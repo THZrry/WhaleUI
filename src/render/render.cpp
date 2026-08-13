@@ -1,79 +1,665 @@
-/* Renderer: public seam implementation.
- * Step 2: contract stub - state tracking only, no GPU work yet. Step 3 fills
- * in the SDL3 GPU pipeline (shaders, draw list, caches). */
+/* Renderer: CPU paint into an RGBA framebuffer, uploaded to an offscreen GPU
+ * texture and blitted to the swapchain (SDL built-in blit pipeline; custom
+ * shaders are a later step). Text comes from SDL3_ttf using fonts registered
+ * through the font module. */
 
 #include "render/render.h"
+#include "font/font.h"
+#include "style/style.h"
 
-extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window)
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_gpu.h>
+#ifdef WHALEUI_BUILD_FULL
+#include <SDL3_ttf/SDL_ttf.h>
+#endif
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
+namespace {
+
+/* --- color --- */
+
+struct NamedColor { const char* name; unsigned int value; };
+
+const NamedColor k_named[] = {
+    {"black", 0xFF000000}, {"silver", 0xFFC0C0C0}, {"gray", 0xFF808080},
+    {"white", 0xFFFFFFFF}, {"maroon", 0xFF800000}, {"red", 0xFFFF0000},
+    {"purple", 0xFF800080}, {"fuchsia", 0xFFFF00FF}, {"green", 0xFF008000},
+    {"lime", 0xFF00FF00}, {"olive", 0xFF808000}, {"yellow", 0xFFFFFF00},
+    {"navy", 0xFF000080}, {"blue", 0xFF0000FF}, {"teal", 0xFF008080},
+    {"aqua", 0xFF00FFFF}, {"orange", 0xFFFFA500}, {"pink", 0xFFFFC0CB},
+    {"brown", 0xFFA52A2A}, {"transparent", 0x00000000},
+};
+
+unsigned int hex_byte(const char* s, int* ok)
 {
-    whaleui_render_t* render = new whaleui_render_t;
-    render->device = device;
-    render->window = window;
-    render->dirty_x = render->dirty_y = 0;
-    render->dirty_w = render->dirty_h = 0;
-    render->has_dirty = 0;
-    render->width = render->height = 0;
-    render->pipeline = nullptr;
-    return render;
+    unsigned int v = 0;
+    for (int i = 0; i < 2; ++i) {
+        char c = s[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') {
+            v |= static_cast<unsigned>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            v |= static_cast<unsigned>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            v |= static_cast<unsigned>(c - 'A' + 10);
+        } else {
+            *ok = 0;
+            return 0;
+        }
+    }
+    return v;
 }
 
-extern "C" void whaleui_render_destroy(whaleui_render_t* render)
+unsigned int hex_nib(char c, int* ok)
 {
-    delete render;
-}
-
-extern "C" void whaleui_render_invalidate(whaleui_render_t* render)
-{
-    if (!render) {
-        return;
+    if (c >= '0' && c <= '9') {
+        return static_cast<unsigned>(c - '0');
     }
-    render->dirty_x = 0;
-    render->dirty_y = 0;
-    render->dirty_w = render->width;
-    render->dirty_h = render->height;
-    render->has_dirty = 1;
-}
-
-extern "C" void whaleui_render_invalidate_rect(whaleui_render_t* render, int x, int y, int w, int h)
-{
-    if (!render || w <= 0 || h <= 0) {
-        return;
+    if (c >= 'a' && c <= 'f') {
+        return static_cast<unsigned>(c - 'a' + 10);
     }
-    if (!render->has_dirty) {
-        render->dirty_x = x;
-        render->dirty_y = y;
-        render->dirty_w = w;
-        render->dirty_h = h;
-        render->has_dirty = 1;
-        return;
+    if (c >= 'A' && c <= 'F') {
+        return static_cast<unsigned>(c - 'A' + 10);
     }
-    /* union with existing dirty rect */
-    int x2 = render->dirty_x + render->dirty_w;
-    int y2 = render->dirty_y + render->dirty_h;
-    int nx2 = x + w, ny2 = y + h;
-    render->dirty_x = render->dirty_x < x ? render->dirty_x : x;
-    render->dirty_y = render->dirty_y < y ? render->dirty_y : y;
-    render->dirty_w = (x2 > nx2 ? x2 : nx2) - render->dirty_x;
-    render->dirty_h = (y2 > ny2 ? y2 : ny2) - render->dirty_y;
-}
-
-extern "C" int whaleui_render_frame(whaleui_render_t* render)
-{
-    if (!render) {
-        return -1;
-    }
-    /* Step 2: no GPU yet. Consume the dirty flag. */
-    render->has_dirty = 0;
+    *ok = 0;
     return 0;
 }
 
-extern "C" int whaleui_render_resize(whaleui_render_t* render, int width, int height)
+/* --- framebuffer helpers (RGBA8, 0xAARRGGBB) --- */
+
+void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
+               int x, int y, int w, int h, unsigned int color)
 {
-    if (!render || width <= 0 || height <= 0) {
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > fbw ? fbw : x + w;
+    int y1 = y + h > fbh ? fbh : y + h;
+    unsigned int a = (color >> 24) & 0xFF;
+    if (a == 0) {
+        return;
+    }
+    if (a == 255) {
+        for (int yy = y0; yy < y1; ++yy) {
+            std::fill(fb.begin() + static_cast<size_t>(yy) * fbw + x0,
+                      fb.begin() + static_cast<size_t>(yy) * fbw + x1, color);
+        }
+        return;
+    }
+    unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+    for (int yy = y0; yy < y1; ++yy) {
+        for (int xx = x0; xx < x1; ++xx) {
+            unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
+            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            unsigned int nr = (r * a + dr * (255 - a)) / 255;
+            unsigned int ng = (g * a + dg * (255 - a)) / 255;
+            unsigned int nb = (b * a + db * (255 - a)) / 255;
+            d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+        }
+    }
+}
+
+void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
+                   const SDL_Surface* surf, int dx, int dy)
+{
+    if (!surf || !surf->pixels) {
+        return;
+    }
+    const unsigned char* src = static_cast<const unsigned char*>(surf->pixels);
+    int pitch = surf->pitch;
+    for (int y = 0; y < surf->h; ++y) {
+        int ty = dy + y;
+        if (ty < 0 || ty >= fbh) {
+            continue;
+        }
+        for (int x = 0; x < surf->w; ++x) {
+            int tx = dx + x;
+            if (tx < 0 || tx >= fbw) {
+                continue;
+            }
+            const unsigned char* s = src + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
+            unsigned int a = s[3];
+            if (a == 0) {
+                continue;
+            }
+            unsigned int& d = fb[static_cast<size_t>(ty) * fbw + tx];
+            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            if (a == 255) {
+                d = 0xFF000000 | (static_cast<unsigned>(s[0]) << 16) |
+                    (static_cast<unsigned>(s[1]) << 8) | s[2];
+            } else {
+                unsigned int nr = (s[0] * a + dr * (255 - a)) / 255;
+                unsigned int ng = (s[1] * a + dg * (255 - a)) / 255;
+                unsigned int nb = (s[2] * a + db * (255 - a)) / 255;
+                d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+            }
+        }
+    }
+}
+
+/* style helpers */
+std::string sget(const WhaleUIComputedStyle& s, const char* k)
+{
+    auto it = s.find(k);
+    return it == s.end() ? std::string() : it->second;
+}
+
+} // namespace
+
+extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
+{
+    if (!s || !out) {
         return -1;
     }
-    render->width = width;
-    render->height = height;
-    whaleui_render_invalidate(render);
+    while (*s == ' ' || *s == '\t') {
+        ++s;
+    }
+    if (*s == '#') {
+        ++s;
+        int ok = 1;
+        size_t n = std::strlen(s);
+        if (n == 3) { /* #rgb */
+            int ok = 1;
+            unsigned int r = hex_nib(s[0], &ok);
+            unsigned int g = hex_nib(s[1], &ok);
+            unsigned int b = hex_nib(s[2], &ok);
+            *out = 0xFF000000 | ((r * 0x11) << 16) | ((g * 0x11) << 8) | (b * 0x11);
+            return ok ? 0 : -2;
+        }
+        if (n == 6 || n == 8) {
+            unsigned int r = hex_byte(s, &ok);
+            unsigned int g = hex_byte(s + 2, &ok);
+            unsigned int b = hex_byte(s + 4, &ok);
+            unsigned int a = n == 8 ? hex_byte(s + 6, &ok) : 0xFF;
+            *out = (a << 24) | (r << 16) | (g << 8) | b;
+            return ok ? 0 : -2;
+        }
+        return -3;
+    }
+    if (std::strncmp(s, "rgba(", 5) == 0 || std::strncmp(s, "rgb(", 4) == 0) {
+        int rr = 0, gg = 0, bb = 0, aa = 255;
+        if (std::sscanf(s, "rgba(%d,%d,%d,%d)", &rr, &gg, &bb, &aa) >= 3 ||
+            std::sscanf(s, "rgb(%d,%d,%d)", &rr, &gg, &bb) >= 3) {
+            unsigned int r = rr < 0 ? 0 : static_cast<unsigned>(rr);
+            unsigned int g = gg < 0 ? 0 : static_cast<unsigned>(gg);
+            unsigned int b = bb < 0 ? 0 : static_cast<unsigned>(bb);
+            unsigned int a = aa < 0 ? 0 : static_cast<unsigned>(aa);
+            if (r > 255) { r = 255; }
+            if (g > 255) { g = 255; }
+            if (b > 255) { b = 255; }
+            if (a > 255) { a = 255; }
+            *out = (a << 24) | (r << 16) | (g << 8) | b;
+            return 0;
+        }
+        return -4;
+    }
+    for (const NamedColor& nc : k_named) {
+        if (std::strcmp(s, nc.name) == 0) {
+            *out = nc.value;
+            return 0;
+        }
+    }
+    return -5;
+}
+
+namespace {
+
+/* --- fonts --- */
+
+#ifdef WHALEUI_BUILD_FULL
+TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size)
+{
+    if (size <= 0) {
+        size = 16;
+    }
+    std::string key = family + "|" + std::to_string(size);
+    for (auto& f : r->fonts) {
+        if (f.first == key) {
+            return f.second;
+        }
+    }
+    /* find the font file in the registry */
+    const unsigned char* data = nullptr;
+    size_t len = 0;
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    for (size_t i = 0; i < reg->count; ++i) {
+        const char* fam = reg->fonts[i].family;
+        if (family.empty() || std::strcmp(fam, family.c_str()) == 0 ||
+            (family == "sans-serif" || family == "serif" || family == "monospace")) {
+            data = reg->fonts[i].data;
+            len = reg->fonts[i].len;
+            break;
+        }
+    }
+    TTF_Font* font = nullptr;
+    if (data && len) {
+        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(data), len);
+        if (io) {
+            font = TTF_OpenFontIO(io, true, static_cast<float>(size));
+        }
+    }
+    if (!font && !family.empty() && family != "sans-serif" && family != "serif" &&
+        family != "monospace") {
+        /* fall back to default font */
+        return render_get_font(r, "", size);
+    }
+    if (!font) {
+        return r->font_default ? r->font_default : nullptr;
+    }
+    r->fonts.emplace_back(key, font);
+    return font;
+}
+#else /* !WHALEUI_BUILD_FULL: text rendering needs SDL3_ttf (full only).
+         stb_font text lands with the lite/minimal font path. */
+TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int) { return nullptr; }
+#endif
+
+/* --- painting --- */
+
+unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop, unsigned int def)
+{
+    std::string v = sget(s, prop);
+    if (v.empty()) {
+        return def;
+    }
+    unsigned int c = 0;
+    if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+        return c;
+    }
+    return def;
+}
+
+void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n)
+{
+#ifdef WHALEUI_BUILD_FULL
+    unsigned int color = color_of(n->style, "color", 0xFF000000);
+    float alpha = (color >> 24) & 0xFF;
+    unsigned int a8 = static_cast<unsigned>(alpha * n->opacity);
+    color = (a8 << 24) | (color & 0x00FFFFFF);
+
+    int fs = 16;
+    std::string fsv = sget(n->style, "font-size");
+    if (!fsv.empty()) {
+        fs = std::atoi(fsv.c_str());
+    }
+    if (fs <= 0) {
+        fs = 16;
+    }
+    std::string family = sget(n->style, "font-family");
+    TTF_Font* font = render_get_font(r, family, fs);
+    if (!font) {
+        return;
+    }
+    SDL_Color fg = {
+        static_cast<Uint8>((color >> 16) & 0xFF),
+        static_cast<Uint8>((color >> 8) & 0xFF),
+        static_cast<Uint8>(color & 0xFF),
+        static_cast<Uint8>((color >> 24) & 0xFF)
+    };
+    SDL_Surface* surf = TTF_RenderText_Blended(font, n->text.c_str(), n->text.size(), fg);
+    if (!surf) {
+        return;
+    }
+    SDL_Surface* conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGBA8888);
+    if (conv) {
+        int tx = n->border.x;
+        int ty = n->border.y + (n->border.h - conv->h) / 2;
+        blend_surface(r->pixels, r->width, r->height, conv, tx, ty);
+        SDL_DestroySurface(conv);
+    }
+    SDL_DestroySurface(surf);
+#endif /* WHALEUI_BUILD_FULL */
+}
+
+void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n)
+{
+    if (!n->visible) {
+        return;
+    }
+    if (n->is_text) {
+        paint_text(r, n);
+        return;
+    }
+    /* background */
+    unsigned int bg = color_of(n->style, "background-color", 0);
+    unsigned int bg2 = color_of(n->style, "background", 0);
+    if (bg == 0) {
+        bg = bg2;
+    }
+    if (bg != 0) {
+        unsigned int a = (bg >> 24) & 0xFF;
+        unsigned int a8 = static_cast<unsigned>(a * n->opacity);
+        fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
+                  n->border.w, n->border.h, (a8 << 24) | (bg & 0x00FFFFFF));
+    }
+    /* border */
+    int bw[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
+    bool any = bw[0] || bw[1] || bw[2] || bw[3];
+    if (any) {
+        unsigned int bc = color_of(n->style, "border-color",
+                                   color_of(n->style, "border", 0xFF000000));
+        if (bc != 0) {
+            unsigned int a = (bc >> 24) & 0xFF;
+            unsigned int a8 = static_cast<unsigned>(a * n->opacity);
+            unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
+            if (bw[0]) { /* top */
+                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c);
+            }
+            if (bw[2]) { /* bottom */
+                fill_rect(r->pixels, r->width, r->height, n->border.x,
+                          n->border.y + n->border.h - bw[2], n->border.w, bw[2], c);
+            }
+            if (bw[1]) { /* right */
+                fill_rect(r->pixels, r->width, r->height,
+                          n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c);
+            }
+            if (bw[3]) { /* left */
+                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c);
+            }
+        }
+    }
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        paint_node(r, c);
+    }
+}
+
+} // namespace
+
+extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window,
+                                                   int width, int height)
+{
+    if (!window || width <= 0 || height <= 0) {
+        return nullptr;
+    }
+    whaleui_render_t* r = new whaleui_render_t;
+    std::memset(r, 0, sizeof(*r));
+    r->device = device;
+    r->window = window;
+    r->width = width;
+    r->height = height;
+    r->has_dirty = 1;
+    r->bg_color = 0xFF202020;
+    r->pixels.resize(static_cast<size_t>(width) * height, 0xFF202020);
+
+    if (device) {
+        /* GPU path: offscreen target + transfer buffer */
+        SDL_GPUTextureCreateInfo tci;
+        std::memset(&tci, 0, sizeof(tci));
+        tci.type = SDL_GPU_TEXTURETYPE_2D;
+        tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tci.width = static_cast<Uint32>(width);
+        tci.height = static_cast<Uint32>(height);
+        tci.layer_count_or_depth = 1;
+        tci.num_levels = 1;
+        tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        r->offscreen = SDL_CreateGPUTexture(device, &tci);
+
+        SDL_GPUTransferBufferCreateInfo tbi;
+        std::memset(&tbi, 0, sizeof(tbi));
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
+        r->transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
+
+        if (!r->offscreen || !r->transfer) {
+            SDL_ReleaseGPUTexture(device, r->offscreen);
+            SDL_ReleaseGPUTransferBuffer(device, r->transfer);
+            r->offscreen = nullptr;
+            r->transfer = nullptr;
+            device = nullptr;
+        }
+    }
+
+    if (!device) {
+        /* software fallback: SDL_Renderer + streaming texture */
+        r->renderer = SDL_CreateRenderer(window, nullptr);
+        if (!r->renderer) {
+            /* last resort: force the software driver */
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "software");
+            SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window);
+            r->renderer = SDL_CreateRendererWithProperties(props);
+            SDL_DestroyProperties(props);
+        }
+        if (!r->renderer) {
+            delete r;
+            return nullptr;
+        }
+        r->tex = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA8888,
+                                   SDL_TEXTUREACCESS_STREAMING, width, height);
+        if (!r->tex) {
+            SDL_DestroyRenderer(r->renderer);
+            delete r;
+            return nullptr;
+        }
+    }
+
+    /* default font: first registered font, else system fallback */
+#ifdef WHALEUI_BUILD_FULL
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    if (reg->count > 0) {
+        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(reg->fonts[0].data),
+                                         reg->fonts[0].len);
+        if (io) {
+            r->font_default = TTF_OpenFontIO(io, true, 16.0f);
+        }
+    }
+#endif
+    return r;
+}
+
+extern "C" void whaleui_render_destroy(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+    whaleui_layout_destroy(r->tree);
+    if (r->rules) {
+        whaleui_css_rules_destroy(r->rules, r->rule_count);
+    }
+    whaleui_css_keyframes_destroy(&r->keyframes);
+#ifdef WHALEUI_BUILD_FULL
+    for (auto& f : r->fonts) {
+        TTF_CloseFont(f.second);
+    }
+    TTF_CloseFont(r->font_default);
+#endif
+    if (r->renderer) {
+        SDL_DestroyTexture(r->tex);
+        SDL_DestroyRenderer(r->renderer);
+    } else {
+        SDL_ReleaseGPUTexture(r->device, r->offscreen);
+        SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
+    }
+    delete r;
+}
+
+extern "C" void whaleui_render_set_css(whaleui_render_t* r,
+                                       const whaleui_css_rule_t* rules, size_t count,
+                                       const whaleui_css_keyframes_t* keyframes,
+                                       const std::map<std::string, std::string>* theme_vars)
+{
+    if (!r) {
+        return;
+    }
+    if (r->rules) {
+        whaleui_css_rules_destroy(r->rules, r->rule_count);
+        r->rules = nullptr;
+        r->rule_count = 0;
+    }
+    whaleui_css_keyframes_destroy(&r->keyframes);
+    if (rules && count) {
+        /* deep-copy rules so the render context owns its stylesheet */
+        whaleui_css_rule_t* copy = static_cast<whaleui_css_rule_t*>(
+            std::malloc(count * sizeof(*copy)));
+        if (copy) {
+            for (size_t i = 0; i < count; ++i) {
+                std::memset(&copy[i], 0, sizeof(copy[i]));
+            }
+            r->rules = copy;
+            r->rule_count = count;
+            for (size_t i = 0; i < count; ++i) {
+                copy[i].selector = strdup(rules[i].selector ? rules[i].selector : "");
+                copy[i].media = rules[i].media ? strdup(rules[i].media) : nullptr;
+                copy[i].important = rules[i].important;
+                if (rules[i].decl_count) {
+                    copy[i].decls = static_cast<char**>(std::malloc(rules[i].decl_count * sizeof(char*)));
+                    for (size_t d = 0; d < rules[i].decl_count; ++d) {
+                        copy[i].decls[d] = strdup(rules[i].decls[d]);
+                    }
+                    copy[i].decl_count = rules[i].decl_count;
+                }
+            }
+        }
+    }
+    if (keyframes) {
+        r->keyframes.items = static_cast<whaleui_keyframes_t*>(std::malloc(
+            keyframes->count * sizeof(*keyframes->items)));
+        r->keyframes.count = keyframes->count;
+        for (size_t i = 0; i < keyframes->count; ++i) {
+            whaleui_keyframes_t* d = &r->keyframes.items[i];
+            const whaleui_keyframes_t* s = &keyframes->items[i];
+            std::memset(d, 0, sizeof(*d));
+            d->name = strdup(s->name);
+            if (s->frame_count) {
+                d->frames = static_cast<char**>(std::malloc(s->frame_count * sizeof(char*)));
+                for (size_t j = 0; j < s->frame_count; ++j) {
+                    d->frames[j] = strdup(s->frames[j]);
+                }
+                d->frame_count = s->frame_count;
+            }
+        }
+    }
+    if (theme_vars) {
+        r->theme_vars = *theme_vars;
+    }
+    r->has_dirty = 1;
+}
+
+extern "C" void whaleui_render_invalidate(whaleui_render_t* r)
+{
+    if (r) {
+        r->has_dirty = 1;
+    }
+}
+
+extern "C" void whaleui_render_invalidate_rect(whaleui_render_t* r, int x, int y, int w, int h)
+{
+    (void)x; (void)y; (void)w; (void)h;
+    if (r) {
+        r->has_dirty = 1;
+    }
+}
+
+extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
+{
+    if (!r || width <= 0 || height <= 0) {
+        return -1;
+    }
+    r->width = width;
+    r->height = height;
+    r->pixels.assign(static_cast<size_t>(width) * height, r->bg_color);
+    if (r->renderer) {
+        SDL_DestroyTexture(r->tex);
+        r->tex = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA8888,
+                                   SDL_TEXTUREACCESS_STREAMING, width, height);
+    } else {
+        SDL_ReleaseGPUTexture(r->device, r->offscreen);
+        SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
+        SDL_GPUTextureCreateInfo tci;
+        std::memset(&tci, 0, sizeof(tci));
+        tci.type = SDL_GPU_TEXTURETYPE_2D;
+        tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tci.width = static_cast<Uint32>(width);
+        tci.height = static_cast<Uint32>(height);
+        tci.layer_count_or_depth = 1;
+        tci.num_levels = 1;
+        tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        r->offscreen = SDL_CreateGPUTexture(r->device, &tci);
+        SDL_GPUTransferBufferCreateInfo tbi;
+        std::memset(&tbi, 0, sizeof(tbi));
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
+        r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
+    }
+    r->has_dirty = 1;
+    return 0;
+}
+
+extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
+{
+    if (!r || !doc) {
+        return -1;
+    }
+    if (r->has_dirty || !r->tree) {
+        whaleui_layout_destroy(r->tree);
+        r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
+                                         &r->theme_vars, r->width, r->height);
+        r->has_dirty = 0;
+    }
+    if (!r->tree) {
+        return -2;
+    }
+
+    /* paint */
+    std::fill(r->pixels.begin(), r->pixels.end(), r->bg_color);
+    paint_node(r, r->tree->root);
+
+    /* present: software path or GPU blit */
+    if (r->renderer) {
+        SDL_UpdateTexture(r->tex, nullptr, r->pixels.data(),
+                          static_cast<int>(r->width) * 4);
+        SDL_RenderClear(r->renderer);
+        SDL_RenderTexture(r->renderer, r->tex, nullptr, nullptr);
+        SDL_RenderPresent(r->renderer);
+        return 0;
+    }
+
+    /* upload + blit + present */
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
+    if (!cmd) {
+        return -3;
+    }
+    SDL_GPUTexture* swapchain = nullptr;
+    Uint32 sw = 0, sh = 0;
+    if (!SDL_AcquireGPUSwapchainTexture(cmd, r->window, &swapchain, &sw, &sh) || !swapchain) {
+        SDL_SubmitGPUCommandBuffer(cmd);
+        return 0;
+    }
+    void* mapped = SDL_MapGPUTransferBuffer(r->device, r->transfer, false);
+    if (mapped) {
+        std::memcpy(mapped, r->pixels.data(), r->pixels.size() * 4);
+        SDL_UnmapGPUTransferBuffer(r->device, r->transfer);
+    }
+    SDL_GPUTextureTransferInfo upload;
+    std::memset(&upload, 0, sizeof(upload));
+    upload.transfer_buffer = r->transfer;
+    SDL_GPUTextureRegion region;
+    std::memset(&region, 0, sizeof(region));
+    region.texture = r->offscreen;
+    region.w = static_cast<Uint32>(r->width);
+    region.h = static_cast<Uint32>(r->height);
+    region.d = 1;
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_UploadToGPUTexture(cp, &upload, &region, false);
+    SDL_EndGPUCopyPass(cp);
+
+    SDL_GPUBlitInfo blit;
+    std::memset(&blit, 0, sizeof(blit));
+    blit.source.texture = r->offscreen;
+    blit.source.w = static_cast<Uint32>(r->width);
+    blit.source.h = static_cast<Uint32>(r->height);
+    blit.destination.texture = swapchain;
+    blit.destination.w = sw;
+    blit.destination.h = sh;
+    blit.load_op = SDL_GPU_LOADOP_CLEAR;
+    blit.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
+    blit.filter = SDL_GPU_FILTER_NEAREST;
+    SDL_BlitGPUTexture(cmd, &blit);
+    SDL_SubmitGPUCommandBuffer(cmd);
     return 0;
 }

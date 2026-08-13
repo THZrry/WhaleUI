@@ -1,12 +1,37 @@
 /* Application core: public C API implementation.
- * Step 2: contract implementation (state kept, event loop stub). */
+ * Event loop polls SDL events, repaints visible windows, honors the
+ * max-fps / battery-saver frame cap. */
 
 #include "core/app.h"
+#include "core/window.h"
+#include "platform/platform.h"
+#include "render/render.h"
+
+#include <SDL3/SDL.h>
 
 #include <cstring>
 
+namespace {
+/* theme resolution: SYSTEM -> platform detection */
+whaleui_theme_t resolved_theme(const whaleui_app_t* app)
+{
+    if (!app) {
+        return WHALEUI_THEME_LIGHT;
+    }
+    return app->theme == WHALEUI_THEME_SYSTEM ? whaleui_platform_system_theme() : app->theme;
+}
+} // namespace
+
+whaleui_theme_t whaleui_app_resolved_theme(const whaleui_app_t* app)
+{
+    return resolved_theme(app);
+}
+
 extern "C" whaleui_app_t* whaleui_app_create(void)
 {
+    if (whaleui_platform_init() != 0) {
+        return nullptr;
+    }
     whaleui_app_t* app = new whaleui_app_t;
     app->theme = WHALEUI_THEME_SYSTEM;
     std::strcpy(app->accent, "#0078D4"); /* default accent */
@@ -14,12 +39,23 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->battery_saver = 1; /* default 60fps in battery saver */
     app->vsync = 1;
     app->running = 0;
-    app->gpu = nullptr; /* SDL GPU device, created lazily in step 3 */
+    app->gpu = nullptr;
     return app;
 }
 
 extern "C" void whaleui_app_destroy(whaleui_app_t* app)
 {
+    if (!app) {
+        return;
+    }
+    for (whaleui_window_t* win : app->windows) {
+        whaleui_window_destroy(win);
+    }
+    app->windows.clear();
+    if (app->gpu) {
+        SDL_DestroyGPUDevice(app->gpu);
+    }
+    whaleui_platform_shutdown();
     delete app;
 }
 
@@ -29,8 +65,84 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         return -1;
     }
     app->running = 1;
-    /* Step 2: no event loop yet. Quit immediately. */
-    app->running = 0;
+
+    /* nothing visible -> nothing to run (keeps headless tests fast) */
+    bool any = false;
+    for (whaleui_window_t* win : app->windows) {
+        if (win->visible && win->sdl) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) {
+        app->running = 0;
+        return 0;
+    }
+
+    Uint64 last = SDL_GetTicks();
+    while (app->running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            switch (e.type) {
+            case SDL_EVENT_QUIT:
+                app->running = 0;
+                break;
+            case SDL_EVENT_KEY_DOWN:
+                if (e.key.key == SDLK_ESCAPE) {
+                    app->running = 0;
+                } else if (e.key.key == SDLK_T) {
+                    /* toggle theme for the demo */
+                    whaleui_app_set_theme(app, app->theme == WHALEUI_THEME_DARK
+                                                 ? WHALEUI_THEME_LIGHT
+                                                 : WHALEUI_THEME_DARK);
+                }
+                break;
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                        win->visible = 0;
+                        app->running = 0;
+                        break;
+                    }
+                }
+                break;
+            case SDL_EVENT_WINDOW_RESIZED: {
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                        win->width = e.window.data1;
+                        win->height = e.window.data2;
+                        if (win->render) {
+                            whaleui_render_resize(win->render, win->width, win->height);
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+
+        /* paint all visible windows */
+        for (whaleui_window_t* win : app->windows) {
+            if (win->visible && win->sdl && win->render && win->document) {
+                whaleui_render_frame(win->render, win->document);
+            }
+        }
+
+        /* frame cap: max_fps, else battery saver default 60 */
+        int fps = app->max_fps > 0 ? app->max_fps : (app->battery_saver ? 60 : 0);
+        Uint64 now = SDL_GetTicks();
+        if (fps > 0) {
+            Uint64 target = last + 1000 / fps;
+            if (now < target) {
+                SDL_Delay(static_cast<Uint32>(target - now));
+                now = target;
+            }
+        }
+        last = now;
+    }
     return 0;
 }
 
@@ -47,6 +159,12 @@ extern "C" int whaleui_app_set_theme(whaleui_app_t* app, whaleui_theme_t theme)
         return -1;
     }
     app->theme = theme;
+    /* repaint windows with the new theme variables */
+    for (whaleui_window_t* win : app->windows) {
+        if (win->render) {
+            whaleui_render_invalidate(win->render);
+        }
+    }
     return 0;
 }
 

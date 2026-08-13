@@ -37,6 +37,10 @@ struct whaleui_window
     whaleui_dom_document_t* document;
 };
 
+/* Re-parse the stylesheet + rebuild theme variables (used after theme or
+ * accent changes). Internal; declared here for core/app.cpp. */
+void whaleui_window_refresh_css(whaleui_window_t* win);
+
 #ifdef __cplusplus
 }
 #endif

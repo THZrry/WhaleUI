@@ -3,16 +3,28 @@
 
 /* Renderer - internal interface.
  *
- * One render context per window, backed by a SDL3 GPU device (shared from the
- * app). Step 3 fills in: GPU pipeline, shaders (SPIR-V intermediate for
- * Vulkan/D3D11/GL4.6), dirty-rect tracking, occlusion, and texture/font
- * caches. This header fixes the seam the rest of the engine renders into. */
+ * One render context per window. Frames are painted into a CPU RGBA
+ * framebuffer, uploaded to an offscreen GPU texture and blitted to the
+ * swapchain with SDL's built-in blit pipeline (no custom shaders yet - the
+ * intermediate-shader path is a later step). Text is rasterized with
+ * SDL3_ttf from fonts registered through the font module. */
 
 #include "whaleui.h"
+#include "layout/layout.h"
+#include "style/css.h"
+
+#include <map>
+#include <string>
+#include <vector>
 
 /* SDL3 opaque types; never dereferenced in this header. */
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_GPUDevice SDL_GPUDevice;
+typedef struct SDL_GPUTexture SDL_GPUTexture;
+typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
+typedef struct SDL_Renderer SDL_Renderer;
+typedef struct SDL_Texture SDL_Texture;
+typedef struct TTF_Font TTF_Font;
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,32 +35,61 @@ struct whaleui_render
     SDL_GPUDevice* device; /* borrowed from app->gpu */
     SDL_Window* window;    /* borrowed from win->sdl */
 
-    /* dirty-rect accumulation (step 3: min/max tracking + rect list) */
-    int dirty_x, dirty_y, dirty_w, dirty_h;
+    int width, height;     /* window size in pixels */
     int has_dirty;
 
-    /* swapchain/viewport cached from the last resize */
-    int width, height;
+    /* CPU framebuffer (RGBA8) + GPU offscreen target.
+     * GPU path: offscreen + transfer. Software fallback (no GPU backend):
+     * SDL_Renderer + streaming texture present the same framebuffer. */
+    std::vector<unsigned int> pixels;
+    SDL_GPUTexture* offscreen;
+    SDL_GPUTransferBuffer* transfer;
+    SDL_Renderer* renderer; /* non-NULL when running on the software path */
+    SDL_Texture* tex;
 
-    /* step 3: draw list, texture cache, font atlas, shader pipeline */
-    void* pipeline; /* placeholder, owned by render impl */
+    /* owned stylesheet + last layout tree (rebuilt on dirty) */
+    whaleui_layout_tree_t* tree;
+    whaleui_css_rule_t* rules;
+    size_t rule_count;
+    whaleui_css_keyframes_t keyframes;
+    std::map<std::string, std::string> theme_vars;
+
+    /* font cache: "family|size" -> TTF_Font */
+    std::vector<std::pair<std::string, TTF_Font*>> fonts;
+    TTF_Font* font_default;
+
+    /* painted-background color (body background, cached) */
+    unsigned int bg_color;
 };
 
 typedef struct whaleui_render whaleui_render_t;
 
-/* Create/destroy a per-window render context (device/window borrowed). */
-whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window);
+/* Create/destroy a per-window render context (device/window borrowed).
+ * The window must already be claimed for the GPU device. */
+whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window,
+                                        int width, int height);
 void whaleui_render_destroy(whaleui_render_t* render);
 
-/* Mark the whole viewport (or a rect) dirty -> next frame repaints it. */
+/* Attach the document's stylesheet (rules are copied; keyframes copied).
+ * Call after load_html/load_uri and before the first frame. */
+void whaleui_render_set_css(whaleui_render_t* render,
+                            const whaleui_css_rule_t* rules, size_t count,
+                            const whaleui_css_keyframes_t* keyframes,
+                            const std::map<std::string, std::string>* theme_vars);
+
+/* Mark the whole viewport dirty -> next frame repaints + re-lays-out. */
 void whaleui_render_invalidate(whaleui_render_t* render);
 void whaleui_render_invalidate_rect(whaleui_render_t* render, int x, int y, int w, int h);
 
-/* Render one frame for the window. Returns 0 on success. */
-int whaleui_render_frame(whaleui_render_t* render);
+/* Paint one frame for the window. Returns 0 on success. */
+int whaleui_render_frame(whaleui_render_t* render, whaleui_dom_document_t* doc);
 
-/* Handle a resize: update cached viewport, invalidate. */
+/* Handle a resize: recreate offscreen target, invalidate. */
 int whaleui_render_resize(whaleui_render_t* render, int width, int height);
+
+/* Parse a CSS color ("#rgb"/"#rrggbb"/"#rrggbbaa"/named/transparent) into
+ * 0xAARRGGBB. Returns 0 on success. */
+int whaleui_render_parse_color(const char* s, unsigned int* out);
 
 #ifdef __cplusplus
 }
