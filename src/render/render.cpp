@@ -70,8 +70,24 @@ unsigned int hex_nib(char c, int* ok)
 
 /* --- framebuffer helpers (RGBA8, 0xAARRGGBB) --- */
 
+struct Clip { int x, y, w, h; };
+
+/* intersect [x0,x1)x[y0,y1) with clip (NULL = no clip) */
+void clip_rect(int& x0, int& y0, int& x1, int& y1, const Clip* clip)
+{
+    if (!clip || clip->w <= 0 || clip->h <= 0) {
+        return;
+    }
+    int cx0 = clip->x, cy0 = clip->y;
+    int cx1 = clip->x + clip->w, cy1 = clip->y + clip->h;
+    if (x0 < cx0) { x0 = cx0; }
+    if (y0 < cy0) { y0 = cy0; }
+    if (x1 > cx1) { x1 = cx1; }
+    if (y1 > cy1) { y1 = cy1; }
+}
+
 void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
-               int x, int y, int w, int h, unsigned int color)
+               int x, int y, int w, int h, unsigned int color, const Clip* clip)
 {
     if (w <= 0 || h <= 0) {
         return;
@@ -80,8 +96,9 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     int y0 = y < 0 ? 0 : y;
     int x1 = x + w > fbw ? fbw : x + w;
     int y1 = y + h > fbh ? fbh : y + h;
+    clip_rect(x0, y0, x1, y1, clip);
     unsigned int a = (color >> 24) & 0xFF;
-    if (a == 0) {
+    if (a == 0 || x1 <= x0 || y1 <= y0) {
         return;
     }
     if (a == 255) {
@@ -104,8 +121,63 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     }
 }
 
+/* rounded rect: radius clipped to half the smaller side */
+void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
+                     int x, int y, int w, int h, int radius,
+                     unsigned int color, const Clip* clip)
+{
+    if (radius <= 0) {
+        fill_rect(fb, fbw, fbh, x, y, w, h, color, clip);
+        return;
+    }
+    int half = w < h ? w / 2 : h / 2;
+    if (radius > half) {
+        radius = half;
+    }
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > fbw ? fbw : x + w;
+    int y1 = y + h > fbh ? fbh : y + h;
+    clip_rect(x0, y0, x1, y1, clip);
+    unsigned int a = (color >> 24) & 0xFF;
+    if (a == 0 || x1 <= x0 || y1 <= y0) {
+        return;
+    }
+    unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+    long r2 = static_cast<long>(radius) * radius;
+    for (int yy = y0; yy < y1; ++yy) {
+        for (int xx = x0; xx < x1; ++xx) {
+            /* corner test */
+            long dx = 0, dy = 0;
+            if (xx < x + radius) {
+                dx = static_cast<long>(x + radius - 1 - xx) + 1;
+            } else if (xx >= x + w - radius) {
+                dx = static_cast<long>(xx - (x + w - radius)) + 1;
+            }
+            if (yy < y + radius) {
+                dy = static_cast<long>(y + radius - 1 - yy) + 1;
+            } else if (yy >= y + h - radius) {
+                dy = static_cast<long>(yy - (y + h - radius)) + 1;
+            }
+            if ((dx != 0 || dy != 0) && dx * dx + dy * dy > r2) {
+                continue; /* outside the rounded corner */
+            }
+            unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
+            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            if (a == 255) {
+                d = color;
+            } else {
+                unsigned int nr = (r * a + dr * (255 - a)) / 255;
+                unsigned int ng = (g * a + dg * (255 - a)) / 255;
+                unsigned int nb = (b * a + db * (255 - a)) / 255;
+                d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+            }
+        }
+    }
+}
+
 void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
-                   const SDL_Surface* surf, int dx, int dy)
+                   const SDL_Surface* surf, int dx, int dy, const Clip* clip)
 {
     if (!surf || !surf->pixels) {
         return;
@@ -117,9 +189,15 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
         if (ty < 0 || ty >= fbh) {
             continue;
         }
+        if (clip && (ty < clip->y || ty >= clip->y + clip->h)) {
+            continue;
+        }
         for (int x = 0; x < surf->w; ++x) {
             int tx = dx + x;
             if (tx < 0 || tx >= fbw) {
+                continue;
+            }
+            if (clip && (tx < clip->x || tx >= clip->x + clip->w)) {
                 continue;
             }
             const unsigned char* s = src + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
@@ -212,12 +290,13 @@ namespace {
 /* --- fonts --- */
 
 #ifdef WHALEUI_BUILD_FULL
-TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size)
+TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size,
+                          bool bold)
 {
     if (size <= 0) {
         size = 16;
     }
-    std::string key = family + "|" + std::to_string(size);
+    std::string key = family + "|" + std::to_string(size) + "|" + (bold ? "b" : "n");
     for (auto& f : r->fonts) {
         if (f.first == key) {
             return f.second;
@@ -246,17 +325,23 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
     if (!font && !family.empty() && family != "sans-serif" && family != "serif" &&
         family != "monospace") {
         /* fall back to default font */
-        return render_get_font(r, "", size);
+        return render_get_font(r, "", size, bold);
     }
     if (!font) {
+        if (bold && r->font_default) {
+            TTF_SetFontStyle(r->font_default, TTF_STYLE_BOLD);
+        }
         return r->font_default ? r->font_default : nullptr;
+    }
+    if (bold) {
+        TTF_SetFontStyle(font, TTF_STYLE_BOLD);
     }
     r->fonts.emplace_back(key, font);
     return font;
 }
 #else /* !WHALEUI_BUILD_FULL: text rendering needs SDL3_ttf (full only).
          stb_font text lands with the lite/minimal font path. */
-TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int) { return nullptr; }
+TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, bool) { return nullptr; }
 #endif
 
 /* --- painting --- */
@@ -274,7 +359,7 @@ unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop, unsigned 
     return def;
 }
 
-void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n)
+void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
 #ifdef WHALEUI_BUILD_FULL
     unsigned int color = color_of(n->style, "color", 0xFF000000);
@@ -291,7 +376,11 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n)
         fs = 16;
     }
     std::string family = sget(n->style, "font-family");
-    TTF_Font* font = render_get_font(r, family, fs);
+    /* font-weight: bold/bolder/600-900 render bold */
+    std::string fw = sget(n->style, "font-weight");
+    bool bold = fw == "bold" || fw == "bolder" ||
+                (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+    TTF_Font* font = render_get_font(r, family, fs, bold);
     if (!font) {
         return;
     }
@@ -307,25 +396,43 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n)
     }
     SDL_Surface* conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGBA8888);
     if (conv) {
+        /* text-align within the box */
+        std::string ta = sget(n->style, "text-align");
         int tx = n->border.x;
+        if (ta == "center") {
+            tx = n->border.x + (n->border.w - conv->w) / 2;
+        } else if (ta == "right") {
+            tx = n->border.x + n->border.w - conv->w;
+        }
         int ty = n->border.y + (n->border.h - conv->h) / 2;
-        blend_surface(r->pixels, r->width, r->height, conv, tx, ty);
+        blend_surface(r->pixels, r->width, r->height, conv, tx, ty, clip);
         SDL_DestroySurface(conv);
     }
     SDL_DestroySurface(surf);
 #endif /* WHALEUI_BUILD_FULL */
 }
 
-void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n)
+void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
     if (!n->visible) {
         return;
     }
     if (n->is_text) {
-        paint_text(r, n);
+        paint_text(r, n, clip);
         return;
     }
-    /* background */
+    /* overflow: hidden clips descendants to the border box */
+    Clip self;
+    const Clip* eff = clip;
+    std::string ov = sget(n->style, "overflow");
+    if (ov == "hidden") {
+        self.x = n->border.x;
+        self.y = n->border.y;
+        self.w = n->border.w;
+        self.h = n->border.h;
+        eff = &self;
+    }
+    /* background (border-radius supported) */
     unsigned int bg = color_of(n->style, "background-color", 0);
     unsigned int bg2 = color_of(n->style, "background", 0);
     if (bg == 0) {
@@ -334,8 +441,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n)
     if (bg != 0) {
         unsigned int a = (bg >> 24) & 0xFF;
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
-        fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
-                  n->border.w, n->border.h, (a8 << 24) | (bg & 0x00FFFFFF));
+        unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
+        int radius = 0;
+        std::string br = sget(n->style, "border-radius");
+        if (!br.empty()) {
+            radius = std::atoi(br.c_str());
+        }
+        if (radius > 0) {
+            fill_round_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
+                            n->border.w, n->border.h, radius, c, eff);
+        } else {
+            fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
+                      n->border.w, n->border.h, c, eff);
+        }
     }
     /* border */
     int bw[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
@@ -348,23 +466,23 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n)
             unsigned int a8 = static_cast<unsigned>(a * n->opacity);
             unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
             if (bw[0]) { /* top */
-                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c);
+                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c, eff);
             }
             if (bw[2]) { /* bottom */
                 fill_rect(r->pixels, r->width, r->height, n->border.x,
-                          n->border.y + n->border.h - bw[2], n->border.w, bw[2], c);
+                          n->border.y + n->border.h - bw[2], n->border.w, bw[2], c, eff);
             }
             if (bw[1]) { /* right */
                 fill_rect(r->pixels, r->width, r->height,
-                          n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c);
+                          n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c, eff);
             }
             if (bw[3]) { /* left */
-                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c);
+                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c, eff);
             }
         }
     }
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-        paint_node(r, c);
+        paint_node(r, c, eff);
     }
 }
 
@@ -607,7 +725,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 
     /* paint */
     std::fill(r->pixels.begin(), r->pixels.end(), r->bg_color);
-    paint_node(r, r->tree->root);
+    Clip full = {0, 0, r->width, r->height};
+    paint_node(r, r->tree->root, &full);
 
     /* present: software path or GPU blit */
     if (r->renderer) {

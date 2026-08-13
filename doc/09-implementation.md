@@ -29,16 +29,17 @@
 ```
 display, width, height, min/max-width, margin/padding/border(简写+四边),
 box-sizing, position, top/left, z-index, opacity, flex 布局(flex-direction,
-justify-content, gap, flex-grow), background-color/background(纯色),
-color, font-size, font-family(按注册字体), border-width/style/color,
-line-height(近似), cursor(记录)
+justify-content, gap, flex-grow), background-color/background(纯色,
+支持 border-radius 圆角), color, font-size, font-family(按注册字体),
+font-weight(bold/≥600 合成粗体), text-align(left/center/right),
+border-width/style/color, line-height(近似), overflow:hidden(裁剪),
+cursor(记录)
 ```
 
 ### 已解析但渲染未生效(引擎可计算,绘制暂未消费)
 
 ```
-border-radius, box-shadow, text-align, font-weight(粗体未合成),
-background-image, transform, transition, animation(@keyframes 已解析)
+box-shadow, background-image, transform, transition, animation(@keyframes 已解析)
 ```
 
 ### 未实现(解析器/引擎未处理)
