@@ -3,44 +3,21 @@
 
 /* DOM - internal interface.
  *
- * Elements wrap lexbor nodes (step 3). Step 2 keeps a minimal tree so the
- * public contract is exercised; lexbor integration replaces the internals. */
+ * Step 3: handles ARE the lexbor objects. A whaleui_dom_document_t* is an
+ * lxb_html_document* and a whaleui_dom_element_t* is an lxb_dom_element*,
+ * passed through as opaque pointers (C-compatible, stable identity, no
+ * wrapper allocation). The structs below are never instantiated; they only
+ * give the public API a named type. Internal modules cast back via
+ * reinterpret_cast. */
 
 #include "whaleui.h"
-
-#include <cstddef>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct whaleui_dom_element
-{
-    char* tag;
-    char* id;
-    char* text;
-    /* attribute storage: flat array of "name=value" strings */
-    char** attrs;
-    size_t attr_count;
-    /* inline style: flat array of "property=value" strings */
-    char** styles;
-    size_t style_count;
-    whaleui_dom_element_t* parent;
-    whaleui_dom_element_t* first_child;
-    whaleui_dom_element_t* next_sibling;
-
-    /* step 3 (ECS-ready): per-tag behavior flags and computed-style slot.
-     * All tags are treated as div internally; per-tag adapters (strong, input,
-     * summary, ...) key off these. */
-    unsigned tag_kind;    /* WHALEUI_TAG_* (div default) */
-    void* computed_style; /* owned by the style engine */
-    void* layout_box;     /* owned by the layout engine (lexbor) */
-};
-
-struct whaleui_dom_document
-{
-    whaleui_dom_element_t* root; /* document element (html) */
-};
+struct whaleui_dom_element { char _opaque; };
+struct whaleui_dom_document { char _opaque; };
 
 #ifdef __cplusplus
 }
