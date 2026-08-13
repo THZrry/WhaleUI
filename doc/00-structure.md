@@ -9,9 +9,9 @@ whaleui/
 ├── src/
 │   ├── core/                  # 应用/窗口核心、生命周期、主题(含公开 C API 实现)
 │   ├── dom/                   # DOM 解析与操作(包装 lexbor,含公开 C API 实现)
-│   ├── style/                 # 样式计算、CSS 属性表、主题映射(含公开 C API 实现)
-│   ├── layout/                # 布局适配(盒模型结果由 lexbor 计算)
-│   ├── render/                # 渲染(SDL3 GPU,脏矩形/遮挡/缓存)
+│   ├── style/                 # 样式计算、CSS 解析、默认主题与变量(含公开 C API 实现)
+│   ├── layout/                # 自研布局引擎(盒模型 + 基础 flex)
+│   ├── render/                # 渲染(SDL3 GPU + 软件回退,脏矩形/缓存为后续优化)
 │   ├── fs/                    # 虚拟文件系统(默认磁盘,可替换,含公开 C API 实现)
 │   ├── font/                  # 字体注册/加载/默认字体(含公开 C API 实现)
 │   └── platform/
@@ -20,6 +20,7 @@ whaleui/
 │       └── macos/             # macOS 后端
 ├── doc/                       # 设计文档(本目录)
 ├── tests/                     # 单元测试(零依赖,assert 风格)
+├── examples/                  # demo 示例
 ├── tools/
 │   └── fetch-3rdparty.ps1     # 下载官方预编译第三方包
 ├── 3rdparty/                  # 预编译第三方包(仅 include 入库,其余 gitignore)

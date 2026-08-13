@@ -11,7 +11,9 @@
 | `test_fs` | 虚拟文件系统 | 默认磁盘 loader 读写、URI 前缀、set_loader 替换 |
 | `test_font` | 字体 | 内存注册、默认字体设置/查询、family 列表 |
 | `test_dom` | DOM | 解析、getElementById/querySelector、创建/挂载、属性、文本、样式 |
-| `test_style` | 样式 | CSS 解析、属性读取、规则销毁 |
+| `test_style` | 样式 | CSS 解析(注释/逗号/!important/media/keyframes)、选择器匹配、级联、var() |
+| `test_layout` | 布局 | 盒模型、block 流、flex row/column、border-box、position、opacity/z-index |
+| `test_render` | 渲染 | 像素级绘制验证(背景/盒子/主题切换,软件渲染路径) |
 | `test_window` | 窗口 | 创建/标题/尺寸、load_html/load_uri、document 获取 |
 
 ## 运行方式
@@ -21,6 +23,8 @@ xmake                        # 构建全部(含测试)
 xmake run test_api           # 运行单个测试
 xmake run test_dom
 ```
+
+> Windows 下测试二进制依赖 `SDL3.dll` 与 `SDL3_ttf.dll`,构建后会自动拷贝到输出目录。
 
 ## 验收标准
 

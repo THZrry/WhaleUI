@@ -61,14 +61,13 @@ typedef struct whaleui_platform_api {
 
 ## 渲染管线 (render)
 
-1. DOM 解析(lexbor)→ `WhaleUIDocument`
-2. 样式计算(CSS 规则 + 主题)→ 每个元素 `computed style`
-3. 布局:直接调用 lexbor 的 CSS layout(位置/尺寸计算全部由 lexbor 完成,项目不实现排版算法;`src/layout/` 仅把 lexbor 的盒结果适配为渲染器可用的 `whaleui_layout_box_t`)
-4. 渲染:`src/render/` 组织 draw list,脏矩形 + 遮挡剔除 + 缓存,SDL3 GPU 提交
-5. 帧率:省电模式默认 60fps,分辨率切换时重检测,允许用户覆盖
+1. DOM 解析(lexbor)→ 文档句柄
+2. 样式计算(CSS 规则 + 主题变量)→ 每个元素 computed style(见 `src/style/`)
+3. 布局:自研盒模型 + 基础 flex(`src/layout/`,lexbor 只提供解析不计算布局;位置/尺寸计算在本项目内完成)
+4. 渲染:`src/render/` 将布局树绘制到 CPU framebuffer,经 SDL_GPU 纹理呈现;无 GPU 时回退 SDL_Renderer 软件渲染
+5. 帧率:省电模式默认 60fps,允许用户覆盖(`whaleui_app_set_render_option`)
 
 ## 主题与样式
 
-- 内置主题:Windows Classic / Aero / Metro / Fluent、GTK、macOS、Material Design,各含深浅色变体。
-- 通用 class 保留,每个 tag 有预设样式。
-- 主题选择:跟随系统(默认)/ 用户指定;热切换。
+- 内置默认样式表 + 浅/深色两套 `--*` 变量,可热切换。
+- 系统风格(Windows Classic / Aero / Metro / Fluent、GTK、macOS、Material)以 `--*` 变量表的形式逐步扩展(见 `doc/09-implementation.md`)。
