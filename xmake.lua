@@ -50,7 +50,7 @@ target("whaleui-full")
     add_defines("WHALEUI_BUILD_FULL")
     add_packages("libsdl3", "libsdl3_image", "lexbor", "stb", "utf8proc")
     add_files("src/**.cpp")
-    add_includedirs("include")
+    add_includedirs("include", "src")
     on_load(function (target)
         if sdl3_ttf_prebuilt then
             target:add("includedirs", "3rdparty/sdl3_ttf/include")
@@ -67,7 +67,7 @@ target("whaleui-lite")
     add_defines("WHALEUI_BUILD_LITE")
     add_packages("libsdl3", "lexbor", "stb", "utf8proc")
     add_files("src/**.cpp")
-    add_includedirs("include")
+    add_includedirs("include", "src")
 
 -- Minimal: layout only, no HTML parsing/cache, stb resources
 target("whaleui-minimal")
@@ -75,4 +75,23 @@ target("whaleui-minimal")
     add_defines("WHALEUI_BUILD_MINIMAL")
     add_packages("libsdl3", "stb")
     add_files("src/**.cpp")
-    add_includedirs("include")
+    add_includedirs("include", "src")
+
+-- ======================= tests =======================
+-- Zero-dependency assert-style unit tests; each links whaleui-full.
+-- Run with:  xmake run test_api   (from the repo root, so file:// URIs in
+-- tests resolve under tests/data/).
+
+for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_style", "test_window"}) do
+    target(name)
+        set_kind("binary")
+        add_files("tests/" .. name .. ".cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3", "libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        -- absolute repo root so file:// URIs work regardless of cwd
+        add_defines('WHALEUI_TEST_ROOT="' .. os.projectdir():gsub("\\", "/") .. '"')
+        set_default(true)
+end
+
