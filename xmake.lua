@@ -69,15 +69,13 @@ target("whaleui-lite")
     add_files("src/**.cpp")
     add_includedirs("include", "src")
 
--- Minimal: layout only, no HTML parsing/cache, stb resources
+-- Minimal: layout only, no SDL image/font, stb resources. lexbor stays:
+-- the layout engine walks a lexbor DOM tree.
 target("whaleui-minimal")
     set_kind("static")
     add_defines("WHALEUI_BUILD_MINIMAL")
-    add_packages("libsdl3", "stb")
-    -- no HTML parsing in minimal: dom.cpp needs lexbor, exclude it
-    add_files("src/core/**.cpp", "src/layout/**.cpp",
-              "src/render/**.cpp", "src/fs/**.cpp", "src/font/**.cpp",
-              "src/platform/**.cpp", "src/style/css.cpp")
+    add_packages("libsdl3", "lexbor", "stb")
+    add_files("src/**.cpp")
     add_includedirs("include", "src")
 
 -- ======================= tests =======================
@@ -85,7 +83,7 @@ target("whaleui-minimal")
 -- Run with:  xmake run test_api   (from the repo root, so file:// URIs in
 -- tests resolve under tests/data/).
 
-for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_style", "test_window"}) do
+for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_style", "test_layout", "test_window"}) do
     target(name)
         set_kind("binary")
         add_files("tests/" .. name .. ".cpp")
