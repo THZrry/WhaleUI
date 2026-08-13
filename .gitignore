@@ -1,0 +1,18 @@
+# build output
+build/
+
+# xmake local config
+.xmake/
+
+# IDE / OS
+.vscode/
+.idea/
+*.user
+Thumbs.db
+.DS_Store
+
+# third-party: linked, not vendored. README: keep includes (needed to build), ignore the rest.
+3rdparty/*/*
+third_party/*/*
+!3rdparty/*/include/
+!third_party/*/include/

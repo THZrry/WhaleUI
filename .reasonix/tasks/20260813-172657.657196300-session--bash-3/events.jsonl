@@ -1,0 +1,2 @@
+{"sequence":1,"timestamp":"2026-08-14T02:04:22.4193152+08:00","event_type":"state_change","task_id":"20260813-172657.657196300-session--bash-3","session_id":"20260813-172657.657196300-session","state":"running","runtime_state":"alive"}
+{"sequence":2,"timestamp":"2026-08-14T02:21:31.282328+08:00","event_type":"state_change","task_id":"20260813-172657.657196300-session--bash-3","session_id":"20260813-172657.657196300-session","state":"failed","runtime_state":"exited","error_code":"job_failed"}
