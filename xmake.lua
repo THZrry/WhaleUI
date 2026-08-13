@@ -6,23 +6,38 @@ set_project("whaleui")
 set_version("0.1.0")
 set_languages("c++14")
 
--- third-party deps (xrepo)
--- render: SDL3; layout: lexbor; charset: utf8proc; tasks: std::thread (libco unsupported on mingw)
+-- ============================================================
+-- Third-party strategy (per README: link, don't vendor; keep only
+-- include/ in git, ignore binaries).
+--
+-- Two ways to consume each dep:
+--   A. Prebuilt: user downloads the official prebuilt package and drops it
+--      under 3rdparty/<name>/  (see tools/fetch-3rdparty.ps1). xmake detects
+--      it and links directly - no toolchain needed for that dep.
+--   B. Source: xmake pulls the package from xrepo and builds it.
+--
+-- Priority is A > B. On windows/mingw, SDL3_ttf has no working source build
+-- (its pkgconf->meson dep chain hard-requires MSVC), so A is mandatory there
+-- and the script errors out with a clear message if the prebuilt is missing.
+-- ============================================================
+
+-- --- SDL3_ttf (font rendering, Full target only) ---
+local sdl3_ttf_prebuilt = os.isdir("3rdparty/sdl3_ttf/lib")
+if sdl3_ttf_prebuilt then
+    -- mode A: prebuilt, linked manually in whaleui-full below
+elseif not is_plat("windows", "mingw") then
+    -- mode B: source build via xrepo
+    add_requires("libsdl3_ttf", {configs = {shared = false}})
+else
+    raise("SDL3_ttf prebuilt missing on mingw. Run tools/fetch-3rdparty.ps1 or manually place the official SDL3_ttf mingw devel package under 3rdparty/sdl3_ttf/")
+end
+
+-- --- always source-built via xrepo ---
 add_requires("libsdl3")
 add_requires("lexbor")
 add_requires("stb")
 add_requires("utf8proc")
 add_requires("libsdl3_image", {configs = {shared = false}})
-
--- SDL3_ttf: on windows/mingw use the official prebuilt mingw devel package
--- under 3rdparty/sdl3_ttf (downloaded from
--- https://github.com/libsdl-org/SDL_ttf/releases/download/release-3.2.2/SDL3_ttf-devel-3.2.2-mingw.zip,
--- include kept in git, bin/lib gitignored). Building from source on a windows
--- host needs MSVC (pkgconf->meson tool chain), so prebuilt wins here.
--- On other platforms build from xrepo source.
-if not is_plat("windows", "mingw") then
-    add_requires("libsdl3_ttf", {configs = {shared = false}})
-end
 
 -- audio/video placeholders: not implemented yet (commented out)
 -- add_requires("libsdl3_mixer")
@@ -37,7 +52,7 @@ target("whaleui-full")
     add_files("src/**.cpp")
     add_includedirs("include")
     on_load(function (target)
-        if is_plat("windows", "mingw") then
+        if sdl3_ttf_prebuilt then
             target:add("includedirs", "3rdparty/sdl3_ttf/include")
             target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
             target:add("links", "SDL3_ttf")
