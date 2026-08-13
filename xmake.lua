@@ -75,9 +75,9 @@ target("whaleui-minimal")
     add_defines("WHALEUI_BUILD_MINIMAL")
     add_packages("libsdl3", "stb")
     -- no HTML parsing in minimal: dom.cpp needs lexbor, exclude it
-    add_files("src/core/**.cpp", "src/style/**.cpp", "src/layout/**.cpp",
+    add_files("src/core/**.cpp", "src/layout/**.cpp",
               "src/render/**.cpp", "src/fs/**.cpp", "src/font/**.cpp",
-              "src/platform/**.cpp")
+              "src/platform/**.cpp", "src/style/css.cpp")
     add_includedirs("include", "src")
 
 -- ======================= tests =======================
