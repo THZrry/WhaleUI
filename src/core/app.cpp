@@ -14,6 +14,7 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->battery_saver = 1; /* default 60fps in battery saver */
     app->vsync = 1;
     app->running = 0;
+    app->gpu = nullptr; /* SDL GPU device, created lazily in step 3 */
     return app;
 }
 

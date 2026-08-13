@@ -63,7 +63,7 @@ typedef struct whaleui_platform_api {
 
 1. DOM 解析(lexbor)→ `WhaleUIDocument`
 2. 样式计算(CSS 规则 + 主题)→ 每个元素 `computed style`
-3. 布局(盒模型,lexbor 负责位置计算)
+3. 布局:直接调用 lexbor 的 CSS layout(位置/尺寸计算全部由 lexbor 完成,项目不实现排版算法;`src/layout/` 仅把 lexbor 的盒结果适配为渲染器可用的 `whaleui_layout_box_t`)
 4. 渲染:`src/render/` 组织 draw list,脏矩形 + 遮挡剔除 + 缓存,SDL3 GPU 提交
 5. 帧率:省电模式默认 60fps,分辨率切换时重检测,允许用户覆盖
 

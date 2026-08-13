@@ -4,6 +4,7 @@
 #include "core/window.h"
 #include "dom/dom.h"
 #include "fs/fs.h"
+#include "render/render.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,8 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     }
     whaleui_window_t* win = new whaleui_window_t;
     win->app = app;
+    win->sdl = nullptr;    /* native window created in step 3 */
+    win->render = nullptr; /* render context created in step 3 (needs sdl) */
     win->title = dup_str(title);
     win->width = width;
     win->height = height;
@@ -40,6 +43,9 @@ extern "C" void whaleui_window_destroy(whaleui_window_t* win)
 {
     if (!win) {
         return;
+    }
+    if (win->render) {
+        whaleui_render_destroy(win->render);
     }
     if (win->document) {
         whaleui_dom_document_destroy(win->document);
@@ -54,6 +60,7 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
         return -1;
     }
     win->visible = 1;
+    /* step 3: SDL_ShowWindow(win->sdl) when sdl is set */
     return 0;
 }
 
@@ -63,6 +70,7 @@ extern "C" int whaleui_window_hide(whaleui_window_t* win)
         return -1;
     }
     win->visible = 0;
+    /* step 3: SDL_HideWindow(win->sdl) when sdl is set */
     return 0;
 }
 
@@ -72,6 +80,7 @@ extern "C" int whaleui_window_close(whaleui_window_t* win)
         return -1;
     }
     win->visible = 0;
+    /* step 3: SDL_DestroyWindow(win->sdl) + release render */
     return 0;
 }
 
@@ -101,6 +110,9 @@ extern "C" int whaleui_window_set_size(whaleui_window_t* win, int width, int hei
     }
     win->width = width;
     win->height = height;
+    if (win->render) {
+        whaleui_render_resize(win->render, width, height);
+    }
     return 0;
 }
 

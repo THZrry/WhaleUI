@@ -29,3 +29,14 @@ extern "C" whaleui_theme_t whaleui_platform_system_theme(void)
     /* Step 2: light default; registry query (AppsUseLightTheme) in step 3. */
     return WHALEUI_THEME_LIGHT;
 }
+
+extern "C" int whaleui_platform_init(void)
+{
+    /* Step 2: no-op; SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS) in step 3. */
+    return 0;
+}
+
+extern "C" void whaleui_platform_shutdown(void)
+{
+    /* Step 2: no-op; SDL_Quit() in step 3. */
+}

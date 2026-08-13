@@ -1,9 +1,20 @@
 #ifndef WHALEUI_CORE_WINDOW_H
 #define WHALEUI_CORE_WINDOW_H
 
-/* Window core - internal interface. */
+/* Window core - internal interface.
+ *
+ * The window owns the native SDL_Window* (created in step 3 via the platform
+ * backend). All queries/mutations go through the window_* functions, which
+ * wrap the SDL APIs; the struct only keeps pointers + cached state. */
 
 #include "whaleui.h"
+
+/* SDL3 opaque types; never dereferenced in this header. */
+typedef struct SDL_Window SDL_Window;
+
+/* render context for this window (src/render/render.h) */
+struct whaleui_render;
+typedef struct whaleui_render whaleui_render_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,10 +23,17 @@ extern "C" {
 struct whaleui_window
 {
     whaleui_app_t* app;
+    SDL_Window* sdl;       /* native window (NULL until step 3) */
+
+    whaleui_render_t* render; /* per-window render context */
+
+    /* cached state used before the native window exists; replaced by SDL
+     * queries once sdl is set */
     char* title;
     int width;
     int height;
     int visible;
+
     whaleui_dom_document_t* document;
 };
 

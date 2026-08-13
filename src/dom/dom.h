@@ -28,6 +28,13 @@ struct whaleui_dom_element
     whaleui_dom_element_t* parent;
     whaleui_dom_element_t* first_child;
     whaleui_dom_element_t* next_sibling;
+
+    /* step 3 (ECS-ready): per-tag behavior flags and computed-style slot.
+     * All tags are treated as div internally; per-tag adapters (strong, input,
+     * summary, ...) key off these. */
+    unsigned tag_kind;    /* WHALEUI_TAG_* (div default) */
+    void* computed_style; /* owned by the style engine */
+    void* layout_box;     /* owned by the layout engine (lexbor) */
 };
 
 struct whaleui_dom_document

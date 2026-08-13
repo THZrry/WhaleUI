@@ -5,6 +5,10 @@
 
 #include "whaleui.h"
 
+/* SDL3 opaque types; keep pointers, query/mutate via SDL APIs (wrapped in
+ * src/platform/ and src/render/). Never dereference these here. */
+typedef struct SDL_GPUDevice SDL_GPUDevice;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,6 +21,10 @@ struct whaleui_app
     int battery_saver;
     int vsync;
     int running;
+
+    /* SDL3 GPU device shared by all windows (created lazily in step 3,
+     * owned by the app, destroyed in whaleui_app_destroy). */
+    SDL_GPUDevice* gpu;
 };
 
 #ifdef __cplusplus
