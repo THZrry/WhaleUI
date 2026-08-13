@@ -7,14 +7,13 @@ whaleui/
 ├── include/
 │   └── whaleui.h              # 唯一公开头文件:全部公开 C API
 ├── src/
-│   ├── api/                   # 公开 C API 实现(薄包装,调内部接口)
-│   ├── core/                  # 应用/窗口核心、生命周期、主题
-│   ├── dom/                   # DOM 解析与操作(包装 lexbor)
-│   ├── style/                 # 样式计算、CSS 属性表、主题映射
-│   ├── layout/                # 布局(盒模型,交由 lexbor)
+│   ├── core/                  # 应用/窗口核心、生命周期、主题(含公开 C API 实现)
+│   ├── dom/                   # DOM 解析与操作(包装 lexbor,含公开 C API 实现)
+│   ├── style/                 # 样式计算、CSS 属性表、主题映射(含公开 C API 实现)
+│   ├── layout/                # 布局适配(盒模型结果由 lexbor 计算)
 │   ├── render/                # 渲染(SDL3 GPU,脏矩形/遮挡/缓存)
-│   ├── fs/                    # 虚拟文件系统(默认磁盘,可替换)
-│   ├── font/                  # 字体注册/加载/默认字体
+│   ├── fs/                    # 虚拟文件系统(默认磁盘,可替换,含公开 C API 实现)
+│   ├── font/                  # 字体注册/加载/默认字体(含公开 C API 实现)
 │   └── platform/
 │       ├── windows/           # Windows 后端(私有头文件随目录)
 │       ├── linux/             # Linux 后端(Wayland 优先,X11 兼容)
@@ -26,6 +25,8 @@ whaleui/
 ├── 3rdparty/                  # 预编译第三方包(仅 include 入库,其余 gitignore)
 └── xmake.lua                  # 构建脚本(Full/Lite/Minimal 三 target)
 ```
+
+> 注:公开 C API(`whaleui_*`)实现在各自模块内就地实现(core/dom/style/fs/font),不设独立薄包装目录——内部结构与公开接口一一对应,减少一层间接。
 
 ## 分层原则
 
