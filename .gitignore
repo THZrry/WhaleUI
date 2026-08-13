@@ -4,6 +4,9 @@ build/
 # xmake local config
 .xmake/
 
+# agent tooling metadata
+.reasonix/
+
 # IDE / OS
 .vscode/
 .idea/
