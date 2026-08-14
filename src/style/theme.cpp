@@ -55,7 +55,6 @@ void base_css(const ThemeDef& d, std::string& css)
         "p { margin: 6px 0; }\n"
         "strong, b { font-weight: 600; }\n"
         "em, i { font-style: italic; }\n"
-        "a { color: var(--accent); text-decoration: none; }\n"
         "ul, ol { margin: 6px 0; padding-left: 24px; }\n"
         "li { margin: 3px 0; }\n"
         "summary { cursor: pointer; }\n"
@@ -65,14 +64,17 @@ void base_css(const ThemeDef& d, std::string& css)
         "button { background: var(--btn-bg); color: var(--btn-fg);\n"
         "         border: none; padding: 6px 16px; border-radius: %dpx;\n"
         "         font-size: 13px; font-weight: 600; cursor: pointer;\n"
-        "         transition: background-color 100ms; }\n"
+        "         transition: background-color 120ms, transform 120ms; }\n"
         "button:hover { background: var(--btn-bg-hover); }\n"
-        "button:active { background: var(--btn-bg-active); }\n"
+        "button:active { background: var(--btn-bg-active);\n"
+        "                transform: translateY(1px); }\n"
+        "a { color: var(--accent); text-decoration: none;\n"
+        "    transition: color 150ms; }\n"
         "a:hover { text-decoration: underline; }\n"
         "input, select, textarea { background: var(--field); color: var(--fg);\n"
         "         border: 1px solid var(--border); padding: 5px 10px;\n"
         "         border-radius: %dpx; font-size: 13px;\n"
-        "         transition: border-color 100ms; }\n"
+        "         transition: border-color 120ms, background-color 120ms; }\n"
         "input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }\n"
         "input:focus, select:focus, textarea:focus { border-color: var(--accent); }\n"
         "textarea { overflow: auto; }\n"
@@ -82,7 +84,9 @@ void base_css(const ThemeDef& d, std::string& css)
     std::snprintf(rad, sizeof(rad),
         ".card { background: var(--card); border: 1px solid var(--border);\n"
         "        border-radius: %dpx; padding: 16px 18px;\n"
-        "        box-shadow: var(--shadow); }\n",
+        "        box-shadow: var(--shadow);\n"
+        "        transition: transform 180ms; }\n"
+        ".card:hover { transform: translateY(-2px); }\n",
         d.card_radius);
     css += rad;
     css +=
