@@ -145,6 +145,9 @@ struct whaleui_render
 
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
+
+    /* global text scale (font-size multiplier, 1.0 = 100%) */
+    float text_scale;
 };
 
 typedef struct whaleui_render whaleui_render_t;

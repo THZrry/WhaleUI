@@ -1,4 +1,4 @@
-﻿// test_layout: box model + block flow + basic flex.
+// test_layout: box model + block flow + basic flex.
 #include "whaleui.h"
 #include "layout/layout.h"
 
@@ -13,7 +13,7 @@ whaleui_layout_tree_t* do_layout(const char* html, int w, int h)
 {
     whaleui_dom_document_t* doc = whaleui_dom_parse_html(html, std::strlen(html));
     assert(doc != nullptr);
-    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr, nullptr, nullptr);
+    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr, nullptr, nullptr, 1.0f);
 }
 
 /* find first element node with the given tag, depth-first */
@@ -211,7 +211,7 @@ int main(void)
             46);
         assert(doc != nullptr);
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* d = find_tag(t->root, "div");
         assert(d != nullptr);
@@ -225,7 +225,7 @@ int main(void)
             54);
         assert(doc != nullptr);
         t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
-                                   nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         d = find_tag(t->root, "div");
         assert(d != nullptr);
@@ -240,7 +240,7 @@ int main(void)
             54);
         assert(doc != nullptr);
         t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 80, 600,
-                                   nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         d = find_tag(t->root, "div");
         assert(d != nullptr);
@@ -259,7 +259,7 @@ int main(void)
             119);
         assert(doc != nullptr);
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* g = find_tag(t->root, "div");
         assert(g != nullptr);
@@ -283,7 +283,7 @@ int main(void)
             108);
         assert(doc != nullptr);
         t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
-                                   nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         g = find_tag(t->root, "div");
         assert(g != nullptr);
@@ -303,7 +303,7 @@ int main(void)
             133);
         assert(doc != nullptr);
         t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
-                                   nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         g = find_tag(t->root, "div");
         assert(g != nullptr);
@@ -325,7 +325,7 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* sc = find_tag(t->root, "div");
         assert(sc != nullptr);
@@ -338,7 +338,7 @@ int main(void)
 
         scrolls[sc->el] = 50;
         whaleui_layout_tree_t* t2 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr, 1.0f);
         assert(t2 != nullptr);
         whaleui_layout_node_t* sc2 = find_tag(t2->root, "div");
         assert(sc2 != nullptr);
@@ -348,7 +348,7 @@ int main(void)
         /* scrolling the max amount reaches the content end */
         scrolls[sc2->el] = sc2->scroll_max;
         whaleui_layout_tree_t* t3 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr, 1.0f);
         assert(t3 != nullptr);
         whaleui_layout_node_t* sc3 = find_tag(t3->root, "div");
         assert(sc3 != nullptr);
@@ -382,7 +382,7 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t0 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr, 1.0f);
         assert(t0 != nullptr);
         whaleui_layout_node_t* sc = find_tag(t0->root, "div");
         assert(sc != nullptr);
@@ -394,11 +394,11 @@ int main(void)
 
         /* grab the element pointer from a throwaway layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         scrolls[find_tag(t->root, "div")->el] = 30;
         whaleui_layout_tree_t* t1 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr, 1.0f);
         assert(t1 != nullptr);
         whaleui_layout_node_t* sc1 = find_tag(t1->root, "div");
         assert(sc1 != nullptr);
@@ -435,19 +435,19 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         assert(t->root->scroll_max == 500); /* 800 content - 300 viewport */
         whaleui_layout_destroy(t);
 
         /* scrolling the page shifts the root's children up */
         whaleui_layout_tree_t* t0 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr, 1.0f);
         assert(t0 != nullptr);
         scrolls.clear();
         scrolls[t0->root->el] = 200;
         whaleui_layout_tree_t* t1 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr, 1.0f);
         assert(t1 != nullptr);
         assert(t1->root->scroll_max == 500);
         whaleui_layout_node_t* d = find_tag(t1->root, "div");
@@ -465,7 +465,7 @@ int main(void)
             57);
         assert(doc != nullptr);
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* d = find_tag(t->root, "div");
         assert(d != nullptr);
@@ -484,7 +484,7 @@ int main(void)
             whaleui_dom_parse_html(html.c_str(), html.size());
         assert(doc != nullptr);
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* p = find_tag(t->root, "p");
         assert(p != nullptr);
@@ -507,7 +507,7 @@ int main(void)
         assert(doc != nullptr);
         std::map<std::string, std::string> vars;
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, rules, count, &vars, 800, 600, nullptr, nullptr, nullptr);
+            doc, rules, count, &vars, 800, 600, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* a = find_tag(t->root, "a");
         assert(a != nullptr);
@@ -531,7 +531,7 @@ int main(void)
         assert(doc != nullptr);
         std::map<lxb_dom_element*, int> scrolls;
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* fx = find_tag(t->root, "div");
         /* find the fixed div (deepest, id fx) */
@@ -554,7 +554,7 @@ int main(void)
         /* scroll the container: fixed element keeps its viewport position */
         scrolls[sc->el] = 50;
         whaleui_layout_tree_t* t2 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr, 1.0f);
         assert(t2 != nullptr);
         whaleui_layout_node_t* fx2 = nullptr;
         for (auto& nd : t2->arena) {
@@ -570,6 +570,31 @@ int main(void)
         assert(fx2 != nullptr);
         assert(fx2->border.x == 20 && fx2->border.y == 10);
         whaleui_layout_destroy(t2);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* global text scale multiplies px font-size in the layout tree */
+    {
+        const char* html = "<body><div style=\"font-size:20px;\">x</div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->style["font-size"] == "20px");
+        whaleui_layout_destroy(t);
+        /* 125% -> 25px */
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
+                                   nullptr, nullptr, nullptr, 1.25f);
+        assert(t != nullptr);
+        d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->style["font-size"] == "25px");
         whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }

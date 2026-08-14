@@ -82,7 +82,8 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               int viewport_w, int viewport_h,
                                               const whaleui_style_state* st,
                                               const std::map<struct lxb_dom_element*, int>* scrolls,
-                                              struct whaleui_anim* anim);
+                                              struct whaleui_anim* anim,
+                                              float text_scale);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
 #ifdef __cplusplus

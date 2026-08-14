@@ -343,3 +343,17 @@ extern "C" int whaleui_app_set_render_option(whaleui_app_t* app,
     }
     return 0;
 }
+
+extern "C" int whaleui_app_set_text_scale(whaleui_app_t* app, float scale)
+{
+    if (!app || scale <= 0.0f || scale > 4.0f) {
+        return -1;
+    }
+    for (whaleui_window_t* win : app->windows) {
+        if (win->render) {
+            win->render->text_scale = scale;
+            win->render->has_dirty = 1;
+        }
+    }
+    return 0;
+}

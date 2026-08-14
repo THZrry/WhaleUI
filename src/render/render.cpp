@@ -3152,6 +3152,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_text = nullptr;
     r->cursor_pointer = nullptr;
     r->anim = whaleui_anim_create();
+    r->text_scale = 1.0f;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
 
     /* GPU path: offscreen target + transfer buffer */
@@ -3861,7 +3862,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         st.pressed = r->pressed_el;
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
                                          &r->theme_vars, r->fb_w, r->fb_h,
-                                         &st, &r->scrolls, r->anim);
+                                         &st, &r->scrolls, r->anim,
+                                         r->text_scale);
         r->has_dirty = 0;
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles

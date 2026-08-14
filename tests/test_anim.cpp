@@ -182,7 +182,7 @@ int main(void)
         whaleui_style_state st = {nullptr, nullptr, nullptr};
         std::map<lxb_dom_element*, int> scrolls;
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, &vars, 800, 600, &st, &scrolls, a);
+            doc, nullptr, 0, &vars, 800, 600, &st, &scrolls, a, 1.0f);
         assert(t != nullptr);
         assert(whaleui_anim_active(a) == 1);
         whaleui_layout_node_t* div = find_el(t->root, "div");

@@ -139,6 +139,10 @@ typedef enum whaleui_render_option {
 int whaleui_app_set_render_option(whaleui_app_t* app,
                                   whaleui_render_option_t opt, int value);
 
+/* Global text scale for all windows (font-size multiplier, 1.0 = 100%,
+ * e.g. 1.25 = 125%). Relayouts and repaints. Returns 0 on success. */
+int whaleui_app_set_text_scale(whaleui_app_t* app, float scale);
+
 /* ======================= window ======================= */
 
 typedef struct whaleui_window whaleui_window_t;

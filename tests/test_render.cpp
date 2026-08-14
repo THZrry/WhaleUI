@@ -7,10 +7,13 @@
 #include "layout/layout.h"
 
 #include <lexbor/dom/dom.h>
+#include <SDL3/SDL.h>
 
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+
+int anim_runs(void); /* defined after main (window/GPU path) */
 
 int main(void)
 {
@@ -112,7 +115,7 @@ int main(void)
         /* locate the select box via a fresh layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         whaleui_layout_node_t* sel = nullptr;
         for (auto& n : t->arena) {
             if (n.visible && n.el) {
@@ -156,7 +159,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* inp = nullptr;
         for (auto& n : t->arena) {
@@ -215,7 +218,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* p = nullptr;
         whaleui_layout_node_t* tr = nullptr;
@@ -274,7 +277,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* ta = nullptr;
         for (auto& n : t->arena) {
@@ -342,7 +345,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* sc = nullptr;
         for (auto& n : t->arena) {
@@ -417,7 +420,7 @@ int main(void)
          * fall through to the page */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         whaleui_layout_node_t* tiny = nullptr;
         for (auto& n : t->arena) {
@@ -477,7 +480,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr, 1.0f);
         assert(t != nullptr);
         /* the three <p> text runs, in document order */
         whaleui_layout_node_t* runs[3] = {nullptr, nullptr, nullptr};
@@ -514,5 +517,49 @@ int main(void)
     }
 
     whaleui_app_destroy(app);
+    anim_runs();
     return 0;
+}
+
+/* paint-only animation: the fast path keeps repainting and the element
+ * fades in across frames (page-load animation actually runs) */
+int anim_runs(void)
+{
+    whaleui_app_t* app = whaleui_app_create();
+    if (!app) {
+        return 0;
+    }
+    whaleui_window_t* w = whaleui_window_create(app, "anim-test", 200, 150);
+    if (!w) {
+        whaleui_app_destroy(app);
+        return 0;
+    }
+    const char* html =
+        "<html><head><style>@keyframes fade { 0% { opacity: 0; } "
+        "100% { opacity: 1; } } #b { animation: fade 1500ms linear; "
+        "width:100px;height:100px;background-color:#ff0000; }</style></head>"
+        "<body><div id=\"b\"></div></body></html>";
+    if (whaleui_window_load_html(w, html) != 0) {
+        whaleui_window_destroy(w);
+        whaleui_app_destroy(app);
+        return 0;
+    }
+    if (whaleui_window_show(w) != 0) {
+        whaleui_window_destroy(w);
+        whaleui_app_destroy(app);
+        return 0;
+    }
+    assert(whaleui_render_frame(w->render, w->document) == 0);
+    unsigned int f0 = w->render->pixels[50 * 200 + 50];
+    /* let the animation advance ~400ms, then the box must be visibly
+     * fading in (background underneath + red channel rising) */
+    SDL_Delay(400);
+    assert(whaleui_render_frame(w->render, w->document) == 0);
+    unsigned int f1 = w->render->pixels[50 * 200 + 50];
+    unsigned int r0 = (f0 >> 16) & 0xFF, r1 = (f1 >> 16) & 0xFF;
+    assert(f1 != f0);
+    assert(r1 > r0); /* red channel grows as opacity climbs */
+    whaleui_window_destroy(w);
+    whaleui_app_destroy(app);
+    return 1;
 }

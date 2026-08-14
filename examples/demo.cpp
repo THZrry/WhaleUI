@@ -59,8 +59,26 @@ static const char* kHtml =
     "<option value=\"macos\">macOS</option>"
     "</select>"
     "</div>"
-    "<p class=\"muted\">下拉选择主题 · T 切换深浅色 · ESC 退出 · "
-    "主题由库内置样式提供,页面 CSS 仅做演示</p>"
+    "<p class=\"muted\">下拉选择主题 · T 深浅色 · +/- 文字缩放 · ESC 退出</p>"
+
+    "<div class=\"row\">"
+    "<div class=\"card anim-card\">"
+    "<h2 class=\"anim-rise\">Animations</h2>"
+    "<p class=\"anim-rise d1\">@keyframes rise · cubic-bezier + fill both(错峰)</p>"
+    "<div style=\"display:flex;align-items:center;gap:14px;margin:12px 0\">"
+    "<span class=\"anim-pulse\" style=\"width:18px;height:18px;"
+    "border-radius:50%;background:var(--accent);display:inline-block\"></span>"
+    "<span class=\"muted\" style=\"font-size:12px\">pulse · scale + opacity infinite</span>"
+    "</div>"
+    "<div style=\"height:10px;border-radius:5px;background:var(--border);"
+    "overflow:hidden;margin:10px 0\">"
+    "<div class=\"anim-bar\" style=\"height:100%;border-radius:5px;"
+    "background:var(--accent)\"></div>"
+    "</div>"
+    "<p class=\"muted\" style=\"font-size:12px\">bar · width 往返(alternate);"
+    "hover 本卡片上浮(transition transform)</p>"
+    "</div>"
+    "</div>"
 
     "<div class=\"row\">"
     "<div class=\"card\">"
@@ -113,25 +131,6 @@ static const char* kHtml =
     "<p class=\"muted\" style=\"margin-top:10px;opacity:0.6\">opacity 0.6 次要文字</p>"
     "</div>"
     "</div>"
-
-    "<div class=\"row\">"
-    "<div class=\"card anim-card\">"
-    "<h2 class=\"anim-rise\">Animations</h2>"
-    "<p class=\"anim-rise d1\">@keyframes rise · cubic-bezier + fill both(错峰)</p>"
-    "<div style=\"display:flex;align-items:center;gap:14px;margin:12px 0\">"
-    "<span class=\"anim-pulse\" style=\"width:18px;height:18px;"
-    "border-radius:50%;background:var(--accent);display:inline-block\"></span>"
-    "<span class=\"muted\" style=\"font-size:12px\">pulse · scale + opacity infinite</span>"
-    "</div>"
-    "<div style=\"height:10px;border-radius:5px;background:var(--border);"
-    "overflow:hidden;margin:10px 0\">"
-    "<div class=\"anim-bar\" style=\"height:100%;border-radius:5px;"
-    "background:var(--accent)\"></div>"
-    "</div>"
-    "<p class=\"muted\" style=\"font-size:12px\">bar · width 往返(alternate);"
-    "hover 本卡片上浮(transition transform)</p>"
-    "</div>"
-    "</div>"
     "</div></body></html>";
 
 static void on_theme_select(whaleui_app_t* app, const char* value, void* userdata)
@@ -141,6 +140,7 @@ static void on_theme_select(whaleui_app_t* app, const char* value, void* userdat
 }
 
 /* key handling lives in the app, not the library */
+static float g_text_scale = 1.0f;
 static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
 {
     (void)userdata;
@@ -154,6 +154,18 @@ static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
         whaleui_app_set_theme(app, cur == WHALEUI_THEME_DARK
                                        ? WHALEUI_THEME_LIGHT
                                        : WHALEUI_THEME_DARK);
+    } else if (keycode == '=' ) {
+        g_text_scale += 0.25f;
+        if (g_text_scale > 2.0f) {
+            g_text_scale = 1.0f;
+        }
+        whaleui_app_set_text_scale(app, g_text_scale);
+    } else if (keycode == '-') {
+        g_text_scale -= 0.25f;
+        if (g_text_scale < 1.0f) {
+            g_text_scale = 1.0f;
+        }
+        whaleui_app_set_text_scale(app, g_text_scale);
     }
 }
 

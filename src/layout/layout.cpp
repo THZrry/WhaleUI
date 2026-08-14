@@ -364,6 +364,7 @@ struct Builder
     whaleui_style_state st;
     const std::map<lxb_dom_element*, int>* scrolls;
     whaleui_anim_t* anim;
+    float text_scale;
 
     whaleui_layout_node_t* new_node()
     {
@@ -429,6 +430,25 @@ struct Builder
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
         n->style = whaleui_style_compute(el, rules, rule_count, vars, &st);
+
+        /* global text scale: multiply px/unitless font-size values so the
+         * renderer (which reads font-size from the style) and all em-based
+         * descendants scale together. Function values (clamp() etc.) are
+         * left alone. */
+        if (text_scale != 1.0f) {
+            WhaleUIComputedStyle::iterator fit = n->style.find("font-size");
+            if (fit != n->style.end() &&
+                fit->second.find('(') == std::string::npos) {
+                char* endp = nullptr;
+                float v = std::strtof(fit->second.c_str(), &endp);
+                if (endp != fit->second.c_str()) {
+                    char buf[40];
+                    std::snprintf(buf, sizeof(buf), "%g%s", v * text_scale,
+                                  endp);
+                    fit->second = buf;
+                }
+            }
+        }
 
         /* animations/transitions interpolate on top of the computed style,
          * so layout (opacity, width, ...) and paint (colors) see them */
@@ -1233,7 +1253,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     int viewport_w, int viewport_h,
     const whaleui_style_state* st,
     const std::map<lxb_dom_element*, int>* scrolls,
-    struct whaleui_anim* anim)
+    struct whaleui_anim* anim, float text_scale)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -1255,6 +1275,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.st = st ? *st : whaleui_style_state();
     b.scrolls = scrolls;
     b.anim = anim;
+    b.text_scale = text_scale > 0 ? text_scale : 1.0f;
     if (theme_vars) {
         b.vars = *theme_vars;
     }
