@@ -53,13 +53,13 @@ backdrop-filter, clip-path, 媒体查询的其余条件
 
 ## 已知限制
 
-- **文本换行**:布局阶段按字符数近似文本宽度,实际度量在渲染时完成;长文本可能溢出盒子,`overflow` 裁剪尚未实现。
+- **文本换行**:布局阶段按字符数近似文本宽度,实际度量在渲染时完成;长文本可能溢出盒子,`overflow: hidden` 裁剪已支持。
 - **文本渲染**:SDL3_ttf 的 `TTF_Text` API(surface engine),自动注册系统 UI 字体(Segoe UI / Segoe UI Emoji / Microsoft YaHei / SimHei / SimSun / Arial)并按注册顺序建立 fallback 链——缺字形时(CJK、emoji)自动回退到后续字体。注意:SDL3_ttf 3.2.2 的 `TTF_SetTextColor` 会使 `TTF_DrawSurfaceText` 静默不绘制,因此文字颜色改为渲染后 tint 混合。
 - **lite/minimal 文本渲染**:SDL3_ttf 仅随 `full` 目标;lite/minimal 的文本绘制(stb_font)待实现。
-- **font-weight 粗体**:未做字形合成,`strong`/`b` 与普通文本同字形。
 - **线程模型**:单线程渲染,`whaleui_app_run` 阻塞;多线程/异步流程留待后续。
 - **脏矩形**:当前整帧重绘;脏矩形/遮挡/缓存是下一步性能优化点。
-- **主题**:内置默认样式 + 深浅色两套变量;Windows Classic / Aero / Metro / Fluent / GTK / macOS / Material 的系统风格转换尚未逐一落地(可基于 `--*` 变量表扩展)。
+- **交互**:已支持 `<select>` 下拉(点击展开、选择、回调)与鼠标点击;按钮 hover/焦点、文本输入、滚动等尚未实现。
+- **主题**:内置 7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效(包括未自定义样式的标签);通过 `whaleui_app_set_theme_style` 或页面 `<select>` 切换。
 
 ## 运行方式
 

@@ -69,6 +69,27 @@ whaleui_theme_t whaleui_app_get_theme(const whaleui_app_t* app);
 /* Accent (theme) color, "#RRGGBB" or "#AARRGGBB". */
 int whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex);
 
+/* ======================= theme style ======================= */
+
+/* Built-in theme styles: "fluent" (default), "metro", "material",
+ * "classic", "aero", "gtk", "macos". The style changes the whole UI
+ * (default stylesheet + light/dark variables) for every window, including
+ * elements the page does not style itself. */
+int whaleui_theme_count(void);
+const char* whaleui_theme_name(int index);   /* "fluent", ... */
+const char* whaleui_theme_label(int index);  /* "Fluent (Win11)", ... */
+
+int whaleui_app_set_theme_style(whaleui_app_t* app, const char* style);
+const char* whaleui_app_get_theme_style(const whaleui_app_t* app);
+
+/* ======================= controls ======================= */
+
+/* Called when a <select> option is chosen (value = the option's value). */
+typedef void (*whaleui_select_cb)(whaleui_app_t* app, const char* value,
+                                  void* userdata);
+int whaleui_app_set_select_callback(whaleui_app_t* app, whaleui_select_cb cb,
+                                    void* userdata);
+
 /* ======================= render options ======================= */
 
 typedef enum whaleui_render_option {

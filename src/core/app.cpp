@@ -6,6 +6,7 @@
 #include "core/window.h"
 #include "platform/platform.h"
 #include "render/render.h"
+#include "style/theme.h"
 
 #include <SDL3/SDL.h>
 
@@ -34,12 +35,15 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     }
     whaleui_app_t* app = new whaleui_app_t;
     app->theme = WHALEUI_THEME_SYSTEM;
+    std::strcpy(app->theme_style, "fluent");
     std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
     app->max_fps = 0;
     app->battery_saver = 1; /* default 60fps in battery saver */
     app->vsync = 1;
     app->running = 0;
     app->gpu = nullptr;
+    app->select_cb = nullptr;
+    app->select_ud = nullptr;
     return app;
 }
 
@@ -119,6 +123,23 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 }
                 break;
             }
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    for (whaleui_window_t* win : app->windows) {
+                        if (win->render && win->document &&
+                            SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                            const char* val = nullptr;
+                            if (whaleui_render_handle_click(win->render,
+                                                            e.button.x, e.button.y,
+                                                            &val) &&
+                                val && app->select_cb) {
+                                app->select_cb(app, val, app->select_ud);
+                            }
+                            break;
+                        }
+                    }
+                }
+                break;
             default:
                 break;
             }
@@ -168,6 +189,27 @@ extern "C" int whaleui_app_set_theme(whaleui_app_t* app, whaleui_theme_t theme)
     return 0;
 }
 
+extern "C" int whaleui_app_set_theme_style(whaleui_app_t* app, const char* style)
+{
+    if (!app || !style) {
+        return -1;
+    }
+    const char* resolved = whaleui_theme_resolve(style);
+    std::strncpy(app->theme_style, resolved, sizeof(app->theme_style) - 1);
+    app->theme_style[sizeof(app->theme_style) - 1] = '\0';
+    for (whaleui_window_t* win : app->windows) {
+        if (win->render) {
+            whaleui_window_refresh_css(win);
+        }
+    }
+    return 0;
+}
+
+extern "C" const char* whaleui_app_get_theme_style(const whaleui_app_t* app)
+{
+    return app ? app->theme_style : "fluent";
+}
+
 extern "C" whaleui_theme_t whaleui_app_get_theme(const whaleui_app_t* app)
 {
     return app ? app->theme : WHALEUI_THEME_SYSTEM;
@@ -186,6 +228,17 @@ extern "C" int whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex)
             whaleui_window_refresh_css(win);
         }
     }
+    return 0;
+}
+
+extern "C" int whaleui_app_set_select_callback(whaleui_app_t* app,
+                                               whaleui_select_cb cb, void* userdata)
+{
+    if (!app) {
+        return -1;
+    }
+    app->select_cb = cb;
+    app->select_ud = userdata;
     return 0;
 }
 

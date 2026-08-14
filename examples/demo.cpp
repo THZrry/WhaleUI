@@ -38,14 +38,23 @@ static const char* kHtml =
     "            color: var(--accent-fg); padding: 8px 10px;"
     "            border-radius: 6px; width: 150px; height: 26px;"
     "            font-size: 12px; }"
+    "#theme { min-width: 150px; }"
     "</style></head>"
     "<body><div class=\"app\">"
 
     "<div class=\"header\">"
     "<h1>WhaleUI Demo</h1>"
-    "<span class=\"badge\">Fluent · D3D12</span>"
+    "<select id=\"theme\">"
+    "<option value=\"fluent\">Fluent (Win11)</option>"
+    "<option value=\"metro\">Metro (Win8)</option>"
+    "<option value=\"material\">Material Design</option>"
+    "<option value=\"classic\">Windows Classic</option>"
+    "<option value=\"aero\">Windows 7 Aero</option>"
+    "<option value=\"gtk\">GTK (Adwaita)</option>"
+    "<option value=\"macos\">macOS</option>"
+    "</select>"
     "</div>"
-    "<p class=\"muted\">T 切换深浅色 · ESC 退出 · var()/@media 已生效</p>"
+    "<p class=\"muted\">下拉选择主题 · T 切换深浅色 · ESC 退出</p>"
 
     "<div class=\"row\">"
     "<div class=\"card\">"
@@ -65,7 +74,8 @@ static const char* kHtml =
     "<div class=\"row\">"
     "<div class=\"card\">"
     "<h2>Theme vars</h2>"
-    "<p>--card / --border / --muted / --accent 由主题注入,可热切换。</p>"
+    "<p>--card / --border / --muted / --accent 随主题与深浅色切换,"
+    "对未自定义样式的标签同样生效。</p>"
     "<p class=\"theme-note\">深色主题下此文字变亮蓝(@media prefers-color-scheme)。</p>"
     "</div>"
     "<div class=\"card\">"
@@ -75,6 +85,12 @@ static const char* kHtml =
     "</div>"
     "</div>"
     "</div></body></html>";
+
+static void on_theme_select(whaleui_app_t* app, const char* value, void* userdata)
+{
+    (void)userdata;
+    whaleui_app_set_theme_style(app, value);
+}
 
 int main(void)
 {
@@ -87,6 +103,9 @@ int main(void)
     whaleui_font_register("C:/Windows/Fonts/segoeui.ttf");
     whaleui_font_register("C:/Windows/Fonts/arial.ttf");
     whaleui_font_register("C:/Windows/Fonts/msyh.ttc");
+
+    /* the theme dropdown switches the whole UI style */
+    whaleui_app_set_select_callback(app, on_theme_select, nullptr);
 
     whaleui_window_t* win = whaleui_window_create(app, "WhaleUI Demo", 780, 540);
     if (!win) {

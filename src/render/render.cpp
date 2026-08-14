@@ -13,6 +13,8 @@
 #include <SDL3_ttf/SDL_ttf.h>
 #endif
 
+#include <lexbor/dom/dom.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -567,27 +569,16 @@ unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def)
     return def;
 }
 
-void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
+/* render one text string at (x,y) with the given style attributes.
+ * Shared by text runs and <select> controls. */
+void draw_text_at(whaleui_render_t* r, const std::string& text, int x, int y,
+                  int fs, const std::string& family, unsigned int color,
+                  bool bold, const Clip* clip)
 {
 #ifdef WHALEUI_BUILD_FULL
-    unsigned int color = color_of(n->style, "color", 0xFF000000);
-    float alpha = (color >> 24) & 0xFF;
-    unsigned int a8 = static_cast<unsigned>(alpha * n->opacity);
-    color = (a8 << 24) | (color & 0x00FFFFFF);
-
-    int fs = 16;
-    std::string fsv = sget(n->style, "font-size");
-    if (!fsv.empty()) {
-        fs = std::atoi(fsv.c_str());
-    }
     if (fs <= 0) {
         fs = 16;
     }
-    std::string family = sget(n->style, "font-family");
-    /* font-weight: bold/bolder/600-900 render bold */
-    std::string fw = sget(n->style, "font-weight");
-    bool bold = fw == "bold" || fw == "bolder" ||
-                (!fw.empty() && std::atoi(fw.c_str()) >= 600);
     TTF_Font* font = render_get_font(r, family, fs, bold);
     if (!font) {
         return;
@@ -601,7 +592,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     if (!engine) {
         return;
     }
-    TTF_Text* t = TTF_CreateText(engine, font, n->text.c_str(), n->text.size());
+    TTF_Text* t = TTF_CreateText(engine, font, text.c_str(), text.size());
     if (!t) {
         return;
     }
@@ -615,21 +606,172 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
         if (surf) {
             SDL_FillSurfaceRect(surf, nullptr, 0);
             TTF_DrawSurfaceText(t, 0, 0, surf);
-            /* text-align within the box */
-            std::string ta = sget(n->style, "text-align");
-            int tx = n->border.x;
-            if (ta == "center") {
-                tx = n->border.x + (n->border.w - tw) / 2;
-            } else if (ta == "right") {
-                tx = n->border.x + n->border.w - tw;
-            }
-            int ty = n->border.y + (n->border.h - th) / 2;
-            blend_surface(r->pixels, r->width, r->height, surf, tx, ty, clip, &color);
+            blend_surface(r->pixels, r->width, r->height, surf, x, y, clip, &color);
             SDL_DestroySurface(surf);
         }
     }
     TTF_DestroyText(t);
 #endif /* WHALEUI_BUILD_FULL */
+}
+
+void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
+{
+    unsigned int color = color_of(n->style, "color", 0xFF000000);
+    float alpha = (color >> 24) & 0xFF;
+    unsigned int a8 = static_cast<unsigned>(alpha * n->opacity);
+    color = (a8 << 24) | (color & 0x00FFFFFF);
+
+    int fs = 16;
+    std::string fsv = sget(n->style, "font-size");
+    if (!fsv.empty()) {
+        fs = std::atoi(fsv.c_str());
+    }
+    std::string family = sget(n->style, "font-family");
+    /* font-weight: bold/bolder/600-900 render bold */
+    std::string fw = sget(n->style, "font-weight");
+    bool bold = fw == "bold" || fw == "bolder" ||
+                (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+    /* text-align within the box */
+    std::string ta = sget(n->style, "text-align");
+    int tx = n->border.x;
+    if (ta == "center") {
+        tx = n->border.x + (n->border.w - static_cast<int>(n->text.size() * fs * 0.5f)) / 2;
+    } else if (ta == "right") {
+        tx = n->border.x + n->border.w - static_cast<int>(n->text.size() * fs * 0.5f);
+    }
+    int ty = n->border.y + (n->border.h - static_cast<int>(fs * 1.2f)) / 2;
+    draw_text_at(r, n->text, tx, ty, fs, family, color, bold, clip);
+}
+
+/* --- <select> support --- */
+
+/* collect <option> texts and values of a select element (from the DOM) */
+void select_options(lxb_dom_element* sel, std::vector<std::string>& texts,
+                    std::vector<std::string>& values)
+{
+    lxb_dom_node* c = sel->node.first_child;
+    while (c) {
+        if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* el = lxb_dom_interface_element(c);
+            size_t len = 0;
+            const lxb_char_t* name = lxb_dom_element_local_name(el, &len);
+            if (name && len == 6 && std::memcmp(name, "option", 6) == 0) {
+                /* text = concatenated text children */
+                std::string txt;
+                lxb_dom_node* t = el->node.first_child;
+                while (t) {
+                    if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
+                        const lexbor_str_t* s = &lxb_dom_interface_text(t)->char_data.data;
+                        if (s->data) {
+                            txt.append(reinterpret_cast<const char*>(s->data), s->length);
+                        }
+                    }
+                    t = t->next;
+                }
+                texts.push_back(txt);
+                size_t vlen = 0;
+                const lxb_char_t* v = lxb_dom_element_get_attribute(
+                    el, (const lxb_char_t*)"value", 5, &vlen);
+                values.push_back(v ? std::string(reinterpret_cast<const char*>(v), vlen) : txt);
+            }
+        }
+        c = c->next;
+    }
+}
+
+bool is_select_node(whaleui_layout_node_t* n)
+{
+    if (!n || !n->el) {
+        return false;
+    }
+    size_t len = 0;
+    const lxb_char_t* name = lxb_dom_element_local_name(n->el, &len);
+    return name && len == 6 && std::memcmp(name, "select", 6) == 0;
+}
+
+const int kSelectItemH = 26;
+
+/* draw the current value + arrow, and the option list when expanded */
+void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
+{
+    std::vector<std::string> texts, values;
+    select_options(n->el, texts, values);
+    if (texts.empty()) {
+        return;
+    }
+    int sel = r->select_index.count(n) ? r->select_index[n] : 0;
+    if (sel < 0 || sel >= static_cast<int>(texts.size())) {
+        sel = 0;
+    }
+    int fs = 13;
+    unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+    int ty = n->content.y + (n->content.h - static_cast<int>(fs * 1.2f)) / 2;
+    draw_text_at(r, texts[sel], n->content.x + 2, ty, fs, "", fg, false, clip);
+    /* arrow (▾) at the right edge */
+    draw_text_at(r, "\xe2\x96\xbe", n->content.x + n->content.w - 18, ty,
+                 fs, "", fg, false, clip);
+
+    if (r->open_select == n) {
+        int list_x = n->border.x;
+        int list_y = n->border.y + n->border.h;
+        int list_w = n->border.w;
+        int list_h = static_cast<int>(texts.size()) * kSelectItemH;
+        unsigned int bg = 0xFF000000;
+        auto it = r->theme_vars.find("--card");
+        if (it != r->theme_vars.end()) {
+            whaleui_render_parse_color(it->second.c_str(), &bg);
+        }
+        fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, list_h, bg, clip);
+        unsigned int border_c = 0xFF000000;
+        auto itb = r->theme_vars.find("--border");
+        if (itb != r->theme_vars.end()) {
+            whaleui_render_parse_color(itb->second.c_str(), &border_c);
+        }
+        for (int i = 0; i < static_cast<int>(texts.size()); ++i) {
+            int iy = list_y + i * kSelectItemH;
+            if (i == r->open_select_hover) {
+                fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
+                          0x33000000 | (fg & 0x00FFFFFF), clip);
+            }
+            if (i == sel) {
+                /* mark the chosen option with the accent color */
+                unsigned int acc = 0xFF0067C0;
+                auto ita = r->theme_vars.find("--accent");
+                if (ita != r->theme_vars.end()) {
+                    whaleui_render_parse_color(ita->second.c_str(), &acc);
+                }
+                draw_text_at(r, texts[i], list_x + 8,
+                             iy + (kSelectItemH - static_cast<int>(fs * 1.2f)) / 2,
+                             fs, "", acc, true, clip);
+            } else {
+                draw_text_at(r, texts[i], list_x + 8,
+                             iy + (kSelectItemH - static_cast<int>(fs * 1.2f)) / 2,
+                             fs, "", fg, false, clip);
+            }
+        }
+        /* bottom border of the list */
+        fill_rect(r->pixels, r->width, r->height, list_x, list_y + list_h - 1,
+                  list_w, 1, border_c, clip);
+    }
+}
+
+/* depth-first hit test; coordinates are absolute (layout boxes are absolute) */
+whaleui_layout_node_t* hit_test(whaleui_layout_node_t* n, int x, int y)
+{
+    if (!n || !n->visible) {
+        return nullptr;
+    }
+    if (x >= n->border.x && x < n->border.x + n->border.w &&
+        y >= n->border.y && y < n->border.y + n->border.h) {
+        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+            whaleui_layout_node_t* hit = hit_test(c, x, y);
+            if (hit) {
+                return hit;
+            }
+        }
+        return n;
+    }
+    return nullptr;
 }
 
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
@@ -716,6 +858,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, eff);
     }
+    /* <select> control paints on top of its children (value + list overlay) */
+    if (is_select_node(n)) {
+        paint_select(r, n, eff);
+    }
 }
 
 } // namespace
@@ -726,8 +872,10 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     if (!device || !window || width <= 0 || height <= 0) {
         return nullptr;
     }
-    whaleui_render_t* r = new whaleui_render_t;
-    std::memset(r, 0, sizeof(*r));
+    /* value-initialize: STL containers (pixels/fonts/select_index) are
+     * default-constructed, scalars zeroed - never memset a struct with
+     * std::map/vector members (breaks the map's sentinel node) */
+    whaleui_render_t* r = new whaleui_render_t();
     r->device = device;
     r->window = window;
     r->width = width;
@@ -910,9 +1058,54 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     return 0;
 }
 
-extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
+extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
+                                           const char** out_value)
 {
-    if (!r || !doc) {
+    if (out_value) {
+        *out_value = nullptr;
+    }
+    if (!r || !r->tree) {
+        return 0;
+    }
+    /* 1. clicking inside the expanded list chooses an option */
+    if (r->open_select) {
+        whaleui_layout_node_t* s = r->open_select;
+        std::vector<std::string> texts, values;
+        select_options(s->el, texts, values);
+        int list_x = s->border.x;
+        int list_y = s->border.y + s->border.h;
+        int list_w = s->border.w;
+        if (x >= list_x && x < list_x + list_w &&
+            y >= list_y && y < list_y + kSelectItemH * static_cast<int>(values.size())) {
+            int idx = (y - list_y) / kSelectItemH;
+            if (idx >= 0 && idx < static_cast<int>(values.size())) {
+                r->select_index[s] = idx;
+                r->open_select = nullptr;
+                r->has_dirty = 1;
+                if (out_value) {
+                    static std::string chosen;
+                    chosen = values[idx];
+                    *out_value = chosen.c_str();
+                }
+                return 1;
+            }
+        }
+        /* click outside the list closes it */
+        r->open_select = nullptr;
+        r->has_dirty = 1;
+    }
+    /* 2. clicking a <select> toggles it open */
+    whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
+    if (hit && is_select_node(hit)) {
+        r->open_select = hit;
+        r->open_select_hover = 0;
+        r->has_dirty = 1;
+    }
+    return 0;
+}
+
+extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
+{    if (!r || !doc) {
         return -1;
     }
     if (r->has_dirty || !r->tree) {

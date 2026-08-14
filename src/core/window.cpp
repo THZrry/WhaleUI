@@ -80,7 +80,7 @@ void window_reload_css(whaleui_window_t* win)
     if (!win || !win->render) {
         return;
     }
-    std::string css = whaleui_theme_default_css();
+    std::string css = whaleui_theme_default_css(win->app->theme_style);
     if (win->document) {
         collect_doc_css(win->document, css);
     }
@@ -91,7 +91,9 @@ void window_reload_css(whaleui_window_t* win)
         return;
     }
     std::map<std::string, std::string> theme_vars;
-    whaleui_theme_vars(whaleui_app_resolved_theme(win->app), win->app->accent, theme_vars);
+    whaleui_theme_vars(win->app->theme_style,
+                       whaleui_app_resolved_theme(win->app),
+                       win->app->accent, theme_vars);
     whaleui_render_set_css(win->render, rules, count, &kf, &theme_vars);
     whaleui_css_rules_destroy(rules, count);
     whaleui_css_keyframes_destroy(&kf);

@@ -4,9 +4,13 @@
 #include "whaleui.h"
 #include "render/render.h"
 #include "core/window.h"
+#include "layout/layout.h"
+
+#include <lexbor/dom/dom.h>
 
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 
 int main(void)
 {
@@ -94,6 +98,51 @@ int main(void)
     /* inner area (50,20) -> red */
     assert(win3->render->pixels[20 * 200 + 50] == 0xFFFF0000);
     whaleui_window_destroy(win3);
+
+    /* <select> dropdown interaction */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "select", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><select id=\"t\"><option value=\"a\">Alpha</option>"
+            "<option value=\"b\">Beta</option></select></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        /* locate the select box via a fresh layout pass */
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200);
+        whaleui_layout_node_t* sel = nullptr;
+        for (auto& n : t->arena) {
+            if (n.visible && n.el) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 6 && std::memcmp(name, "select", 6) == 0) {
+                    sel = &n;
+                    break;
+                }
+            }
+        }
+        assert(sel != nullptr);
+        /* click the select -> opens */
+        const char* val = nullptr;
+        int rc = whaleui_render_handle_click(w->render,
+                                             sel->border.x + 10, sel->border.y + 10,
+                                             &val);
+        assert(rc == 0);
+        assert(w->render->open_select != nullptr);
+        assert(w->render->open_select->el == sel->el);
+        /* click the SECOND option (item height 26) -> chosen, value "b" */
+        int item_center = sel->border.y + sel->border.h + 26 + 13;
+        rc = whaleui_render_handle_click(w->render, sel->border.x + 10,
+                                         item_center, &val);
+        assert(rc == 1);
+        assert(val != nullptr && std::strcmp(val, "b") == 0);
+        assert(w->render->open_select == nullptr);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
 
     whaleui_app_destroy(app);
     return 0;

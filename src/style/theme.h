@@ -1,12 +1,11 @@
 #ifndef WHALEUI_STYLE_THEME_H
 #define WHALEUI_STYLE_THEME_H
 
-/* Theme: built-in default stylesheet + light/dark variable tables.
- *
- * The default stylesheet is a small Chromium-like baseline: every tag has a
- * preset (all tags are divs internally, per the project spec), a shared set
- * of utility classes is kept, and colors come from custom properties so the
- * theme can hot-swap. */
+/* Theme styles: built-in design presets (Fluent / Metro / Material /
+ * Classic / Aero / GTK / macOS), each with a default stylesheet + light/dark
+ * variable tables. Themes are global: every element that uses var(--*) or
+ * inherits body color/font follows the current style, including tags the
+ * user's HTML does not style. */
 
 #include "whaleui.h"
 
@@ -17,11 +16,24 @@
 extern "C" {
 #endif
 
-/* Built-in default stylesheet (applied before any document CSS). */
-const char* whaleui_theme_default_css(void);
+/* number of built-in theme styles */
+int whaleui_theme_count(void);
 
-/* Fill vars with --bg/--fg/--card/--border/--accent for the resolved theme. */
-void whaleui_theme_vars(whaleui_theme_t theme, const char* accent,
+/* style id for index i ("fluent", "metro", ...) - valid until next call */
+const char* whaleui_theme_name(int i);
+
+/* display label for index i ("Fluent", "Metro", ...) */
+const char* whaleui_theme_label(int i);
+
+/* normalize a style name; unknown names fall back to "fluent" */
+const char* whaleui_theme_resolve(const char* name);
+
+/* built-in default stylesheet for a theme style */
+const char* whaleui_theme_default_css(const char* style);
+
+/* fill vars (--bg/--fg/--card/--border/--accent/--btn-* ...) for a style */
+void whaleui_theme_vars(const char* style, whaleui_theme_t theme,
+                        const char* accent,
                         std::map<std::string, std::string>& out);
 
 #ifdef __cplusplus

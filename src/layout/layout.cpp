@@ -191,12 +191,19 @@ struct Builder
     whaleui_layout_node_t* build(lxb_dom_element* el, whaleui_layout_node_t* parent)
     {
         whaleui_layout_node_t* n = new_node();
-        std::memset(n, 0, sizeof(*n));
+        /* scalars reset here; style/text are STL containers (default-
+         * constructed by new_node) and must NOT be memset */
         n->el = el;
         n->parent = parent;
         n->z = 0;
         n->opacity = 1.0f;
         n->visible = 1;
+        n->is_text = 0;
+        std::memset(&n->border, 0, sizeof(n->border));
+        std::memset(&n->content, 0, sizeof(n->content));
+        std::memset(n->margin, 0, sizeof(n->margin));
+        std::memset(n->padding, 0, sizeof(n->padding));
+        std::memset(n->border_w, 0, sizeof(n->border_w));
 
         n->style = whaleui_style_compute(el, rules, rule_count, vars);
 
@@ -244,7 +251,6 @@ struct Builder
         if (!txt.empty() && n->visible) {
             tree->text_arena.push_back(txt);
             whaleui_layout_node_t* t = new_node();
-            std::memset(t, 0, sizeof(*t));
             t->el = el;
             t->parent = n;
             t->is_text = 1;
@@ -314,10 +320,14 @@ struct Builder
         int m[4], p[4];
         sides(get(n->style, "margin"), m, static_cast<float>(cw), em, 0);
         sides(get(n->style, "padding"), p, static_cast<float>(cw), em, 0);
+        static const char* kBorderWidth[] = {
+            "border-top-width", "border-right-width",
+            "border-bottom-width", "border-left-width",
+        };
         for (int i = 0; i < 4; ++i) {
             n->margin[i] = m[i];
             n->padding[i] = p[i];
-            n->border_w[i] = border_width(get(n->style, i % 2 ? "border-right-width" : "border-left-width"), em);
+            n->border_w[i] = border_width(get(n->style, kBorderWidth[i]), em);
         }
         /* border shorthand "border: 1px solid red" / border-width */
         std::string border = get(n->style, "border");
@@ -342,7 +352,7 @@ struct Builder
         /* width/height */
         bool w_auto = true, h_auto = true;
         float wpx = len_or_auto(get(n->style, "width"), static_cast<float>(cw), em, &w_auto);
-        float hpx = len_or_auto(get(n->style, "height"), static_cast<float>(cw), em, &h_auto);
+        float hpx = len_or_auto(get(n->style, "height"), static_cast<float>(ch), em, &h_auto);
         std::string box_sizing = get(n->style, "box-sizing");
         bool border_box = box_sizing == "border-box";
 
@@ -417,6 +427,17 @@ struct Builder
         n->content.w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
         n->content.h = bh - p[0] - p[2] - n->border_w[0] - n->border_w[2];
 
+        /* a <select> always reserves enough height for its value text */
+        if (n->el) {
+            size_t tlen = 0;
+            const lxb_char_t* tname = lxb_dom_element_local_name(n->el, &tlen);
+            if (tname && tlen == 6 && std::memcmp(tname, "select", 6) == 0 &&
+                n->border.h < 28) {
+                n->border.h = 28;
+                n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
+            }
+        }
+
         /* min/max */
         std::string mn = get(n->style, "min-width");
         std::string mw = get(n->style, "max-width");
@@ -426,10 +447,18 @@ struct Builder
         if (!mw.empty() && n->border.w > static_cast<int>(len_px(mw, static_cast<float>(cw), em))) {
             n->border.w = static_cast<int>(len_px(mw, static_cast<float>(cw), em));
         }
+        std::string mnh = get(n->style, "min-height");
+        std::string mxh = get(n->style, "max-height");
+        if (!mnh.empty() && n->border.h < static_cast<int>(len_px(mnh, static_cast<float>(ch), em))) {
+            n->border.h = static_cast<int>(len_px(mnh, static_cast<float>(ch), em));
+        }
+        if (!mxh.empty() && n->border.h > static_cast<int>(len_px(mxh, static_cast<float>(ch), em))) {
+            n->border.h = static_cast<int>(len_px(mxh, static_cast<float>(ch), em));
+        }
 
         /* advance flow cursor for block flow (static/relative) */
         if (pkind == 0 || pkind == 3) {
-            *cursor_y = y + m[0] + bh + m[2];
+            *cursor_y = y + m[0] + n->border.h + m[2];
         }
         if (cursor_y && pkind == 0) {
             /* nothing extra */
@@ -440,12 +469,17 @@ struct Builder
                       int font_px, int& kid_cursor)
     {
         (void)inner_h;
+        /* block flow: children stack below each other, starting at the
+         * container's content origin (padding/border are already excluded
+         * via content.y) */
+        int cursor = n->content.y;
         whaleui_layout_node_t* c = n->first_child;
         while (c) {
-            layout(c, n->content.x, n->content.y + kid_cursor, inner_w, inner_h,
-                   font_px, &kid_cursor);
+            layout(c, n->content.x, n->content.y, inner_w, inner_h,
+                   font_px, &cursor);
             c = c->next;
         }
+        kid_cursor = cursor - n->content.y;
     }
 
     void layout_flex(whaleui_layout_node_t* n, int inner_w, int inner_h,
@@ -540,10 +574,20 @@ struct Builder
                  * beyond the measured main size) */
                 pos = (k->border.y + k->border.h) - n->content.y + gap;
             } else {
-                int c = 0;
+                int c = n->content.y;
                 layout(k, n->content.x + static_cast<int>(pos), n->content.y,
                        sz, inner_h, font_px, &c);
                 pos = (k->border.x + k->border.w) - n->content.x + gap;
+                /* align-items: stretch (default) / center / flex-end */
+                std::string align = get(n->style, "align-items");
+                if (align == "center") {
+                    k->border.y += (inner_h - k->border.h) / 2;
+                } else if (align == "flex-end" || align == "end") {
+                    k->border.y += inner_h - k->border.h;
+                } else if (inner_h > 0) {
+                    /* stretch: only when the container has a definite height */
+                    k->border.h = inner_h;
+                }
             }
             (void)align;
         }

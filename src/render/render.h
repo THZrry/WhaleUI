@@ -55,11 +55,22 @@ struct whaleui_render
     TTF_Font* font_default;
     TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
 
+    /* select dropdown interaction state */
+    whaleui_layout_node_t* open_select;  /* currently expanded <select>, or NULL */
+    int open_select_hover;               /* hovered option index in the list */
+    std::map<whaleui_layout_node_t*, int> select_index; /* select -> chosen option */
+
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
 };
 
 typedef struct whaleui_render whaleui_render_t;
+
+/* Hit-test the last layout tree and drive the <select> interaction.
+ * Returns 1 when a select option was chosen (out_value set, owned by the
+ * library), 0 otherwise (the click may still have toggled a select open). */
+int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
+                                const char** out_value);
 
 /* Create/destroy a per-window render context (device/window borrowed).
  * The window must already be claimed for the GPU device. */

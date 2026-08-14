@@ -177,6 +177,20 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* block children start at the parent's content origin (padding respected) */
+    {
+        whaleui_layout_tree_t* t = do_layout(
+            "<div class=\"card\" style=\"padding:16px 18px;\">"
+            "<h2>Title</h2><p>body</p></div>", 400, 300);
+        assert(t != nullptr);
+        whaleui_layout_node_t* card = find_tag(t->root, "div");
+        whaleui_layout_node_t* h2 = find_tag(t->root, "h2");
+        assert(card != nullptr && h2 != nullptr);
+        assert(card->content.y == card->border.y + 16); /* padding-top */
+        assert(h2->border.y == card->content.y);        /* starts inside content */
+        whaleui_layout_destroy(t);
+    }
+
     /* opacity + z-index recorded */
     {
         whaleui_layout_tree_t* t = do_layout(
