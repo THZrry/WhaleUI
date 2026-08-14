@@ -13,7 +13,7 @@ whaleui_layout_tree_t* do_layout(const char* html, int w, int h)
 {
     whaleui_dom_document_t* doc = whaleui_dom_parse_html(html, std::strlen(html));
     assert(doc != nullptr);
-    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr);
+    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr, nullptr);
 }
 
 /* find first element node with the given tag, depth-first */
@@ -200,6 +200,63 @@ int main(void)
         assert(z != nullptr);
         assert(z->z == 5);
         assert(z->opacity > 0.49f && z->opacity < 0.51f);
+        whaleui_layout_destroy(t);
+    }
+
+    /* overflow:auto with a fixed height scrolls: children shift up by
+     * scroll_y, scroll_max = content height - visible height */
+    {
+        const char* html = "<body><div id=\"sc\" style=\"overflow:auto;"
+            "height:50px;\"><div style=\"height:200px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        std::map<lxb_dom_element*, int> scrolls;
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* sc = find_tag(t->root, "div");
+        assert(sc != nullptr);
+        whaleui_layout_node_t* inner = sc->first_child;
+        assert(inner != nullptr);
+        assert(sc->border.h == 50);          /* fixed height, not grown */
+        assert(sc->scroll_max == 150);       /* 200 content - 50 visible */
+        assert(inner->border.y == sc->content.y);
+        whaleui_layout_destroy(t);
+
+        scrolls[sc->el] = 50;
+        whaleui_layout_tree_t* t2 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls);
+        assert(t2 != nullptr);
+        whaleui_layout_node_t* sc2 = find_tag(t2->root, "div");
+        assert(sc2 != nullptr);
+        whaleui_layout_node_t* inner2 = sc2->first_child;
+        assert(inner2 != nullptr);
+        assert(inner2->border.y == sc2->content.y - 50);
+        /* scrolling the max amount reaches the content end */
+        scrolls[sc2->el] = sc2->scroll_max;
+        whaleui_layout_tree_t* t3 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls);
+        assert(t3 != nullptr);
+        whaleui_layout_node_t* sc3 = find_tag(t3->root, "div");
+        assert(sc3 != nullptr);
+        whaleui_layout_node_t* inner3 = sc3->first_child;
+        assert(inner3->border.y == sc3->content.y - sc3->scroll_max);
+        whaleui_layout_destroy(t3);
+        whaleui_layout_destroy(t2);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* overflow:hidden clips but does not scroll */
+    {
+        whaleui_layout_tree_t* t = do_layout(
+            "<div id=\"h\" style=\"overflow:hidden;height:30px;\">"
+            "<div style=\"height:100px;\"></div></div>", 800, 600);
+        assert(t != nullptr);
+        whaleui_layout_node_t* h = find_tag(t->root, "div");
+        assert(h != nullptr);
+        assert(h->scroll_max == 0);
         whaleui_layout_destroy(t);
     }
 

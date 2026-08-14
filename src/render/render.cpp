@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 
 namespace {
 
@@ -312,6 +313,130 @@ std::string sget(const WhaleUIComputedStyle& s, const char* k)
     return it == s.end() ? std::string() : it->second;
 }
 
+/* --- editable elements + text editing --- */
+
+bool tag_eq(lxb_dom_element* el, const char* tag)
+{
+    if (!el) {
+        return false;
+    }
+    size_t n = 0;
+    const lxb_char_t* name = lxb_dom_element_local_name(el, &n);
+    if (!name) {
+        return false;
+    }
+    size_t tlen = std::strlen(tag);
+    return n == tlen && std::memcmp(name, tag, tlen) == 0;
+}
+
+/* is this element a text-editing target? input(type=text)/textarea, or any
+ * element with contenteditable != "false" */
+bool is_editable(lxb_dom_element* el)
+{
+    if (!el) {
+        return false;
+    }
+    if (tag_eq(el, "input") || tag_eq(el, "textarea")) {
+        if (tag_eq(el, "input")) {
+            size_t alen = 0;
+            const lxb_char_t* t = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &alen);
+            /* non-text input types (button/checkbox/radio/...) are not
+             * text-editable */
+            if (t && alen > 0 &&
+                !(alen == 4 && std::memcmp(t, "text", 4) == 0)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    size_t alen = 0;
+    const lxb_char_t* ce = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"contenteditable", 15, &alen);
+    if (ce && alen > 0) {
+        return !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
+    }
+    return false;
+}
+
+/* editable value: input -> value attribute; textarea/contenteditable -> the
+ * concatenated text children */
+std::string edit_value(lxb_dom_element* el)
+{
+    if (tag_eq(el, "input")) {
+        size_t alen = 0;
+        const lxb_char_t* v = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"value", 5, &alen);
+        return v ? std::string(reinterpret_cast<const char*>(v), alen)
+                 : std::string();
+    }
+    std::string out;
+    lxb_dom_node* n = el->node.first_child;
+    while (n) {
+        if (n->type == LXB_DOM_NODE_TYPE_TEXT ||
+            n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
+            const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
+            if (s->data) {
+                out.append(reinterpret_cast<const char*>(s->data), s->length);
+            }
+        }
+        n = n->next;
+    }
+    return out;
+}
+
+/* write an editable value back into the DOM (input -> value attr; the rest
+ * -> one text node replacing all children) */
+void edit_set_value(lxb_dom_element* el, const std::string& s)
+{
+    if (tag_eq(el, "input")) {
+        lxb_dom_element_set_attribute(el, (const lxb_char_t*)"value", 5,
+                                      reinterpret_cast<const lxb_char_t*>(s.c_str()),
+                                      s.size());
+        return;
+    }
+    lxb_dom_node* n = el->node.first_child;
+    while (n) {
+        lxb_dom_node* nx = n->next;
+        lxb_dom_node_remove(n);
+        lxb_dom_node_destroy(n);
+        n = nx;
+    }
+    lxb_dom_text* tn = lxb_dom_document_create_text_node(
+        el->node.owner_document,
+        reinterpret_cast<const lxb_char_t*>(s.c_str()), s.size());
+    if (tn) {
+        lxb_dom_node_insert_child(&el->node, lxb_dom_interface_node(tn));
+    }
+}
+
+/* UTF-8: byte offset of the previous/next character boundary */
+size_t utf8_prev(const std::string& s, size_t b)
+{
+    if (b == 0) {
+        return 0;
+    }
+    if (b > s.size()) {
+        b = s.size();
+    }
+    --b;
+    while (b > 0 && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) {
+        --b;
+    }
+    return b;
+}
+size_t utf8_next(const std::string& s, size_t b)
+{
+    if (b >= s.size()) {
+        return s.size();
+    }
+    ++b;
+    while (b < s.size() && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) {
+        ++b;
+    }
+    return b;
+}
+
 } // namespace
 
 extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
@@ -586,6 +711,390 @@ unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def)
         p = s;
     }
     return def;
+}
+
+/* --- text measuring / hit-testing ---
+ * Shared by selection and caret placement. Must match what draw_text_at
+ * paints (same font, same wrapping). Full build: TTF_Text (fallback chain +
+ * wrapping handled natively). Lite/minimal: stb_truetype per-glyph metrics,
+ * simpler but functionally equivalent. */
+
+struct TRect { int x, y, w, h; };
+
+#ifdef WHALEUI_BUILD_FULL
+TTF_Text* text_obj(whaleui_render_t* r, const std::string& text, int fs,
+                   const std::string& family, bool bold)
+{
+    if (text.empty()) {
+        return nullptr;
+    }
+    TTF_Font* font = render_get_font(r, family, fs, bold);
+    if (!font) {
+        return nullptr;
+    }
+    if (!r->text_engine) {
+        r->text_engine = TTF_CreateSurfaceTextEngine();
+    }
+    if (!r->text_engine) {
+        return nullptr;
+    }
+    return TTF_CreateText(r->text_engine, font, text.c_str(), text.size());
+}
+#else
+/* stb font table for measuring (mirrors the draw path in draw_text_at) */
+struct StbFonts
+{
+    struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
+    std::vector<F> fonts;
+    size_t pref;
+    int line_h;
+    explicit StbFonts(const std::string& family, int fs)
+        : pref(static_cast<size_t>(-1)), line_h(fs > 0 ? fs : 16)
+    {
+        whaleui_font_registry* reg = whaleui_font_registry_get();
+        if (!reg) {
+            return;
+        }
+        for (size_t fi = 0; fi < reg->count; ++fi) {
+            F f;
+            f.ok = false;
+            f.scale = 1.0f;
+            f.asc = 0;
+            f.line_h = line_h;
+            const unsigned char* d = reg->fonts[fi].data;
+            size_t l = reg->fonts[fi].len;
+            if (d && l >= 4) {
+                int off = stbtt_GetFontOffsetForIndex(d, 0);
+                if (off >= 0 && stbtt_InitFont(&f.info, d, off)) {
+                    f.scale = stbtt_ScaleForPixelHeight(&f.info, static_cast<float>(fs));
+                    int desc = 0, linegap = 0;
+                    stbtt_GetFontVMetrics(&f.info, &f.asc, &desc, &linegap);
+                    f.line_h = static_cast<int>((f.asc - desc + linegap) * f.scale + 0.5f);
+                    f.ok = true;
+                    line_h = f.line_h;
+                }
+            }
+            fonts.push_back(f);
+        }
+        /* preferred font: first CSS family match, else first usable font */
+        std::vector<std::string> fams = split_families(family);
+        for (const std::string& fam : fams) {
+            if (fam.empty()) {
+                continue;
+            }
+            bool generic = fam == "sans-serif" || fam == "serif" ||
+                           fam == "monospace";
+            if (generic) {
+                continue;
+            }
+            for (size_t fi = 0; fi < fonts.size(); ++fi) {
+                if (fonts[fi].ok && reg->fonts[fi].family &&
+                    std::strcmp(reg->fonts[fi].family, fam.c_str()) == 0) {
+                    pref = fi;
+                    break;
+                }
+            }
+            if (pref != static_cast<size_t>(-1)) {
+                break;
+            }
+        }
+        if (pref == static_cast<size_t>(-1)) {
+            for (size_t fi = 0; fi < fonts.size(); ++fi) {
+                if (fonts[fi].ok) {
+                    pref = fi;
+                    break;
+                }
+            }
+        }
+    }
+    size_t pick(size_t start, unsigned int cp) const
+    {
+        if (start != static_cast<size_t>(-1) && fonts[start].ok &&
+            stbtt_FindGlyphIndex(&fonts[start].info, cp) != 0) {
+            return start;
+        }
+        for (size_t fi = 0; fi < fonts.size(); ++fi) {
+            if (fi == start || !fonts[fi].ok) {
+                continue;
+            }
+            if (stbtt_FindGlyphIndex(&fonts[fi].info, cp) != 0) {
+                return fi;
+            }
+        }
+        return static_cast<size_t>(-1);
+    }
+    /* decode UTF-8 into lines of codepoints + byte starts; measures widths */
+    struct TLine { std::vector<unsigned int> cps; std::vector<size_t> starts; int w; };
+    std::vector<TLine> lines(const std::string& text) const
+    {
+        std::vector<TLine> out;
+        out.push_back(TLine());
+        const unsigned char* sb = reinterpret_cast<const unsigned char*>(text.c_str());
+        size_t i = 0;
+        while (i < text.size()) {
+            size_t start = i;
+            unsigned char c = sb[i];
+            unsigned int cp = c;
+            int len = 1;
+            if (c >= 0x80) {
+                if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
+                    cp = ((c & 0x1F) << 6) | (sb[i + 1] & 0x3F);
+                    len = 2;
+                } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
+                    cp = ((c & 0x0F) << 12) | ((sb[i + 1] & 0x3F) << 6) |
+                         (sb[i + 2] & 0x3F);
+                    len = 3;
+                } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
+                    cp = ((c & 0x07) << 18) | ((sb[i + 1] & 0x3F) << 12) |
+                         ((sb[i + 2] & 0x3F) << 6) | (sb[i + 3] & 0x3F);
+                    len = 4;
+                } else {
+                    cp = 0;
+                }
+            }
+            i += len;
+            if (cp == '\n') {
+                out.push_back(TLine());
+                continue;
+            }
+            if (cp < 0x20 || cp == 0x7F) {
+                continue;
+            }
+            out.back().cps.push_back(cp);
+            out.back().starts.push_back(start);
+        }
+        for (size_t li = 0; li < out.size(); ++li) {
+            TLine& ln = out[li];
+            for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
+                size_t fi = pick(pref, ln.cps[gi]);
+                if (fi == static_cast<size_t>(-1)) {
+                    continue;
+                }
+                int adv = 0, lsb = 0;
+                stbtt_GetCodepointHMetrics(&fonts[fi].info, ln.cps[gi], &adv, &lsb);
+                ln.w += static_cast<int>(adv * fonts[fi].scale + 0.5f);
+            }
+        }
+        return out;
+    }
+};
+#endif
+
+/* total text size in px (0 when empty) */
+void text_size(whaleui_render_t* r, const std::string& text, int fs,
+               const std::string& family, bool bold, int* tw, int* th)
+{
+    *tw = *th = 0;
+    if (text.empty()) {
+        return;
+    }
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Text* t = text_obj(r, text, fs, family, bold);
+    if (t) {
+        TTF_GetTextSize(t, tw, th);
+        TTF_DestroyText(t);
+    }
+#else
+    StbFonts stb(family, fs);
+    std::vector<StbFonts::TLine> ls = stb.lines(text);
+    *th = static_cast<int>(ls.size()) * stb.line_h;
+    for (size_t i = 0; i < ls.size(); ++i) {
+        if (ls[i].w > *tw) {
+            *tw = ls[i].w;
+        }
+    }
+#endif
+}
+
+/* per-line height in px for the caret/highlight rectangles */
+int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bold)
+{
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Font* font = render_get_font(r, family, fs, bold);
+    if (font) {
+        int h = TTF_GetFontHeight(font);
+        if (h > 0) {
+            return h;
+        }
+    }
+    return fs > 0 ? fs : 16;
+#else
+    StbFonts stb(family, fs > 0 ? fs : 16);
+    return stb.line_h;
+#endif
+}
+
+/* byte offset of the text under (px,py), relative to the text top-left */
+size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
+                    const std::string& family, bool bold, int px, int py)
+{
+    if (text.empty()) {
+        return 0;
+    }
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Text* t = text_obj(r, text, fs, family, bold);
+    if (!t) {
+        return 0;
+    }
+    int tw = 0, th = 0;
+    TTF_GetTextSize(t, &tw, &th);
+    if (px < 0) {
+        px = 0;
+    }
+    if (py < 0) {
+        py = 0;
+    }
+    if (px >= tw) {
+        px = tw > 0 ? tw - 1 : 0;
+    }
+    if (py >= th) {
+        py = th > 0 ? th - 1 : 0;
+    }
+    TTF_SubString sub;
+    size_t off = text.size();
+    if (TTF_GetTextSubStringForPoint(t, static_cast<float>(px),
+                                     static_cast<float>(py), &sub)) {
+        off = static_cast<size_t>(sub.offset);
+    }
+    TTF_DestroyText(t);
+    return off;
+#else
+    StbFonts stb(family, fs);
+    std::vector<StbFonts::TLine> ls = stb.lines(text);
+    if (ls.empty()) {
+        return 0;
+    }
+    int lh = stb.line_h;
+    int line = lh > 0 ? py / lh : 0;
+    if (line < 0) {
+        line = 0;
+    }
+    if (line >= static_cast<int>(ls.size())) {
+        line = static_cast<int>(ls.size()) - 1;
+    }
+    const StbFonts::TLine& ln = ls[static_cast<size_t>(line)];
+    int xacc = 0;
+    for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
+        size_t fi = stb.pick(stb.pref, ln.cps[gi]);
+        int adv = 0, lsb = 0;
+        if (fi != static_cast<size_t>(-1)) {
+            stbtt_GetCodepointHMetrics(&stb.fonts[fi].info, ln.cps[gi], &adv, &lsb);
+        }
+        int w = static_cast<int>(adv * (fi == static_cast<size_t>(-1) ? 0.5f : stb.fonts[fi].scale) + 0.5f);
+        if (px < xacc + w / 2) {
+            return ln.starts[gi];
+        }
+        xacc += w;
+    }
+    return text.size();
+#endif
+}
+
+/* highlight rectangles for the byte range [a,b), relative to text top-left */
+std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
+                             int fs, const std::string& family, bool bold,
+                             size_t a, size_t b)
+{
+    std::vector<TRect> out;
+    if (a > text.size()) {
+        a = text.size();
+    }
+    if (b > text.size()) {
+        b = text.size();
+    }
+    if (a > b) {
+        std::swap(a, b);
+    }
+    if (a == b || text.empty()) {
+        return out;
+    }
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Text* t = text_obj(r, text, fs, family, bold);
+    if (!t) {
+        return out;
+    }
+    int count = 0;
+    TTF_SubString** subs = TTF_GetTextSubStringsForRange(
+        t, static_cast<int>(a), static_cast<int>(b - a), &count);
+    if (subs) {
+        for (int i = 0; i < count; ++i) {
+            TRect rc;
+            rc.x = subs[i]->rect.x;
+            rc.y = subs[i]->rect.y;
+            rc.w = subs[i]->rect.w;
+            rc.h = subs[i]->rect.h;
+            out.push_back(rc);
+            SDL_free(subs[i]);
+        }
+        SDL_free(subs);
+    }
+    TTF_DestroyText(t);
+#else
+    StbFonts stb(family, fs);
+    std::vector<StbFonts::TLine> ls = stb.lines(text);
+    int lh = stb.line_h;
+    for (size_t li = 0; li < ls.size(); ++li) {
+        const StbFonts::TLine& ln = ls[li];
+        int x0 = -1, x1 = -1;
+        int xacc = 0;
+        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
+            size_t fs2 = stb.pick(stb.pref, ln.cps[gi]);
+            int adv = 0, lsb2 = 0;
+            if (fs2 != static_cast<size_t>(-1)) {
+                stbtt_GetCodepointHMetrics(&stb.fonts[fs2].info, ln.cps[gi], &adv, &lsb2);
+            }
+            int w = static_cast<int>(adv * (fs2 == static_cast<size_t>(-1) ? 0.5f : stb.fonts[fs2].scale) + 0.5f);
+            if (x0 < 0 && ln.starts[gi] >= a) {
+                x0 = xacc;
+            }
+            if (ln.starts[gi] >= b && x1 < 0) {
+                x1 = xacc;
+                break;
+            }
+            xacc += w;
+        }
+        if (x0 < 0) {
+            continue; /* line ends before a */
+        }
+        if (x1 < 0) {
+            x1 = xacc; /* range extends past this line's end */
+        }
+        if (x1 > x0) {
+            TRect rc = {x0, static_cast<int>(li) * lh, x1 - x0, lh};
+            out.push_back(rc);
+        }
+        if (x1 >= xacc) {
+            continue; /* keep scanning later lines (range continues) */
+        }
+        break;
+    }
+#endif
+    return out;
+}
+
+/* caret (cursor) position for byte offset `off`, relative to text top-left */
+void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
+               const std::string& family, bool bold, size_t off,
+               int* cx, int* cy, int* ch)
+{
+    int lh = text_line_h(r, fs, family, bold);
+    if (off == 0) {
+        *cx = 0;
+        *cy = 0;
+        *ch = lh;
+        return;
+    }
+    std::vector<TRect> rs = sel_rects(r, text, fs, family, bold, 0, off);
+    if (rs.empty()) {
+        *cx = 0;
+        *cy = 0;
+        *ch = lh;
+        return;
+    }
+    const TRect& last = rs.back();
+    *cx = last.x + last.w;
+    *cy = last.y;
+    *ch = last.h;
 }
 
 /* render one text string inside the box (bx,by,bw,bh). align: 0=left,
@@ -890,6 +1399,198 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
 #endif /* WHALEUI_BUILD_FULL */
 }
 
+/* --- text selection + editing overlay --- */
+
+/* is element a before element b in document (pre-order) order? */
+bool doc_before(lxb_dom_element* a, lxb_dom_element* b)
+{
+    if (!a || !b || a == b) {
+        return false;
+    }
+    lxb_dom_document* doc = a->node.owner_document;
+    if (!doc) {
+        return false;
+    }
+    lxb_dom_element* root = lxb_dom_document_element(doc);
+    std::function<bool(lxb_dom_node*)> walk = [&](lxb_dom_node* n) -> bool {
+        while (n) {
+            if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* el = lxb_dom_interface_element(n);
+                if (el == a) {
+                    return true;
+                }
+                if (el == b) {
+                    return false;
+                }
+                if (n->first_child && walk(n->first_child)) {
+                    return true;
+                }
+            }
+            n = n->next;
+        }
+        return false;
+    };
+    return walk(root ? &root->node : nullptr);
+}
+
+/* selection byte range [a,b) for el's text; false when el is outside the
+ * selection (or the range is empty). Cross-element selections highlight the
+ * endpoint elements partially and everything in between fully. */
+bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
+                   size_t* a, size_t* b)
+{
+    lxb_dom_element* sa = r->sel_anchor_el;
+    lxb_dom_element* sf = r->sel_focus_el;
+    if (!sa || !sf || !el) {
+        return false;
+    }
+    if (sa == sf && el == sa) {
+        size_t lo = static_cast<size_t>(r->sel_anchor);
+        size_t hi = static_cast<size_t>(r->sel_focus);
+        if (lo > hi) {
+            std::swap(lo, hi);
+        }
+        *a = lo;
+        *b = hi;
+        return *a < *b && *a < len;
+    }
+    if (el == sa) {
+        *a = static_cast<size_t>(r->sel_anchor);
+        *b = len;
+        return *a < len;
+    }
+    if (el == sf) {
+        *a = 0;
+        *b = static_cast<size_t>(r->sel_focus);
+        return *b > 0;
+    }
+    bool ab = doc_before(sa, sf);
+    if (ab ? (doc_before(sa, el) && doc_before(el, sf))
+           : (doc_before(sf, el) && doc_before(el, sa))) {
+        *a = 0;
+        *b = len;
+        return len > 0;
+    }
+    return false;
+}
+
+unsigned int accent_hl(whaleui_render_t* r, unsigned int alpha)
+{
+    unsigned int hl = (alpha << 24);
+    auto it = r->theme_vars.find("--accent");
+    if (it != r->theme_vars.end()) {
+        unsigned int c = 0;
+        if (whaleui_render_parse_color(it->second.c_str(), &c) == 0) {
+            hl = (alpha << 24) | (c & 0x00FFFFFF);
+        }
+    }
+    return hl;
+}
+
+/* highlight the selected part of a text run (drawn before the glyphs) */
+void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
+                          whaleui_layout_node_t* box, int fs,
+                          const std::string& family, bool bold, const Clip* clip)
+{
+    size_t a = 0, b = 0;
+    if (!sel_range_for(r, n->el, n->text.size(), &a, &b)) {
+        return;
+    }
+    int tw = 0, th = 0;
+    text_size(r, n->text, fs, family, bold, &tw, &th);
+    if (th <= 0) {
+        return;
+    }
+    int tx = box->content.x;
+    int ty = box->content.y + (box->content.h - th) / 2;
+    std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b);
+    unsigned int hl = accent_hl(r, 0x3C);
+    for (size_t i = 0; i < rects.size(); ++i) {
+        fill_rect(r->pixels, r->fb_w, r->fb_h,
+                  tx + rects[i].x, ty + rects[i].y,
+                  rects[i].w, rects[i].h, hl, clip);
+    }
+}
+
+/* blinking caret at byte offset `off` (text-relative coordinates tx,ty) */
+void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
+                 int fs, const std::string& family, bool bold,
+                 size_t off, const Clip* clip)
+{
+    if ((SDL_GetTicks() / 500) & 1) {
+        return; /* blink: off half the time */
+    }
+    int cx = 0, cy = 0, ch = 16;
+    caret_pos(r, text, fs, family, bold, off, &cx, &cy, &ch);
+    fill_rect(r->pixels, r->fb_w, r->fb_h, tx + cx, ty + cy, 1, ch,
+              accent_hl(r, 0xFF), clip);
+}
+
+/* editable controls: input paints its value text (always); when focused, a
+ * selection highlight + caret + IME composition overlay are drawn on top.
+ * textarea/contenteditable glyphs come from the layout text run - this only
+ * adds the interaction layer. */
+void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
+                    const Clip* clip)
+{
+    lxb_dom_element* el = n->el;
+    if (!el || !is_editable(el)) {
+        return;
+    }
+    int fs = 16;
+    std::string fsv = sget(n->style, "font-size");
+    if (!fsv.empty()) {
+        fs = std::atoi(fsv.c_str());
+    }
+    std::string family = sget(n->style, "font-family");
+    std::string fw = sget(n->style, "font-weight");
+    bool bold = fw == "bold" || fw == "bolder" ||
+                (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+    std::string val = edit_value(el);
+    bool focused = (el == r->edit_el);
+    int tw = 0, th = 0;
+    text_size(r, val, fs, family, bold, &tw, &th);
+    /* glyphs sit vertically centered in the content box (matches paint_text) */
+    int tx = n->content.x;
+    int ty = n->content.y + (n->content.h - th) / 2;
+    if (th <= 0) {
+        th = text_line_h(r, fs, family, bold);
+    }
+
+    if (tag_eq(el, "input")) {
+        /* input has no text children: paint the value here, always */
+        unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+        draw_text_at(r, val, n->content.x, n->content.y,
+                     n->content.w, n->content.h,
+                     fs, family, fg, bold, 0, clip);
+    }
+    if (focused) {
+        size_t a = 0, b = 0;
+        if (sel_range_for(r, el, val.size(), &a, &b)) {
+            std::vector<TRect> rects = sel_rects(r, val, fs, family, bold, a, b);
+            unsigned int hl = accent_hl(r, 0x3C);
+            for (size_t i = 0; i < rects.size(); ++i) {
+                fill_rect(r->pixels, r->fb_w, r->fb_h,
+                          tx + rects[i].x, ty + rects[i].y,
+                          rects[i].w, rects[i].h, hl, clip);
+            }
+        }
+        size_t caret = static_cast<size_t>(r->sel_focus);
+        if (caret > val.size()) {
+            caret = val.size();
+        }
+        paint_caret(r, tx, ty, val, fs, family, bold, caret, clip);
+        if (!r->compose.empty()) {
+            unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+            unsigned int comp = (0xC8 << 24) | (fg & 0x00FFFFFF);
+            int cxx = 0, cyy = 0, chh = 16;
+            caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
+            draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
+                         fs, family, comp, bold, 0, clip);
+        }
+    }
+}
+
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
     unsigned int color = color_of(n->style, "color", 0xFF000000);
@@ -919,6 +1620,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     if (n->parent && !n->parent->is_text) {
         box = n->parent;
     }
+    paint_text_selection(r, n, box, fs, family, bold, clip);
     draw_text_at(r, n->text, box->content.x, box->content.y,
                  box->content.w, box->content.h,
                  fs, family, color, bold, align, clip);
@@ -1347,11 +2049,12 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
         paint_text(r, n, clip);
         return;
     }
-    /* overflow: hidden clips descendants to the border box */
+    /* overflow: hidden/auto/scroll clips descendants to the border box
+     * (auto/scroll containers also shift children by scroll_y at layout) */
     Clip self;
     const Clip* eff = clip;
     std::string ov = sget(n->style, "overflow");
-    if (ov == "hidden") {
+    if (ov == "hidden" || ov == "auto" || ov == "scroll") {
         self.x = n->border.x;
         self.y = n->border.y;
         self.w = n->border.w;
@@ -1428,10 +2131,221 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, eff);
     }
+    /* editable control: value text (input) + selection/caret overlay */
+    if (n->el && is_editable(n->el)) {
+        paint_editable(r, n, eff);
+    }
     /* <select> control: value + arrow painted here; the expanded list is
      * painted LAST in render_frame so nothing occludes it */
     if (is_select_node(n)) {
         paint_select_value(r, n, eff);
+    }
+}
+
+/* --- editing interaction helpers --- */
+
+/* font params of a layout node (matches the paint path) */
+void node_font(whaleui_layout_node_t* n, int* fs, std::string* family, bool* bold)
+{
+    *fs = 16;
+    std::string fsv = sget(n->style, "font-size");
+    if (!fsv.empty()) {
+        *fs = std::atoi(fsv.c_str());
+    }
+    *family = sget(n->style, "font-family");
+    std::string fw = sget(n->style, "font-weight");
+    *bold = fw == "bold" || fw == "bolder" ||
+            (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+}
+
+/* text top-left inside a box (matches paint_text/paint_editable) */
+void text_origin(whaleui_render_t* r, whaleui_layout_node_t* box,
+                 const std::string& text, int fs, const std::string& family,
+                 bool bold, int* tx, int* ty)
+{
+    int tw = 0, th = 0;
+    text_size(r, text, fs, family, bold, &tw, &th);
+    *tx = box->content.x;
+    *ty = box->content.y + (box->content.h - th) / 2;
+}
+
+/* byte offset in a text-run node at (x,y) */
+size_t byte_at_node(whaleui_render_t* r, whaleui_layout_node_t* hit, int x, int y)
+{
+    int fs;
+    std::string family;
+    bool bold;
+    node_font(hit, &fs, &family, &bold);
+    int tx = 0, ty = 0;
+    text_origin(r, hit, hit->text, fs, family, bold, &tx, &ty);
+    return byte_at_text(r, hit->text, fs, family, bold, x - tx, y - ty);
+}
+
+/* caret byte offset in an editable element at (x,y); hit is the layout node
+ * under the mouse (the text run or the editable box itself) */
+size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
+                        whaleui_layout_node_t* hit, int x, int y)
+{
+    std::string val = edit_value(el);
+    if (val.empty()) {
+        return 0;
+    }
+    whaleui_layout_node_t* box =
+        (hit && hit->is_text && hit->parent) ? hit->parent : hit;
+    int fs;
+    std::string family;
+    bool bold;
+    node_font(box, &fs, &family, &bold);
+    int tx = 0, ty = 0;
+    text_origin(r, box, val, fs, family, bold, &tx, &ty);
+    return byte_at_text(r, val, fs, family, bold, x - tx, y - ty);
+}
+
+/* drag: move the selection focus end to the element under the mouse */
+void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
+                            int x, int y)
+{
+    if (!hit) {
+        return;
+    }
+    if (hit->is_text) {
+        r->sel_focus_el = hit->el;
+        r->sel_focus = static_cast<int>(byte_at_node(r, hit, x, y));
+        r->has_dirty = 1;
+    } else if (is_editable(hit->el)) {
+        r->sel_focus_el = hit->el;
+        r->sel_focus = static_cast<int>(caret_from_point(r, hit->el, hit, x, y));
+        r->has_dirty = 1;
+    }
+}
+
+/* replace [a,b) of the editable value with `insertion`, move the caret to
+ * the end of the insertion and write the result back into the DOM */
+void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
+                  const std::string& insertion)
+{
+    std::string val = edit_value(el);
+    if (a > val.size()) {
+        a = val.size();
+    }
+    if (b > val.size()) {
+        b = val.size();
+    }
+    if (a > b) {
+        std::swap(a, b);
+    }
+    std::string nv = val.substr(0, a) + insertion + val.substr(b);
+    edit_set_value(el, nv);
+    size_t caret = a + insertion.size();
+    r->sel_anchor_el = r->sel_focus_el = el;
+    r->sel_anchor = r->sel_focus = static_cast<int>(caret);
+    r->compose.clear();
+    r->has_dirty = 1;
+}
+
+bool is_contenteditable(lxb_dom_element* el)
+{
+    if (!el || tag_eq(el, "input") || tag_eq(el, "textarea")) {
+        return false;
+    }
+    return is_editable(el);
+}
+
+size_t line_start(const std::string& s, size_t b)
+{
+    size_t p = s.rfind('\n', b == 0 ? std::string::npos : b - 1);
+    return p == std::string::npos ? 0 : p + 1;
+}
+size_t line_end(const std::string& s, size_t b)
+{
+    size_t p = s.find('\n', b);
+    return p == std::string::npos ? s.size() : p;
+}
+
+void edit_key(whaleui_render_t* r, int keycode, int mods)
+{
+    lxb_dom_element* el = r->edit_el;
+    if (!el) {
+        return;
+    }
+    std::string val = edit_value(el);
+    int a = r->sel_anchor, b = r->sel_focus;
+    if (a > b) {
+        std::swap(a, b);
+    }
+    bool ctrl = (mods & SDL_KMOD_CTRL) != 0;
+    if (ctrl) {
+        if (keycode == 'a') { /* select all */
+            r->sel_anchor = 0;
+            r->sel_focus = static_cast<int>(val.size());
+            r->has_dirty = 1;
+        }
+        /* other ctrl shortcuts (clipboard etc.) not handled yet */
+        return;
+    }
+    switch (keycode) {
+    case WHALEUI_KEY_LEFT:
+        r->sel_anchor = r->sel_focus =
+            static_cast<int>(utf8_prev(val, static_cast<size_t>(
+                r->sel_anchor != r->sel_focus ? a : r->sel_focus)));
+        r->has_dirty = 1;
+        break;
+    case WHALEUI_KEY_RIGHT:
+        r->sel_anchor = r->sel_focus =
+            static_cast<int>(utf8_next(val, static_cast<size_t>(
+                r->sel_anchor != r->sel_focus ? b : r->sel_focus)));
+        r->has_dirty = 1;
+        break;
+    case WHALEUI_KEY_HOME:
+        r->sel_anchor = r->sel_focus =
+            static_cast<int>(line_start(val, static_cast<size_t>(r->sel_focus)));
+        r->has_dirty = 1;
+        break;
+    case WHALEUI_KEY_END:
+        r->sel_anchor = r->sel_focus =
+            static_cast<int>(line_end(val, static_cast<size_t>(r->sel_focus)));
+        r->has_dirty = 1;
+        break;
+    case WHALEUI_KEY_UP: { /* simplified: jump to the previous line start */
+        size_t ls = line_start(val, static_cast<size_t>(r->sel_focus));
+        if (ls > 0) {
+            r->sel_anchor = r->sel_focus =
+                static_cast<int>(line_start(val, ls - 1));
+            r->has_dirty = 1;
+        }
+        break;
+    }
+    case WHALEUI_KEY_DOWN: { /* simplified: jump to the next line start */
+        size_t le = line_end(val, static_cast<size_t>(r->sel_focus));
+        if (le < val.size()) {
+            r->sel_anchor = r->sel_focus = static_cast<int>(le + 1);
+            r->has_dirty = 1;
+        }
+        break;
+    }
+    case WHALEUI_KEY_BACKSPACE:
+        if (a != b) {
+            edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "");
+        } else if (a > 0) {
+            edit_replace(r, el, utf8_prev(val, static_cast<size_t>(a)),
+                         static_cast<size_t>(a), "");
+        }
+        break;
+    case WHALEUI_KEY_DELETE:
+        if (a != b) {
+            edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "");
+        } else if (a < static_cast<int>(val.size())) {
+            edit_replace(r, el, static_cast<size_t>(a),
+                         utf8_next(val, static_cast<size_t>(a)), "");
+        }
+        break;
+    case WHALEUI_KEY_ENTER:
+        if (tag_eq(el, "textarea") || is_contenteditable(el)) {
+            edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "\n");
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -1876,6 +2790,10 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         r->hover_el = el;
         r->has_dirty = 1;
     }
+    /* drag-extend the selection while the left button is held down */
+    if (r->pressed_el && r->sel_anchor_el && hit) {
+        update_selection_focus(r, hit, x, y);
+    }
 }
 
 extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
@@ -1885,19 +2803,110 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
         return;
     }
     fb_coords(r, x, y);
-    lxb_dom_element* el = nullptr;
     if (down) {
         whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
-        el = hit ? hit->el : nullptr;
-    }
-    if (el != r->pressed_el) {
+        lxb_dom_element* el = hit ? hit->el : nullptr;
+        if (el && is_editable(el)) {
+            /* focus the editable control and place the caret */
+            r->edit_el = el;
+            r->sel_anchor_el = r->sel_focus_el = el;
+            r->sel_anchor = r->sel_focus =
+                static_cast<int>(caret_from_point(r, el, hit, x, y));
+            SDL_StartTextInput(r->window);
+        } else if (hit && hit->is_text) {
+            /* start a text selection */
+            if (r->edit_el) {
+                SDL_StopTextInput(r->window);
+                r->edit_el = nullptr;
+            }
+            r->compose.clear();
+            r->sel_anchor_el = r->sel_focus_el = hit->el;
+            r->sel_anchor = r->sel_focus =
+                static_cast<int>(byte_at_node(r, hit, x, y));
+        } else {
+            /* click elsewhere: drop the selection + editing focus */
+            if (r->edit_el) {
+                SDL_StopTextInput(r->window);
+                r->edit_el = nullptr;
+            }
+            r->compose.clear();
+            r->sel_anchor_el = r->sel_focus_el = nullptr;
+            r->sel_anchor = r->sel_focus = 0;
+        }
         r->pressed_el = el;
-        r->has_dirty = 1;
-    }
-    if (down && el != r->focus_el) {
         r->focus_el = el;
-        r->has_dirty = 1;
+    } else {
+        r->pressed_el = nullptr; /* mouse up: keep the selection */
     }
+    r->has_dirty = 1;
+}
+
+extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
+                                            float dy)
+{
+    if (!r || !r->tree) {
+        return;
+    }
+    fb_coords(r, x, y);
+    whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
+    if (!hit) {
+        return;
+    }
+    /* nearest scrollable ancestor (the hit element itself included) */
+    for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
+        if (!n->el) {
+            continue;
+        }
+        std::string ov = sget(n->style, "overflow");
+        if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
+            int& cur = r->scrolls[n->el];
+            /* SDL: positive y scrolls away from the user (content moves up) */
+            int nv = cur + static_cast<int>(dy * 40.0f);
+            if (nv > n->scroll_max) {
+                nv = n->scroll_max;
+            }
+            if (nv < 0) {
+                nv = 0;
+            }
+            if (nv != cur) {
+                cur = nv;
+                r->has_dirty = 1;
+            }
+            return;
+        }
+    }
+}
+
+extern "C" void whaleui_render_handle_key(whaleui_render_t* r, int keycode,
+                                          int pressed, int mods)
+{
+    if (!r || !pressed) {
+        return;
+    }
+    edit_key(r, keycode, mods);
+}
+
+extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8)
+{
+    if (!r || !utf8 || !*utf8 || !r->edit_el) {
+        return;
+    }
+    int a = r->sel_anchor, b = r->sel_focus;
+    if (a > b) {
+        std::swap(a, b);
+    }
+    edit_replace(r, r->edit_el, static_cast<size_t>(a), static_cast<size_t>(b),
+                 std::string(utf8));
+}
+
+extern "C" void whaleui_render_handle_editing(whaleui_render_t* r,
+                                              const char* utf8)
+{
+    if (!r) {
+        return;
+    }
+    r->compose = utf8 ? utf8 : "";
+    r->has_dirty = 1;
 }
 
 extern "C" void whaleui_render_set_fsr(whaleui_render_t* r, int mode,
@@ -1942,7 +2951,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         st.pressed = r->pressed_el;
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
                                          &r->theme_vars, r->fb_w, r->fb_h,
-                                         &st);
+                                         &st, &r->scrolls);
         r->has_dirty = 0;
     }
     if (!r->tree) {

@@ -32,8 +32,8 @@ border 简写含颜色提取), box-sizing, position, top/left, z-index, opacity,
 flex 布局(flex-direction, justify-content, gap, flex-grow),
 background-color/background(纯色), border-radius 圆角(背景与边框均沿弧线),
 color, font-size, font-family(按注册字体), font-weight(bold/≥600 合成粗体),
-text-align(left/center/right), line-height(近似), overflow:hidden(裁剪),
-cursor(记录)
+text-align(left/center/right), line-height(近似), overflow:hidden/auto/scroll(裁剪,
+auto/scroll 额外支持滚轮滚动), cursor(记录)
 ```
 
 ### 已解析但渲染未生效(引擎可计算,绘制暂未消费)
@@ -58,7 +58,9 @@ backdrop-filter, clip-path, 媒体查询的其余条件
 - **lite/minimal 文本渲染**:SDL3_ttf 仅随 `full` 目标;lite/minimal 的文本绘制(stb_font)待实现。
 - **线程模型**:单线程渲染,`whaleui_app_run` 阻塞;多线程/异步流程留待后续。
 - **脏矩形**:当前整帧重绘;脏矩形/遮挡/缓存是下一步性能优化点。
-- **交互**:已支持 `<select>` 下拉(点击展开、选择、回调)与鼠标点击;按钮 hover/焦点、文本输入、滚动等尚未实现。
+- **交互**:已支持 `<select>` 下拉(点击展开、选择、回调)、鼠标点击、`:hover/:active/:focus`、**滚轮滚动**(`overflow:auto/scroll` 的固定高度容器,内容随滚动平移并裁剪,不绘制滚动条)、**文本选择**(点击锚定、拖动扩展、跨元素,`TTF_Text` 子串几何精确高亮)、**文本编辑**(`input[type=text]`/`textarea`/`contenteditable`:光标闪烁、方向键/Home/End/Backspace/Delete/Enter、Ctrl+A 全选)、**输入法**(焦点进入可编辑元素时 `SDL_StartTextInput`,`SDL_EVENT_TEXT_INPUT` 上屏、`SDL_EVENT_TEXT_EDITING` 组合文本显示在光标处)。剪贴板(Ctrl+C/V)未实现。
+- **lite/minimal**:滚动/选择/编辑/IME 与 full 功能一致;文本度量与命中测试在 full 用 `TTF_Text`,lite/minimal 用 stb_truetype 逐字度量(无 kerning/连字,精度近似)。
+- **编辑键简化**:Up/Down 按行首跳转(未保持列位置);未处理 Ctrl 组合除 A 外的快捷键。
 - **主题**:内置 7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效(包括未自定义样式的标签);通过 `whaleui_app_set_theme_style` 或页面 `<select>` 切换。
 
 ## 运行方式

@@ -7,7 +7,9 @@
  * Shows: box model, flex (row/column/gap/justify), border-radius (background
  * + border follow the corner arcs), buttons/inputs, lists, bold,
  * text-align, opacity, custom properties (var()), @media
- * prefers-color-scheme, overflow clipping.
+ * prefers-color-scheme, overflow clipping, mouse-wheel scrolling,
+ * text selection (click + drag), editable controls (input/textarea/
+ * contenteditable) with IME text input.
  */
 
 #include "whaleui.h"
@@ -58,6 +60,29 @@ static const char* kHtml =
     "<ul><li>item <strong>bold</strong></li><li>item two</li><li>item three</li></ul>"
     "<p class=\"ta-right\">right-aligned</p>"
     "<p class=\"ta-center\">centered</p>"
+    "</div>"
+    "</div>"
+
+    "<div class=\"row\">"
+    "<div class=\"card\" style=\"flex:1\">"
+    "<h2>Edit &amp; IME</h2>"
+    "<p style=\"margin:2px 0 6px\"><input id=\"name\" value=\"可编辑输入框\" "
+    "style=\"width:100%;box-sizing:border-box\"></p>"
+    "<p style=\"margin:2px 0 6px\"><textarea style=\"width:100%;height:56px;"
+    "box-sizing:border-box\">多行文本&#10;支持 Enter 换行</textarea></p>"
+    "<p style=\"margin:2px 0 6px\"><span contenteditable=\"true\" "
+    "style=\"border:1px solid var(--border);border-radius:4px;padding:5px 10px;\">"
+    "contenteditable 可编辑</span></p>"
+    "</div>"
+    "<div class=\"card\" style=\"flex:1\">"
+    "<h2>Scroll</h2>"
+    "<div style=\"overflow:auto;height:120px;background:var(--card);"
+    "border:1px solid var(--border);border-radius:4px;padding:8px 10px;\">"
+    "滚轮滚动区域<br>line 1<br>line 2<br>line 3<br>line 4<br>line 5<br>"
+    "line 6<br>line 7<br>line 8<br>line 9<br>line 10"
+    "</div>"
+    "<p class=\"muted\" style=\"margin-top:8px\">点击文字选中,拖动扩展;"
+    "输入框支持输入法</p>"
     "</div>"
     "</div>"
 
@@ -116,7 +141,7 @@ int main(int argc, char** argv)
     whaleui_app_set_select_callback(app, on_theme_select, nullptr);
     whaleui_app_set_key_callback(app, on_key, nullptr);
 
-    whaleui_window_t* win = whaleui_window_create(app, "WhaleUI Demo", 780, 540);
+    whaleui_window_t* win = whaleui_window_create(app, "WhaleUI Demo", 800, 680);
     if (!win) {
         std::fprintf(stderr, "window create failed\n");
         return 1;

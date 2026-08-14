@@ -205,6 +205,7 @@ struct Builder
     size_t rule_count;
     std::map<std::string, std::string> vars;
     whaleui_style_state st;
+    const std::map<lxb_dom_element*, int>* scrolls;
 
     whaleui_layout_node_t* new_node()
     {
@@ -224,6 +225,14 @@ struct Builder
         n->opacity = 1.0f;
         n->visible = 1;
         n->is_text = 0;
+        n->scroll_y = 0;
+        n->scroll_max = 0;
+        if (scrolls && el) {
+            auto it = scrolls->find(el);
+            if (it != scrolls->end() && it->second > 0) {
+                n->scroll_y = it->second;
+            }
+        }
         std::memset(&n->border, 0, sizeof(n->border));
         std::memset(&n->content, 0, sizeof(n->content));
         std::memset(n->margin, 0, sizeof(n->margin));
@@ -431,6 +440,16 @@ struct Builder
         int kid_cursor = 0;
         int dk = display_kind(get(n->style, "display"));
 
+        /* scrollable container: lay children out shifted up by scroll_y.
+         * The absolute child coords then match what the renderer paints
+         * (clipped to the container), and hit-testing needs no offset math. */
+        std::string ov = get(n->style, "overflow");
+        bool scrollable = ov == "auto" || ov == "scroll";
+        int saved_cy = n->content.y;
+        if (scrollable && n->scroll_y > 0) {
+            n->content.y -= n->scroll_y;
+        }
+
         /* position:absolute children search the nearest positioned ancestor;
          * simplified: any positioned ancestor. */
         if (dk == 1) {
@@ -438,6 +457,8 @@ struct Builder
         } else {
             layout_block(n, inner_w, inner_h, font_px, kid_cursor);
         }
+
+        n->content.y = saved_cy;
 
         /* height: explicit or content height */
         int bh;
@@ -447,7 +468,7 @@ struct Builder
                 /* content-box: height is the content height */
                 bh += p[0] + p[2] + n->border_w[0] + n->border_w[2];
             }
-            if (bh < kid_cursor) {
+            if (bh < kid_cursor && !scrollable) {
                 bh = kid_cursor; /* content can overflow; keep explicit h */
             }
         } else {
@@ -456,6 +477,17 @@ struct Builder
         n->border.h = bh;
         n->content.w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
         n->content.h = bh - p[0] - p[2] - n->border_w[0] - n->border_w[2];
+
+        /* scroll range for overflow:auto/scroll containers (fixed height
+         * only: auto-height boxes grow with their content) */
+        n->scroll_max = 0;
+        if (scrollable) {
+            int cmax = kid_cursor - n->content.h;
+            if (cmax < 0) {
+                cmax = 0;
+            }
+            n->scroll_max = cmax;
+        }
 
         /* a <select> always reserves enough height for its value text;
          * keep it at 28 so the control does not grow and squeeze neighbors
@@ -664,7 +696,8 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>* theme_vars,
     int viewport_w, int viewport_h,
-    const whaleui_style_state* st)
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -684,6 +717,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.rules = rules;
     b.rule_count = count;
     b.st = st ? *st : whaleui_style_state();
+    b.scrolls = scrolls;
     if (theme_vars) {
         b.vars = *theme_vars;
     }

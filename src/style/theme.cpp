@@ -75,6 +75,7 @@ void base_css(const ThemeDef& d, std::string& css)
         "         transition: border-color 100ms; }\n"
         "input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }\n"
         "input:focus, select:focus, textarea:focus { border-color: var(--accent); }\n"
+        "textarea { overflow: auto; }\n"
         "select { cursor: pointer; }\n",
         d.btn_radius, d.in_radius);
     css += rad;

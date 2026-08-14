@@ -112,7 +112,7 @@ int main(void)
         /* locate the select box via a fresh layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
         whaleui_layout_node_t* sel = nullptr;
         for (auto& n : t->arena) {
             if (n.visible && n.el) {
@@ -140,6 +140,137 @@ int main(void)
         assert(rc == 1);
         assert(val != nullptr && std::strcmp(val, "b") == 0);
         assert(w->render->open_select == nullptr);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* editable input: click focuses + places the caret; typing + backspace
+     * update the DOM value */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "edit", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" value=\"abc\"></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : t->arena) {
+            if (n.visible && n.el) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        /* click the far-left edge of the input -> caret at offset 0 */
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->edit_el == inp->el);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
+        /* typing inserts at the caret -> "Xabc" */
+        whaleui_render_handle_text(w->render, "X");
+        const char* v = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
+        assert(v != nullptr && std::strcmp(v, "Xabc") == 0);
+        /* backspace removes the inserted char */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_BACKSPACE, 1, 0);
+        v = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
+        assert(v != nullptr && std::strcmp(v, "abc") == 0);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* text selection: clicking a text run anchors, dragging extends */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "sel", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">hello world</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* p = nullptr;
+        whaleui_layout_node_t* tr = nullptr;
+        for (auto& n : t->arena) {
+            if (!n.visible) {
+                continue;
+            }
+            if (!p && n.el) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 1 && std::memcmp(name, "p", 1) == 0) {
+                    p = &n;
+                }
+            }
+            if (n.is_text && p && n.el == p->el) {
+                tr = &n;
+            }
+        }
+        assert(p != nullptr && tr != nullptr);
+        int y = tr->border.y + tr->border.h / 2;
+        whaleui_render_set_pressed(w->render, tr->border.x + 1, y, 1);
+        whaleui_render_set_hover(w->render, tr->border.x + 60, y);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el == p->el);
+        assert(w->render->sel_anchor == 0);
+        assert(w->render->sel_focus > w->render->sel_anchor);
+        /* clicking elsewhere clears the selection */
+        whaleui_render_set_pressed(w->render, 250, 150, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el == nullptr);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* textarea: Enter inserts a newline into the text content */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\">ab</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : t->arena) {
+            if (n.visible && n.el) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 && std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        /* click the far-left edge -> caret 0 */
+        whaleui_render_set_pressed(w->render, ta->content.x + 1,
+                                   ta->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->edit_el == ta->el);
+        /* Enter inserts a newline before "ab" */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_ENTER, 1, 0);
+        const char* txt = whaleui_dom_get_text(
+            reinterpret_cast<whaleui_dom_element_t*>(ta->el));
+        assert(txt != nullptr && std::strcmp(txt, "\nab") == 0);
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }

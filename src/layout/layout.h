@@ -42,6 +42,12 @@ struct whaleui_layout_node
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 
+    /* vertical scroll of an overflow:auto/scroll container. The children
+     * are laid out shifted up by scroll_y (absolute coords stay consistent
+     * for hit-test/paint); scroll_max = content height - visible height. */
+    int scroll_y;
+    int scroll_max;
+
     WhaleUIComputedStyle style; /* computed style (owned by the node) */
     std::string text;           /* for text runs */
 
@@ -66,12 +72,14 @@ typedef struct whaleui_layout_tree whaleui_layout_tree_t;
 /* One layout pass: compute styles + boxes for the whole document.
  * theme_vars: extra custom properties (e.g. --bg for the current theme).
  * hover_el: element under the mouse (for :hover rules), may be NULL.
- * Returns NULL on failure. The caller owns the tree. */
+ * scrolls: element -> current scroll_y for overflow:auto/scroll containers
+ * (may be NULL). Returns NULL on failure. The caller owns the tree. */
 whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               const whaleui_css_rule_t* rules, size_t count,
                                               const std::map<std::string, std::string>* theme_vars,
                                               int viewport_w, int viewport_h,
-                                              const whaleui_style_state* st);
+                                              const whaleui_style_state* st,
+                                              const std::map<struct lxb_dom_element*, int>* scrolls);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
 #ifdef __cplusplus

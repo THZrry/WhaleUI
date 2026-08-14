@@ -71,6 +71,23 @@ struct whaleui_render
     struct lxb_dom_element* focus_el;
     struct lxb_dom_element* pressed_el;
 
+    /* vertical scroll per element (overflow:auto/scroll), applied at layout */
+    std::map<struct lxb_dom_element*, int> scrolls;
+
+    /* text selection: anchor + focus (element, UTF-8 byte offset). The
+     * focus end is the "active" end while dragging. In an editable element
+     * the selection doubles as the caret (anchor == focus == caret). */
+    struct lxb_dom_element* sel_anchor_el;
+    struct lxb_dom_element* sel_focus_el;
+    int sel_anchor;
+    int sel_focus;
+
+    /* editable element with keyboard focus (input/textarea/contenteditable);
+     * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
+    struct lxb_dom_element* edit_el;
+    /* IME composition text (SDL_EVENT_TEXT_EDITING), drawn at the caret */
+    std::string compose;
+
     /* color transitions (CSS `transition` on color properties): one active
      * animation per element+property, plus the last-drawn color used to
      * detect changes and keep animating */
@@ -118,8 +135,25 @@ int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
 void whaleui_render_set_hover(whaleui_render_t* r, int x, int y);
 
 /* Left-button press/release: hit-tests and tracks the pressed element
- * (:active) and the focused element (:focus, set on press). */
+ * (:active) and the focused element (:focus, set on press). Also starts a
+ * text selection / caret placement on editable elements. */
 void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y, int down);
+
+/* Mouse wheel: scrolls the nearest scrollable ancestor of the element under
+ * (x, y) by dy wheel ticks (x/y may be -1 to reuse the last hover pos). */
+void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y, float dy);
+
+/* Keyboard: editing keys (arrows/backspace/delete/enter) on the focused
+ * editable element. mods: SDL_Keymod bitmask (for ctrl shortcuts). */
+void whaleui_render_handle_key(whaleui_render_t* r, int keycode, int pressed,
+                               int mods);
+
+/* Text input (SDL_EVENT_TEXT_INPUT, UTF-8): insert into the focused editable
+ * element, replacing the current selection. */
+void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8);
+
+/* IME composition update (SDL_EVENT_TEXT_EDITING); empty text commits. */
+void whaleui_render_handle_editing(whaleui_render_t* r, const char* utf8);
 
 /* FSR 1.0 upscaling. mode: 0 = auto (4K display or battery -> on, unless the
  * scaled render size would be too small), 1 = force on, 2 = off. scale e.g.

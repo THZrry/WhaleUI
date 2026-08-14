@@ -21,6 +21,17 @@ whaleui_theme_t resolved_theme(const whaleui_app_t* app)
     }
     return app->theme == WHALEUI_THEME_SYSTEM ? app->system_theme : app->theme;
 }
+
+/* window owning an SDL window id (used by key/text/wheel dispatch) */
+whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
+{
+    for (whaleui_window_t* win : app->windows) {
+        if (win->sdl && SDL_GetWindowID(win->sdl) == id) {
+            return win;
+        }
+    }
+    return nullptr;
+}
 } // namespace
 
 whaleui_theme_t whaleui_app_resolved_theme(const whaleui_app_t* app)
@@ -94,16 +105,54 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
             case SDL_EVENT_QUIT:
                 app->running = 0;
                 break;
-            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_DOWN: {
+                whaleui_window_t* w = window_for(app, e.key.windowID);
+                if (w && w->render) {
+                    whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
+                                              1, static_cast<int>(e.key.mod));
+                }
                 if (app->key_cb) {
                     app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
                 }
                 break;
-            case SDL_EVENT_KEY_UP:
+            }
+            case SDL_EVENT_KEY_UP: {
+                whaleui_window_t* w = window_for(app, e.key.windowID);
+                if (w && w->render) {
+                    whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
+                                              0, static_cast<int>(e.key.mod));
+                }
                 if (app->key_cb) {
                     app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
                 }
                 break;
+            }
+            case SDL_EVENT_TEXT_INPUT: {
+                whaleui_window_t* w = window_for(app, e.text.windowID);
+                if (w && w->render) {
+                    whaleui_render_handle_text(w->render, e.text.text);
+                }
+                break;
+            }
+            case SDL_EVENT_TEXT_EDITING: {
+                whaleui_window_t* w = window_for(app, e.edit.windowID);
+                if (w && w->render) {
+                    whaleui_render_handle_editing(w->render, e.edit.text);
+                }
+                break;
+            }
+            case SDL_EVENT_MOUSE_WHEEL: {
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->render && SDL_GetWindowID(win->sdl) == e.wheel.windowID) {
+                        whaleui_render_handle_wheel(win->render,
+                                                    static_cast<int>(e.wheel.mouse_x),
+                                                    static_cast<int>(e.wheel.mouse_y),
+                                                    e.wheel.y);
+                        break;
+                    }
+                }
+                break;
+            }
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 for (whaleui_window_t* win : app->windows) {
                     if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
