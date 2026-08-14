@@ -980,6 +980,7 @@ struct Builder
         std::string rgv = get(n->style, "row-gap");
         float row_gap = rgv.empty() ? col_gap
                                     : len_px(rgv, static_cast<float>(inner_w), em);
+        std::string align = get(n->style, "align-items");
 
         /* column widths: fixed px / auto = content / fr = share of free */
         std::vector<int> col_w(ncols, 0);
@@ -1074,6 +1075,20 @@ struct Builder
                 }
                 int cy = y;
                 layout(k, x, y, w, row_h[r], font_px, &cy);
+                /* align-items: center vertically centers shorter items */
+                if (align == "center") {
+                    int dy = (row_h[r] - k->border.h) / 2;
+                    if (dy > 0) {
+                        k->border.y += dy;
+                        k->content.y += dy;
+                        /* move the item's subtree down with it */
+                        for (whaleui_layout_node_t* cc = k->first_child; cc;
+                             cc = cc->next) {
+                            cc->border.y += dy;
+                            cc->content.y += dy;
+                        }
+                    }
+                }
                 x += w + static_cast<int>(col_gap);
             }
             y += row_h[r] + static_cast<int>(row_gap);
