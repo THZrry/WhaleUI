@@ -322,6 +322,59 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* container scroll via wheel: an overflow:auto box scrolls its own
+     * content (not the page) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "cscroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div id=\"sc\" style=\"overflow:auto;height:50px;\">"
+            "line1<br>line2<br>line3<br>line4</div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* sc = nullptr;
+        for (auto& n : t->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 && std::memcmp(name, "div", 3) == 0) {
+                    sc = &n;
+                    break;
+                }
+            }
+        }
+        assert(sc != nullptr);
+        assert(sc->scroll_max > 0);
+        /* cross-check the renderer's own tree (the one handle_wheel uses) */
+        whaleui_layout_node_t* rsc = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 && std::memcmp(name, "div", 3) == 0) {
+                    rsc = &n;
+                    break;
+                }
+            }
+        }
+        assert(rsc != nullptr);
+        assert(rsc->scroll_max > 0);
+        /* wheel over the container scrolls it, without rebuilding the tree */
+        whaleui_layout_tree_t* tree_before = w->render->tree;
+        whaleui_render_handle_wheel(w->render, sc->border.x + 5,
+                                    sc->border.y + 5, 1.0f);
+        assert(w->render->tree == tree_before);
+        assert(w->render->scrolls[sc->el] > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
     /* cross-element selection: dragging up (anchor below focus) selects
      * between the endpoints only; a click in the middle selects nothing */
     {

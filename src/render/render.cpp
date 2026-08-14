@@ -1476,8 +1476,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
  * per frame (O(1) membership test instead of a per-run document walk). */
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
                    size_t* a, size_t* b, int seq, int sel_lo, int sel_hi)
-{
-    lxb_dom_element* sa = r->sel_anchor_el;
+{    lxb_dom_element* sa = r->sel_anchor_el;
     lxb_dom_element* sf = r->sel_focus_el;
     if (!sa || !sf || !el) {
         return false;
@@ -1518,9 +1517,13 @@ bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
     return false;
 }
 
-/* pre-order sequence numbers of the anchor/focus layout nodes (elements),
- * -1 when the selection is same-element or collapsed. Iterative pre-order
- * matching paint_node's recursion: node, its whole subtree, then siblings. */
+/* paint-time scroll offset of a scrollable box (defined below) */
+int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n);
+
+/* pre-order sequence numbers of the anchor/focus layout nodes, computed by
+ * walking the tree EXACTLY like paint_node does (same visibility skip, same
+ * clipped-subtree skip, same scroll offsets), so the sequence assigned
+ * during painting matches. -1 when same-element or collapsed. */
 void sel_seq(whaleui_render_t* r, int* lo, int* hi)
 {
     *lo = *hi = -1;
@@ -1530,34 +1533,35 @@ void sel_seq(whaleui_render_t* r, int* lo, int* hi)
         return;
     }
     int idx = 0;
-    std::vector<whaleui_layout_node_t*> stack;
-    stack.push_back(r->tree->root);
-    while (!stack.empty()) {
-        whaleui_layout_node_t* n = stack.back();
-        stack.pop_back();
-        if (!n->visible) {
-            continue; /* invisible nodes take no sequence slot (paint skips) */
-        }
-        if (n->el == sa && *lo < 0) {
-            *lo = idx;
-        }
-        if (n->el == sf && *hi < 0) {
-            *hi = idx;
-        }
-        ++idx;
-        /* siblings are visited after the subtree: push next first, then the
-         * children in reverse so they pop in document order */
-        if (n->next) {
-            stack.push_back(n->next);
-        }
-        std::vector<whaleui_layout_node_t*> kids;
-        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-            kids.push_back(c);
-        }
-        for (size_t i = kids.size(); i-- > 0;) {
-            stack.push_back(kids[i]);
-        }
-    }
+    std::function<void(whaleui_layout_node_t*, int)> walk =
+        [&](whaleui_layout_node_t* n, int off_y) {
+            if (!n->visible) {
+                return;
+            }
+            const int my = idx++;
+            if (n->el == sa && *lo < 0) {
+                *lo = my;
+            }
+            if (n->el == sf && *hi < 0) {
+                *hi = my;
+            }
+            if (n->is_text) {
+                return;
+            }
+            /* clipped containers fully off-screen are skipped by paint too */
+            std::string ov = sget(n->style, "overflow");
+            if (ov == "hidden" || ov == "auto" || ov == "scroll") {
+                int y0 = n->border.y + off_y;
+                if (y0 + n->border.h <= 0 || y0 >= r->fb_h) {
+                    return;
+                }
+            }
+            int child_off = off_y + scroll_delta(r, n);
+            for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+                walk(c, child_off);
+            }
+        };
+    walk(r->tree->root, 0);
     if (*lo > *hi) {
         std::swap(*lo, *hi);
     }
@@ -3149,9 +3153,12 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     };
 
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
-    /* nearest scrollable ancestor (the hit element itself included) */
+    /* nearest scrollable ancestor (the hit element itself included).
+     * Text runs inherit their parent's overflow but are not scroll
+     * containers (scroll_max == 0): skip them so the walk reaches the
+     * actual box */
     for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
-        if (!n->el) {
+        if (!n->el || n->is_text) {
             continue;
         }
         std::string ov = sget(n->style, "overflow");
