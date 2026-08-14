@@ -123,9 +123,11 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
  * target, return the (not yet submitted) command buffer so the caller can
  * blit to the swapchain and submit. scroll_dy != 0 shifts the previous
  * frame's geometry via a ping-pong blit (the caller repaints the exposed
- * strip). Returns NULL on failure. */
+ * strip). load_only skips the clear (dirty-rect repaints). Returns NULL
+ * on failure. */
 SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
-                                        unsigned int clear_color, int scroll_dy);
+                                        unsigned int clear_color, int scroll_dy,
+                                        int load_only);
 
 #ifdef __cplusplus
 }

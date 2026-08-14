@@ -93,6 +93,30 @@ unsigned int hex_nib(char c, int* ok)
 struct Clip { int x, y, w, h; };
 
 /* intersect [x0,x1)x[y0,y1) with clip (NULL = no clip) */
+/* grow a clip rect to also contain (x0,y0)-(x1,y1); when out is empty it
+ * takes the rect */
+void dirty_rect(int x0, int y0, int x1, int y1, Clip* out)
+{
+    if (!out) {
+        return;
+    }
+    if (out->w <= 0 || out->h <= 0) {
+        out->x = x0;
+        out->y = y0;
+        out->w = x1 - x0;
+        out->h = y1 - y0;
+        return;
+    }
+    int ax0 = out->x < x0 ? out->x : x0;
+    int ay0 = out->y < y0 ? out->y : y0;
+    int ax1 = (out->x + out->w) > x1 ? (out->x + out->w) : x1;
+    int ay1 = (out->y + out->h) > y1 ? (out->y + out->h) : y1;
+    out->x = ax0;
+    out->y = ay0;
+    out->w = ax1 - ax0;
+    out->h = ay1 - ay0;
+}
+
 void clip_rect(int& x0, int& y0, int& x1, int& y1, const Clip* clip)
 {
     if (!clip || clip->w <= 0 || clip->h <= 0) {
@@ -4074,12 +4098,66 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             }
         }
     }
+    bool partial = false; /* load-only repaint of a dirty region */
+    if (scroll_dy != 0) {
+        /* scroll strip handled above */
+    } else if (animating && !need_layout && !r->has_dirty && !r->edit_el) {
+        /* paint-only animation: repaint only the animating elements'
+         * bounding boxes (dirty-rect, keeps the rest of the frame) */
+        std::function<void(whaleui_layout_node_t*)> acc =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                    int x0 = nd->border.x, y0 = nd->border.y;
+                    int x1 = x0 + nd->border.w, y1 = y0 + nd->border.h;
+                    /* widen by the transform translation */
+                    std::string tv = sget(nd->style, "transform");
+                    if (!tv.empty() && tv != "none") {
+                        whaleui_transform_t tf;
+                        if (whaleui_transform_eval(
+                                tv.c_str(), static_cast<float>(nd->border.w),
+                                static_cast<float>(nd->border.h), &tf) == 0) {
+                            x0 -= static_cast<int>(tf.tx > 0 ? tf.tx : -tf.tx);
+                            y0 -= static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
+                            x1 += static_cast<int>(tf.tx > 0 ? tf.tx : -tf.tx);
+                            y1 += static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
+                        }
+                    }
+                    if (x0 < 0) x0 = 0;
+                    if (y0 < 0) y0 = 0;
+                    if (x1 > r->fb_w) x1 = r->fb_w;
+                    if (y1 > r->fb_h) y1 = r->fb_h;
+                    if (x1 > x0 && y1 > y0) {
+                        dirty_rect(x0, y0, x1, y1, &strip);
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    acc(c);
+                }
+            };
+        acc(r->tree->root);
+        if (strip.w > 0 && strip.h > 0) {
+            partial = true;
+        }
+    }
+    if (partial) {
+        /* clear only the dirty text-layer region */
+        for (int yy = strip.y; yy < strip.y + strip.h; ++yy) {
+            std::fill(r->text_layer.begin() +
+                          static_cast<size_t>(yy) * r->fb_w + strip.x,
+                      r->text_layer.begin() +
+                          static_cast<size_t>(yy) * r->fb_w + strip.x + strip.w,
+                      0);
+        }
+    } else if (scroll_dy == 0) {
+        std::fill(r->text_layer.begin(), r->text_layer.end(), 0);
+    }
     g_gpu = r->gpu;
     int sel_lo = 0, sel_hi = 0;
     sel_seq(r, &sel_lo, &sel_hi);
     int seq = 0;
     paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi,
-               scroll_dy != 0 ? &strip : &full);
+               (partial || scroll_dy != 0) ? &strip : &full);
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's
@@ -4103,7 +4181,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* present: one batched render pass into the offscreen target, then a
      * single blit to the swapchain - no per-element GPU round-trips */
     SDL_GPUCommandBuffer* cmd =
-        whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color, scroll_dy);
+        whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color, scroll_dy,
+                          partial ? 1 : 0);
     if (!cmd) {
         return -3;
     }

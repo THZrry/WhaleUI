@@ -608,7 +608,8 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
 }
 
 SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
-                                        unsigned int clear_color, int scroll_dy)
+                                        unsigned int clear_color, int scroll_dy,
+                                        int load_only)
 {
     if (!g) {
         return nullptr;
@@ -728,7 +729,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
         ((clear_color >> 8) & 0xFF) / 255.0f,
         (clear_color & 0xFF) / 255.0f,
         ((clear_color >> 24) & 0xFF) / 255.0f};
-    ct.load_op = scroll_dy != 0 ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
+    ct.load_op = (scroll_dy != 0 || load_only) ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
     ct.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
     if (!rp) {
