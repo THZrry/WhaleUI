@@ -132,7 +132,7 @@ int main(void)
                                              &val);
         assert(rc == 0);
         assert(w->render->open_select != nullptr);
-        assert(w->render->open_select->el == sel->el);
+        assert(w->render->open_select == sel->el);
         /* click the SECOND option (item height 26) -> chosen, value "b" */
         int item_center = sel->border.y + sel->border.h + 26 + 13;
         rc = whaleui_render_handle_click(w->render, sel->border.x + 10,

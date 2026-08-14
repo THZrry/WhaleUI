@@ -712,7 +712,7 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
     if (texts.empty()) {
         return;
     }
-    int sel = r->select_index.count(n) ? r->select_index[n] : 0;
+    int sel = r->select_index.count(n->el) ? r->select_index[n->el] : 0;
     if (sel < 0 || sel >= static_cast<int>(texts.size())) {
         sel = 0;
     }
@@ -724,7 +724,7 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
     draw_text_at(r, "\xe2\x96\xbe", n->content.x + n->content.w - 18, n->content.y,
                  18, n->content.h, fs, "", fg, false, 0, clip);
 
-    if (r->open_select == n) {
+    if (r->open_select == n->el) {
         int list_x = n->border.x;
         int list_y = n->border.y + n->border.h;
         int list_w = n->border.w;
@@ -1071,6 +1071,24 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     return 0;
 }
 
+/* find the layout node for a DOM element in the current tree */
+whaleui_layout_node_t* find_node_by_el(whaleui_layout_node_t* n, lxb_dom_element* el)
+{
+    if (!n || !el) {
+        return nullptr;
+    }
+    if (n->el == el) {
+        return n;
+    }
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        whaleui_layout_node_t* hit = find_node_by_el(c, el);
+        if (hit) {
+            return hit;
+        }
+    }
+    return nullptr;
+}
+
 extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                                            const char** out_value)
 {
@@ -1082,7 +1100,11 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     }
     /* 1. clicking inside the expanded list chooses an option */
     if (r->open_select) {
-        whaleui_layout_node_t* s = r->open_select;
+        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        if (!s) {
+            r->open_select = nullptr;
+            return 0;
+        }
         std::vector<std::string> texts, values;
         select_options(s->el, texts, values);
         int list_x = s->border.x;
@@ -1092,7 +1114,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             y >= list_y && y < list_y + kSelectItemH * static_cast<int>(values.size())) {
             int idx = (y - list_y) / kSelectItemH;
             if (idx >= 0 && idx < static_cast<int>(values.size())) {
-                r->select_index[s] = idx;
+                r->select_index[r->open_select] = idx;
                 r->open_select = nullptr;
                 r->has_dirty = 1;
                 if (out_value) {
@@ -1110,7 +1132,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     /* 2. clicking a <select> toggles it open */
     whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
     if (hit && is_select_node(hit)) {
-        r->open_select = hit;
+        r->open_select = hit->el;
         r->open_select_hover = 0;
         r->has_dirty = 1;
     }

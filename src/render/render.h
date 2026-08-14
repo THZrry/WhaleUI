@@ -55,10 +55,12 @@ struct whaleui_render
     TTF_Font* font_default;
     TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
 
-    /* select dropdown interaction state */
-    whaleui_layout_node_t* open_select;  /* currently expanded <select>, or NULL */
-    int open_select_hover;               /* hovered option index in the list */
-    std::map<whaleui_layout_node_t*, int> select_index; /* select -> chosen option */
+    /* select dropdown interaction state. open_select is the DOM element
+     * (stable across layout-tree rebuilds; layout nodes are recreated every
+     * frame and would dangle) */
+    struct lxb_dom_element* open_select;
+    int open_select_hover;
+    std::map<struct lxb_dom_element*, int> select_index; /* select -> option */
 
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
