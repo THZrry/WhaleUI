@@ -47,6 +47,9 @@ if (-not $Force -and (Test-Path (Join-Path $sdl3ttf "lib\libSDL3_ttf.dll.a"))) {
 }
 
 # --- SDL3 (shared runtime: SDL3.dll, imported by SDL3_ttf.dll) ---
+# 3.4.10 is the version verified working on the target machine (the official
+# mingw devel package ships the D3D12 + Vulkan GPU backends; D3D11 backend is
+# not compiled in the prebuilt - the D3D12 path is used).
 $sdl3 = Join-Path $root "3rdparty\sdl3"
 if (-not $Force -and (Test-Path (Join-Path $sdl3 "lib\libSDL3.dll.a"))) {
     Write-Host "sdl3 already present. Use -Force to re-fetch."
@@ -54,9 +57,9 @@ if (-not $Force -and (Test-Path (Join-Path $sdl3 "lib\libSDL3.dll.a"))) {
     $tar = Join-Path $env:TEMP "SDL3-devel-mingw.tar.gz"
     Write-Host "==> downloading SDL3 mingw devel"
     curl.exe -s -L -o $tar --max-time 300 `
-        "https://github.com/libsdl-org/SDL/releases/download/release-3.4.4/SDL3-devel-3.4.4-mingw.tar.gz"
+        "https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-devel-3.4.10-mingw.tar.gz"
     New-Item -ItemType Directory -Force -Path $sdl3 | Out-Null
-    tar.exe -xzf $tar -C $sdl3 --strip-components=2 "SDL3-3.4.4/x86_64-w64-mingw32"
+    tar.exe -xzf $tar -C $sdl3 --strip-components=2 "SDL3-3.4.10/x86_64-w64-mingw32"
     Remove-Item $tar -Force
     Write-Host "    done -> $sdl3"
 }
