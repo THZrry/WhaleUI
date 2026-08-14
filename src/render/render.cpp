@@ -946,8 +946,11 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     if (py < 0) {
         py = 0;
     }
+    /* at/past the right edge of the text: the caret goes to the very end,
+     * so the last character can be selected */
     if (px >= tw) {
-        px = tw > 0 ? tw - 1 : 0;
+        TTF_DestroyText(t);
+        return text.size();
     }
     if (py >= th) {
         py = th > 0 ? th - 1 : 0;
@@ -957,6 +960,11 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     if (TTF_GetTextSubStringForPoint(t, static_cast<float>(px),
                                      static_cast<float>(py), &sub)) {
         off = static_cast<size_t>(sub.offset);
+        /* clicking the right half of a character (or beyond it) places the
+         * caret AFTER that character instead of before it */
+        if (px >= sub.rect.x + sub.rect.w / 2) {
+            off = static_cast<size_t>(sub.offset + sub.length);
+        }
     }
     TTF_DestroyText(t);
     return off;
@@ -1652,6 +1660,29 @@ void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
               accent_hl(r, 0xFF), clip);
 }
 
+/* move the IME text-input area to the caret so the candidate window
+ * follows the cursor (SDL_SetTextInputArea; fb coords scaled to window) */
+void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
+                     const std::string& family, bool bold, size_t caret,
+                     int tx, int ty)
+{
+    if (!r->edit_el || !r->window) {
+        return;
+    }
+    int cxx = 0, cyy = 0, chh = 16;
+    caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
+    int wx = tx + cxx;
+    int wy = ty + cyy;
+    if (r->fb_w != r->width && r->width > 0) {
+        wx = wx * r->width / r->fb_w;
+    }
+    if (r->fb_h != r->height && r->height > 0) {
+        wy = wy * r->height / r->fb_h;
+    }
+    SDL_Rect rect = {wx, wy, 2, chh};
+    SDL_SetTextInputArea(r->window, &rect, 0);
+}
+
 /* editable controls: input paints its value text (always); when focused, a
  * selection highlight + caret + IME composition overlay are drawn on top.
  * textarea/contenteditable glyphs come from the layout text run - this only
@@ -1706,6 +1737,8 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (caret > val.size()) {
             caret = val.size();
         }
+        /* keep the IME candidate window anchored at the caret */
+        update_ime_area(r, val, fs, family, bold, caret, tx, ty);
         paint_caret(r, tx, ty, val, fs, family, bold, caret, clip);
         if (!r->compose.empty()) {
             unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
@@ -2602,6 +2635,7 @@ whaleui_layout_node_t* scrollbar_under(whaleui_render_t* r,
                                        whaleui_layout_node_t* hit, int x,
                                        int y);
 void update_drag_scroll(whaleui_render_t* r, int y);
+SDL_Cursor* render_cursor(whaleui_render_t* r, SDL_SystemCursor id);
 
 /* --- FSR 1.0 (GPU compute) resources --- */
 
@@ -2749,6 +2783,9 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->fsr_sharpness = 0.4f;
     r->scroll_fn = scroll_default;
     r->scroll_ud = nullptr;
+    r->cursor_arrow = nullptr;
+    r->cursor_text = nullptr;
+    r->cursor_pointer = nullptr;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
 
     /* GPU path: offscreen target + transfer buffer */
@@ -2815,6 +2852,15 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     for (auto& e : r->text_cache) {
         TTF_DestroyText(e.second.t);
         SDL_DestroySurface(e.second.surf);
+    }
+    if (r->cursor_arrow) {
+        SDL_DestroyCursor(r->cursor_arrow);
+    }
+    if (r->cursor_text) {
+        SDL_DestroyCursor(r->cursor_text);
+    }
+    if (r->cursor_pointer) {
+        SDL_DestroyCursor(r->cursor_pointer);
     }
     if (r->text_engine) {
         TTF_DestroySurfaceTextEngine(r->text_engine);
@@ -3058,6 +3104,32 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
         r->hover_el = el;
+        /* switch the system cursor: I-beam over editable text, pointer
+         * over links/clickable controls, arrow otherwise */
+        SDL_Cursor* want = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
+        if (el) {
+            if (is_editable(el)) {
+                want = render_cursor(r, SDL_SYSTEM_CURSOR_TEXT);
+            } else {
+                std::string c = sget(hit->style, "cursor");
+                bool pointer = c == "pointer";
+                if (!pointer) {
+                    size_t tlen = 0;
+                    const lxb_char_t* tname = lxb_dom_element_local_name(el, &tlen);
+                    pointer = tname &&
+                              ((tlen == 1 && tname[0] == 'a') ||
+                               (tlen == 6 &&
+                                (std::memcmp(tname, "select", 6) == 0 ||
+                                 std::memcmp(tname, "button", 6) == 0)) ||
+                               (tlen == 7 &&
+                                std::memcmp(tname, "summary", 7) == 0));
+                }
+                if (pointer) {
+                    want = render_cursor(r, SDL_SYSTEM_CURSOR_POINTER);
+                }
+            }
+        }
+        SDL_SetCursor(want);
         r->has_dirty = 1;
     }
     /* drag a scrollbar: the thumb follows the mouse y */
@@ -3082,6 +3154,21 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
 }
 
 /* --- scrollbar dragging --- */
+
+/* cached system cursor (created on first use) */
+SDL_Cursor* render_cursor(whaleui_render_t* r, SDL_SystemCursor id)
+{
+    SDL_Cursor** slot = &r->cursor_arrow;
+    if (id == SDL_SYSTEM_CURSOR_TEXT) {
+        slot = &r->cursor_text;
+    } else if (id == SDL_SYSTEM_CURSOR_POINTER) {
+        slot = &r->cursor_pointer;
+    }
+    if (!*slot) {
+        *slot = SDL_CreateSystemCursor(id);
+    }
+    return *slot;
+}
 
 /* nearest scrollable box whose scrollbar track contains (x, y); walks up
  * from the hit node. NULL when the click is not on a scrollbar. */

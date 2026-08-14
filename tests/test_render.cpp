@@ -193,6 +193,13 @@ int main(void)
             reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
         assert(v != nullptr && std::strlen(v) == 3 &&
                std::strchr(v, 'X') == nullptr);
+        /* clicking past the right edge of the text puts the caret at the
+         * very end (the last character can be selected); keep x off the
+         * page scrollbar track (right 8px of the window) */
+        whaleui_render_set_pressed(w->render, inp->content.x + 100,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor == 3 && w->render->sel_focus == 3);
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }

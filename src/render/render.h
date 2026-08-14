@@ -25,6 +25,7 @@ typedef struct SDL_GPUTexture SDL_GPUTexture;
 typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
 typedef struct SDL_GPUComputePipeline SDL_GPUComputePipeline;
 typedef struct SDL_Surface SDL_Surface;
+typedef struct SDL_Cursor SDL_Cursor;
 typedef struct TTF_Font TTF_Font;
 typedef struct TTF_TextEngine TTF_TextEngine;
 typedef struct TTF_Text TTF_Text;
@@ -97,6 +98,10 @@ struct whaleui_render
     void* scroll_ud;
     /* scrollbar being dragged (element owning the scrollable box) */
     struct lxb_dom_element* drag_scroll_el;
+    /* system cursors (lazy-created; null until first used) */
+    SDL_Cursor* cursor_arrow;
+    SDL_Cursor* cursor_text;
+    SDL_Cursor* cursor_pointer;
 
     /* text selection: anchor + focus (element, UTF-8 byte offset). The
      * focus end is the "active" end while dragging. In an editable element
