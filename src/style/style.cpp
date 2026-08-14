@@ -23,6 +23,9 @@ struct SelPart
     std::string id;     /* "" = any */
     std::string cls;    /* first class only ("" = any) */
     bool hover;         /* ":hover" pseudo-class present */
+    bool active;        /* ":active" present */
+    bool focus;         /* ":focus" / ":focus-visible" present */
+    bool disabled;      /* ":disabled" present */
 };
 
 /* parse "tag#id.cls:hover" into SelPart (other pseudo-classes ignored) */
@@ -48,6 +51,12 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             std::string v(s, static_cast<size_t>(p - s));
             if (v == "hover") {
                 out.hover = true;
+            } else if (v == "active") {
+                out.active = true;
+            } else if (v == "focus" || v == "focus-visible") {
+                out.focus = true;
+            } else if (v == "disabled") {
+                out.disabled = true;
             }
             continue;
         }
@@ -65,7 +74,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             }
         }
     }
-    return !out.tag.empty() || !out.id.empty() || !out.cls.empty() || out.hover;
+    return !out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
+           out.hover || out.active || out.focus || out.disabled;
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -108,6 +118,14 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
         size_t nlen = 0;
         const lxb_char_t* name = lxb_dom_element_local_name(el, &nlen);
         if (!name || nlen != p.tag.size() || std::memcmp(name, p.tag.data(), p.tag.size()) != 0) {
+            return false;
+        }
+    }
+    if (p.disabled) {
+        size_t alen = 0;
+        const lxb_char_t* d = lxb_dom_element_get_attribute(el,
+                                                            (const lxb_char_t*)"disabled", 8, &alen);
+        if (!d || alen == 0) {
             return false;
         }
     }
@@ -191,12 +209,11 @@ void resolve_var(std::string& val, const std::map<std::string, std::string>& var
 } // namespace
 
 extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
-                                   lxb_dom_element* hover_el)
+                                   const whaleui_style_state* st)
 {
     if (!selector || !el) {
         return 0;
     }
-    (void)hover_el;
     /* split on '>' and whitespace into a chain of simple selectors */
     struct Chain { std::string sel; bool child; };
     Chain chain[32];
@@ -265,9 +282,16 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
         if (!matched) {
             return 0;
         }
-        if (i == n - 1 && part.hover) {
-            /* :hover on the target element requires the mouse over it */
-            if (!hover_el || lxb_dom_interface_element(cur) != hover_el) {
+        if (i == n - 1) {
+            /* pseudo-classes apply to the target element itself */
+            lxb_dom_element* cur_el = lxb_dom_interface_element(cur);
+            if (part.hover && (!st || !st->hover || cur_el != st->hover)) {
+                return 0;
+            }
+            if (part.active && (!st || !st->pressed || cur_el != st->pressed)) {
+                return 0;
+            }
+            if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
                 return 0;
             }
         }
@@ -366,7 +390,7 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     lxb_dom_element* el,
     const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>& vars,
-    lxb_dom_element* hover_el)
+    const whaleui_style_state* st)
 {
     WhaleUIComputedStyle out;
     if (!el) {
@@ -378,7 +402,7 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
 
     for (size_t i = 0; i < count; ++i) {
         const whaleui_css_rule_t* r = &rules[i];
-        if (!r->selector || !whaleui_style_match(r->selector, el, hover_el)) {
+        if (!r->selector || !whaleui_style_match(r->selector, el, st)) {
             continue;
         }
         Specificity sp = sel_specificity(r->selector);
@@ -417,9 +441,9 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
 
     /* inline style wins unless the rule was !important */
     size_t alen = 0;
-    const lxb_char_t* st = lxb_dom_element_get_attribute(el, (const lxb_char_t*)"style", 5, &alen);
-    if (st) {
-        std::string style(reinterpret_cast<const char*>(st), alen);
+    const lxb_char_t* stv = lxb_dom_element_get_attribute(el, (const lxb_char_t*)"style", 5, &alen);
+    if (stv) {
+        std::string style(reinterpret_cast<const char*>(stv), alen);
         size_t pos = 0;
         while (pos < style.size()) {
             size_t colon = style.find(':', pos);

@@ -19,3 +19,7 @@ Thumbs.db
 third_party/*/*
 !3rdparty/*/include/
 !third_party/*/include/
+
+# user-provided, not tracked
+Qwen_html_*.html
+fsr-min/

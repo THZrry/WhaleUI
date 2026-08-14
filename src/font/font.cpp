@@ -57,13 +57,24 @@ extern "C" const char* whaleui_font_register(const char* uri)
     if (!uri) {
         return nullptr;
     }
+    /* dedupe: same family (base file name) already registered -> reuse it
+     * instead of re-reading the font file */
+    whaleui_font_registry* reg = registry();
+    char* want = family_from_path(uri);
+    for (size_t j = 0; j < reg->count; ++j) {
+        if (reg->fonts[j].family && want &&
+            std::strcmp(reg->fonts[j].family, want) == 0) {
+            std::free(want);
+            return reg->fonts[j].family;
+        }
+    }
+    std::free(want);
     char* data = nullptr;
     size_t len = 0;
     if (whaleui_fs_load(uri, &data, &len) != 0) {
         return nullptr;
     }
     /* data is malloc'd by fs_load; font registry borrows it */
-    whaleui_font_registry* reg = registry();
     whaleui_font_t* nf = static_cast<whaleui_font_t*>(std::realloc(reg->fonts, (reg->count + 1) * sizeof(*reg->fonts)));
     if (!nf) {
         std::free(data);

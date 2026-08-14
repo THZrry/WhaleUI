@@ -71,7 +71,7 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               const whaleui_css_rule_t* rules, size_t count,
                                               const std::map<std::string, std::string>* theme_vars,
                                               int viewport_w, int viewport_h,
-                                              lxb_dom_element* hover_el);
+                                              const whaleui_style_state* st);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
 #ifdef __cplusplus

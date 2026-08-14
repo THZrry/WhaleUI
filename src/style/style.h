@@ -20,12 +20,23 @@ typedef std::map<std::string, std::string> WhaleUIComputedStyle;
 extern "C" {
 #endif
 
+/* Interaction state driving pseudo-class matching (:hover/:active/:focus).
+ * hover = element under the mouse; focus = last clicked control;
+ * pressed = element the left button is held down on. */
+struct whaleui_style_state
+{
+    lxb_dom_element* hover;
+    lxb_dom_element* focus;
+    lxb_dom_element* pressed;
+};
+
 /* Does the (already comma-split) selector match this element?
  * Supports: tag, #id, .class, combinations ("div.card"), descendant chains
- * ("div .card"), child chains (">"), :hover (matched when el == hover_el),
- * and skips other pseudo-class suffixes. */
+ * ("div .card"), child chains (">"), pseudo-classes :hover/:active/:focus
+ * (matched against st), :disabled (via the disabled attribute), and skips
+ * other pseudo-class suffixes. */
 int whaleui_style_match(const char* selector, lxb_dom_element* el,
-                        lxb_dom_element* hover_el);
+                        const whaleui_style_state* st);
 
 /* Evaluate an @media condition against the current theme + viewport width.
  * Unsupported conditions evaluate to false (safe default). */
@@ -42,11 +53,11 @@ void whaleui_style_collect_vars_full(lxb_dom_element* root,
 
 /* Cascade rules (+ inline style) into a computed style for el.
  * vars: custom properties (from :root and the theme) for var() resolution.
- * hover_el: the element currently under the mouse (for :hover rules). */
+ * st: interaction state for pseudo-class matching (:hover/:active/:focus). */
 WhaleUIComputedStyle whaleui_style_compute(lxb_dom_element* el,
                                            const whaleui_css_rule_t* rules, size_t count,
                                            const std::map<std::string, std::string>& vars,
-                                           lxb_dom_element* hover_el);
+                                           const whaleui_style_state* st);
 
 /* Length helpers for layout: "12px"/"1.5em"/"50%"/"auto" -> number + unit id.
  * unit: 0=px, 1=%, 2=em, 3=auto, 4=number(unitless). Returns 0 on success. */

@@ -321,12 +321,13 @@ int parse_all(const char* css, size_t len,
                             whaleui_css_rule_t tmp;
                             std::memset(&tmp, 0, sizeof(tmp));
                             parse_body(&tmp, body);
-                            /* encode frame as "key=prop:value;prop:value" */
+                            /* encode frame as "key=prop:value;prop:value";
+                             * +1 for the terminating NUL that sprintf adds */
                             size_t need = std::strlen(kt) + 1;
                             for (size_t i = 0; i < tmp.decl_count; ++i) {
                                 need += std::strlen(tmp.decls[i]) + 1;
                             }
-                            char* enc = static_cast<char*>(std::malloc(need));
+                            char* enc = static_cast<char*>(std::malloc(need + 1));
                             if (enc) {
                                 char* w = enc;
                                 w += std::sprintf(w, "%s=", kt);

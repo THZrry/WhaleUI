@@ -158,12 +158,16 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* SDL3 3.4.x requires explicit shader-format flags: D3D12/Vulkan
-             * PrepareDriver refuse format_flags==0. Declare DXIL (D3D12) +
-             * SPIR-V (Vulkan); SDL picks the first working backend. */
-            win->app->gpu = SDL_CreateGPUDevice(
-                SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
-                false, nullptr);
+            /* FSR 1.0's compute shaders are SPIR-V, so prefer a Vulkan
+             * device; fall back to D3D12 (FSR then unavailable) when the
+             * system has no Vulkan driver. */
+            win->app->gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV,
+                                                false, nullptr);
+            if (!win->app->gpu) {
+                win->app->gpu = SDL_CreateGPUDevice(
+                    SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
+                    false, nullptr);
+            }
             if (!win->app->gpu) {
                 SDL_DestroyWindow(win->sdl);
                 win->sdl = nullptr;
@@ -181,6 +185,12 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -5;
         }
         window_reload_css(win);
+    }
+    /* pre-render the first frame before the window becomes visible, so it
+     * appears with content already painted instead of a blank flash while
+     * the first layout + text rasterization run */
+    if (win->render && win->document) {
+        whaleui_render_frame(win->render, win->document);
     }
     SDL_ShowWindow(win->sdl);
     win->visible = 1;

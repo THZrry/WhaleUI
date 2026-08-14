@@ -204,7 +204,7 @@ struct Builder
     const whaleui_css_rule_t* rules;
     size_t rule_count;
     std::map<std::string, std::string> vars;
-    lxb_dom_element* hover_el;
+    whaleui_style_state st;
 
     whaleui_layout_node_t* new_node()
     {
@@ -230,7 +230,7 @@ struct Builder
         std::memset(n->padding, 0, sizeof(n->padding));
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
-        n->style = whaleui_style_compute(el, rules, rule_count, vars, hover_el);
+        n->style = whaleui_style_compute(el, rules, rule_count, vars, &st);
 
         /* inherit font-size / color / font-family from parent */
         if (parent) {
@@ -457,7 +457,9 @@ struct Builder
         n->content.w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
         n->content.h = bh - p[0] - p[2] - n->border_w[0] - n->border_w[2];
 
-        /* a <select> always reserves enough height for its value text */
+        /* a <select> always reserves enough height for its value text;
+         * keep it at 28 so the control does not grow and squeeze neighbors
+         * (the popup text fits: 16px content box + the value-text nudge) */
         if (n->el) {
             size_t tlen = 0;
             const lxb_char_t* tname = lxb_dom_element_local_name(n->el, &tlen);
@@ -627,9 +629,13 @@ struct Builder
                 pos = (k->border.x + k->border.w) - n->content.x + between;
                 /* align-items: stretch (default) / center / flex-end */
                 if (align == "center") {
-                    k->border.y += (inner_h - k->border.h) / 2;
+                    int dy = (inner_h - k->border.h) / 2;
+                    k->border.y += dy;
+                    k->content.y += dy; /* keep content box glued to border */
                 } else if (align == "flex-end" || align == "end") {
-                    k->border.y += inner_h - k->border.h;
+                    int dy = inner_h - k->border.h;
+                    k->border.y += dy;
+                    k->content.y += dy; /* keep content box glued to border */
                 } else if (inner_h > 0) {
                     /* stretch: only when the container has a definite height */
                     k->border.h = inner_h;
@@ -658,7 +664,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>* theme_vars,
     int viewport_w, int viewport_h,
-    lxb_dom_element* hover_el)
+    const whaleui_style_state* st)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -677,7 +683,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.tree = tree;
     b.rules = rules;
     b.rule_count = count;
-    b.hover_el = hover_el;
+    b.st = st ? *st : whaleui_style_state();
     if (theme_vars) {
         b.vars = *theme_vars;
     }

@@ -120,21 +120,32 @@ int main(void)
         lxb_dom_element* body_el = reinterpret_cast<lxb_dom_element*>(body);
 
         /* matching */
-        assert(whaleui_style_match(".card", card_el, nullptr));
-        assert(whaleui_style_match("#card", card_el, nullptr));
-        assert(whaleui_style_match("div.card", card_el, nullptr));
-        assert(whaleui_style_match("body #card", card_el, nullptr));
-        assert(whaleui_style_match("div .note", p_el, nullptr));
-        assert(whaleui_style_match("body > div", card_el, nullptr));
-        assert(!whaleui_style_match(".nope", card_el, nullptr));
-        assert(!whaleui_style_match("span", card_el, nullptr));
-        assert(whaleui_style_match(".note:hover", p_el, p_el));    /* hover active */
-        assert(!whaleui_style_match(".note:hover", p_el, nullptr)); /* no hover */
+        whaleui_style_state st = {nullptr, nullptr, nullptr};
+        assert(whaleui_style_match(".card", card_el, &st));
+        assert(whaleui_style_match("#card", card_el, &st));
+        assert(whaleui_style_match("div.card", card_el, &st));
+        assert(whaleui_style_match("body #card", card_el, &st));
+        assert(whaleui_style_match("div .note", p_el, &st));
+        assert(whaleui_style_match("body > div", card_el, &st));
+        assert(!whaleui_style_match(".nope", card_el, &st));
+        assert(!whaleui_style_match("span", card_el, &st));
+        st.hover = p_el;
+        assert(whaleui_style_match(".note:hover", p_el, &st));      /* hover active */
+        st.hover = nullptr;
+        assert(!whaleui_style_match(".note:hover", p_el, &st));     /* no hover */
+        st.focus = p_el;
+        assert(whaleui_style_match(".note:focus", p_el, &st));     /* focus active */
+        assert(!whaleui_style_match(".note:focus", card_el, &st)); /* focus elsewhere */
+        st.pressed = p_el;
+        assert(whaleui_style_match(".note:active", p_el, &st));    /* pressed active */
+        st.pressed = nullptr;
+        assert(!whaleui_style_match(".note:active", p_el, &st));
+        st = whaleui_style_state();
         /* regression: a bare tag selector must NOT match descendants */
-        assert(!whaleui_style_match("body", card_el, nullptr));
-        assert(!whaleui_style_match("html", card_el, nullptr));
-        assert(!whaleui_style_match("div", p_el, nullptr));
-        assert(!whaleui_style_match("div", body_el, nullptr));
+        assert(!whaleui_style_match("body", card_el, &st));
+        assert(!whaleui_style_match("html", card_el, &st));
+        assert(!whaleui_style_match("div", p_el, &st));
+        assert(!whaleui_style_match("div", body_el, &st));
 
         /* media */
         assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800));

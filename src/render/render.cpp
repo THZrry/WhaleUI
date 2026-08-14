@@ -4,6 +4,7 @@
  * through the font module. */
 
 #include "render/render.h"
+#include "render/fsr_shaders.h"
 #include "font/font.h"
 #include "style/style.h"
 
@@ -11,7 +12,11 @@
 #include <SDL3/SDL_gpu.h>
 #ifdef WHALEUI_BUILD_FULL
 #include <SDL3_ttf/SDL_ttf.h>
+#else
+/* stb_truetype text backend for lite/minimal builds (header-only) */
+#define STB_TRUETYPE_IMPLEMENTATION
 #endif
+#include <stb/stb_truetype.h>
 
 #include <lexbor/dom/dom.h>
 
@@ -339,18 +344,31 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
         return -3;
     }
     if (std::strncmp(s, "rgba(", 5) == 0 || std::strncmp(s, "rgb(", 4) == 0) {
-        int rr = 0, gg = 0, bb = 0, aa = 255;
-        if (std::sscanf(s, "rgba(%d,%d,%d,%d)", &rr, &gg, &bb, &aa) >= 3 ||
-            std::sscanf(s, "rgb(%d,%d,%d)", &rr, &gg, &bb) >= 3) {
+        int rr = 0, gg = 0, bb = 0;
+        float faf = -1.0f;
+        if (std::sscanf(s, "rgba(%d,%d,%d,%f)", &rr, &gg, &bb, &faf) >= 4) {
             unsigned int r = rr < 0 ? 0 : static_cast<unsigned>(rr);
             unsigned int g = gg < 0 ? 0 : static_cast<unsigned>(gg);
             unsigned int b = bb < 0 ? 0 : static_cast<unsigned>(bb);
-            unsigned int a = aa < 0 ? 0 : static_cast<unsigned>(aa);
+            /* alpha: 0..1 float, or legacy 0..255 integer */
+            unsigned int a = faf <= 1.0f
+                                 ? static_cast<unsigned>(faf * 255.0f + 0.5f)
+                                 : static_cast<unsigned>(faf);
             if (r > 255) { r = 255; }
             if (g > 255) { g = 255; }
             if (b > 255) { b = 255; }
             if (a > 255) { a = 255; }
             *out = (a << 24) | (r << 16) | (g << 8) | b;
+            return 0;
+        }
+        if (std::sscanf(s, "rgb(%d,%d,%d)", &rr, &gg, &bb) >= 3) {
+            unsigned int r = rr < 0 ? 0 : static_cast<unsigned>(rr);
+            unsigned int g = gg < 0 ? 0 : static_cast<unsigned>(gg);
+            unsigned int b = bb < 0 ? 0 : static_cast<unsigned>(bb);
+            if (r > 255) { r = 255; }
+            if (g > 255) { g = 255; }
+            if (b > 255) { b = 255; }
+            *out = (255 << 24) | (r << 16) | (g << 8) | b;
             return 0;
         }
         return -4;
@@ -367,8 +385,6 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
 namespace {
 
 /* --- fonts --- */
-
-#ifdef WHALEUI_BUILD_FULL
 
 /* split a font-family value ("Segoe UI, \"MS YaHei\", sans-serif") into a
  * list of family names (quotes and whitespace stripped) */
@@ -409,6 +425,8 @@ std::vector<std::string> split_families(const std::string& s)
     }
     return out;
 }
+
+#ifdef WHALEUI_BUILD_FULL
 
 /* open a font for a family (no fallback chain); "" or generic families pick
  * the default font */
@@ -609,16 +627,265 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         } else if (align == 2) {
             tx = bx + bw - tw;
         }
+        /* line-box centering, shared by every text path; the <select>
+         * value nudges itself up in paint_select_value instead, so this
+         * function has no global side effects on other text */
         int ty = by + (bh - th) / 2;
         SDL_Surface* surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
         if (surf) {
             SDL_FillSurfaceRect(surf, nullptr, 0);
             TTF_DrawSurfaceText(t, 0, 0, surf);
-            blend_surface(r->pixels, r->width, r->height, surf, tx, ty, clip, &color);
+            blend_surface(r->pixels, r->fb_w, r->fb_h, surf, tx, ty, clip, &color);
             SDL_DestroySurface(surf);
         }
     }
     TTF_DestroyText(t);
+#else /* !WHALEUI_BUILD_FULL: stb_truetype text (lite/minimal) */
+    if (fs <= 0) {
+        fs = 16;
+    }
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    if (!reg || reg->count == 0) {
+        return;
+    }
+    /* init every registered font once; each gets its own pixel-height scale
+     * so fallback glyphs (CJK/emoji) keep the same visual size */
+    struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
+    std::vector<F> fonts;
+    for (size_t fi = 0; fi < reg->count; ++fi) {
+        F f;
+        f.ok = false;
+        f.scale = 1.0f;
+        f.asc = 0;
+        f.line_h = fs;
+        const unsigned char* d = reg->fonts[fi].data;
+        size_t l = reg->fonts[fi].len;
+        if (!d || l < 4) {
+            fonts.push_back(f);
+            continue;
+        }
+        int off = stbtt_GetFontOffsetForIndex(d, 0);
+        if (off < 0 || !stbtt_InitFont(&f.info, d, off)) {
+            fonts.push_back(f);
+            continue;
+        }
+        f.scale = stbtt_ScaleForPixelHeight(&f.info, static_cast<float>(fs));
+        int desc = 0, linegap = 0;
+        stbtt_GetFontVMetrics(&f.info, &f.asc, &desc, &linegap);
+        f.line_h = static_cast<int>((f.asc - desc + linegap) * f.scale + 0.5f);
+        f.ok = true;
+        fonts.push_back(f);
+    }
+    /* preferred font: first CSS family match, else the first font that
+     * initialized (mirrors the full build's family matching) */
+    size_t pref = static_cast<size_t>(-1);
+    std::vector<std::string> fams = split_families(family);
+    for (const std::string& fam : fams) {
+        if (fam.empty()) {
+            continue;
+        }
+        bool generic = fam == "sans-serif" || fam == "serif" ||
+                       fam == "monospace";
+        if (generic) {
+            continue;
+        }
+        for (size_t fi = 0; fi < fonts.size(); ++fi) {
+            if (fonts[fi].ok && reg->fonts[fi].family &&
+                std::strcmp(reg->fonts[fi].family, fam.c_str()) == 0) {
+                pref = fi;
+                break;
+            }
+        }
+        if (pref != static_cast<size_t>(-1)) {
+            break;
+        }
+    }
+    if (pref == static_cast<size_t>(-1)) {
+        for (size_t fi = 0; fi < fonts.size(); ++fi) {
+            if (fonts[fi].ok) {
+                pref = fi;
+                break;
+            }
+        }
+    }
+    if (pref == static_cast<size_t>(-1)) {
+        return;
+    }
+    /* pick a font that actually has `cp`; fall back across the registry so
+     * CJK/emoji glyphs resolve even when the preferred font lacks them */
+    auto pick_font = [&](size_t start, unsigned int cp) -> size_t {
+        if (stbtt_FindGlyphIndex(&fonts[start].info, cp) != 0) {
+            return start;
+        }
+        for (size_t fi = 0; fi < fonts.size(); ++fi) {
+            if (fi == start || !fonts[fi].ok) {
+                continue;
+            }
+            if (stbtt_FindGlyphIndex(&fonts[fi].info, cp) != 0) {
+                return fi;
+            }
+        }
+        return static_cast<size_t>(-1);
+    };
+    /* decode UTF-8 into per-line codepoints; control chars are skipped
+     * entirely (a stray byte or control code in a long string must not
+     * draw tofu or crash), '\n' starts a new line, '\r' is dropped so
+     * CRLF counts once */
+    struct TLine { std::vector<unsigned int> cps; int w; };
+    std::vector<TLine> lines;
+    lines.push_back(TLine());
+    const unsigned char* sb = reinterpret_cast<const unsigned char*>(text.c_str());
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char c = sb[i];
+        unsigned int cp = c;
+        int len = 1;
+        if (c >= 0x80) {
+            if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
+                cp = ((c & 0x1F) << 6) | (sb[i + 1] & 0x3F);
+                len = 2;
+            } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
+                cp = ((c & 0x0F) << 12) | ((sb[i + 1] & 0x3F) << 6) |
+                     (sb[i + 2] & 0x3F);
+                len = 3;
+            } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
+                cp = ((c & 0x07) << 18) | ((sb[i + 1] & 0x3F) << 12) |
+                     ((sb[i + 2] & 0x3F) << 6) | (sb[i + 3] & 0x3F);
+                len = 4;
+            } else {
+                cp = 0; /* malformed byte: skip it entirely */
+            }
+        }
+        i += len;
+        if (cp == '\n') {
+            lines.push_back(TLine());
+            continue;
+        }
+        if (cp < 0x20 || cp == 0x7F) {
+            continue; /* C0/DEL control chars: no advance, no glyph */
+        }
+        lines.back().cps.push_back(cp);
+    }
+    /* measure each line: per-glyph font fallback, advances accumulate */
+    const int line_h = fonts[pref].line_h;
+    for (size_t li = 0; li < lines.size(); ++li) {
+        TLine& ln = lines[li];
+        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
+            size_t fi = pick_font(pref, ln.cps[gi]);
+            if (fi == static_cast<size_t>(-1)) {
+                continue; /* no registered font has this glyph */
+            }
+            int adv = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&fonts[fi].info, ln.cps[gi], &adv, &lsb);
+            ln.w += static_cast<int>(adv * fonts[fi].scale + 0.5f);
+        }
+    }
+    int total_w = 0, total_h = static_cast<int>(lines.size()) * line_h;
+    for (size_t li = 0; li < lines.size(); ++li) {
+        if (lines[li].w > total_w) {
+            total_w = lines[li].w;
+        }
+    }
+    if (total_w <= 0 || total_h <= 0) {
+        return;
+    }
+    /* rasterize into an alpha-only buffer (same layout as the framebuffer).
+     * bold is a fake bold: the glyph bitmap is blitted once more 1px to the
+     * right (alpha max), since stb_truetype has no style synthesis. */
+    std::vector<unsigned int> buf(static_cast<size_t>(total_w) * total_h, 0);
+    const float baseline_off = fonts[pref].asc * fonts[pref].scale;
+    for (size_t li = 0; li < lines.size(); ++li) {
+        const TLine& ln = lines[li];
+        const int baseline = static_cast<int>(li * line_h + baseline_off + 0.5f);
+        float px = 0;
+        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
+            unsigned int cp = ln.cps[gi];
+            size_t fi = pick_font(pref, cp);
+            if (fi == static_cast<size_t>(-1)) {
+                continue;
+            }
+            int adv = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&fonts[fi].info, cp, &adv, &lsb);
+            int gw = 0, gh = 0, xoff = 0, yoff = 0;
+            unsigned char* bmp = stbtt_GetCodepointBitmap(
+                &fonts[fi].info, fonts[fi].scale, fonts[fi].scale,
+                cp, &gw, &gh, &xoff, &yoff);
+            if (bmp && gw > 0 && gh > 0) {
+                const int dy = baseline + yoff;
+                for (int pass = 0; pass < (bold ? 2 : 1); ++pass) {
+                    const int dx = static_cast<int>(px) + xoff + pass;
+                    for (int yy = 0; yy < gh; ++yy) {
+                        const int ty2 = dy + yy;
+                        if (ty2 < 0 || ty2 >= total_h) {
+                            continue;
+                        }
+                        for (int xx = 0; xx < gw; ++xx) {
+                            const int tx2 = dx + xx;
+                            if (tx2 < 0 || tx2 >= total_w) {
+                                continue;
+                            }
+                            const unsigned int a = bmp[yy * gw + xx];
+                            if (a == 0) {
+                                continue;
+                            }
+                            unsigned int& dst = buf[ty2 * total_w + tx2];
+                            if (a > dst) {
+                                dst = a;
+                            }
+                        }
+                    }
+                }
+                stbtt_FreeBitmap(bmp, nullptr);
+            }
+            px += adv * fonts[fi].scale;
+        }
+    }
+    /* place + blend (single pass, tinted by `color`) */
+    int tx = bx;
+    if (align == 1) {
+        tx = bx + (bw - total_w) / 2;
+    } else if (align == 2) {
+        tx = bx + bw - total_w;
+    }
+    int ty = by + (bh - fonts[pref].line_h) / 2;
+    const unsigned int tr = (color >> 16) & 0xFF;
+    const unsigned int tg = (color >> 8) & 0xFF;
+    const unsigned int tb = color & 0xFF;
+    const unsigned int ta = (color >> 24) & 0xFF;
+    for (int yy = 0; yy < total_h; ++yy) {
+        const int fy = ty + yy;
+        if (fy < 0 || fy >= r->height) {
+            continue;
+        }
+        if (clip && (fy < clip->y || fy >= clip->y + clip->h)) {
+            continue;
+        }
+        for (int xx = 0; xx < total_w; ++xx) {
+            const unsigned int a = buf[yy * total_w + xx];
+            if (a == 0) {
+                continue;
+            }
+            const int fx = tx + xx;
+            if (fx < 0 || fx >= r->width) {
+                continue;
+            }
+            if (clip && (fx < clip->x || fx >= clip->x + clip->w)) {
+                continue;
+            }
+            const unsigned int fa = (a * ta) / 255;
+            if (fa == 0) {
+                continue;
+            }
+            unsigned int& d = r->pixels[fy * r->width + fx];
+            const unsigned int dr = (d >> 16) & 0xFF;
+            const unsigned int dg = (d >> 8) & 0xFF;
+            const unsigned int db = d & 0xFF;
+            const unsigned int nr = (tr * fa + dr * (255 - fa)) / 255;
+            const unsigned int ng = (tg * fa + dg * (255 - fa)) / 255;
+            const unsigned int nb = (tb * fa + db * (255 - fa)) / 255;
+            d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+        }
+    }
 #endif /* WHALEUI_BUILD_FULL */
 }
 
@@ -718,15 +985,20 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n, const Cli
     }
     int fs = 13;
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-    /* value text left, arrow pinned to the right edge */
+    /* value text left, arrow pinned to the right edge. Both are nudged up
+     * 2px: segoe's glyphs sit ~2px below the line-box center, so metric
+     * centering alone leaves the text looking low inside the control. */
     int arrow_x = n->content.x + n->content.w - 16;
     int text_w = arrow_x - n->content.x - 8;
     if (text_w < 10) {
         text_w = 10;
     }
-    draw_text_at(r, texts[sel], n->content.x + 2, n->content.y,
+    int vy = n->content.y - 2;
+    draw_text_at(r, texts[sel], n->content.x + 2, vy,
                  text_w, n->content.h, fs, "", fg, false, 0, clip);
-    draw_text_at(r, "\xe2\x96\xbe", arrow_x, n->content.y,
+    /* large solid triangle ▼: the small ▾ is only a few px tall and looks
+     * like it floats above the text baseline */
+    draw_text_at(r, "\xe2\x96\xbc", arrow_x, vy,
                  16, n->content.h, fs, "", fg, false, 0, clip);
 }
 
@@ -749,12 +1021,42 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip
     int list_y = n->border.y + n->border.h;
     int list_w = n->border.w;
     int list_h = static_cast<int>(texts.size()) * kSelectItemH;
+    /* the popup follows the select's corner radius (default theme radius),
+     * instead of square corners that clash with the rounded control */
+    int radius = 0;
+    std::string br = sget(n->style, "border-radius");
+    if (!br.empty()) {
+        radius = std::atoi(br.c_str());
+    }
     unsigned int bg = 0xFF000000;
     auto it = r->theme_vars.find("--card");
     if (it != r->theme_vars.end()) {
         whaleui_render_parse_color(it->second.c_str(), &bg);
     }
-    fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, list_h, bg, clip);
+    /* soft shadow under the popup (before the card background) */
+    {
+        const int blur = 6;
+        for (int k = blur; k >= 1; --k) {
+            unsigned int ka = static_cast<unsigned>(0x28 * (blur - k + 1) / (blur + 1));
+            unsigned int c = (ka << 24); /* black, alpha faded outwards */
+            if (radius > 0) {
+                fill_round_rect(r->pixels, r->fb_w, r->fb_h,
+                                list_x + 0 - k, list_y + 2 - k,
+                                list_w + 2 * k, list_h + 2 * k, radius, c, clip);
+            } else {
+                fill_rect(r->pixels, r->fb_w, r->fb_h,
+                          list_x + 0 - k, list_y + 2 - k,
+                          list_w + 2 * k, list_h + 2 * k, c, clip);
+            }
+        }
+    }
+    if (radius > 0) {
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, list_x, list_y,
+                        list_w, list_h, radius, bg, clip);
+    } else {
+        fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, list_y, list_w,
+                  list_h, bg, clip);
+    }
     unsigned int border_c = 0xFF000000;
     auto itb = r->theme_vars.find("--border");
     if (itb != r->theme_vars.end()) {
@@ -771,12 +1073,22 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip
     for (int i = 0; i < static_cast<int>(texts.size()); ++i) {
         int iy = list_y + i * kSelectItemH;
         if (i == r->open_select_hover) {
-            fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
-                      hover_wash, clip);
+            if (radius > 0) {
+                fill_round_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
+                                list_w, kSelectItemH, radius, hover_wash, clip);
+            } else {
+                fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
+                          list_w, kSelectItemH, hover_wash, clip);
+            }
         }
         if (i == sel) {
-            fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
-                      sel_wash, clip);
+            if (radius > 0) {
+                fill_round_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
+                                list_w, kSelectItemH, radius, sel_wash, clip);
+            } else {
+                fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
+                          list_w, kSelectItemH, sel_wash, clip);
+            }
             draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
                          kSelectItemH, fs, "", acc, true, 0, clip);
         } else {
@@ -784,13 +1096,9 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip
                          kSelectItemH, fs, "", fg, false, 0, clip);
         }
     }
-    /* border around the list */
-    fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, 1, border_c, clip);
-    fill_rect(r->pixels, r->width, r->height, list_x, list_y + list_h - 1,
-              list_w, 1, border_c, clip);
-    fill_rect(r->pixels, r->width, r->height, list_x, list_y, 1, list_h, border_c, clip);
-    fill_rect(r->pixels, r->width, r->height, list_x + list_w - 1, list_y,
-              1, list_h, border_c, clip);
+    /* border around the list (follows the corner arcs when rounded) */
+    fill_round_border(r->pixels, r->fb_w, r->fb_h, list_x, list_y,
+                      list_w, list_h, radius, 1, border_c, clip);
 }
 
 /* depth-first hit test; coordinates are absolute (layout boxes are absolute).
@@ -814,6 +1122,221 @@ whaleui_layout_node_t* hit_test(whaleui_layout_node_t* n, int x, int y)
     return nullptr;
 }
 
+/* parse "ox oy blur color" (one shadow; color may be rgba(), written
+ * without spaces). Returns 0 when no usable shadow is present. */
+int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
+                 unsigned int& col)
+{
+    ox = oy = blur = 0;
+    col = 0;
+    std::vector<std::string> tok;
+    const char* p = v.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        tok.emplace_back(s, static_cast<size_t>(p - s));
+    }
+    int nums[3] = {0, 0, 0};
+    size_t ni = 0;
+    std::string colstr;
+    for (size_t i = 0; i < tok.size(); ++i) {
+        const std::string& t = tok[i];
+        if (ni < 3 && !t.empty() &&
+            (t[0] == '-' || (t[0] >= '0' && t[0] <= '9'))) {
+            nums[ni++] = std::atoi(t.c_str());
+        } else if (!colstr.empty()) {
+            colstr += ' ';
+            colstr += t;
+        } else {
+            colstr = t;
+        }
+    }
+    ox = nums[0];
+    oy = nums[1];
+    blur = nums[2];
+    if (blur <= 0 || colstr.empty()) {
+        return -1;
+    }
+    return whaleui_render_parse_color(colstr.c_str(), &col);
+}
+
+/* soft shadow under a box: concentric rounded rects expanding up to `blur`
+ * px, alpha fading outwards. Painted BEFORE the background so the element
+ * body covers the inner layers. */
+void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
+                  const Clip* clip)
+{
+    std::string v = sget(n->style, "box-shadow");
+    if (v.empty() || v == "none") {
+        return;
+    }
+    int ox = 0, oy = 0, blur = 0;
+    unsigned int col = 0;
+    if (parse_shadow(v, ox, oy, blur, col) != 0) {
+        return;
+    }
+    int radius = 0;
+    std::string br = sget(n->style, "border-radius");
+    if (!br.empty()) {
+        radius = std::atoi(br.c_str());
+    }
+    unsigned int a = (col >> 24) & 0xFF;
+    if (a == 0) {
+        return;
+    }
+    for (int k = blur; k >= 1; --k) {
+        unsigned int ka = static_cast<unsigned>(a * (blur - k + 1) / (blur + 1));
+        if (ka == 0) {
+            continue;
+        }
+        unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
+        int sx = n->border.x + ox - k;
+        int sy = n->border.y + oy - k;
+        int sw = n->border.w + 2 * k;
+        int sh = n->border.h + 2 * k;
+        if (radius > 0) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh,
+                            radius, c, clip);
+        } else {
+            fill_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh, c, clip);
+        }
+    }
+}
+
+/* parse "background-color 100ms" / "all 0.1s" -> duration in ms (0 = none) */
+uint32_t transition_ms(const WhaleUIComputedStyle& s)
+{
+    std::string v = sget(s, "transition");
+    if (v.empty() || v == "none") {
+        return 0;
+    }
+    const char* p = v.c_str();
+    while (*p) {
+        if ((*p >= '0' && *p <= '9') || *p == '.') {
+            float num = static_cast<float>(std::atof(p));
+            const char* q = p;
+            while ((*q >= '0' && *q <= '9') || *q == '.') {
+                ++q;
+            }
+            while (*q == ' ' || *q == '\t') {
+                ++q;
+            }
+            if (*q == 'm' && q[1] == 's') {
+                return static_cast<uint32_t>(num);
+            }
+            if (*q == 's') {
+                return static_cast<uint32_t>(num * 1000.0f);
+            }
+            p = q;
+        } else {
+            ++p;
+        }
+    }
+    return 0;
+}
+
+unsigned int lerp_color(unsigned int from, unsigned int to, float t)
+{
+    auto ch = [t](unsigned int f, unsigned int g) -> unsigned int {
+        return static_cast<unsigned int>(f + (static_cast<float>(g) - f) * t + 0.5f);
+    };
+    unsigned int fr = (from >> 16) & 0xFF, fg = (from >> 8) & 0xFF,
+                 fb = from & 0xFF, fa = (from >> 24) & 0xFF;
+    unsigned int tr = (to >> 16) & 0xFF, tg = (to >> 8) & 0xFF,
+                 tb = to & 0xFF, ta = (to >> 24) & 0xFF;
+    return (ch(fa, ta) << 24) | (ch(fr, tr) << 16) | (ch(fg, tg) << 8) |
+           ch(fb, tb);
+}
+
+/* interpolated value at `now`; updates anim_last so the next frame's change
+ * detection keeps working */
+unsigned int current_anim_color(whaleui_render_t* r,
+                                whaleui_render_t::ColorAnim& a,
+                                const std::string& key);
+
+/* resolve the drawn color for (el, prop): snaps unless a transition is
+ * configured, in which case it starts/advances a ColorAnim and reports the
+ * interpolated value. `running` is set while an animation is active. */
+unsigned int anim_color(whaleui_render_t* r, whaleui_layout_node_t* n,
+                        const char* prop, unsigned int target, bool* running)
+{
+    *running = false;
+    if (!n->el) {
+        return target;
+    }
+    std::string key = std::string(prop) + "@" +
+                      std::to_string(reinterpret_cast<size_t>(n->el));
+    const uint64_t now = SDL_GetTicks();
+    auto it = r->anim_last.find(key);
+    if (it == r->anim_last.end()) {
+        r->anim_last[key] = target;
+        return target;
+    }
+    if (it->second == target) {
+        return target;
+    }
+    /* an animation is only continued, never restarted mid-flight */
+    whaleui_render_t::ColorAnim* active = nullptr;
+    for (auto& a : r->anims) {
+        if (a.el == n->el && a.prop == prop) {
+            active = &a;
+            break;
+        }
+    }
+    const uint32_t dur = transition_ms(n->style);
+    if (!active && dur > 0) {
+        whaleui_render_t::ColorAnim a;
+        a.el = n->el;
+        a.prop = prop;
+        a.from = it->second;
+        a.to = target;
+        a.start = now;
+        a.dur = dur;
+        r->anims.push_back(a);
+        active = &r->anims.back();
+    } else if (!active) {
+        it->second = target; /* no transition: snap */
+        return target;
+    }
+    if (active->to != target) {
+        /* target changed mid-flight: retarget from the current value */
+        float p = static_cast<float>(now - active->start) /
+                  static_cast<float>(active->dur);
+        if (p > 1.0f) {
+            p = 1.0f;
+        }
+        active->from = lerp_color(active->from, active->to, p);
+        active->to = target;
+        active->start = now;
+    }
+    *running = true;
+    return current_anim_color(r, *active, key);
+}
+
+/* interpolated value at `now`; updates anim_last so the next frame's change
+ * detection keeps working */
+unsigned int current_anim_color(whaleui_render_t* r,
+                                whaleui_render_t::ColorAnim& a,
+                                const std::string& key)
+{
+    const uint64_t now = SDL_GetTicks();
+    float p = static_cast<float>(now - a.start) / static_cast<float>(a.dur);
+    if (p >= 1.0f) {
+        p = 1.0f;
+    }
+    unsigned int v = lerp_color(a.from, a.to, p);
+    r->anim_last[key] = v;
+    return v;
+}
+
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
     if (!n->visible) {
@@ -834,6 +1357,8 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
         self.h = n->border.h;
         eff = &self;
     }
+    /* soft shadow first, so the element body covers the inner layers */
+    paint_shadow(r, n, eff);
     /* background (border-radius supported) */
     unsigned int bg = color_of(n->style, "background-color", 0);
     unsigned int bg2 = color_of(n->style, "background", 0);
@@ -844,16 +1369,18 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
         unsigned int a = (bg >> 24) & 0xFF;
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
         unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
+        bool running = false;
+        c = anim_color(r, n, "background-color", c, &running);
         int radius = 0;
         std::string br = sget(n->style, "border-radius");
         if (!br.empty()) {
             radius = std::atoi(br.c_str());
         }
         if (radius > 0) {
-            fill_round_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x, n->border.y,
                             n->border.w, n->border.h, radius, c, eff);
         } else {
-            fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y,
+            fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x, n->border.y,
                       n->border.w, n->border.h, c, eff);
         }
     }
@@ -867,6 +1394,8 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
             unsigned int a = (bc >> 24) & 0xFF;
             unsigned int a8 = static_cast<unsigned>(a * n->opacity);
             unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
+            bool running = false;
+            c = anim_color(r, n, "border-color", c, &running);
             int radius = 0;
             std::string br2 = sget(n->style, "border-radius");
             if (!br2.empty()) {
@@ -875,22 +1404,22 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
             /* uniform border width for the ring */
             int brw = bw[1] > 0 ? bw[1] : (bw[3] > 0 ? bw[3] : (bw[0] > 0 ? bw[0] : bw[2]));
             if (radius > 0 && brw > 0) {
-                fill_round_border(r->pixels, r->width, r->height, n->border.x, n->border.y,
+                fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x, n->border.y,
                                   n->border.w, n->border.h, radius, brw, c, eff);
             } else {
                 if (bw[0]) { /* top */
-                    fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c, eff);
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x, n->border.y, n->border.w, bw[0], c, eff);
                 }
                 if (bw[2]) { /* bottom */
-                    fill_rect(r->pixels, r->width, r->height, n->border.x,
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
                               n->border.y + n->border.h - bw[2], n->border.w, bw[2], c, eff);
                 }
                 if (bw[1]) { /* right */
-                    fill_rect(r->pixels, r->width, r->height,
+                    fill_rect(r->pixels, r->fb_w, r->fb_h,
                               n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c, eff);
                 }
                 if (bw[3]) { /* left */
-                    fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c, eff);
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x, n->border.y, bw[3], n->border.h, c, eff);
                 }
             }
         }
@@ -907,6 +1436,114 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 
 } // namespace
 
+/* --- FSR 1.0 (GPU compute) resources --- */
+
+/* build compute pipelines + textures for the current window size. Returns 1
+ * when everything is usable (FSR can run), 0 if any resource failed. */
+int render_fsr_create(whaleui_render_t* r)
+{
+    SDL_GPUDevice* d = r->device;
+    SDL_GPUComputePipelineCreateInfo ci;
+    std::memset(&ci, 0, sizeof(ci));
+    ci.entrypoint = "main";
+    ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    ci.num_readonly_storage_textures = 1;
+    ci.num_readwrite_storage_textures = 1;
+    ci.threadcount_x = 8;
+    ci.threadcount_y = 8;
+    ci.threadcount_z = 1;
+    ci.code_size = g_easu_spv_size * 4;
+    ci.code = reinterpret_cast<const Uint8*>(g_easu_spv);
+    r->fsr_easu_pipe = SDL_CreateGPUComputePipeline(d, &ci);
+    if (!r->fsr_easu_pipe) {
+        return 0;
+    }
+    ci.code_size = g_rcas_spv_size * 4;
+    ci.code = reinterpret_cast<const Uint8*>(g_rcas_spv);
+    r->fsr_rcas_pipe = SDL_CreateGPUComputePipeline(d, &ci);
+    if (!r->fsr_rcas_pipe) {
+        return 0;
+    }
+    auto mkTex = [&](int w, int h, SDL_GPUTextureUsageFlags u,
+                     SDL_GPUTexture** out) {
+        SDL_GPUTextureCreateInfo t;
+        std::memset(&t, 0, sizeof(t));
+        t.type = SDL_GPU_TEXTURETYPE_2D;
+        t.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; /* matches rgba8 shader */
+        t.usage = u;
+        t.width = static_cast<Uint32>(w);
+        t.height = static_cast<Uint32>(h);
+        t.layer_count_or_depth = 1;
+        t.num_levels = 1;
+        *out = SDL_CreateGPUTexture(d, &t);
+        return *out != nullptr;
+    };
+    const SDL_GPUTextureUsageFlags low_usage =
+        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ;
+    const SDL_GPUTextureUsageFlags scratch_usage =
+        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
+        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+    if (!mkTex(r->fb_w, r->fb_h, low_usage, &r->offscreen_low) ||
+        !mkTex(r->width, r->height, scratch_usage, &r->fsr_up) ||
+        !mkTex(r->width, r->height, scratch_usage, &r->fsr_out)) {
+        return 0;
+    }
+    SDL_GPUTransferBufferCreateInfo tbi;
+    std::memset(&tbi, 0, sizeof(tbi));
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbi.size = static_cast<Uint32>(static_cast<size_t>(r->fb_w) * r->fb_h * 4);
+    r->fsr_transfer = SDL_CreateGPUTransferBuffer(d, &tbi);
+    return r->fsr_transfer != nullptr;
+}
+
+void render_fsr_destroy(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+    SDL_GPUDevice* d = r->device;
+    SDL_ReleaseGPUComputePipeline(d, r->fsr_easu_pipe);
+    SDL_ReleaseGPUComputePipeline(d, r->fsr_rcas_pipe);
+    SDL_ReleaseGPUTexture(d, r->offscreen_low);
+    SDL_ReleaseGPUTexture(d, r->fsr_up);
+    SDL_ReleaseGPUTexture(d, r->fsr_out);
+    SDL_ReleaseGPUTransferBuffer(d, r->fsr_transfer);
+    r->fsr_easu_pipe = nullptr;
+    r->fsr_rcas_pipe = nullptr;
+    r->offscreen_low = nullptr;
+    r->fsr_up = nullptr;
+    r->fsr_out = nullptr;
+    r->fsr_transfer = nullptr;
+}
+
+/* should the current frame use the FSR path? mode 0 = auto. */
+int fsr_want_active(whaleui_render_t* r)
+{
+    if (!r->fsr_easu_pipe || !r->fsr_rcas_pipe || !r->offscreen_low) {
+        return 0; /* resources failed to create */
+    }
+    if (r->fsr_mode == 2) {
+        return 0;
+    }
+    if (r->fsr_mode == 1) {
+        return 1;
+    }
+    /* auto: 4K display, or running on battery, and the render surface is big
+     * enough for the extra EASU/RCAS passes to pay off. High-DPI windows
+     * are judged by their physical (pixel) size, not the logical size. */
+    int pw = r->width, ph = r->height;
+    SDL_GetWindowSizeInPixels(r->window, &pw, &ph);
+    if (pw < 2560 && ph < 1440) {
+        return 0; /* render surface too small to bother */
+    }
+    SDL_DisplayID did = SDL_GetDisplayForWindow(r->window);
+    const SDL_DisplayMode* dm = did ? SDL_GetDesktopDisplayMode(did) : nullptr;
+    bool big = dm && (dm->w >= 3840 || dm->h >= 2160);
+    SDL_PowerState ps = SDL_GetPowerInfo(nullptr, nullptr);
+    bool battery = ps == SDL_POWERSTATE_ON_BATTERY;
+    return (big || battery) ? 1 : 0;
+}
+
 extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window,
                                                    int width, int height)
 {
@@ -921,9 +1558,14 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->window = window;
     r->width = width;
     r->height = height;
+    r->fb_w = width;
+    r->fb_h = height;
     r->has_dirty = 1;
     r->bg_color = 0xFF202020;
-    r->pixels.resize(static_cast<size_t>(width) * height, 0xFF202020);
+    r->fsr_mode = 0;   /* auto */
+    r->fsr_scale = 0.5f;
+    r->fsr_sharpness = 0.4f;
+    r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
 
     /* GPU path: offscreen target + transfer buffer */
     SDL_GPUTextureCreateInfo tci;
@@ -949,6 +1591,8 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
         delete r;
         return nullptr;
     }
+    /* FSR compute resources (created up front; auto mode may enable it) */
+    render_fsr_create(r);
 
     /* default font: register the platform UI fonts (CJK/emoji fallback
      * chain), then open the first as default and chain fallbacks */
@@ -990,6 +1634,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
 #endif
     SDL_ReleaseGPUTexture(r->device, r->offscreen);
     SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
+    render_fsr_destroy(r);
     delete r;
 }
 
@@ -1077,6 +1722,8 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     }
     r->width = width;
     r->height = height;
+    r->fb_w = width;
+    r->fb_h = height;
     r->pixels.assign(static_cast<size_t>(width) * height, r->bg_color);
     SDL_ReleaseGPUTexture(r->device, r->offscreen);
     SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
@@ -1095,6 +1742,9 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
     r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
+    render_fsr_destroy(r);
+    render_fsr_create(r);
+    r->fsr_active = 0;
     r->has_dirty = 1;
     return 0;
 }
@@ -1117,6 +1767,17 @@ whaleui_layout_node_t* find_node_by_el(whaleui_layout_node_t* n, lxb_dom_element
     return nullptr;
 }
 
+/* window -> framebuffer coordinates (identity when FSR is off) */
+static void fb_coords(whaleui_render_t* r, int& x, int& y)
+{
+    if (r->width > 1 && r->fb_w != r->width) {
+        x = x * r->fb_w / r->width;
+    }
+    if (r->height > 1 && r->fb_h != r->height) {
+        y = y * r->fb_h / r->height;
+    }
+}
+
 extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                                            const char** out_value)
 {
@@ -1126,6 +1787,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     if (!r || !r->tree) {
         return 0;
     }
+    fb_coords(r, x, y);
     /* 1. clicking inside the expanded list chooses an option */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
@@ -1172,6 +1834,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     if (!r || !r->tree) {
         return;
     }
+    fb_coords(r, x, y);
     /* hover inside the expanded list highlights the option under the mouse */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
@@ -1203,16 +1866,71 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     }
 }
 
+extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
+                                           int down)
+{
+    if (!r || !r->tree) {
+        return;
+    }
+    fb_coords(r, x, y);
+    lxb_dom_element* el = nullptr;
+    if (down) {
+        whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
+        el = hit ? hit->el : nullptr;
+    }
+    if (el != r->pressed_el) {
+        r->pressed_el = el;
+        r->has_dirty = 1;
+    }
+    if (down && el != r->focus_el) {
+        r->focus_el = el;
+        r->has_dirty = 1;
+    }
+}
+
+extern "C" void whaleui_render_set_fsr(whaleui_render_t* r, int mode,
+                                       float scale, float sharpness)
+{
+    if (!r) {
+        return;
+    }
+    r->fsr_mode = (mode < 0 || mode > 2) ? 0 : mode;
+    r->fsr_scale = scale > 0.0f ? scale : 0.5f;
+    r->fsr_sharpness = sharpness < 0.0f ? 0.0f : (sharpness > 1.0f ? 1.0f : sharpness);
+    r->has_dirty = 1;
+}
+
 extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
 {
     if (!r || !doc) {
         return -1;
     }
+    /* FSR decision: auto mode watches display size + power state, so it can
+     * flip at runtime; switching resolution rebuilds the framebuffer */
+    {
+        int want = fsr_want_active(r);
+        if (want != r->fsr_active) {
+            r->fsr_active = want;
+            const float scale = r->fsr_scale > 0.0f ? r->fsr_scale : 0.5f;
+            r->fb_w = want ? static_cast<int>(r->width * scale) : r->width;
+            r->fb_h = want ? static_cast<int>(r->height * scale) : r->height;
+            if (r->fb_w < 1) { r->fb_w = 1; }
+            if (r->fb_h < 1) { r->fb_h = 1; }
+            r->pixels.assign(static_cast<size_t>(r->fb_w) * r->fb_h, r->bg_color);
+            render_fsr_destroy(r);
+            render_fsr_create(r);
+            r->has_dirty = 1;
+        }
+    }
     if (r->has_dirty || !r->tree) {
         whaleui_layout_destroy(r->tree);
+        whaleui_style_state st;
+        st.hover = r->hover_el;
+        st.focus = r->focus_el;
+        st.pressed = r->pressed_el;
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
-                                         &r->theme_vars, r->width, r->height,
-                                         r->hover_el);
+                                         &r->theme_vars, r->fb_w, r->fb_h,
+                                         &st);
         r->has_dirty = 0;
     }
     if (!r->tree) {
@@ -1221,7 +1939,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 
     /* paint */
     std::fill(r->pixels.begin(), r->pixels.end(), r->bg_color);
-    Clip full = {0, 0, r->width, r->height};
+    Clip full = {0, 0, r->fb_w, r->fb_h};
     paint_node(r, r->tree->root, &full);
 
     /* expanded select list is drawn last (highest z) so later siblings and
@@ -1233,6 +1951,27 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         }
     }
 
+    /* advance color transitions: keep repainting while any is running, then
+     * drop finished ones */
+    {
+        const uint64_t now = SDL_GetTicks();
+        bool any = false;
+        for (auto& a : r->anims) {
+            if (now < a.start + a.dur) {
+                any = true;
+            }
+        }
+        if (any) {
+            r->has_dirty = 1;
+        }
+        auto& an = r->anims;
+        an.erase(std::remove_if(an.begin(), an.end(),
+                                [now](const whaleui_render_t::ColorAnim& a) {
+                                    return now >= a.start + a.dur;
+                                }),
+                 an.end());
+    }
+
     /* present: upload offscreen + blit to swapchain */
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
     if (!cmd) {
@@ -1241,6 +1980,80 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     SDL_GPUTexture* swapchain = nullptr;
     Uint32 sw = 0, sh = 0;
     if (!SDL_AcquireGPUSwapchainTexture(cmd, r->window, &swapchain, &sw, &sh) || !swapchain) {
+        SDL_SubmitGPUCommandBuffer(cmd);
+        return 0;
+    }
+    if (r->fsr_active && r->offscreen_low) {
+        /* FSR path: upload the low-res framebuffer (RGB swapped: pixels are
+         * 0xAARRGGBB = B,G,R,A bytes, the rgba8 shader wants R,G,B,A), then
+         * EASU upscale -> RCAS sharpen -> blit the full-res result. */
+        void* mapped = SDL_MapGPUTransferBuffer(r->device, r->fsr_transfer, false);
+        if (mapped) {
+            const unsigned char* src =
+                reinterpret_cast<const unsigned char*>(r->pixels.data());
+            unsigned char* dst = static_cast<unsigned char*>(mapped);
+            const size_t n = r->pixels.size();
+            for (size_t i = 0; i < n; ++i) {
+                dst[i * 4 + 0] = src[i * 4 + 2]; /* R */
+                dst[i * 4 + 1] = src[i * 4 + 1]; /* G */
+                dst[i * 4 + 2] = src[i * 4 + 0]; /* B */
+                dst[i * 4 + 3] = src[i * 4 + 3]; /* A */
+            }
+            SDL_UnmapGPUTransferBuffer(r->device, r->fsr_transfer);
+        }
+        SDL_GPUTextureTransferInfo upload;
+        std::memset(&upload, 0, sizeof(upload));
+        upload.transfer_buffer = r->fsr_transfer;
+        SDL_GPUTextureRegion region;
+        std::memset(&region, 0, sizeof(region));
+        region.texture = r->offscreen_low;
+        region.w = static_cast<Uint32>(r->fb_w);
+        region.h = static_cast<Uint32>(r->fb_h);
+        region.d = 1;
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_UploadToGPUTexture(cp, &upload, &region, false);
+        SDL_EndGPUCopyPass(cp);
+
+        auto runPass = [&](SDL_GPUComputePipeline* p, SDL_GPUTexture* rw,
+                           SDL_GPUTexture* ro, const void* pc, Uint32 pcSz,
+                           int outW, int outH) {
+            SDL_GPUStorageTextureReadWriteBinding rwBind;
+            std::memset(&rwBind, 0, sizeof(rwBind));
+            rwBind.texture = rw;
+            rwBind.mip_level = 0;
+            rwBind.layer = 0;
+            rwBind.cycle = false;
+            SDL_GPUComputePass* cps = SDL_BeginGPUComputePass(cmd, &rwBind, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, p);
+                SDL_BindGPUComputeStorageTextures(cps, 0, &ro, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, pc, pcSz);
+                SDL_DispatchGPUCompute(cps, (static_cast<Uint32>(outW) + 7) / 8,
+                                       (static_cast<Uint32>(outH) + 7) / 8, 1);
+                SDL_EndGPUComputePass(cps);
+            }
+        };
+        float pf[4] = {static_cast<float>(r->fb_w), static_cast<float>(r->fb_h),
+                       static_cast<float>(r->fb_w) / static_cast<float>(r->width),
+                       static_cast<float>(r->fb_h) / static_cast<float>(r->height)};
+        runPass(r->fsr_easu_pipe, r->fsr_up, r->offscreen_low, pf, sizeof(pf),
+                r->width, r->height);
+        float rp[4] = {r->fsr_sharpness, 0, 0, 0};
+        runPass(r->fsr_rcas_pipe, r->fsr_out, r->fsr_up, rp, sizeof(rp),
+                r->width, r->height);
+
+        SDL_GPUBlitInfo blit;
+        std::memset(&blit, 0, sizeof(blit));
+        blit.source.texture = r->fsr_out;
+        blit.source.w = static_cast<Uint32>(r->width);
+        blit.source.h = static_cast<Uint32>(r->height);
+        blit.destination.texture = swapchain;
+        blit.destination.w = sw;
+        blit.destination.h = sh;
+        blit.load_op = SDL_GPU_LOADOP_CLEAR;
+        blit.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
+        blit.filter = SDL_GPU_FILTER_LINEAR;
+        SDL_BlitGPUTexture(cmd, &blit);
         SDL_SubmitGPUCommandBuffer(cmd);
         return 0;
     }
@@ -1255,8 +2068,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     SDL_GPUTextureRegion region;
     std::memset(&region, 0, sizeof(region));
     region.texture = r->offscreen;
-    region.w = static_cast<Uint32>(r->width);
-    region.h = static_cast<Uint32>(r->height);
+    region.w = static_cast<Uint32>(r->fb_w);
+    region.h = static_cast<Uint32>(r->fb_h);
     region.d = 1;
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
     SDL_UploadToGPUTexture(cp, &upload, &region, false);
@@ -1265,8 +2078,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     SDL_GPUBlitInfo blit;
     std::memset(&blit, 0, sizeof(blit));
     blit.source.texture = r->offscreen;
-    blit.source.w = static_cast<Uint32>(r->width);
-    blit.source.h = static_cast<Uint32>(r->height);
+    blit.source.w = static_cast<Uint32>(r->fb_w);
+    blit.source.h = static_cast<Uint32>(r->fb_h);
     blit.destination.texture = swapchain;
     blit.destination.w = sw;
     blit.destination.h = sh;

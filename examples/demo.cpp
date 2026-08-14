@@ -13,6 +13,7 @@
 #include "whaleui.h"
 
 #include <cstdio>
+#include <string>
 
 static const char* kHtml =
     "<html><head><style>"
@@ -98,8 +99,9 @@ static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
     }
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
+    (void)argc;
     whaleui_app_t* app = whaleui_app_create();
     if (!app) {
         std::fprintf(stderr, "app create failed\n");
@@ -119,7 +121,18 @@ int main(void)
         std::fprintf(stderr, "window create failed\n");
         return 1;
     }
-    if (whaleui_window_load_html(win, kHtml) != 0) {
+    if (argc > 1) {
+        /* demo <file.html>: render an external HTML file (bare path or
+         * file:// URI; relative paths resolve against the working dir) */
+        std::string uri = argv[1];
+        if (uri.rfind("file://", 0) != 0) {
+            uri = "file://" + uri;
+        }
+        if (whaleui_window_load_uri(win, uri.c_str()) != 0) {
+            std::fprintf(stderr, "load %s failed\n", argv[1]);
+            return 1;
+        }
+    } else if (whaleui_window_load_html(win, kHtml) != 0) {
         std::fprintf(stderr, "load html failed\n");
         return 1;
     }

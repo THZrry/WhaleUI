@@ -13,6 +13,7 @@
 #include "layout/layout.h"
 #include "style/css.h"
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@ typedef struct SDL_Window SDL_Window;
 typedef struct SDL_GPUDevice SDL_GPUDevice;
 typedef struct SDL_GPUTexture SDL_GPUTexture;
 typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
+typedef struct SDL_GPUComputePipeline SDL_GPUComputePipeline;
 typedef struct TTF_Font TTF_Font;
 typedef struct TTF_TextEngine TTF_TextEngine;
 
@@ -64,6 +66,41 @@ struct whaleui_render
 
     /* element under the mouse (for :hover rules) */
     struct lxb_dom_element* hover_el;
+    /* last clicked control (:focus) and the element the left button is
+     * held down on (:active) */
+    struct lxb_dom_element* focus_el;
+    struct lxb_dom_element* pressed_el;
+
+    /* color transitions (CSS `transition` on color properties): one active
+     * animation per element+property, plus the last-drawn color used to
+     * detect changes and keep animating */
+    struct ColorAnim
+    {
+        struct lxb_dom_element* el;
+        std::string prop;
+        unsigned int from, to;
+        uint64_t start; /* SDL_GetTicks ms */
+        uint32_t dur;
+    };
+    std::vector<ColorAnim> anims;
+    std::map<std::string, unsigned int> anim_last;
+
+    /* FSR 1.0 (GPU compute upscale, shaders in fsr_shaders.h).
+     * fsr_mode: 0 = auto (default; enable on 4K display or on battery,
+     * unless the scaled render size gets too small), 1 = on, 2 = off.
+     * fb_w/fb_h = the actual render resolution (== window when FSR off,
+     * window*scale when on); interaction coordinates are scaled to it. */
+    int fsr_mode;
+    float fsr_scale;
+    float fsr_sharpness;
+    int fb_w, fb_h;
+    int fsr_active;
+    SDL_GPUComputePipeline* fsr_easu_pipe;
+    SDL_GPUComputePipeline* fsr_rcas_pipe;
+    SDL_GPUTexture* offscreen_low;   /* rgba8, render res (upload target) */
+    SDL_GPUTexture* fsr_up;          /* rgba8, window res (EASU out) */
+    SDL_GPUTexture* fsr_out;         /* rgba8, window res (RCAS out) */
+    SDL_GPUTransferBuffer* fsr_transfer; /* low-res upload buffer */
 
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
@@ -79,6 +116,16 @@ int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
 
 /* Update the hovered element from a mouse position; repaints when changed. */
 void whaleui_render_set_hover(whaleui_render_t* r, int x, int y);
+
+/* Left-button press/release: hit-tests and tracks the pressed element
+ * (:active) and the focused element (:focus, set on press). */
+void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y, int down);
+
+/* FSR 1.0 upscaling. mode: 0 = auto (4K display or battery -> on, unless the
+ * scaled render size would be too small), 1 = force on, 2 = off. scale e.g.
+ * 0.5 (render at half resolution, EASU upscales), sharpness in [0,1]. */
+void whaleui_render_set_fsr(whaleui_render_t* r, int mode, float scale,
+                            float sharpness);
 
 /* Create/destroy a per-window render context (device/window borrowed).
  * The window must already be claimed for the GPU device. */

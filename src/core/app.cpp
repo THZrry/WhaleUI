@@ -141,6 +141,9 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                     for (whaleui_window_t* win : app->windows) {
                         if (win->render && win->document &&
                             SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                            whaleui_render_set_pressed(win->render,
+                                                       static_cast<int>(e.button.x),
+                                                       static_cast<int>(e.button.y), 1);
                             const char* val = nullptr;
                             if (whaleui_render_handle_click(win->render,
                                                             e.button.x, e.button.y,
@@ -148,6 +151,17 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                                 val && app->select_cb) {
                                 app->select_cb(app, val, app->select_ud);
                             }
+                            break;
+                        }
+                    }
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    for (whaleui_window_t* win : app->windows) {
+                        if (win->render &&
+                            SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                            whaleui_render_set_pressed(win->render, 0, 0, 0);
                             break;
                         }
                     }
