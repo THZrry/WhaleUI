@@ -55,6 +55,7 @@ set_policy("build.across_targets_in_parallel", true)
 -- attach SDL3 to a target: prebuilt or xrepo
 local function use_sdl3(t)
     t:add("defines", "SDL_DISABLE_OLD_NAMES")
+    t:add("includedirs", "3rdparty/dxc/include") -- dxcapi.h (HLSL -> DXIL)
     if sdl3_prebuilt then
         t:add("includedirs", "3rdparty/sdl3/include")
         t:add("linkdirs", "3rdparty/sdl3/lib")
@@ -138,6 +139,14 @@ after_build(function (target)
         if os.isfile(sdl3dll) then
             os.cp(sdl3dll, target:targetdir())
         end
+        local dxcdll = os.projectdir() .. "/3rdparty/dxc/bin/dxcompiler.dll"
+        if os.isfile(dxcdll) then
+            os.cp(dxcdll, target:targetdir())
+        end
+        local dxildll = os.projectdir() .. "/3rdparty/dxc/bin/dxil.dll"
+        if os.isfile(dxildll) then
+            os.cp(dxildll, target:targetdir())
+        end
     end
 end)
 
@@ -152,6 +161,3 @@ target("demo")
     on_load(function (target)
         use_sdl3(target)
     end)
-
-
-

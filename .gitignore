@@ -23,3 +23,6 @@ third_party/*/*
 # user-provided, not tracked
 Qwen_html_*.html
 fsr-min/
+
+# DXC (HLSL->DXIL runtime compile): the dlls must ship with the app
+!3rdparty/dxc/bin/

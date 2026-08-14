@@ -6,6 +6,8 @@
 #include "render/render.h"
 #include "render/fsr_shaders.h"
 #include "render/fsr_dxil.h"
+#include "render/gpu.h"
+#include "render/gpu_shaders.h"
 #include "animate/animate.h"
 #include "font/font.h"
 #include "style/style.h"
@@ -29,6 +31,11 @@
 #include <functional>
 
 namespace {
+
+/* GPU draw-list target for the current paint pass (single-threaded; set by
+ * render_frame before painting, cleared after). When set, every fill/rect
+ * call appends a batched command instead of writing CPU pixels. */
+whaleui_gpu_t* g_gpu = nullptr;
 
 /* --- color --- */
 
@@ -100,6 +107,21 @@ void clip_rect(int& x0, int& y0, int& x1, int& y1, const Clip* clip)
 void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                int x, int y, int w, int h, unsigned int color, const Clip* clip)
 {
+    if (g_gpu) {
+        int c[4];
+        const int* cp = nullptr;
+        if (clip) {
+            c[0] = clip->x;
+            c[1] = clip->y;
+            c[2] = clip->w;
+            c[3] = clip->h;
+            cp = c;
+        }
+        whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
+                         static_cast<float>(w), static_cast<float>(h),
+                         0.0f, color, cp);
+        return;
+    }
     if (w <= 0 || h <= 0) {
         return;
     }
@@ -355,6 +377,25 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip)
 {
+    if (g_gpu) {
+        /* GPU path: linear two-color gradients come free via vertex-color
+         * interpolation; multi-stop/radial fall back to the first stop.
+         * ponytail: a dedicated gradient shader would cover all cases. */
+        unsigned int c = g.stops.empty() ? 0 : g.stops[0].c;
+        int c2[4];
+        const int* cp = nullptr;
+        if (clip) {
+            c2[0] = clip->x;
+            c2[1] = clip->y;
+            c2[2] = clip->w;
+            c2[3] = clip->h;
+            cp = c2;
+        }
+        whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
+                         static_cast<float>(w), static_cast<float>(h),
+                         0.0f, c, cp);
+        return;
+    }
     if (w <= 0 || h <= 0 || g.stops.empty()) {
         return;
     }
@@ -469,6 +510,21 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                      int x, int y, int w, int h, int radius,
                      unsigned int color, const Clip* clip)
 {
+    if (g_gpu) {
+        int c[4];
+        const int* cp = nullptr;
+        if (clip) {
+            c[0] = clip->x;
+            c[1] = clip->y;
+            c[2] = clip->w;
+            c[3] = clip->h;
+            cp = c;
+        }
+        whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
+                         static_cast<float>(w), static_cast<float>(h),
+                         static_cast<float>(radius), color, cp);
+        return;
+    }
     if (radius <= 0) {
         fill_rect(fb, fbw, fbh, x, y, w, h, color, clip);
         return;
@@ -510,8 +566,20 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
  * inset by `bw`, so borders follow the corner arcs instead of going square */
 void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
                        int x, int y, int w, int h, int radius, int bw,
-                       unsigned int color, const Clip* clip)
+                       unsigned int color, unsigned int bg, const Clip* clip)
 {
+    if (g_gpu) {
+        /* ring via two rounded rects: outer in the border color, then the
+         * inner rect re-filled with the element's background color */
+        fill_round_rect(fb, fbw, fbh, x, y, w, h, radius, color, clip);
+        int ix = x + bw, iy = y + bw, iw = w - 2 * bw, ih = h - 2 * bw;
+        int irad = radius - bw;
+        if (irad < 0) {
+            irad = 0;
+        }
+        fill_round_rect(fb, fbw, fbh, ix, iy, iw, ih, irad, bg, clip);
+        return;
+    }
     if (bw <= 0) {
         return;
     }
@@ -1554,8 +1622,13 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             if (cs) {
                 SDL_FillSurfaceRect(cs, nullptr, 0);
                 TTF_DrawSurfaceText(ct, 0, 0, cs);
-                blend_surface(r->pixels, r->fb_w, r->fb_h, cs, tx, ty, clip,
-                              &color);
+                if (g_gpu) {
+                    blend_surface(r->text_layer, r->fb_w, r->fb_h, cs, tx, ty,
+                                  clip, &color);
+                } else {
+                    blend_surface(r->pixels, r->fb_w, r->fb_h, cs, tx, ty,
+                                  clip, &color);
+                }
                 SDL_DestroySurface(cs);
             }
             TTF_DestroyText(ct);
@@ -1636,6 +1709,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                     TTF_DrawSurfaceText(t, 0, 0, surf);
                 }
                 e.surf = surf;
+                e.ax = -1; /* atlas slot is stale after a re-rasterize */
             }
         } else {
             surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
@@ -1645,8 +1719,16 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             }
         }
         if (surf) {
-            blend_surface(r->pixels, r->fb_w, r->fb_h, surf, tx, ty, clip,
-                          &color);
+            if (g_gpu) {
+                /* text goes to the CPU layer (geometries stay on the GPU
+                 * draw list); the layer is composited into the target by a
+                 * compute pass after the geometry render pass */
+                blend_surface(r->text_layer, r->fb_w, r->fb_h, surf, tx, ty,
+                              clip, &color);
+            } else {
+                blend_surface(r->pixels, r->fb_w, r->fb_h, surf, tx, ty,
+                              clip, &color);
+            }
         }
         if (cache_key.empty() && surf) {
             SDL_DestroySurface(surf);
@@ -2489,7 +2571,7 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     /* border around the list (follows the corner arcs when rounded) */
     fill_round_border(r->pixels, r->fb_w, r->fb_h, list_x, list_y,
-                      list_w, list_h, radius, 1, border_c, clip);
+                      list_w, list_h, radius, 1, border_c, bg, clip);
 }
 
 /* depth-first hit test; coordinates are absolute (layout boxes are absolute).
@@ -2692,10 +2774,12 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     if (!br.empty()) {
         radius = std::atoi(br.c_str());
     }
+    unsigned int bg_c = 0; /* inner re-fill color for rounded border rings */
     if (bg != 0) {
         unsigned int a = (bg >> 24) & 0xFF;
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
         unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
+        bg_c = c;
         if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
@@ -2739,7 +2823,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             if (radius > 0 && brw > 0) {
                 fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                                   n->border.y + noy,
-                                  bw, bh, radius, brw, c, eff);
+                                  bw, bh, radius, brw, c, bg_c, eff);
             } else {
                 if (bw2[0]) { /* top */
                     fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
@@ -3173,32 +3257,19 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_pointer = nullptr;
     r->anim = whaleui_anim_create();
     r->text_scale = 1.0f;
+    r->partial = 0;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
+    r->text_layer.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0);
 
-    /* GPU path: offscreen target + transfer buffer */
-    SDL_GPUTextureCreateInfo tci;
-    std::memset(&tci, 0, sizeof(tci));
-    tci.type = SDL_GPU_TEXTURETYPE_2D;
-    tci.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    tci.width = static_cast<Uint32>(width);
-    tci.height = static_cast<Uint32>(height);
-    tci.layer_count_or_depth = 1;
-    tci.num_levels = 1;
-    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    r->offscreen = SDL_CreateGPUTexture(device, &tci);
-
-    SDL_GPUTransferBufferCreateInfo tbi;
-    std::memset(&tbi, 0, sizeof(tbi));
-    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
-    r->transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
-
-    if (!r->offscreen || !r->transfer) {
-        SDL_ReleaseGPUTexture(device, r->offscreen);
-        SDL_ReleaseGPUTransferBuffer(device, r->transfer);
+    /* GPU renderer: batched draw commands into an offscreen target.
+     * FSR is disabled for now (its path still expects the CPU framebuffer;
+     * it will be rewired to read the GPU target). */
+    r->gpu = whaleui_gpu_create(device, width, height);
+    if (!r->gpu) {
         delete r;
         return nullptr;
     }
+    r->fsr_active = 0;
     /* FSR compute resources (created up front; auto mode may enable it) */
     render_fsr_create(r);
 
@@ -3254,8 +3325,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
         TTF_DestroySurfaceTextEngine(r->text_engine);
     }
 #endif
-    SDL_ReleaseGPUTexture(r->device, r->offscreen);
-    SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
+    whaleui_gpu_destroy(r->gpu);
     render_fsr_destroy(r);
     delete r;
 }
@@ -3928,8 +3998,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return -2;
     }
 
-    /* paint */
-    std::fill(r->pixels.begin(), r->pixels.end(), r->bg_color);
+    /* paint: collect batched GPU draw commands (CPU never touches pixels;
+     * the painter appends rects/text sprites to the command list). Text
+     * goes to the CPU layer, uploaded + composited by a compute pass. */
+    std::fill(r->text_layer.begin(), r->text_layer.end(), 0);
+    g_gpu = r->gpu;
     Clip full = {0, 0, r->fb_w, r->fb_h};
     int sel_lo = 0, sel_hi = 0;
     sel_seq(r, &sel_lo, &sel_hi);
@@ -3949,9 +4022,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             paint_select_list(r, s, soff, &full);
         }
     }
+    g_gpu = nullptr;
 
-    /* present: upload offscreen + blit to swapchain */
-    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
+    /* upload the text layer every frame (cleared to zero before painting;
+     * the compute pass composites it over the geometry) */
+    whaleui_gpu_text_layer(r->gpu, r->text_layer.data(), r->fb_w, r->fb_h);
+
+    /* present: one batched render pass into the offscreen target, then a
+     * single blit to the swapchain - no per-element GPU round-trips */
+    SDL_GPUCommandBuffer* cmd =
+        whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color);
     if (!cmd) {
         return -3;
     }
@@ -3961,101 +4041,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         SDL_SubmitGPUCommandBuffer(cmd);
         return 0;
     }
-    if (r->fsr_active && r->offscreen_low) {
-        /* FSR path: upload the low-res framebuffer (RGB swapped: pixels are
-         * 0xAARRGGBB = B,G,R,A bytes, the rgba8 shader wants R,G,B,A), then
-         * EASU upscale -> RCAS sharpen -> blit the full-res result. */
-        void* mapped = SDL_MapGPUTransferBuffer(r->device, r->fsr_transfer, false);
-        if (mapped) {
-            const unsigned char* src =
-                reinterpret_cast<const unsigned char*>(r->pixels.data());
-            unsigned char* dst = static_cast<unsigned char*>(mapped);
-            const size_t n = r->pixels.size();
-            for (size_t i = 0; i < n; ++i) {
-                dst[i * 4 + 0] = src[i * 4 + 2]; /* R */
-                dst[i * 4 + 1] = src[i * 4 + 1]; /* G */
-                dst[i * 4 + 2] = src[i * 4 + 0]; /* B */
-                dst[i * 4 + 3] = src[i * 4 + 3]; /* A */
-            }
-            SDL_UnmapGPUTransferBuffer(r->device, r->fsr_transfer);
-        }
-        SDL_GPUTextureTransferInfo upload;
-        std::memset(&upload, 0, sizeof(upload));
-        upload.transfer_buffer = r->fsr_transfer;
-        SDL_GPUTextureRegion region;
-        std::memset(&region, 0, sizeof(region));
-        region.texture = r->offscreen_low;
-        region.w = static_cast<Uint32>(r->fb_w);
-        region.h = static_cast<Uint32>(r->fb_h);
-        region.d = 1;
-        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-        SDL_UploadToGPUTexture(cp, &upload, &region, false);
-        SDL_EndGPUCopyPass(cp);
-
-        auto runPass = [&](SDL_GPUComputePipeline* p, SDL_GPUTexture* rw,
-                           SDL_GPUTexture* ro, const void* pc, Uint32 pcSz,
-                           int outW, int outH) {
-            SDL_GPUStorageTextureReadWriteBinding rwBind;
-            std::memset(&rwBind, 0, sizeof(rwBind));
-            rwBind.texture = rw;
-            rwBind.mip_level = 0;
-            rwBind.layer = 0;
-            rwBind.cycle = false;
-            SDL_GPUComputePass* cps = SDL_BeginGPUComputePass(cmd, &rwBind, 1, nullptr, 0);
-            if (cps) {
-                SDL_BindGPUComputePipeline(cps, p);
-                SDL_BindGPUComputeStorageTextures(cps, 0, &ro, 1);
-                SDL_PushGPUComputeUniformData(cmd, 0, pc, pcSz);
-                SDL_DispatchGPUCompute(cps, (static_cast<Uint32>(outW) + 7) / 8,
-                                       (static_cast<Uint32>(outH) + 7) / 8, 1);
-                SDL_EndGPUComputePass(cps);
-            }
-        };
-        float pf[4] = {static_cast<float>(r->fb_w), static_cast<float>(r->fb_h),
-                       static_cast<float>(r->fb_w) / static_cast<float>(r->width),
-                       static_cast<float>(r->fb_h) / static_cast<float>(r->height)};
-        runPass(r->fsr_easu_pipe, r->fsr_up, r->offscreen_low, pf, sizeof(pf),
-                r->width, r->height);
-        float rp[4] = {r->fsr_sharpness, 0, 0, 0};
-        runPass(r->fsr_rcas_pipe, r->fsr_out, r->fsr_up, rp, sizeof(rp),
-                r->width, r->height);
-
-        SDL_GPUBlitInfo blit;
-        std::memset(&blit, 0, sizeof(blit));
-        blit.source.texture = r->fsr_out;
-        blit.source.w = static_cast<Uint32>(r->width);
-        blit.source.h = static_cast<Uint32>(r->height);
-        blit.destination.texture = swapchain;
-        blit.destination.w = sw;
-        blit.destination.h = sh;
-        blit.load_op = SDL_GPU_LOADOP_CLEAR;
-        blit.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
-        blit.filter = SDL_GPU_FILTER_LINEAR;
-        SDL_BlitGPUTexture(cmd, &blit);
-        SDL_SubmitGPUCommandBuffer(cmd);
-        return 0;
-    }
-    void* mapped = SDL_MapGPUTransferBuffer(r->device, r->transfer, false);
-    if (mapped) {
-        std::memcpy(mapped, r->pixels.data(), r->pixels.size() * 4);
-        SDL_UnmapGPUTransferBuffer(r->device, r->transfer);
-    }
-    SDL_GPUTextureTransferInfo upload;
-    std::memset(&upload, 0, sizeof(upload));
-    upload.transfer_buffer = r->transfer;
-    SDL_GPUTextureRegion region;
-    std::memset(&region, 0, sizeof(region));
-    region.texture = r->offscreen;
-    region.w = static_cast<Uint32>(r->fb_w);
-    region.h = static_cast<Uint32>(r->fb_h);
-    region.d = 1;
-    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-    SDL_UploadToGPUTexture(cp, &upload, &region, false);
-    SDL_EndGPUCopyPass(cp);
-
     SDL_GPUBlitInfo blit;
     std::memset(&blit, 0, sizeof(blit));
-    blit.source.texture = r->offscreen;
+    blit.source.texture = r->gpu->target2;
     blit.source.w = static_cast<Uint32>(r->fb_w);
     blit.source.h = static_cast<Uint32>(r->fb_h);
     blit.destination.texture = swapchain;
@@ -4063,7 +4051,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     blit.destination.h = sh;
     blit.load_op = SDL_GPU_LOADOP_CLEAR;
     blit.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
-    blit.filter = SDL_GPU_FILTER_NEAREST;
+    blit.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cmd, &blit);
     SDL_SubmitGPUCommandBuffer(cmd);
     return 0;

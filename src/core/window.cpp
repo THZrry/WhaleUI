@@ -163,12 +163,24 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* DXIL covers D3D12 (FSR's compute shaders ship both DXIL and
-             * SPIR-V); SPIR-V covers Vulkan. SDL picks the first working
-             * backend, and the renderer selects the matching shader bytes. */
-            win->app->gpu = SDL_CreateGPUDevice(
-                SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
-                false, nullptr);
+            /* D3D12 first (works everywhere, incl. Basic Display Adapter via
+             * WARP); DXBC from D3DCompile needs the device to declare it. */
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_SetBooleanProperty(props,
+                SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXBC_BOOLEAN, true);
+            SDL_SetBooleanProperty(props,
+                SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
+            SDL_SetBooleanProperty(props,
+                SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+            win->app->gpu = SDL_CreateGPUDeviceWithProperties(props);
+            SDL_DestroyProperties(props);
+            if (!win->app->gpu) {
+                /* fallback: let SDL pick any backend */
+                win->app->gpu = SDL_CreateGPUDevice(
+                    SDL_GPU_SHADERFORMAT_DXBC | SDL_GPU_SHADERFORMAT_DXIL |
+                        SDL_GPU_SHADERFORMAT_SPIRV,
+                    false, nullptr);
+            }
             if (!win->app->gpu) {
                 SDL_DestroyWindow(win->sdl);
                 win->sdl = nullptr;

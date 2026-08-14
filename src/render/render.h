@@ -71,6 +71,8 @@ struct whaleui_render
         SDL_Surface* surf; /* rasterized glyphs (drawn with the default
                               color; tinting happens at blend time) */
         std::string text;
+        /* glyph atlas slot (GPU path): surface pixels live here */
+        int ax, ay, aw, ah;
     };
     std::map<std::string, TextCacheEntry> text_cache;
 
@@ -143,11 +145,24 @@ struct whaleui_render
     SDL_GPUTexture* fsr_out;         /* rgba8, window res (RCAS out) */
     SDL_GPUTransferBuffer* fsr_transfer; /* low-res upload buffer */
 
+    /* GPU renderer (gpu.h): batched draw commands, no CPU framebuffer */
+    struct whaleui_gpu* gpu;
+
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
 
     /* global text scale (font-size multiplier, 1.0 = 100%) */
     float text_scale;
+
+    /* dirty-rect repaint: when partial is set, only this region is cleared,
+     * painted and uploaded (small animations no longer repaint the whole
+     * framebuffer every frame) */
+    int partial;
+    int dirty_x, dirty_y, dirty_w, dirty_h;
+
+    /* CPU text layer: text is rasterized here (geometries go to the GPU
+     * draw list), uploaded and composited into the GPU target each frame */
+    std::vector<unsigned int> text_layer;
 };
 
 typedef struct whaleui_render whaleui_render_t;

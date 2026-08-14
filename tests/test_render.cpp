@@ -3,6 +3,7 @@
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
 #include "render/render.h"
+#include "render/gpu.h"
 #include "core/window.h"
 #include "layout/layout.h"
 
@@ -14,6 +15,52 @@
 #include <cstring>
 
 int anim_runs(void); /* defined after main (window/GPU path) */
+
+/* read one pixel back from the GPU composited target (R8G8B8A8) */
+static unsigned int gpixel(whaleui_render_t* r, int x, int y)
+{
+    if (!r || !r->gpu) {
+        return 0;
+    }
+    SDL_GPUDevice* dev = r->gpu->device;
+    static SDL_GPUTransferBuffer* tb = nullptr;
+    if (!tb) {
+        SDL_GPUTransferBufferCreateInfo tbi = {};
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+        tbi.size = 4;
+        tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+    }
+    if (!tb) {
+        return 0;
+    }
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion region = {};
+    region.texture = r->gpu->target2;
+    region.x = static_cast<Uint32>(x < 0 ? 0 : x);
+    region.y = static_cast<Uint32>(y < 0 ? 0 : y);
+    region.w = 1;
+    region.h = 1;
+    region.d = 1;
+    SDL_GPUTextureTransferInfo ti = {};
+    ti.transfer_buffer = tb;
+    SDL_DownloadFromGPUTexture(cp, &region, &ti);
+    SDL_EndGPUCopyPass(cp);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence) {
+        SDL_WaitForGPUFences(dev, false, &fence, 1);
+        SDL_ReleaseGPUFence(dev, fence);
+    }
+    unsigned int px = 0;
+    void* data = SDL_MapGPUTransferBuffer(dev, tb, true);
+    if (data) {
+        const unsigned char* p = static_cast<const unsigned char*>(data);
+        px = 0xFF000000 | (static_cast<unsigned int>(p[0]) << 16) |
+             (static_cast<unsigned int>(p[1]) << 8) | p[2];
+        SDL_UnmapGPUTransferBuffer(dev, tb);
+    }
+    return px;
+}
 
 int main(void)
 {
@@ -57,17 +104,17 @@ int main(void)
     assert(whaleui_render_frame(win->render, win->document) == 0);
 
     /* red box covers the top-left 100x100 */
-    assert(win->render->pixels[0] == 0xFFFF0000);             /* (0,0) */
-    assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* (50,50) */
-    assert(win->render->pixels[99 * 200 + 99] == 0xFFFF0000); /* (99,99) */
+    assert(gpixel(win->render, 0, 0) == 0xFFFF0000);             /* (0,0) */
+    assert(gpixel(win->render, 50, 50) == 0xFFFF0000); /* (50,50) */
+    assert(gpixel(win->render, 99, 99) == 0xFFFF0000); /* (99,99) */
     /* right of the box, still inside body: body background (light gray) */
-    assert(win->render->pixels[50 * 200 + 150] == 0xFFF3F3F3);
+    assert(gpixel(win->render, 150, 50) == 0xFFF3F3F3);
 
     /* theme switch via app_set_theme (the T-key path) repaints dark */
     assert(whaleui_app_set_theme(app, WHALEUI_THEME_DARK) == 0);
     assert(whaleui_render_frame(win->render, win->document) == 0);
-    assert(win->render->pixels[50 * 200 + 150] == 0xFF202020);
-    assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000);
+    assert(gpixel(win->render, 150, 50) == 0xFF202020);
+    assert(gpixel(win->render, 50, 50) == 0xFFFF0000);
 
     whaleui_window_destroy(win);
 
@@ -79,10 +126,10 @@ int main(void)
         "background-color:#ff0000;border-radius:10px;\"></div></body></html>") == 0);
     assert(whaleui_window_show(win2) == 0);
     assert(whaleui_render_frame(win2->render, win2->document) == 0);
-    assert(win2->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* center inside */
-    assert(win2->render->pixels[0] == 0xFF202020);             /* corner outside arc */
-    assert(win2->render->pixels[2 * 200 + 2] == 0xFF202020);   /* just outside the arc */
-    assert(win2->render->pixels[5 * 200 + 5] == 0xFFFF0000);   /* just inside the arc */
+    assert(gpixel(win2->render, 50, 50) == 0xFFFF0000); /* center inside */
+    assert(gpixel(win2->render, 0, 0) == 0xFF202020);             /* corner outside arc */
+    assert(gpixel(win2->render, 2, 2) == 0xFF202020);   /* just outside the arc */
+    assert(gpixel(win2->render, 5, 5) == 0xFFFF0000);   /* just inside the arc */
     whaleui_window_destroy(win2);
 
     /* rounded border: the 2px border follows the corner arcs */
@@ -95,11 +142,11 @@ int main(void)
     assert(whaleui_window_show(win3) == 0);
     assert(whaleui_render_frame(win3->render, win3->document) == 0);
     /* corner (1,1) sits outside the arc -> body background */
-    assert(win3->render->pixels[1 * 200 + 1] == 0xFF202020);
+    assert(gpixel(win3->render, 1, 1) == 0xFF202020);
     /* top border mid (50,1): inside the 2px ring -> blue */
-    assert(win3->render->pixels[1 * 200 + 50] == 0xFF0000FF);
+    assert(gpixel(win3->render, 50, 1) == 0xFF0000FF);
     /* inner area (50,20) -> red */
-    assert(win3->render->pixels[20 * 200 + 50] == 0xFFFF0000);
+    assert(gpixel(win3->render, 50, 20) == 0xFFFF0000);
     whaleui_window_destroy(win3);
 
     /* <select> dropdown interaction */
@@ -396,13 +443,13 @@ int main(void)
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         /* before scrolling, (150,150) is inside the blue block (150..300) */
-        assert(w->render->pixels[150 * 300 + 150] == 0xFF0000FF);
+        assert(gpixel(w->render, 150, 150) == 0xFF0000FF);
         /* wheel-down 40px: content moves UP, blue block starts at 110 */
         whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
         assert(whaleui_render_frame(w->render, w->document) == 0);
-        assert(w->render->pixels[150 * 300 + 150] == 0xFF0000FF); /* still blue */
+        assert(gpixel(w->render, 150, 150) == 0xFF0000FF); /* still blue */
         /* y=130 is inside the shifted blue block (110..260), not red */
-        assert(w->render->pixels[130 * 300 + 150] == 0xFF0000FF);
+        assert(gpixel(w->render, 150, 130) == 0xFF0000FF);
         whaleui_window_destroy(w);
     }
 
@@ -550,12 +597,12 @@ int anim_runs(void)
         return 0;
     }
     assert(whaleui_render_frame(w->render, w->document) == 0);
-    unsigned int f0 = w->render->pixels[50 * 200 + 50];
+    unsigned int f0 = gpixel(w->render, 50, 50);
     /* let the animation advance ~400ms, then the box must be visibly
      * fading in (background underneath + red channel rising) */
     SDL_Delay(400);
     assert(whaleui_render_frame(w->render, w->document) == 0);
-    unsigned int f1 = w->render->pixels[50 * 200 + 50];
+    unsigned int f1 = gpixel(w->render, 50, 50);
     unsigned int r0 = (f0 >> 16) & 0xFF, r1 = (f1 >> 16) & 0xFF;
     assert(f1 != f0);
     assert(r1 > r0); /* red channel grows as opacity climbs */
