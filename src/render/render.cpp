@@ -3134,9 +3134,12 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             return;
         }
         int& cur = r->scrolls[sc->el];
-        /* Content moves opposite the wheel: rolling down (dy<0) reveals
-         * content further down, so scroll_y increases with -dy. */
-        int nv = cur - static_cast<int>(dpx);
+        /* Scroll direction verified on Windows with a real mouse: content
+         * follows dy (positive dy reveals content further down). SDL
+         * normalizes wheel signs across Windows/macOS/Linux, so the same
+         * logic applies on all three - revisit only if a platform reports
+         * the opposite sign in practice. */
+        int nv = cur + static_cast<int>(dpx);
         if (nv > sc->scroll_max) {
             nv = sc->scroll_max;
         }
