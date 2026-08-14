@@ -129,6 +129,20 @@ int display_kind(const std::string& d)
     return 3; /* block (default) */
 }
 
+/* flex-grow, honoring the "flex: <grow> ..." shorthand */
+float flex_grow(const WhaleUIComputedStyle& s)
+{
+    std::string g = get(s, "flex-grow");
+    if (!g.empty()) {
+        return std::strtof(g.c_str(), nullptr);
+    }
+    std::string f = get(s, "flex");
+    if (!f.empty()) {
+        return std::strtof(f.c_str(), nullptr);
+    }
+    return 0;
+}
+
 int position_kind(const std::string& p)
 {
     if (p == "absolute") {
@@ -492,7 +506,7 @@ struct Builder
         /* flex-grow distributes free space */
         float grow_sum = 0;
         for (size_t i = 0; i < kids.size(); ++i) {
-            float g = std::strtof(get(kids[i]->style, "flex-grow").c_str(), nullptr);
+            float g = flex_grow(kids[i]->style);
             if (g > 0) {
                 grow_sum += g;
             }
@@ -517,7 +531,7 @@ struct Builder
         float pos = lead;
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
-            float grow = std::strtof(get(k->style, "flex-grow").c_str(), nullptr);
+            float grow = flex_grow(k->style);
             int sz = main_size[i] + (grow > 0 ? static_cast<int>(extra * grow) : 0);
             if (column) {
                 int c = n->content.y + static_cast<int>(pos);
@@ -570,6 +584,10 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     /* layout the html element into the viewport */
     int cursor = 0;
     b.layout(n, 0, 0, viewport_w, viewport_h, 16, &cursor);
+    /* the root element spans the whole viewport so its background covers the
+     * window even when the content is shorter than the viewport */
+    n->border.h = viewport_h;
+    n->content.h = viewport_h;
     return tree;
 }
 

@@ -18,9 +18,9 @@
 
 static const char* kHtml =
     "<html><head><style>"
-    ":root { --brand: #6366f1; --radius: 12px; }"
+    ":root { --radius: 10px; }"
     "@media (prefers-color-scheme: dark) {"
-    "  .theme-note { color: #fbbf24; }"
+    "  .theme-note { color: #4cc2ff; }"
     "}"
     ".app { display: flex; flex-direction: column; gap: 14px; padding: 28px; }"
     ".header { display: flex; justify-content: space-between;"
@@ -29,28 +29,29 @@ static const char* kHtml =
     ".card { background: var(--card); border: 1px solid var(--border);"
     "        border-radius: var(--radius); padding: 16px 18px; flex: 1; }"
     ".card h2 { margin-top: 0; }"
-    ".badge { background: var(--brand); color: white; padding: 3px 10px;"
-    "         border-radius: 999px; font-size: 11px; font-weight: 600;"
-    "         display: inline-block; }"
+    ".badge { background: var(--accent); color: var(--accent-fg);"
+    "         padding: 3px 10px; border-radius: 999px; font-size: 11px;"
+    "         font-weight: 600; display: inline-block; }"
     ".ta-right { text-align: right; }"
     ".ta-center { text-align: center; }"
-    ".clip-box { overflow: hidden; background: var(--accent); color: white;"
-    "            padding: 8px 10px; border-radius: 6px; width: 150px;"
-    "            height: 26px; font-size: 12px; }"
+    ".clip-box { overflow: hidden; background: var(--accent);"
+    "            color: var(--accent-fg); padding: 8px 10px;"
+    "            border-radius: 6px; width: 150px; height: 26px;"
+    "            font-size: 12px; }"
     "</style></head>"
     "<body><div class=\"app\">"
 
     "<div class=\"header\">"
     "<h1>WhaleUI Demo</h1>"
-    "<span class=\"badge\">GPU · D3D12</span>"
+    "<span class=\"badge\">Fluent · D3D12</span>"
     "</div>"
     "<p class=\"muted\">T 切换深浅色 · ESC 退出 · var()/@media 已生效</p>"
 
     "<div class=\"row\">"
     "<div class=\"card\">"
     "<h2>Controls</h2>"
-    "<p style=\"margin-bottom:10px\"><strong>flex</strong> + 圆角 + 边框(圆角跟随弧线)</p>"
-    "<button>Primary</button> <button style=\"background:var(--muted)\">Ghost</button>"
+    "<p style=\"margin-bottom:10px\"><strong>flex</strong> + 圆角边框(跟随弧线)</p>"
+    "<button>Primary</button> <button style=\"background:var(--muted)\">Secondary</button>"
     "<p style=\"margin-top:10px\"><input value=\"input text\"></p>"
     "</div>"
     "<div class=\"card\">"
@@ -63,9 +64,9 @@ static const char* kHtml =
 
     "<div class=\"row\">"
     "<div class=\"card\">"
-    "<h2>Custom props & media</h2>"
-    "<p>--brand / --radius 来自 :root;--card / --border / --muted 来自主题变量。</p>"
-    "<p class=\"theme-note\">深色主题下此文字变黄(@media prefers-color-scheme)。</p>"
+    "<h2>Theme vars</h2>"
+    "<p>--card / --border / --muted / --accent 由主题注入,可热切换。</p>"
+    "<p class=\"theme-note\">深色主题下此文字变亮蓝(@media prefers-color-scheme)。</p>"
     "</div>"
     "<div class=\"card\">"
     "<h2>Overflow</h2>"
@@ -82,7 +83,8 @@ int main(void)
         std::fprintf(stderr, "app create failed\n");
         return 1;
     }
-    /* register system fonts so text can render */
+    /* register system fonts so text can render (Segoe UI is the Win11 font) */
+    whaleui_font_register("C:/Windows/Fonts/segoeui.ttf");
     whaleui_font_register("C:/Windows/Fonts/arial.ttf");
     whaleui_font_register("C:/Windows/Fonts/msyh.ttc");
 

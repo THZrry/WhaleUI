@@ -220,7 +220,9 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el)
     if (n == 0) {
         return 0;
     }
-    /* match from the last part backwards */
+    /* match from the last part backwards.
+     * The LAST part must match the element itself; only the parts before it
+     * walk ancestors (direct parent for '>', any ancestor otherwise). */
     lxb_dom_node* cur = &el->node;
     for (int i = n - 1; i >= 0; --i) {
         SelPart part;
@@ -228,16 +230,26 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el)
             return 0;
         }
         bool matched = false;
-        while (cur && cur->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            if (part_match(part, lxb_dom_interface_element(cur))) {
+        if (i == n - 1) {
+            /* must match the element itself - no ancestor walk */
+            if (cur->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                part_match(part, lxb_dom_interface_element(cur))) {
                 matched = true;
-                break;
             }
-            if (chain[i].child) {
-                cur = nullptr; /* '>' forbids skipping ancestors */
-                break;
+        } else {
+            /* walk ancestors, starting at the current node */
+            lxb_dom_node* a = cur;
+            while (a) {
+                if (a->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                    part_match(part, lxb_dom_interface_element(a))) {
+                    matched = true;
+                    break;
+                }
+                if (chain[i].child) {
+                    break; /* '>' only allows the direct parent */
+                }
+                a = a->parent;
             }
-            cur = cur->parent;
         }
         if (!matched) {
             return 0;

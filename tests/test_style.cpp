@@ -113,8 +113,11 @@ int main(void)
         assert(card != nullptr);
         whaleui_dom_element_t* p = whaleui_dom_query_selector(doc, ".note");
         assert(p != nullptr);
+        whaleui_dom_element_t* body = whaleui_dom_query_selector(doc, "body");
+        assert(body != nullptr);
         lxb_dom_element* card_el = reinterpret_cast<lxb_dom_element*>(card);
         lxb_dom_element* p_el = reinterpret_cast<lxb_dom_element*>(p);
+        lxb_dom_element* body_el = reinterpret_cast<lxb_dom_element*>(body);
 
         /* matching */
         assert(whaleui_style_match(".card", card_el));
@@ -126,6 +129,11 @@ int main(void)
         assert(!whaleui_style_match(".nope", card_el));
         assert(!whaleui_style_match("span", card_el));
         assert(whaleui_style_match(".note:hover", p_el)); /* pseudo stripped */
+        /* regression: a bare tag selector must NOT match descendants */
+        assert(!whaleui_style_match("body", card_el));
+        assert(!whaleui_style_match("html", card_el));
+        assert(!whaleui_style_match("div", p_el));
+        assert(!whaleui_style_match("div", body_el));
 
         /* media */
         assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800));

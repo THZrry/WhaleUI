@@ -34,7 +34,7 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     }
     whaleui_app_t* app = new whaleui_app_t;
     app->theme = WHALEUI_THEME_SYSTEM;
-    std::strcpy(app->accent, "#0078D4"); /* default accent */
+    std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
     app->max_fps = 0;
     app->battery_saver = 1; /* default 60fps in battery saver */
     app->vsync = 1;

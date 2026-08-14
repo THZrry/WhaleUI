@@ -54,12 +54,12 @@ int main(void)
     assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* (50,50) */
     assert(win->render->pixels[99 * 200 + 99] == 0xFFFF0000); /* (99,99) */
     /* right of the box, still inside body: body background (light gray) */
-    assert(win->render->pixels[50 * 200 + 150] == 0xFFF4F5F7);
+    assert(win->render->pixels[50 * 200 + 150] == 0xFFF3F3F3);
 
     /* theme switch via app_set_theme (the T-key path) repaints dark */
     assert(whaleui_app_set_theme(app, WHALEUI_THEME_DARK) == 0);
     assert(whaleui_render_frame(win->render, win->document) == 0);
-    assert(win->render->pixels[50 * 200 + 150] == 0xFF15171C);
+    assert(win->render->pixels[50 * 200 + 150] == 0xFF202020);
     assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000);
 
     whaleui_window_destroy(win);
@@ -73,8 +73,8 @@ int main(void)
     assert(whaleui_window_show(win2) == 0);
     assert(whaleui_render_frame(win2->render, win2->document) == 0);
     assert(win2->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* center inside */
-    assert(win2->render->pixels[0] == 0xFF15171C);             /* corner outside arc */
-    assert(win2->render->pixels[2 * 200 + 2] == 0xFF15171C);   /* just outside the arc */
+    assert(win2->render->pixels[0] == 0xFF202020);             /* corner outside arc */
+    assert(win2->render->pixels[2 * 200 + 2] == 0xFF202020);   /* just outside the arc */
     assert(win2->render->pixels[5 * 200 + 5] == 0xFFFF0000);   /* just inside the arc */
     whaleui_window_destroy(win2);
 
@@ -88,7 +88,7 @@ int main(void)
     assert(whaleui_window_show(win3) == 0);
     assert(whaleui_render_frame(win3->render, win3->document) == 0);
     /* corner (1,1) sits outside the arc -> body background */
-    assert(win3->render->pixels[1 * 200 + 1] == 0xFF15171C);
+    assert(win3->render->pixels[1 * 200 + 1] == 0xFF202020);
     /* top border mid (50,1): inside the 2px ring -> blue */
     assert(win3->render->pixels[1 * 200 + 50] == 0xFF0000FF);
     /* inner area (50,20) -> red */
