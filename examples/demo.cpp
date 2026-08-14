@@ -12,8 +12,6 @@
 
 #include "whaleui.h"
 
-#include <SDL3/SDL.h>
-
 #include <cstdio>
 
 static const char* kHtml =
@@ -21,6 +19,7 @@ static const char* kHtml =
     "@media (prefers-color-scheme: dark) {"
     "  .theme-note { color: #4cc2ff; }"
     "}"
+    ".row .card { flex: 1; }"   /* page structure: cards share the row */
     ".ta-right { text-align: right; }"
     ".ta-center { text-align: center; }"
     ".clip-box { overflow: hidden; background: var(--accent);"
@@ -89,10 +88,10 @@ static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
     if (!pressed) {
         return;
     }
-    if (keycode == SDLK_ESCAPE) {
+    if (keycode == WHALEUI_KEY_ESCAPE) {
         whaleui_app_quit(app);
-    } else if (keycode == SDLK_T) {
-        whaleui_theme_t cur = whaleui_app_get_theme(app);
+    } else if (keycode == WHALEUI_KEY_T) {
+        whaleui_theme_t cur = whaleui_app_resolved_theme(app);
         whaleui_app_set_theme(app, cur == WHALEUI_THEME_DARK
                                        ? WHALEUI_THEME_LIGHT
                                        : WHALEUI_THEME_DARK);
@@ -125,7 +124,7 @@ int main(void)
         return 1;
     }
     if (whaleui_window_show(win) != 0) {
-        std::fprintf(stderr, "window show failed: %s\n", SDL_GetError());
+        std::fprintf(stderr, "window show failed (needs a GPU backend)\n");
         return 1;
     }
     whaleui_app_run(app);

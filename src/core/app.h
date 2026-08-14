@@ -20,6 +20,7 @@ extern "C" {
 struct whaleui_app
 {
     whaleui_theme_t theme;
+    whaleui_theme_t system_theme; /* OS scheme captured at app_create */
     char theme_style[24];
     char accent[16];
     int max_fps;

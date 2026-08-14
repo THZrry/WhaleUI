@@ -66,6 +66,10 @@ typedef enum whaleui_theme {
 int whaleui_app_set_theme(whaleui_app_t* app, whaleui_theme_t theme);
 whaleui_theme_t whaleui_app_get_theme(const whaleui_app_t* app);
 
+/* The EFFECTIVE theme: WHALEUI_THEME_SYSTEM resolves to the OS scheme that
+ * was detected at app creation (defaults to light when undetectable). */
+whaleui_theme_t whaleui_app_resolved_theme(const whaleui_app_t* app);
+
 /* Accent (theme) color, "#RRGGBB" or "#AARRGGBB". */
 int whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex);
 
@@ -90,13 +94,36 @@ typedef void (*whaleui_select_cb)(whaleui_app_t* app, const char* value,
 int whaleui_app_set_select_callback(whaleui_app_t* app, whaleui_select_cb cb,
                                     void* userdata);
 
-/* Called on every key event. keycode is an SDL_Keycode (SDLK_*); pressed is
- * 1 on key-down, 0 on key-up. Key handling stays in the app (the library
- * only dispatches). */
+/* Called on every key event. keycode is one of the WHALEUI_KEY_* values
+ * below (SDL keycodes passed through; no SDL headers needed to use them);
+ * pressed is 1 on key-down, 0 on key-up. Key handling stays in the app
+ * (the library only dispatches). */
 typedef void (*whaleui_key_cb)(whaleui_app_t* app, int keycode, int pressed,
                                void* userdata);
 int whaleui_app_set_key_callback(whaleui_app_t* app, whaleui_key_cb cb,
                                  void* userdata);
+
+/* Key codes delivered to the key callback (no SDL dependency). */
+enum {
+    WHALEUI_KEY_ESCAPE = 27,
+    WHALEUI_KEY_ENTER  = 13,
+    WHALEUI_KEY_SPACE  = 32,
+    WHALEUI_KEY_TAB    = 9,
+    WHALEUI_KEY_BACKSPACE = 8,
+    WHALEUI_KEY_UP     = 1073741906,
+    WHALEUI_KEY_DOWN   = 1073741905,
+    WHALEUI_KEY_LEFT   = 1073741904,
+    WHALEUI_KEY_RIGHT  = 1073741903,
+    WHALEUI_KEY_A = 'a', WHALEUI_KEY_B = 'b', WHALEUI_KEY_C = 'c',
+    WHALEUI_KEY_D = 'd', WHALEUI_KEY_E = 'e', WHALEUI_KEY_F = 'f',
+    WHALEUI_KEY_G = 'g', WHALEUI_KEY_H = 'h', WHALEUI_KEY_I = 'i',
+    WHALEUI_KEY_J = 'j', WHALEUI_KEY_K = 'k', WHALEUI_KEY_L = 'l',
+    WHALEUI_KEY_M = 'm', WHALEUI_KEY_N = 'n', WHALEUI_KEY_O = 'o',
+    WHALEUI_KEY_P = 'p', WHALEUI_KEY_Q = 'q', WHALEUI_KEY_R = 'r',
+    WHALEUI_KEY_S = 's', WHALEUI_KEY_T = 't', WHALEUI_KEY_U = 'u',
+    WHALEUI_KEY_V = 'v', WHALEUI_KEY_W = 'w', WHALEUI_KEY_X = 'x',
+    WHALEUI_KEY_Y = 'y', WHALEUI_KEY_Z = 'z',
+};
 
 /* ======================= render options ======================= */
 

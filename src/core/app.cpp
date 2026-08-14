@@ -13,13 +13,13 @@
 #include <cstring>
 
 namespace {
-/* theme resolution: SYSTEM -> platform detection */
+/* theme resolution: SYSTEM -> the OS scheme captured at app_create */
 whaleui_theme_t resolved_theme(const whaleui_app_t* app)
 {
     if (!app) {
         return WHALEUI_THEME_LIGHT;
     }
-    return app->theme == WHALEUI_THEME_SYSTEM ? whaleui_platform_system_theme() : app->theme;
+    return app->theme == WHALEUI_THEME_SYSTEM ? app->system_theme : app->theme;
 }
 } // namespace
 
@@ -35,6 +35,9 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     }
     whaleui_app_t* app = new whaleui_app_t;
     app->theme = WHALEUI_THEME_SYSTEM;
+    /* capture the OS scheme once at init (defaults to light when the
+     * platform cannot report one, e.g. older systems) */
+    app->system_theme = whaleui_platform_system_theme();
     std::strcpy(app->theme_style, "fluent");
     std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
     app->max_fps = 0;

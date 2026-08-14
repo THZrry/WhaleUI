@@ -24,6 +24,8 @@ int main(void)
 
         assert(whaleui_app_set_theme(app, WHALEUI_THEME_LIGHT) == 0);
         assert(whaleui_app_get_theme(app) == WHALEUI_THEME_LIGHT);
+        assert(whaleui_app_resolved_theme(app) == WHALEUI_THEME_LIGHT);
+        assert(whaleui_app_resolved_theme(nullptr) == WHALEUI_THEME_LIGHT);
 
         /* invalid theme rejected */
         assert(whaleui_app_set_theme(app, (whaleui_theme_t)99) != 0);
