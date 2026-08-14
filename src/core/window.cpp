@@ -158,16 +158,12 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* FSR 1.0's compute shaders are SPIR-V, so prefer a Vulkan
-             * device; fall back to D3D12 (FSR then unavailable) when the
-             * system has no Vulkan driver. */
-            win->app->gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV,
-                                                false, nullptr);
-            if (!win->app->gpu) {
-                win->app->gpu = SDL_CreateGPUDevice(
-                    SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
-                    false, nullptr);
-            }
+            /* DXIL covers D3D12 (FSR's compute shaders ship both DXIL and
+             * SPIR-V); SPIR-V covers Vulkan. SDL picks the first working
+             * backend, and the renderer selects the matching shader bytes. */
+            win->app->gpu = SDL_CreateGPUDevice(
+                SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
+                false, nullptr);
             if (!win->app->gpu) {
                 SDL_DestroyWindow(win->sdl);
                 win->sdl = nullptr;

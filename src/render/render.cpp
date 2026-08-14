@@ -5,6 +5,7 @@
 
 #include "render/render.h"
 #include "render/fsr_shaders.h"
+#include "render/fsr_dxil.h"
 #include "font/font.h"
 #include "style/style.h"
 
@@ -1443,23 +1444,34 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 int render_fsr_create(whaleui_render_t* r)
 {
     SDL_GPUDevice* d = r->device;
+    /* pick the shader variant for the actual backend: SPIR-V on Vulkan,
+     * DXIL (compiled from HLSL with dxc) on D3D12 */
+    const char* drv = SDL_GetGPUDeviceDriver(d);
+    const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
+    const uint32_t* easu_code = vulkan ? g_easu_spv : g_easu_dxil;
+    const uint32_t easu_words = vulkan ? g_easu_spv_size : g_easu_dxil_size;
+    const uint32_t* rcas_code = vulkan ? g_rcas_spv : g_rcas_dxil;
+    const uint32_t rcas_words = vulkan ? g_rcas_spv_size : g_rcas_dxil_size;
+    const SDL_GPUShaderFormat fmt =
+        vulkan ? SDL_GPU_SHADERFORMAT_SPIRV : SDL_GPU_SHADERFORMAT_DXIL;
     SDL_GPUComputePipelineCreateInfo ci;
     std::memset(&ci, 0, sizeof(ci));
     ci.entrypoint = "main";
-    ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    ci.format = fmt;
     ci.num_readonly_storage_textures = 1;
     ci.num_readwrite_storage_textures = 1;
+    ci.num_uniform_buffers = 1;
     ci.threadcount_x = 8;
     ci.threadcount_y = 8;
     ci.threadcount_z = 1;
-    ci.code_size = g_easu_spv_size * 4;
-    ci.code = reinterpret_cast<const Uint8*>(g_easu_spv);
+    ci.code_size = easu_words * 4;
+    ci.code = reinterpret_cast<const Uint8*>(easu_code);
     r->fsr_easu_pipe = SDL_CreateGPUComputePipeline(d, &ci);
     if (!r->fsr_easu_pipe) {
         return 0;
     }
-    ci.code_size = g_rcas_spv_size * 4;
-    ci.code = reinterpret_cast<const Uint8*>(g_rcas_spv);
+    ci.code_size = rcas_words * 4;
+    ci.code = reinterpret_cast<const Uint8*>(rcas_code);
     r->fsr_rcas_pipe = SDL_CreateGPUComputePipeline(d, &ci);
     if (!r->fsr_rcas_pipe) {
         return 0;
