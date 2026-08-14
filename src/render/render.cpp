@@ -1625,8 +1625,8 @@ void expand_hl_rects(std::vector<TRect>& rects, int lh)
 /* highlight the selected part of a text run (drawn before the glyphs) */
 void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
                           int fs, const std::string& family, bool bold,
-                          int off_y, int seq, int sel_lo, int sel_hi,
-                          const Clip* clip)
+                          int off_x, int off_y, int seq, int sel_lo,
+                          int sel_hi, const Clip* clip)
 {
         size_t a = 0, b = 0;
     int tw = 0, th = 0;
@@ -1636,6 +1636,7 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     int tx = 0, ty = 0;
     text_origin(r, n, n->text, fs, family, bold, &tx, &ty);
+    tx += off_x;
     ty += off_y;
     std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b);
     expand_hl_rects(rects, text_line_h(r, fs, family, bold));
@@ -1689,7 +1690,7 @@ void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
  * textarea/contenteditable glyphs come from the layout text run - this only
  * adds the interaction layer. */
 void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
-                    int off_y, const Clip* clip)
+                    int off_x, int off_y, const Clip* clip)
 {
     lxb_dom_element* el = n->el;
     if (!el || !is_editable(el)) {
@@ -1712,13 +1713,14 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     whaleui_layout_node_t* geo = editable_geo(n);
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    tx += off_x;
     ty += off_y;
     int th = text_line_h(r, fs, family, bold);
 
     if (tag_eq(el, "input")) {
         /* input has no text children: paint the value here, always */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-        draw_text_at(r, val, n->content.x, n->content.y,
+        draw_text_at(r, val, n->content.x + off_x, n->content.y,
                      n->content.w, n->content.h,
                      fs, family, fg, bold, 0, el, clip);
     }
@@ -1756,13 +1758,13 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
  * Painted over the content on the container's right edge; thumb height
  * tracks the visible fraction, position tracks scroll_y/scroll_max. */
 void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
-                     int off_y, const Clip* clip)
+                     int off_x, int off_y, const Clip* clip)
 {
     if (n->scroll_max <= 0 || n->border.h < 24) {
         return;
     }
     const int bw = 8;
-    int track_x = n->border.x + n->border.w - bw;
+    int track_x = n->border.x + off_x + n->border.w - bw;
     int track_y = n->border.y + off_y;
     int track_h = n->border.h;
     int content_h = n->scroll_max + n->content.h;
@@ -1801,8 +1803,8 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
               thumb, clip);
 }
 
-void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
-                int seq, int sel_lo, int sel_hi, const Clip* clip)
+void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                int off_y, int seq, int sel_lo, int sel_hi, const Clip* clip)
 {
     /* cull runs fully outside the framebuffer: creating a TTF_Text per run
      * per frame is the dominant paint cost on scroll-heavy pages */
@@ -1837,11 +1839,11 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
     if (n->parent && !n->parent->is_text) {
         box = n->parent;
     }
-    paint_text_selection(r, n, fs, family, bold, off_y, seq, sel_lo, sel_hi,
-                         clip);
+    paint_text_selection(r, n, fs, family, bold, off_x, off_y, seq, sel_lo,
+                         sel_hi, clip);
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
-    draw_text_at(r, n->text, box->content.x, n->border.y + off_y,
+    draw_text_at(r, n->text, box->content.x + off_x, n->border.y + off_y,
                  box->content.w, n->border.h,
                  fs, family, color, bold, align, n->el, clip);
 }
@@ -1896,7 +1898,7 @@ const int kSelectItemH = 26;
 
 /* draw the current value + arrow (always, from paint_node) */
 void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
-                        int off_y, const Clip* clip)
+                        int off_x, int off_y, const Clip* clip)
 {
     std::vector<std::string> texts, values;
     select_options(n->el, texts, values);
@@ -1912,13 +1914,13 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
     /* value text left, arrow pinned to the right edge. Both are nudged up
      * 2px: segoe's glyphs sit ~2px below the line-box center, so metric
      * centering alone leaves the text looking low inside the control. */
-    int arrow_x = n->content.x + n->content.w - 16;
-    int text_w = arrow_x - n->content.x - 8;
+    int arrow_x = n->content.x + off_x + n->content.w - 16;
+    int text_w = arrow_x - n->content.x - off_x - 8;
     if (text_w < 10) {
         text_w = 10;
     }
     int vy = n->content.y + off_y - 2;
-    draw_text_at(r, texts[sel], n->content.x + 2, vy,
+    draw_text_at(r, texts[sel], n->content.x + off_x + 2, vy,
                  text_w, n->content.h, fs, "", fg, false, 0, n->el, clip);
     /* large solid triangle ¨‹: the small ? is only a few px tall and looks
      * like it floats above the text baseline */
@@ -2100,7 +2102,7 @@ int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
  * px, alpha fading outwards. Painted BEFORE the background so the element
  * body covers the inner layers. */
 void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
-                  int off_y, const Clip* clip)
+                  int off_x, int off_y, const Clip* clip)
 {
     std::string v = sget(n->style, "box-shadow");
     if (v.empty() || v == "none") {
@@ -2112,7 +2114,7 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         return;
     }
     /* off-screen shadows cost nothing */
-    int sx0 = n->border.x + ox - blur;
+    int sx0 = n->border.x + off_x + ox - blur;
     int sy0 = n->border.y + off_y + oy - blur;
     if (sx0 + n->border.w + 2 * blur <= 0 || sx0 >= r->fb_w ||
         sy0 + n->border.h + 2 * blur <= 0 || sy0 >= r->fb_h) {
@@ -2136,7 +2138,7 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
             continue;
         }
         unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
-        int sx = n->border.x + ox - k;
+        int sx = n->border.x + off_x + ox - k;
         int sy = n->border.y + off_y + oy - k;
         int sw = n->border.w + 2 * k;
         int sh = n->border.h + 2 * k;
@@ -2150,27 +2152,53 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
 }
 
 
-void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
-                int& seq, int sel_lo, int sel_hi, const Clip* clip)
+void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                int off_y, int& seq, int sel_lo, int sel_hi,
+                const Clip* clip)
 {
     if (!n->visible) {
         return;
     }
     const int my_seq = seq++;
     if (n->is_text) {
-        paint_text(r, n, off_y, my_seq, sel_lo, sel_hi, clip);
+        paint_text(r, n, off_x, off_y, my_seq, sel_lo, sel_hi, clip);
         return;
     }
+    /* transform: translate (px/%) + uniform scale around the element's
+     * center (default transform-origin). The shifted box is drawn here and
+     * off_x/off_y carry the translation into the subtree. Child coordinates
+     * are NOT scaled. ponytail: scale is visual on this box; true 2D
+     * transform stacks + hit-testing are a later step. */
+    float tdx = 0.0f, tdy = 0.0f, ts = 1.0f;
+    std::string tv = sget(n->style, "transform");
+    if (!tv.empty() && tv != "none") {
+        whaleui_transform_t tf;
+        if (whaleui_transform_eval(tv.c_str(),
+                                   static_cast<float>(n->border.w),
+                                   static_cast<float>(n->border.h), &tf) == 0) {
+            tdx = tf.tx;
+            tdy = tf.ty;
+            ts = tf.sx;
+        }
+    }
+    int bw = n->border.w;
+    int bh = n->border.h;
+    if (ts != 1.0f) {
+        bw = static_cast<int>(n->border.w * ts);
+        bh = static_cast<int>(n->border.h * ts);
+    }
+    int nox = off_x + static_cast<int>(tdx) + (n->border.w - bw) / 2;
+    int noy = off_y + static_cast<int>(tdy) + (n->border.h - bh) / 2;
     /* overflow: hidden/auto/scroll clips descendants to the border box
      * (auto/scroll containers also shift children by scroll_y at layout) */
     Clip self;
     const Clip* eff = clip;
     std::string ov = sget(n->style, "overflow");
     if (ov == "hidden" || ov == "auto" || ov == "scroll") {
-        self.x = n->border.x;
-        self.y = n->border.y + off_y;
-        self.w = n->border.w;
-        self.h = n->border.h;
+        self.x = n->border.x + nox;
+        self.y = n->border.y + noy;
+        self.w = bw;
+        self.h = bh;
         eff = &self;
         /* cull clipped containers fully outside the framebuffer: on a
          * scrolled page most of the document is off-screen, so skip their
@@ -2180,7 +2208,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
         }
     }
     /* soft shadow first, so the element body covers the inner layers */
-    paint_shadow(r, n, off_y, eff);
+    paint_shadow(r, n, nox, noy, eff);
     /* background (border-radius supported) */
     unsigned int bg = color_of(n->style, "background-color", 0);
     unsigned int bg2 = color_of(n->style, "background", 0);
@@ -2197,18 +2225,18 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
             radius = std::atoi(br.c_str());
         }
         if (radius > 0) {
-            fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                            n->border.y + off_y,
-                            n->border.w, n->border.h, radius, c, eff);
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                            n->border.y + noy,
+                            bw, bh, radius, c, eff);
         } else {
-            fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                      n->border.y + off_y,
-                      n->border.w, n->border.h, c, eff);
+            fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                      n->border.y + noy,
+                      bw, bh, c, eff);
         }
     }
     /* border (follows the corner arcs when border-radius is set) */
-    int bw[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
-    bool any = bw[0] || bw[1] || bw[2] || bw[3];
+    int bw2[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
+    bool any = bw2[0] || bw2[1] || bw2[2] || bw2[3];
     if (any) {
         unsigned int bc = color_of(n->style, "border-color",
                                    border_color_of(n->style, 0xFF000000));
@@ -2222,48 +2250,48 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
                 radius = std::atoi(br2.c_str());
             }
             /* uniform border width for the ring */
-            int brw = bw[1] > 0 ? bw[1] : (bw[3] > 0 ? bw[3] : (bw[0] > 0 ? bw[0] : bw[2]));
+            int brw = bw2[1] > 0 ? bw2[1] : (bw2[3] > 0 ? bw2[3] : (bw2[0] > 0 ? bw2[0] : bw2[2]));
             if (radius > 0 && brw > 0) {
-                fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                                  n->border.y + off_y,
-                                  n->border.w, n->border.h, radius, brw, c, eff);
+                fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                                  n->border.y + noy,
+                                  bw, bh, radius, brw, c, eff);
             } else {
-                if (bw[0]) { /* top */
-                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                              n->border.y + off_y, n->border.w, bw[0], c, eff);
+                if (bw2[0]) { /* top */
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                              n->border.y + noy, bw, bw2[0], c, eff);
                 }
-                if (bw[2]) { /* bottom */
-                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                              n->border.y + off_y + n->border.h - bw[2], n->border.w, bw[2], c, eff);
+                if (bw2[2]) { /* bottom */
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                              n->border.y + noy + bh - bw2[2], bw, bw2[2], c, eff);
                 }
-                if (bw[1]) { /* right */
+                if (bw2[1]) { /* right */
                     fill_rect(r->pixels, r->fb_w, r->fb_h,
-                              n->border.x + n->border.w - bw[1],
-                              n->border.y + off_y, bw[1], n->border.h, c, eff);
+                              n->border.x + nox + bw - bw2[1],
+                              n->border.y + noy, bw2[1], bh, c, eff);
                 }
-                if (bw[3]) { /* left */
-                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x,
-                              n->border.y + off_y, bw[3], n->border.h, c, eff);
+                if (bw2[3]) { /* left */
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                              n->border.y + noy, bw2[3], bh, c, eff);
                 }
             }
         }
     }
-    int child_off = off_y + scroll_delta(r, n);
+    int child_off_y = noy + scroll_delta(r, n);
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-        paint_node(r, c, child_off, seq, sel_lo, sel_hi, eff);
+        paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff);
     }
     /* scrollbar sits on top of the content */
     if (n->scroll_max > 0) {
-        paint_scrollbar(r, n, off_y, eff);
+        paint_scrollbar(r, n, nox, noy, eff);
     }
     /* editable control: value text (input) + selection/caret overlay */
     if (n->el && is_editable(n->el)) {
-        paint_editable(r, n, off_y, eff);
+        paint_editable(r, n, nox, noy, eff);
     }
     /* <select> control: value + arrow painted here; the expanded list is
      * painted LAST in render_frame so nothing occludes it */
     if (is_select_node(n)) {
-        paint_select_value(r, n, off_y, eff);
+        paint_select_value(r, n, nox, noy, eff);
     }
 }
 
@@ -3375,7 +3403,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     int sel_lo = 0, sel_hi = 0;
     sel_seq(r, &sel_lo, &sel_hi);
     int seq = 0;
-    paint_node(r, r->tree->root, 0, seq, sel_lo, sel_hi, &full);
+    paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi, &full);
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's

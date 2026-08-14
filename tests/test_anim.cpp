@@ -195,5 +195,185 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* cubic-bezier timing: ease-out-ish curve lands above linear at t=0.5 */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 1000ms cubic-bezier(.22,1,.36,1)";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
+        assert(num(s["opacity"]) > 0.90f); /* y(0.5) ~= 0.96 */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* steps(n): discrete jumps, no in-between interpolation */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes blink { 0% { opacity: 1; } 100% { opacity: 0; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "blink 1000ms steps(2) infinite";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 250) == 1);
+        assert(num(s["opacity"]) > 0.99f); /* first step (0..0.5) */
+        assert(whaleui_anim_apply(a, nullptr, s, 750) == 1);
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f); /* second step */
+        assert(whaleui_anim_apply(a, nullptr, s, 999) == 1);
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* fill-mode backwards: first frame shown during the delay */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 500ms linear 200ms backwards";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1); /* starts in delay */
+        assert(num(s["opacity"]) < 0.01f);
+        assert(whaleui_anim_apply(a, nullptr, s, 100) == 1); /* still in delay */
+        assert(num(s["opacity"]) < 0.01f);
+        assert(whaleui_anim_apply(a, nullptr, s, 450) == 1); /* 250ms into the run */
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        s["opacity"] = "1"; /* recomputed style after the run */
+        assert(whaleui_anim_apply(a, nullptr, s, 750) == 0); /* done */
+        assert(num(s["opacity"]) > 0.99f); /* reverts to computed */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* fill-mode both: hold the last frame after the run */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 500ms linear 100ms both";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1); /* backwards in delay */
+        assert(num(s["opacity"]) < 0.01f);
+        assert(whaleui_anim_apply(a, nullptr, s, 700) == 0); /* finished */
+        assert(num(s["opacity"]) > 0.99f); /* forwards holds the end */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* direction alternate: even cycles forward, odd cycles backward */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 1000ms linear infinite alternate";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1); /* start of cycle 0 */
+        assert(whaleui_anim_apply(a, nullptr, s, 250) == 1); /* forward */
+        assert(num(s["opacity"]) > 0.24f && num(s["opacity"]) < 0.26f);
+        assert(whaleui_anim_apply(a, nullptr, s, 1250) == 1); /* cycle 1: backward */
+        assert(num(s["opacity"]) > 0.74f && num(s["opacity"]) < 0.76f);
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* animation longhands: delay set via animation-delay rule */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 1000ms linear";
+        s["animation-delay"] = "100ms";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1); /* starts in delay */
+        assert(whaleui_anim_apply(a, nullptr, s, 50) == 1); /* still in delay */
+        assert(whaleui_anim_apply(a, nullptr, s, 600) == 1); /* 500ms into the run */
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* transition property whitelist: only listed properties animate */
+    {
+        whaleui_anim_t* a = whaleui_anim_create();
+        WhaleUIComputedStyle s;
+        s["transition"] = "background-color 1000ms linear";
+        s["opacity"] = "0";
+        s["background-color"] = "#000000";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 0);
+        s["opacity"] = "1"; /* not in the whitelist: snaps */
+        s["background-color"] = "#ffffff"; /* in the whitelist: animates */
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(s["opacity"] == "1");
+        assert(s["background-color"] == "#000000");
+        whaleui_anim_destroy(a);
+    }
+
+    /* transition-delay longhand: hold the old value during the delay */
+    {
+        whaleui_anim_t* a = whaleui_anim_create();
+        WhaleUIComputedStyle s;
+        s["transition"] = "opacity 1000ms linear";
+        s["transition-delay"] = "200ms";
+        s["opacity"] = "0";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 0);
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 100) == 1); /* change: +200ms delay */
+        assert(num(s["opacity"]) < 0.01f); /* still in delay */
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 800) == 1); /* 500ms into the run */
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        whaleui_anim_destroy(a);
+    }
+
+    /* transform keyframes interpolate translate() -> none */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes rise { from { transform: translateY(16px); } "
+                     "to { transform: none; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "rise 1000ms linear";
+        s["transform"] = "none";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(s["transform"] == "translate(0px, 16px)");
+        assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
+        assert(s["transform"] == "translate(0px, 8px)");
+        assert(whaleui_anim_apply(a, nullptr, s, 999) == 1);
+        s["transform"] = "none"; /* recomputed style after the run */
+        assert(whaleui_anim_apply(a, nullptr, s, 1000) == 0); /* finished */
+        assert(s["transform"] == "none");
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
+    /* transform eval: translate/scale resolution for the painter */
+    {
+        whaleui_transform_t t;
+        assert(whaleui_transform_eval("none", 100, 50, &t) == 0);
+        assert(t.tx == 0 && t.ty == 0 && t.sx == 1 && t.sy == 1);
+        assert(whaleui_transform_eval("translateY(16px)", 100, 50, &t) == 0);
+        assert(t.tx == 0 && t.ty == 16);
+        assert(whaleui_transform_eval("translate(10%, 20%)", 100, 50, &t) == 0);
+        assert(t.tx == 10 && t.ty == 10);
+        assert(whaleui_transform_eval("scale(1.09) translate(1.5%, -1%)", 100, 50, &t) == 0);
+        assert(t.sx > 1.08f && t.sx < 1.10f && t.tx > 1.4f && t.tx < 1.6f);
+        assert(t.ty > -0.6f && t.ty < -0.4f);
+        assert(whaleui_transform_eval("rotate(45deg)", 100, 50, &t) != 0);
+    }
+
     return 0;
 }

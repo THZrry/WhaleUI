@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -72,25 +73,95 @@ bool value_lerp(const std::string& from, const std::string& to, float t,
     return false;
 }
 
-/* timing functions -> progress in [0,1] (ease falls back to ease-in-out) */
+/* --- timing functions -> progress in [0,1] --- */
+
+float bez(float t, float p1, float p2)
+{
+    float u = 1.0f - t;
+    return 3.0f * u * u * t * p1 + 3.0f * u * t * t * p2 + t * t * t;
+}
+
+/* solve x(t) = p for t (x1/x2 in [0,1] -> monotonic) via binary search */
+float bez_solve(float p, float x1, float x2)
+{
+    float lo = 0.0f, hi = 1.0f;
+    for (int i = 0; i < 14; ++i) {
+        float t = (lo + hi) * 0.5f;
+        if (bez(t, x1, x2) < p) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    return (lo + hi) * 0.5f;
+}
+
+float bez_y(float p, float x1, float y1, float x2, float y2)
+{
+    return bez(bez_solve(p, x1, x2), y1, y2);
+}
+
+/* "steps(n[,start|end])" stepping */
+bool parse_steps(const std::string& s, float p, float* out)
+{
+    if (s.compare(0, 6, "steps(") != 0) {
+        return false;
+    }
+    const char* c = s.c_str() + 6;
+    int n = std::atoi(c);
+    if (n <= 0) {
+        return false;
+    }
+    bool start = std::strstr(c, "start") != nullptr;
+    float k = p * static_cast<float>(n);
+    float v = start ? std::ceil(k) : std::floor(k);
+    if (v < 0) {
+        v = 0;
+    }
+    if (v > n) {
+        v = static_cast<float>(n);
+    }
+    *out = v / static_cast<float>(n);
+    return true;
+}
+
 float ease_value(const std::string& name, float t)
 {
-    if (name == "linear") {
+    if (name.empty() || name == "linear") {
         return t;
     }
+    float v = 0;
+    if (parse_steps(name, t, &v)) {
+        return v;
+    }
+    if (name.compare(0, 13, "cubic-bezier(") == 0) {
+        const char* c = name.c_str() + 13;
+        float x1 = static_cast<float>(std::atof(c));
+        while (*c && *c != ',') ++c;
+        if (*c) ++c;
+        float y1 = static_cast<float>(std::atof(c));
+        while (*c && *c != ',') ++c;
+        if (*c) ++c;
+        float x2 = static_cast<float>(std::atof(c));
+        while (*c && *c != ',') ++c;
+        if (*c) ++c;
+        float y2 = static_cast<float>(std::atof(c));
+        return bez_y(t, x1, y1, x2, y2);
+    }
+    /* standard CSS curves */
+    if (name == "ease") {
+        return bez_y(t, 0.25f, 0.1f, 0.25f, 1.0f);
+    }
     if (name == "ease-in") {
-        return t * t;
+        return bez_y(t, 0.42f, 0.0f, 1.0f, 1.0f);
     }
     if (name == "ease-out") {
-        float u = 1.0f - t;
-        return 1.0f - u * u;
+        return bez_y(t, 0.0f, 0.0f, 0.58f, 1.0f);
     }
-    /* ease / ease-in-out / default */
-    if (t < 0.5f) {
-        return 2.0f * t * t;
+    if (name == "ease-in-out") {
+        return bez_y(t, 0.42f, 0.0f, 0.58f, 1.0f);
     }
-    float u = -2.0f * t + 2.0f;
-    return 1.0f - u * u / 2.0f;
+    return t;
 }
 
 /* --- token helpers (animation shorthand) --- */
@@ -160,7 +231,8 @@ uint32_t time_ms(const std::string& s)
     return static_cast<uint32_t>(std::atof(s.substr(0, s.size() - 1).c_str()) * 1000.0f);
 }
 
-/* Parsed `animation` shorthand. iter: -1 = infinite. */
+/* Parsed `animation` shorthand. iter: -1 = infinite. dir: 0=normal,
+ * 1=reverse, 2=alternate, 3=alternate-reverse. */
 struct AnimSpec
 {
     std::string name;
@@ -168,7 +240,9 @@ struct AnimSpec
     uint32_t delay;
     int iter;
     bool forwards;
+    bool backwards;
     std::string timing;
+    int dir;
 };
 
 bool parse_anim(const std::string& v, AnimSpec& out)
@@ -190,10 +264,32 @@ bool parse_anim(const std::string& v, AnimSpec& out)
             continue;
         }
         if (tok == "backwards" || tok == "both") {
-            continue; /* treated as fill-mode none */
+            out.backwards = true;
+            if (tok == "both") {
+                out.forwards = true;
+            }
+            continue;
+        }
+        if (tok == "normal") {
+            out.dir = 0;
+            continue;
+        }
+        if (tok == "reverse") {
+            out.dir = 1;
+            continue;
+        }
+        if (tok == "alternate") {
+            out.dir = 2;
+            continue;
+        }
+        if (tok == "alternate-reverse") {
+            out.dir = 3;
+            continue;
         }
         if (tok == "linear" || tok == "ease" || tok == "ease-in" ||
-            tok == "ease-out" || tok == "ease-in-out") {
+            tok == "ease-out" || tok == "ease-in-out" ||
+            tok.compare(0, 13, "cubic-bezier(") == 0 ||
+            tok.compare(0, 6, "steps(") == 0) {
             out.timing = tok;
             continue;
         }
@@ -218,37 +314,401 @@ bool parse_anim(const std::string& v, AnimSpec& out)
     return !out.name.empty() && out.dur > 0;
 }
 
-/* First duration in a `transition` value ("background-color 0.3s ease",
- * "all 0.1s"); 0 when none. One duration applies to every interpolable
- * property (approximates `transition: all`). */
-uint32_t transition_dur(const std::string& v)
+/* Merge the animation longhand properties (animation-name/-duration/...)
+ * over the shorthand values. */
+void merge_anim_longs(const WhaleUIComputedStyle& style, AnimSpec& spec)
 {
-    if (v.empty() || v == "none") {
-        return 0;
+    auto get = [&style](const char* k) -> std::string {
+        WhaleUIComputedStyle::const_iterator it = style.find(k);
+        return it == style.end() ? std::string() : it->second;
+    };
+    std::string v;
+    v = get("animation-name");
+    if (!v.empty() && v != "none") {
+        spec.name = v;
     }
-    const char* p = v.c_str();
-    while (*p) {
-        if ((*p >= '0' && *p <= '9') || *p == '.') {
-            float num = static_cast<float>(std::atof(p));
-            const char* q = p;
-            while ((*q >= '0' && *q <= '9') || *q == '.') {
-                ++q;
-            }
-            while (*q == ' ' || *q == '\t') {
-                ++q;
-            }
-            if (*q == 'm' && q[1] == 's') {
-                return static_cast<uint32_t>(num);
-            }
-            if (*q == 's') {
-                return static_cast<uint32_t>(num * 1000.0f);
-            }
-            p = q;
-        } else {
-            ++p;
-        }
+    v = get("animation-duration");
+    if (!v.empty()) {
+        spec.dur = time_ms(v); /* "0.5s"/"500ms" -> ms */
+    }
+    v = get("animation-delay");
+    if (!v.empty()) {
+        spec.delay = time_ms(v);
+    }
+    v = get("animation-iteration-count");
+    if (!v.empty()) {
+        spec.iter = v == "infinite" ? -1 : std::atoi(v.c_str());
+    }
+    v = get("animation-timing-function");
+    if (!v.empty()) {
+        spec.timing = v;
+    }
+    v = get("animation-fill-mode");
+    if (!v.empty()) {
+        spec.forwards = v == "forwards" || v == "both";
+        spec.backwards = v == "backwards" || v == "both";
+    }
+    v = get("animation-direction");
+    if (v == "reverse") {
+        spec.dir = 1;
+    } else if (v == "alternate") {
+        spec.dir = 2;
+    } else if (v == "alternate-reverse") {
+        spec.dir = 3;
+    } else if (v == "normal") {
+        spec.dir = 0;
+    }
+}
+
+/* "250ms"/"0.25s" -> ms (single token) */
+uint32_t parse_ms(const std::string& s)
+{
+    if (s.size() >= 2 && s[s.size() - 2] == 'm' && s[s.size() - 1] == 's') {
+        return static_cast<uint32_t>(std::atof(s.substr(0, s.size() - 2).c_str()));
+    }
+    if (!s.empty() && s[s.size() - 1] == 's') {
+        return static_cast<uint32_t>(std::atof(s.substr(0, s.size() - 1).c_str()) * 1000.0f);
     }
     return 0;
+}
+
+void split_comma(const std::string& s, std::vector<std::string>& out)
+{
+    const char* p = s.c_str();
+    while (*p) {
+        const char* q = std::strchr(p, ',');
+        std::string item = q ? std::string(p, static_cast<size_t>(q - p)) : std::string(p);
+        size_t b = item.find_first_not_of(" \t");
+        size_t e = item.find_last_not_of(" \t");
+        if (b != std::string::npos) {
+            out.push_back(item.substr(b, e - b + 1));
+        }
+        if (!q) {
+            break;
+        }
+        p = q + 1;
+    }
+}
+
+/* Parsed `transition` value: property whitelist + first duration/delay/
+ * timing (per-property values collapse to the first; the sample pages use
+ * one timing for every listed property). */
+struct TransSpec
+{
+    bool all; /* no property list: every interpolable property transitions */
+    std::vector<std::string> props;
+    uint32_t dur;
+    uint32_t delay;
+    std::string timing;
+};
+
+bool is_timing_token(const std::string& tok)
+{
+    return tok == "linear" || tok == "ease" || tok == "ease-in" ||
+           tok == "ease-out" || tok == "ease-in-out" ||
+           tok.compare(0, 13, "cubic-bezier(") == 0 ||
+           tok.compare(0, 6, "steps(") == 0;
+}
+
+/* parse the `transition` shorthand ("background-color 0.3s ease", "all
+ * 0.1s", "opacity .5s,transform .5s"). Empty property token = all. */
+void parse_transition_list(const std::string& v, TransSpec& ts)
+{
+    std::vector<std::string> items;
+    split_comma(v, items);
+    for (size_t i = 0; i < items.size(); ++i) {
+        std::vector<std::string> toks;
+        split_ws(items[i], toks);
+        std::string prop;
+        for (size_t j = 0; j < toks.size(); ++j) {
+            const std::string& tok = toks[j];
+            if (is_time(tok.c_str())) {
+                uint32_t ms = time_ms(tok);
+                if (ts.dur == 0) {
+                    ts.dur = ms;
+                } else if (ts.delay == 0) {
+                    ts.delay = ms;
+                }
+                continue;
+            }
+            if (is_timing_token(tok)) {
+                if (ts.timing.empty()) {
+                    ts.timing = tok;
+                }
+                continue;
+            }
+            if (prop.empty()) {
+                prop = tok;
+            }
+        }
+        if (prop.empty()) {
+            ts.all = true;
+        } else if (!ts.all) {
+            ts.props.push_back(prop);
+        }
+    }
+}
+
+void build_trans_spec(const WhaleUIComputedStyle& style, TransSpec& ts)
+{
+    ts = TransSpec();
+    std::string sh, pv, dv, lv, tv;
+    WhaleUIComputedStyle::const_iterator it;
+    if ((it = style.find("transition")) != style.end()) {
+        sh = it->second;
+    }
+    if ((it = style.find("transition-property")) != style.end()) {
+        pv = it->second;
+    }
+    if ((it = style.find("transition-duration")) != style.end()) {
+        dv = it->second;
+    }
+    if ((it = style.find("transition-delay")) != style.end()) {
+        lv = it->second;
+    }
+    if ((it = style.find("transition-timing-function")) != style.end()) {
+        tv = it->second;
+    }
+    if (!sh.empty() && sh != "none") {
+        parse_transition_list(sh, ts);
+    }
+    /* longhand properties override the shorthand */
+    if (!pv.empty()) {
+        ts.props.clear();
+        ts.all = false;
+        if (pv == "all") {
+            ts.all = true;
+        } else {
+            split_comma(pv, ts.props);
+        }
+    }
+    if (!dv.empty()) {
+        std::vector<std::string> items;
+        split_comma(dv, items);
+        if (!items.empty()) {
+            ts.dur = parse_ms(items[0]);
+        }
+    }
+    if (!lv.empty()) {
+        std::vector<std::string> items;
+        split_comma(lv, items);
+        if (!items.empty()) {
+            ts.delay = parse_ms(items[0]);
+        }
+    }
+    if (!tv.empty()) {
+        std::vector<std::string> items;
+        split_comma(tv, items);
+        if (!items.empty()) {
+            ts.timing = items[0];
+        }
+    }
+}
+
+bool trans_in_props(const TransSpec& ts, const std::string& prop)
+{
+    if (ts.all) {
+        return true;
+    }
+    for (size_t i = 0; i < ts.props.size(); ++i) {
+        if (ts.props[i] == prop) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* --- transform: parse / interpolate / evaluate --- */
+
+struct TransformOp
+{
+    int op;     /* 0=translate, 1=scale */
+    float a, b; /* translate: x,y; scale: sx,sy */
+    int au, bu; /* 0=px/number, 1=% (translate only) */
+};
+
+/* skip spaces, parse a number (+ optional %), advance p */
+bool parse_num(const char*& p, float* v, int* unit)
+{
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    char* end = nullptr;
+    float f = std::strtof(p, &end);
+    if (end == p) {
+        return false;
+    }
+    *v = f;
+    *unit = 0;
+    p = end;
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    if (*p == '%') {
+        *unit = 1;
+        ++p;
+    }
+    return true;
+}
+
+void skip_to_close(const char*& p)
+{
+    while (*p && *p != ')') {
+        ++p;
+    }
+    if (*p == ')') {
+        ++p;
+    }
+}
+
+bool transform_parse(const char* v, std::vector<TransformOp>& out)
+{
+    const char* p = v;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        if (std::strncmp(p, "none", 4) == 0) {
+            p += 4;
+            continue;
+        }
+        if (std::strncmp(p, "translateX(", 11) == 0) {
+            p += 11;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            skip_to_close(p);
+            TransformOp op = {0, a, 0, au, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "translateY(", 11) == 0) {
+            p += 11;
+            float b = 0;
+            int bu = 0;
+            if (!parse_num(p, &b, &bu)) {
+                return false;
+            }
+            skip_to_close(p);
+            TransformOp op = {0, 0, b, 0, bu};
+            out.push_back(op);
+        } else if (std::strncmp(p, "translate(", 10) == 0) {
+            p += 10;
+            float a = 0, b = 0;
+            int au = 0, bu = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (*p == ',') {
+                ++p;
+                if (!parse_num(p, &b, &bu)) {
+                    return false;
+                }
+            }
+            skip_to_close(p);
+            TransformOp op = {0, a, b, au, bu};
+            out.push_back(op);
+        } else if (std::strncmp(p, "scale(", 6) == 0) {
+            p += 6;
+            float a = 0, b = 0;
+            int au = 0, bu = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            b = a;
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (*p == ',') {
+                ++p;
+                if (!parse_num(p, &b, &bu)) {
+                    return false;
+                }
+            }
+            skip_to_close(p);
+            TransformOp op = {1, a, b, 0, 0};
+            out.push_back(op);
+        } else {
+            return false; /* unsupported function */
+        }
+    }
+    return true;
+}
+
+/* "none" viewed as the reference ops with identity values */
+std::vector<TransformOp> initial_ops(const std::vector<TransformOp>& ref)
+{
+    std::vector<TransformOp> v;
+    v.reserve(ref.size());
+    for (size_t i = 0; i < ref.size(); ++i) {
+        TransformOp z = ref[i];
+        z.a = ref[i].op == 1 ? 1.0f : 0.0f;
+        z.b = ref[i].op == 1 ? 1.0f : 0.0f;
+        v.push_back(z);
+    }
+    return v;
+}
+
+/* Interpolate two transform values (matching function lists). Non-matching
+ * lists snap to the target. */
+bool transform_lerp(const std::string& from, const std::string& to, float t,
+                    std::string& out)
+{
+    std::vector<TransformOp> a, b;
+    if (!transform_parse(from.c_str(), a) || !transform_parse(to.c_str(), b)) {
+        return false;
+    }
+    if (a.empty() && b.empty()) {
+        out = "none";
+        return true;
+    }
+    if (a.empty()) {
+        a = initial_ops(b);
+    } else if (b.empty()) {
+        b = initial_ops(a);
+    }
+    if (a.size() != b.size()) {
+        out = to; /* function lists differ: snap */
+        return true;
+    }
+    std::string res;
+    char buf[96];
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].op != b[i].op) {
+            out = to; /* different function kinds: snap */
+            return true;
+        }
+        float av = a[i].a + (b[i].a - a[i].a) * t;
+        float bv = a[i].b + (b[i].b - a[i].b) * t;
+        if (a[i].op == 0) {
+            std::snprintf(buf, sizeof(buf), "translate(%g%s, %g%s)", av,
+                          a[i].au ? "%" : "px", bv, a[i].bu ? "%" : "px");
+        } else {
+            std::snprintf(buf, sizeof(buf), "scale(%g, %g)", av, bv);
+        }
+        res += buf;
+        if (i + 1 < a.size()) {
+            res += " ";
+        }
+    }
+    out = res;
+    return true;
+}
+
+/* property-aware interpolation: transform has its own rules */
+bool any_lerp(const std::string& prop, const std::string& from,
+              const std::string& to, float t, std::string& out)
+{
+    if (prop == "transform") {
+        return transform_lerp(from, to, t, out);
+    }
+    return value_lerp(from, to, t, out);
 }
 
 /* --- keyframes frame interpolation --- */
@@ -377,7 +837,7 @@ void interp_frames(const whaleui_keyframes_t* kf, float p, WhaleUIComputedStyle&
         }
         if (hv) {
             std::string v;
-            if (value_lerp(lo->decls[i].second, *hv, t, v)) {
+            if (any_lerp(prop, lo->decls[i].second, *hv, t, v)) {
                 style[prop] = v;
             } else {
                 style[prop] = *hv; /* non-interpolable: take the later frame */
@@ -410,6 +870,7 @@ struct whaleui_anim
         uint64_t start;
         uint32_t dur;
         int iter;
+        int dir;
     };
     std::map<std::string, KfState> kf;
 
@@ -417,8 +878,9 @@ struct whaleui_anim
     struct Trans
     {
         std::string from, to;
-        uint64_t start;
+        uint64_t start; /* absolute ms when interpolation begins (= now+delay) */
         uint32_t dur;
+        uint32_t delay;
     };
     std::map<std::string, Trans> trans;
 
@@ -467,9 +929,78 @@ extern "C" uint64_t whaleui_anim_now(void)
     return SDL_GetTicks();
 }
 
+extern "C" int whaleui_transform_eval(const char* value, float self_w,
+                                      float self_h, whaleui_transform_t* out)
+{
+    if (!out) {
+        return -1;
+    }
+    out->tx = 0.0f;
+    out->ty = 0.0f;
+    out->sx = 1.0f;
+    out->sy = 1.0f;
+    if (!value || !*value || std::strcmp(value, "none") == 0) {
+        return 0;
+    }
+    std::vector<TransformOp> ops;
+    if (!transform_parse(value, ops)) {
+        return -1;
+    }
+    for (size_t i = 0; i < ops.size(); ++i) {
+        const TransformOp& op = ops[i];
+        if (op.op == 0) {
+            out->tx += op.au ? op.a * self_w / 100.0f : op.a;
+            out->ty += op.bu ? op.b * self_h / 100.0f : op.b;
+        } else {
+            out->sx *= op.a;
+            out->sy *= op.b;
+        }
+    }
+    return 0;
+}
+
 namespace {
 
-/* Play the `animation` shorthand: inject the current keyframe values. */
+/* direction handling for keyframe progress. dir: 0=normal, 1=reverse,
+ * 2=alternate, 3=alternate-reverse. cycle = zero-based iteration index. */
+float dir_progress(int dir, uint64_t cycle, float p)
+{
+    switch (dir) {
+    case 1:
+        return 1.0f - p;
+    case 2:
+        return (cycle & 1) ? 1.0f - p : p;
+    case 3:
+        return (cycle & 1) ? p : 1.0f - p;
+    default:
+        return p;
+    }
+}
+
+/* first-frame progress shown during the delay (fill-mode backwards) */
+float start_progress(int dir)
+{
+    return (dir == 1 || dir == 3) ? 1.0f : 0.0f;
+}
+
+/* last-frame progress held after the run (fill-mode forwards) */
+float end_progress(int dir, int iter)
+{
+    uint64_t last = iter > 0 ? static_cast<uint64_t>(iter) - 1 : 0;
+    switch (dir) {
+    case 1:
+        return 0.0f;
+    case 2:
+        return (last & 1) ? 0.0f : 1.0f;
+    case 3:
+        return (last & 1) ? 1.0f : 0.0f;
+    default:
+        return 1.0f;
+    }
+}
+
+/* Play the `animation` shorthand (+ longhand properties): inject the current
+ * keyframe values. */
 void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
                      WhaleUIComputedStyle& style, uint64_t now)
 {
@@ -478,11 +1009,20 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
     if (ait != style.end()) {
         av = ait->second;
     }
-    if (av.empty() || av == "none") {
-        return;
-    }
     AnimSpec spec;
-    if (!parse_anim(av, spec)) {
+    if (av.empty() || av == "none") {
+        /* longhand-only (e.g. animation-name + animation-delay rules) */
+        spec = AnimSpec();
+        spec.dur = 0;
+        spec.iter = 1;
+        merge_anim_longs(style, spec);
+    } else {
+        if (!parse_anim(av, spec)) {
+            return;
+        }
+        merge_anim_longs(style, spec);
+    }
+    if (spec.name.empty() || spec.dur == 0) {
         return;
     }
     const whaleui_keyframes_t* kf = find_keyframes(a->kfs, spec.name.c_str());
@@ -492,33 +1032,43 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
     std::string kkey = spec.name + "@" + elkey;
     std::map<std::string, whaleui_anim::KfState>::iterator it = a->kf.find(kkey);
     if (it == a->kf.end() || it->second.name != spec.name ||
-        it->second.dur != spec.dur || it->second.iter != spec.iter) {
+        it->second.dur != spec.dur || it->second.iter != spec.iter ||
+        it->second.dir != spec.dir) {
         whaleui_anim::KfState st;
         st.name = spec.name;
         st.start = now;
         st.dur = spec.dur;
         st.iter = spec.iter;
+        st.dir = spec.dir;
         a->kf[kkey] = st;
         it = a->kf.find(kkey);
     }
     uint64_t t = now - it->second.start;
     if (t < spec.delay) {
-        return; /* delay period (fill-mode backwards/both not supported) */
+        /* delay period: fill-mode backwards/both shows the first frame
+         * (kept active so the loop survives the delay and the run starts) */
+        if (spec.backwards) {
+            interp_frames(kf, start_progress(spec.dir), style);
+        }
+        a->active = 1;
+        return;
     }
     t -= spec.delay;
     if (spec.iter < 0) { /* infinite */
-        float p = static_cast<float>(t % spec.dur) / static_cast<float>(spec.dur);
+        float p = dir_progress(spec.dir, t / spec.dur,
+                               static_cast<float>(t % spec.dur) / static_cast<float>(spec.dur));
         interp_frames(kf, ease_value(spec.timing, p), style);
         a->active = 1;
     } else {
         uint64_t total = static_cast<uint64_t>(spec.dur) * static_cast<uint64_t>(spec.iter);
         if (t >= total) {
             if (spec.forwards) {
-                interp_frames(kf, 1.0f, style); /* hold the last frame */
+                interp_frames(kf, end_progress(spec.dir, spec.iter), style);
             }
             /* run finished; state kept so it doesn't restart */
         } else {
-            float p = static_cast<float>(t % spec.dur) / static_cast<float>(spec.dur);
+            float p = dir_progress(spec.dir, t / spec.dur,
+                                   static_cast<float>(t % spec.dur) / static_cast<float>(spec.dur));
             interp_frames(kf, ease_value(spec.timing, p), style);
             a->active = 1;
         }
@@ -529,37 +1079,43 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
 void apply_transition(whaleui_anim_t* a, const std::string& elkey,
                       WhaleUIComputedStyle& style, uint64_t now)
 {
-    std::string tv;
-    WhaleUIComputedStyle::const_iterator tit = style.find("transition");
-    if (tit != style.end()) {
-        tv = tit->second;
-    }
-    const uint32_t dur = transition_dur(tv);
+    TransSpec ts;
+    build_trans_spec(style, ts);
     for (WhaleUIComputedStyle::iterator kv = style.begin(); kv != style.end(); ++kv) {
-        if (kv->first == "transition" || kv->first == "animation") {
+        if (kv->first == "transition" || kv->first == "transition-property" ||
+            kv->first == "transition-duration" || kv->first == "transition-delay" ||
+            kv->first == "transition-timing-function" || kv->first == "animation") {
+            continue;
+        }
+        if (!trans_in_props(ts, kv->first)) {
             continue;
         }
         std::string key = kv->first + "@" + elkey;
         std::map<std::string, whaleui_anim::Trans>::iterator tr = a->trans.find(key);
         if (tr != a->trans.end()) {
             /* in flight: advance, retarget if the target changed mid-flight */
-            float p = static_cast<float>(now - tr->second.start) /
+            float p = static_cast<float>(static_cast<int64_t>(now) -
+                                         static_cast<int64_t>(tr->second.start)) /
                       static_cast<float>(tr->second.dur);
             if (p >= 1.0f) {
                 kv->second = tr->second.to;
                 a->prev[key] = tr->second.to;
                 a->trans.erase(tr);
             } else {
+                if (p < 0.0f) {
+                    p = 0.0f; /* delay period: hold the old value */
+                }
                 if (kv->second != tr->second.to) {
                     std::string cur;
-                    if (value_lerp(tr->second.from, tr->second.to, p, cur)) {
+                    if (any_lerp(kv->first, tr->second.from, tr->second.to, p, cur)) {
                         tr->second.from = cur;
                     }
                     tr->second.to = kv->second;
-                    tr->second.start = now;
+                    tr->second.start = now; /* retarget skips the delay */
                     p = 0.0f;
                 }
-                value_lerp(tr->second.from, tr->second.to, p, kv->second);
+                any_lerp(kv->first, tr->second.from, tr->second.to,
+                         ease_value(ts.timing, p), kv->second);
                 a->active = 1;
             }
             continue;
@@ -573,12 +1129,13 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
             continue;
         }
         std::string tmp;
-        if (dur > 0 && value_lerp(pv->second, kv->second, 0.0f, tmp)) {
+        if (ts.dur > 0 && any_lerp(kv->first, pv->second, kv->second, 0.0f, tmp)) {
             whaleui_anim::Trans st;
             st.from = pv->second;
             st.to = kv->second;
-            st.start = now;
-            st.dur = dur;
+            st.start = now + ts.delay;
+            st.dur = ts.dur;
+            st.delay = ts.delay;
             a->trans[key] = st;
             kv->second = pv->second; /* start from the previous value */
             a->active = 1;

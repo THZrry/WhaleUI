@@ -63,6 +63,22 @@ int whaleui_anim_active(const whaleui_anim_t* a);
 /* Milliseconds clock (SDL_GetTicks). */
 uint64_t whaleui_anim_now(void);
 
+/* Evaluated transform: translation in pixels + uniform/axis scale.
+ * scale applies around the element's center (default transform-origin). */
+struct whaleui_transform
+{
+    float tx, ty; /* translate result, px */
+    float sx, sy; /* scale result */
+};
+typedef struct whaleui_transform whaleui_transform_t;
+
+/* Resolve a `transform` value ("none", "translateY(16px)",
+ * "scale(1.09) translate(1.5%,-1%)") for an element of self_w x self_h.
+ * Percentages are relative to the element's own size. Returns 0 on success;
+ * unsupported functions return -1 and leave out untouched. */
+int whaleui_transform_eval(const char* value, float self_w, float self_h,
+                           whaleui_transform_t* out);
+
 #ifdef __cplusplus
 }
 #endif
