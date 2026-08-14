@@ -109,11 +109,15 @@ static const unsigned char kSolidPixel[4] = {255, 255, 255, 255};
 
 /* compute: composite the CPU-rasterized text layer (RGBA8, transparent
  * where empty) over the geometry already drawn into the target. SDL 3.4
- * D3D12 register order: SRV t0 space0, RW-UAV u0 space1. */
+ * SPIR-V layout: set0 = sampled textures, set1 = read-write storage. The
+ * [[vk::binding]] attributes pin the D3D12 register order (t0/t1 space0,
+ * u0 space1) to those sets. Load (not Sample): DXIL compute at cs_6_0
+ * rejects Sample's implicit derivatives, and 1:1 texel reads don't need a
+ * sampler. */
 static const char* kTextCompositeCS = R"(
-Texture2D geometry : register(t0);
-Texture2D text_layer : register(t1);
-RWTexture2D<float4> out_tex : register(u0, space1);
+[[vk::binding(0, 0)]] Texture2D geometry : register(t0);
+[[vk::binding(1, 0)]] Texture2D text_layer : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 [numthreads(16, 16, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     float4 t = text_layer.Load(int3(id.xy, 0));

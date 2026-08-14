@@ -136,17 +136,21 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
 #endif
 }
 
+/* is the active SDL GPU driver Vulkan? (SPIR-V shader path) */
+bool vulkan_driver(SDL_GPUDevice* dev)
+{
+    const char* drv = SDL_GetGPUDeviceDriver(dev);
+    return drv && std::strcmp(drv, "vulkan") == 0;
+}
+
 SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
                               const char* entry, bool fragment)
 {
 #ifdef _WIN32
-    const char* drv = SDL_GetGPUDeviceDriver(dev);
-    const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
+    const bool vulkan = vulkan_driver(dev);
     const std::wstring profile = fragment ? L"ps_6_0" : L"vs_6_0";
-    const wchar_t* fbBind[5] = {L"-fvk-bind", L"b0", L"2", L"0"};
-    IDxcBlob* blob =
-        compile_dxil(hlsl, entry, profile.c_str(), vulkan,
-                     vulkan ? fbBind : nullptr, vulkan ? 4 : 0);
+    IDxcBlob* blob = compile_dxil(hlsl, entry, profile.c_str(), vulkan,
+                                  nullptr, 0);
     if (!blob) {
         return nullptr;
     }
@@ -168,10 +172,17 @@ SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
     }
     return sh;
 #else
+    /* Non-Windows (macOS Metal / Linux) shader compilation is NOT
+     * implemented yet: DXC emits DXIL/SPIR-V only, and SDL's Metal backend
+     * needs MSL. UNVERIFIED - the GPU renderer currently requires the
+     * D3D12 or Vulkan backend. */
     (void)dev;
     (void)hlsl;
     (void)entry;
     (void)fragment;
+    std::fprintf(stderr,
+                 "[gpu] shader compile: only D3D12/Vulkan backends are "
+                 "implemented (Metal/MSL is not verified)\n");
     return nullptr;
 #endif
 }
@@ -233,7 +244,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->atlas_row_h = 0;
     g->atlas_dirty = 0;
 
-    /* shaders (HLSL -> DXIL at runtime) */
+    /* shaders (HLSL -> DXIL / SPIR-V at runtime) */
     SDL_GPUShader* vs_s = compile_shader(device, kSolidVS, "main", false);
     SDL_GPUShader* ps_s = compile_shader(device, kSolidPS, "main", true);
     SDL_GPUShader* vs_t = compile_shader(device, kTextVS, "main", false);
@@ -400,17 +411,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     /* text-composite compute pipeline: text_layer (t0,t1) -> target2 (u0) */
     {
-        const char* drv = SDL_GetGPUDeviceDriver(device);
-        const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
-        /* SPIR-V layout (SDL 3.4): set0 = sampled/ro-storage, set1 =
-         * rw-storage; DXC needs explicit -fvk-bind to land there */
-        const wchar_t* binds[12] = {
-            L"-fvk-bind", L"t0", L"0", L"0",
-            L"-fvk-bind", L"t1", L"0", L"1",
-            L"-fvk-bind", L"u0", L"1", L"0"};
-        IDxcBlob* cs =
-            compile_dxil(kTextCompositeCS, "main", L"cs_6_0", vulkan,
-                         vulkan ? binds : nullptr, vulkan ? 12 : 0);
+        IDxcBlob* cs = compile_dxil(kTextCompositeCS, "main", L"cs_6_0",
+                                    vulkan_driver(device), nullptr, 0);
         if (!cs) {
             goto fail;
         }
@@ -419,8 +421,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
         cpi.code_size = cs->GetBufferSize();
         cpi.entrypoint = "main";
-        cpi.format = vulkan ? SDL_GPU_SHADERFORMAT_SPIRV
-                            : SDL_GPU_SHADERFORMAT_DXIL;
+        cpi.format = vulkan_driver(device) ? SDL_GPU_SHADERFORMAT_SPIRV
+                                           : SDL_GPU_SHADERFORMAT_DXIL;
         cpi.num_samplers = 2;
         cpi.num_readwrite_storage_textures = 1;
         cpi.threadcount_x = 16;

@@ -23,12 +23,18 @@ static unsigned int gpixel(whaleui_render_t* r, int x, int y)
         return 0;
     }
     SDL_GPUDevice* dev = r->gpu->device;
+    /* per-device cache: the later anim_runs() creates a fresh app+device;
+     * a stale buffer from the previous (already destroyed) device crashes
+     * Vulkan's Map. The old buffer is deliberately leaked (4 bytes, test
+     * code) - releasing it would touch the destroyed device. */
     static SDL_GPUTransferBuffer* tb = nullptr;
-    if (!tb) {
+    static SDL_GPUDevice* tb_dev = nullptr;
+    if (!tb || tb_dev != dev) {
         SDL_GPUTransferBufferCreateInfo tbi = {};
         tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
         tbi.size = 4;
         tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+        tb_dev = dev;
     }
     if (!tb) {
         return 0;
@@ -365,17 +371,22 @@ int main(void)
         /* scrolling must NOT rebuild the layout tree (perf: relayout is the
          * expensive part on big pages) */
         whaleui_layout_tree_t* tree_before = w->render->tree;
-        /* wheel-down (dy=-1) reveals content below: scroll_y += 40 */
+        /* wheel-down (dy=-1) targets +40px: the delta lands in
+         * scroll_targets, then the frame loop eases the current scroll
+         * toward it (smooth scrolling) */
         whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
         assert(w->render->tree == tree_before);
-        assert(w->render->scrolls[w->render->tree->root->el] == 40);
+        assert(w->render->scroll_targets[w->render->tree->root->el] == 40);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->scrolls[w->render->tree->root->el] > 0);
+        assert(w->render->scrolls[w->render->tree->root->el] < 40);
         /* clamps at the content limit (no scrolling past the bottom) */
         whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
-        assert(w->render->scrolls[w->render->tree->root->el] ==
+        assert(w->render->scroll_targets[w->render->tree->root->el] ==
                w->render->tree->root->scroll_max);
         /* and at the top: cannot scroll above the first content */
         whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
-        assert(w->render->scrolls[w->render->tree->root->el] == 0);
+        assert(w->render->scroll_targets[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }
 
@@ -426,8 +437,9 @@ int main(void)
         whaleui_render_handle_wheel(w->render, sc->border.x + 5,
                                     sc->border.y + 5, -1.0f);
         assert(w->render->tree == tree_before);
-        assert(w->render->scrolls[sc->el] > 0);
+        assert(w->render->scroll_targets[sc->el] > 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->scrolls[sc->el] > 0);
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }
@@ -444,9 +456,14 @@ int main(void)
         assert(whaleui_render_frame(w->render, w->document) == 0);
         /* before scrolling, (150,150) is inside the blue block (150..300) */
         assert(gpixel(w->render, 150, 150) == 0xFF0000FF);
-        /* wheel-down 40px: content moves UP, blue block starts at 110 */
+        /* wheel-down 40px: content moves UP. The delta is smoothed over
+         * several frames; run frames until the scroll reaches its target,
+         * then the blue block (150..300) starts at 110 */
         whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
-        assert(whaleui_render_frame(w->render, w->document) == 0);
+        while (w->render->scrolls[w->render->tree->root->el] !=
+               w->render->scroll_targets[w->render->tree->root->el]) {
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+        }
         assert(gpixel(w->render, 150, 150) == 0xFF0000FF); /* still blue */
         /* y=130 is inside the shifted blue block (110..260), not red */
         assert(gpixel(w->render, 150, 130) == 0xFF0000FF);

@@ -2066,11 +2066,15 @@ bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
 /* paint-time scroll offset of a scrollable box (defined below) */
 int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n);
 
+/* partial-repaint subtree culler (defined with paint_node below) */
+bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                int off_y, const Clip* clip);
+
 /* pre-order sequence numbers of the anchor/focus layout nodes, computed by
  * walking the tree EXACTLY like paint_node does (same visibility skip, same
  * clipped-subtree skip, same scroll offsets), so the sequence assigned
  * during painting matches. -1 when same-element or collapsed. */
-void sel_seq(whaleui_render_t* r, int* lo, int* hi)
+void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip)
 {
     *lo = *hi = -1;
     lxb_dom_element* sa = r->sel_anchor_el;
@@ -2079,8 +2083,8 @@ void sel_seq(whaleui_render_t* r, int* lo, int* hi)
         return;
     }
     int idx = 0;
-    std::function<void(whaleui_layout_node_t*, int)> walk =
-        [&](whaleui_layout_node_t* n, int off_y) {
+    std::function<void(whaleui_layout_node_t*, int, int, bool)> walk =
+        [&](whaleui_layout_node_t* n, int off_x, int off_y, bool tc) {
             if (!n->visible) {
                 return;
             }
@@ -2090,6 +2094,23 @@ void sel_seq(whaleui_render_t* r, int* lo, int* hi)
             }
             if (n->el == sf && *hi < 0) {
                 *hi = my;
+            }
+            /* same transform/fixed rule as paint_node, so the sequence
+             * numbers stay aligned with what actually gets painted */
+            if (!tc && n->el && !n->is_text) {
+                std::string tv = sget(n->style, "transform");
+                if (!tv.empty() && tv != "none") {
+                    tc = true;
+                } else if (sget(n->style, "position") == "fixed") {
+                    tc = true;
+                }
+            }
+            /* a selection endpoint outside the repaint region must still
+             * receive its sequence number (paint_node does the same), so
+             * the in-viewport middle of the selection keeps highlighting */
+            if (!tc && !(n->el && (n->el == sa || n->el == sf)) &&
+                paint_cull(r, n, off_x, off_y, clip)) {
+                return;
             }
             if (n->is_text) {
                 return;
@@ -2104,10 +2125,10 @@ void sel_seq(whaleui_render_t* r, int* lo, int* hi)
             }
             int child_off = off_y + scroll_delta(r, n);
             for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-                walk(c, child_off);
+                walk(c, off_x, child_off, tc);
             }
         };
-    walk(r->tree->root, 0);
+    walk(r->tree->root, 0, 0, false);
     if (*lo > *hi) {
         std::swap(*lo, *hi);
     }
@@ -2724,14 +2745,85 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
 }
 
 
+/* subtree paint bounds: union of this node's border box and every visible
+ * descendant (absolute viewport coords - the layout pass already positions
+ * nodes absolutely, so no offsets are needed). Computed once per layout
+ * pass; partial repaints then cull whole subtrees instead of walking them. */
+void compute_paint_bounds(whaleui_layout_node_t* n)
+{
+    whaleui_rect_t b = n->border;
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        if (!c->visible) {
+            continue;
+        }
+        compute_paint_bounds(c);
+        int x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+        int cx0 = c->bounds.x, cy0 = c->bounds.y;
+        int cx1 = c->bounds.x + c->bounds.w, cy1 = c->bounds.y + c->bounds.h;
+        if (cx0 < x0) x0 = cx0;
+        if (cy0 < y0) y0 = cy0;
+        if (cx1 > x1) x1 = cx1;
+        if (cy1 > y1) y1 = cy1;
+        b.x = x0;
+        b.y = y0;
+        b.w = x1 - x0;
+        b.h = y1 - y0;
+    }
+    n->bounds = b;
+}
+
+/* cull a subtree from a partial repaint when its paint bounds (shifted by
+ * the off_x/off_y offset chain: transform translation + scroll delta) are
+ * entirely outside the clip. A margin covers box-shadow bleed and selection
+ * padding. Full-viewport clips never cull; transformed / fixed subtrees are
+ * culled by paint_node and sel_seq through the `tc` flag instead (their
+ * painted box differs from the laid-out bounds). */
+const int kCullMargin = 64;
+bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                int off_y, const Clip* clip)
+{
+    if (!clip || clip->w <= 0 || clip->h <= 0) {
+        return false;
+    }
+    if (clip->x <= 0 && clip->y <= 0 && clip->w >= r->fb_w &&
+        clip->h >= r->fb_h) {
+        return false;
+    }
+    int x0 = n->bounds.x + off_x - kCullMargin;
+    int y0 = n->bounds.y + off_y - kCullMargin;
+    int x1 = n->bounds.x + n->bounds.w + off_x + kCullMargin;
+    int y1 = n->bounds.y + n->bounds.h + off_y + kCullMargin;
+    return x1 <= clip->x || x0 >= clip->x + clip->w ||
+           y1 <= clip->y || y0 >= clip->y + clip->h;
+}
+
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, int& seq, int sel_lo, int sel_hi,
-                const Clip* clip)
+                const Clip* clip, bool tc)
 {
     if (!n->visible) {
         return;
     }
     const int my_seq = seq++;
+    /* transformed / fixed subtrees are painted at offset positions the
+     * layout bounds don't know about: never cull them, and propagate the
+     * flag down so descendants use the same rule */
+    if (!tc && n->el && !n->is_text) {
+        std::string tv = sget(n->style, "transform");
+        if (!tv.empty() && tv != "none") {
+            tc = true;
+        } else if (sget(n->style, "position") == "fixed") {
+            tc = true;
+        }
+    }
+    /* a selection endpoint outside the repaint region must still receive
+     * its sequence number (sel_seq does the same), so the in-viewport
+     * middle of the selection keeps highlighting */
+    if (!tc && !(n->el && (n->el == r->sel_anchor_el ||
+                           n->el == r->sel_focus_el)) &&
+        paint_cull(r, n, off_x, off_y, clip)) {
+        return; /* whole subtree outside the repaint region */
+    }
     if (n->is_text) {
         paint_text(r, n, off_x, off_y, my_seq, sel_lo, sel_hi, clip);
         return;
@@ -2873,7 +2965,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     int child_off_y = noy + scroll_delta(r, n);
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-        paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff);
+        paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff, tc);
     }
     /* scrollbar sits on top of the content */
     if (n->scroll_max > 0) {
@@ -3454,6 +3546,10 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     r->fb_w = width;
     r->fb_h = height;
     r->pixels.assign(static_cast<size_t>(width) * height, r->bg_color);
+    /* the CPU text layer and the GPU render targets are size-bound too:
+     * leaving them at the old size made text painting (and the layer
+     * upload) index out of bounds after growing the window */
+    r->text_layer.assign(static_cast<size_t>(width) * height, 0);
     SDL_ReleaseGPUTexture(r->device, r->offscreen);
     SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
     SDL_GPUTextureCreateInfo tci;
@@ -3471,10 +3567,20 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
     r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
+    /* GPU render targets (geometry ping-pong + composite) must follow the
+     * new size; recreate the renderer like the FSR toggle does */
+    whaleui_gpu_destroy(r->gpu);
+    r->gpu = whaleui_gpu_create(r->device, width, height);
+    if (!r->gpu) {
+        return -2;
+    }
     render_fsr_destroy(r);
     render_fsr_create(r);
     r->fsr_active = 0;
     r->has_dirty = 1;
+    /* stale scroll deltas from the old size would make the first scroll
+     * after a resize shift by the accumulated difference */
+    r->last_scrolls.clear();
     return 0;
 }
 
@@ -3568,6 +3674,14 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         return;
     }
     fb_coords(r, x, y);
+    /* dragging a scrollbar: the thumb follows the mouse y. Skipping the
+     * hover update keeps the layout tree stable while dragging (hover
+     * changes would otherwise rebuild it every frame as content scrolls
+     * under the cursor - the main scrollbar-drag stall). */
+    if (r->drag_scroll_el) {
+        update_drag_scroll(r, y);
+        return;
+    }
     /* hover inside the expanded list highlights the option under the mouse */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
@@ -3626,11 +3740,6 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         }
         SDL_SetCursor(want);
         r->has_dirty = 1;
-    }
-    /* drag a scrollbar: the thumb follows the mouse y */
-    if (r->drag_scroll_el) {
-        update_drag_scroll(r, y);
-        return;
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a
@@ -3696,10 +3805,16 @@ void update_drag_scroll(whaleui_render_t* r, int y)
     if (!r->drag_scroll_el || !r->tree) {
         return;
     }
-    whaleui_layout_node_t* sc =
-        find_node_by_el(r->tree->root, r->drag_scroll_el);
+    /* layout tree is stable while dragging (hover updates are skipped), so
+     * the node is cached and only re-resolved after a rebuild */
+    whaleui_layout_node_t* sc = r->drag_scroll_node;
+    if (!sc || sc->el != r->drag_scroll_el) {
+        sc = find_node_by_el(r->tree->root, r->drag_scroll_el);
+        r->drag_scroll_node = sc;
+    }
     if (!sc || sc->scroll_max <= 0) {
         r->drag_scroll_el = nullptr;
+        r->drag_scroll_node = nullptr;
         return;
     }
     int off = 0;
@@ -3755,6 +3870,7 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
         whaleui_layout_node_t* sc = scrollbar_under(r, hit, x, y);
         if (sc) {
             r->drag_scroll_el = sc->el;
+            r->drag_scroll_node = sc; /* valid until the next rebuild */
             update_drag_scroll(r, y);
             r->pressed_el = el;
             r->focus_el = el;
@@ -3797,6 +3913,7 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
          * of a focused editable control is kept as-is. */
         r->pressed_el = nullptr;
         r->drag_scroll_el = nullptr;
+        r->drag_scroll_node = nullptr;
         if (!r->selecting && !(r->edit_el && r->sel_anchor_el == r->edit_el)) {
             r->sel_anchor_el = r->sel_focus_el = nullptr;
             r->sel_anchor = r->sel_focus = 0;
@@ -3850,8 +3967,11 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     do_scroll(r->tree->root);
 }
 
-/* default scroll behavior: add delta to the element's scroll_y, clamped to
- * the content range [0, scroll_max] */
+/* default scroll behavior: wheel deltas land in scroll_targets; the frame
+ * loop eases the current scroll toward the target (a step per frame), so
+ * rapid wheel notches - which SDL/Windows often coalesce into one event
+ * with a big delta - animate smoothly instead of jumping. Returns 1 when a
+ * repaint is needed. */
 static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
                           int delta, void* userdata)
 {
@@ -3864,19 +3984,19 @@ static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
     if (n) {
         max = n->scroll_max;
     }
-    int& cur = r->scrolls[el];
-    int nv = cur + delta;
+    int& tgt = r->scroll_targets[el];
+    int nv = tgt + delta;
     if (nv > max) {
         nv = max;
     }
     if (nv < 0) {
         nv = 0;
     }
-    if (nv != cur) {
-        cur = nv;
-        return 1;
+    if (nv == tgt && r->scrolls[el] == nv) {
+        return 0;
     }
-    return 0;
+    tgt = nv;
+    return 1;
 }
 
 extern "C" int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
@@ -3952,6 +4072,31 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return 0;
     }
     r->scroll_dirty = 0;
+    /* ease the current scroll toward its target: one step per frame, so
+     * batched wheel notches (one event carrying several notches) animate
+     * smoothly instead of jumping. ponytail: linear-ish 1/4 step; a real
+     * inertia/deceleration curve can replace this later. */
+    if (!r->scroll_targets.empty()) {
+        for (auto it = r->scroll_targets.begin();
+             it != r->scroll_targets.end();) {
+            int& cur = r->scrolls[it->first];
+            if (cur == it->second) {
+                it = r->scroll_targets.erase(it);
+                continue;
+            }
+            int d = it->second - cur;
+            int step = d / 4;
+            if (step == 0) {
+                step = d > 0 ? 2 : -2;
+            }
+            if ((d > 0 && step > d) || (d < 0 && step < d)) {
+                step = d; /* never overshoot */
+            }
+            cur += step;
+            r->scroll_dirty = 1;
+            ++it;
+        }
+    }
     /* FSR decision: auto mode watches display size + power state, so it can
      * flip at runtime; switching resolution rebuilds the framebuffer */
     {
@@ -3992,6 +4137,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                          &st, &r->scrolls, r->anim,
                                          r->text_scale);
         r->has_dirty = 0;
+        r->bounds_valid = 0; /* subtree paint bounds are stale */
+        r->drag_scroll_node = nullptr; /* layout nodes were recreated */
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles
          * and refresh the cascaded opacity (children inherit it) */
@@ -4039,8 +4186,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * side + memmove of the text layer) and only repaint the exposed strip.
      * Any other dirty/animations fall back to a full repaint (dy=0). */
     int scroll_dy = 0;
-    if (!r->has_dirty && !r->scroll_dirty && !animating && !r->edit_el &&
-        r->tree) {
+    if (!r->has_dirty && !animating && !r->edit_el && r->tree) {
         std::map<lxb_dom_element*, int> cur;
         std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
@@ -4154,10 +4300,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     }
     g_gpu = r->gpu;
     int sel_lo = 0, sel_hi = 0;
-    sel_seq(r, &sel_lo, &sel_hi);
+    if (!r->bounds_valid) {
+        compute_paint_bounds(r->tree->root);
+        r->bounds_valid = 1;
+    }
+    const Clip* paint_clip = (partial || scroll_dy != 0) ? &strip : &full;
+    sel_seq(r, &sel_lo, &sel_hi, paint_clip);
     int seq = 0;
-    paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi,
-               (partial || scroll_dy != 0) ? &strip : &full);
+    paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi, paint_clip,
+               false);
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's

@@ -92,6 +92,10 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
+    /* smooth-scroll targets: wheel deltas land here and the frame loop
+     * eases the current scroll toward them (a few px per frame), so batched
+     * mouse-wheel notches animate instead of jumping in one frame */
+    std::map<struct lxb_dom_element*, int> scroll_targets;
     /* last-frame scroll snapshot: used to detect pure scroll deltas so the
      * frame can shift the previous image instead of repainting everything */
     std::map<struct lxb_dom_element*, int> last_scrolls;
@@ -103,6 +107,9 @@ struct whaleui_render
     void* scroll_ud;
     /* scrollbar being dragged (element owning the scrollable box) */
     struct lxb_dom_element* drag_scroll_el;
+    /* cached layout node of drag_scroll_el (drag frames do not rebuild the
+     * layout tree, so the pointer stays valid until the next rebuild) */
+    struct whaleui_layout_node* drag_scroll_node;
     /* system cursors (lazy-created; null until first used) */
     SDL_Cursor* cursor_arrow;
     SDL_Cursor* cursor_text;
@@ -162,6 +169,11 @@ struct whaleui_render
      * framebuffer every frame) */
     int partial;
     int dirty_x, dirty_y, dirty_w, dirty_h;
+
+    /* subtree paint bounds are computed once per layout pass and reused by
+     * every paint (and the selection sequence walk); invalidated whenever
+     * the layout tree is rebuilt */
+    int bounds_valid;
 
     /* CPU text layer: text is rasterized here (geometries go to the GPU
      * draw list), uploaded and composited into the GPU target each frame */

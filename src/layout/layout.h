@@ -44,6 +44,11 @@ struct whaleui_layout_node
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 
+    /* subtree paint bounds (absolute viewport coords, union of this node's
+     * border box and all descendants; computed lazily by the renderer).
+     * Lets partial repaints cull whole subtrees instead of walking them. */
+    whaleui_rect_t bounds;
+
     /* vertical scroll of an overflow:auto/scroll container. The children
      * are laid out shifted up by scroll_y (absolute coords stay consistent
      * for hit-test/paint); scroll_max = content height - visible height. */
