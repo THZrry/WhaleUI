@@ -2066,7 +2066,7 @@ int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
  * px, alpha fading outwards. Painted BEFORE the background so the element
  * body covers the inner layers. */
 void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
-                  const Clip* clip)
+                  int off_y, const Clip* clip)
 {
     std::string v = sget(n->style, "box-shadow");
     if (v.empty() || v == "none") {
@@ -2079,7 +2079,7 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     /* off-screen shadows cost nothing */
     int sx0 = n->border.x + ox - blur;
-    int sy0 = n->border.y + oy - blur;
+    int sy0 = n->border.y + off_y + oy - blur;
     if (sx0 + n->border.w + 2 * blur <= 0 || sx0 >= r->fb_w ||
         sy0 + n->border.h + 2 * blur <= 0 || sy0 >= r->fb_h) {
         return;
@@ -2103,7 +2103,7 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         }
         unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
         int sx = n->border.x + ox - k;
-        int sy = n->border.y + oy - k;
+        int sy = n->border.y + off_y + oy - k;
         int sw = n->border.w + 2 * k;
         int sh = n->border.h + 2 * k;
         if (radius > 0) {
@@ -2271,7 +2271,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
         }
     }
     /* soft shadow first, so the element body covers the inner layers */
-    paint_shadow(r, n, eff);
+    paint_shadow(r, n, off_y, eff);
     /* background (border-radius supported) */
     unsigned int bg = color_of(n->style, "background-color", 0);
     unsigned int bg2 = color_of(n->style, "background", 0);
@@ -2716,6 +2716,10 @@ int fsr_want_active(whaleui_render_t* r)
     return (big || battery) ? 1 : 0;
 }
 
+/* default clamped scroll behavior (defined with the wheel handling) */
+static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
+                          int delta, void* userdata);
+
 extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window,
                                                    int width, int height)
 {
@@ -2737,6 +2741,8 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->fsr_mode = 0;   /* auto */
     r->fsr_scale = 0.5f;
     r->fsr_sharpness = 0.4f;
+    r->scroll_fn = scroll_default;
+    r->scroll_ud = nullptr;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
 
     /* GPU path: offscreen target + transfer buffer */
@@ -3133,22 +3139,16 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
      * both input types move a similar distance per event. */
     const float notch = 40.0f;
     float dpx = (dy >= -4.0f && dy <= 4.0f) ? dy * notch : dy;
+    /* wheel-down (dy<0) must INCREASE scroll_y: delta = -dpx */
+    const int delta = -static_cast<int>(dpx);
 
-    auto do_scroll = [r, dpx](whaleui_layout_node_t* sc) {
+    auto do_scroll = [r, delta](whaleui_layout_node_t* sc) {
         if (!sc->el) {
             return;
         }
-        int& cur = r->scrolls[sc->el];
-        /* Verified by simulating a real mouse wheel: SDL reports wheel-up
-         * as positive y, so wheel-down (dy<0) must INCREASE scroll_y to
-         * reveal content below (standard semantics, content opposite the
-         * wheel). */
-        int nv = cur - static_cast<int>(dpx);
-        /* Limits are DISABLED for now: no clamping, no bounce-back even
-         * with no content - raw scroll behavior is being verified first,
-         * limits get re-added later. */
-        if (nv != cur) {
-            cur = nv;
+        /* the scroll behavior hook owns position updates (default clamps
+         * to [0, scroll_max]); a custom hook may animate instead */
+        if (r->scroll_fn(r, sc->el, delta, r->scroll_ud)) {
             r->scroll_dirty = 1;
         }
     };
@@ -3156,8 +3156,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     /* nearest scrollable ancestor (the hit element itself included).
      * Text runs inherit their parent's overflow but are not scroll
-     * containers: skip them so the walk reaches the actual box. Every
-     * overflow:auto/scroll box consumes the wheel while limits are off. */
+     * containers: skip them so the walk reaches the actual box. */
     for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
         if (!n->el || n->is_text) {
             continue;
@@ -3170,6 +3169,47 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     }
     /* nothing explicitly scrollable: scroll the page (html root) */
     do_scroll(r->tree->root);
+}
+
+/* default scroll behavior: add delta to the element's scroll_y, clamped to
+ * the content range [0, scroll_max] */
+static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
+                          int delta, void* userdata)
+{
+    (void)userdata;
+    if (!el || !r->tree) {
+        return 0;
+    }
+    int max = 0;
+    whaleui_layout_node_t* n = find_node_by_el(r->tree->root, el);
+    if (n) {
+        max = n->scroll_max;
+    }
+    int& cur = r->scrolls[el];
+    int nv = cur + delta;
+    if (nv > max) {
+        nv = max;
+    }
+    if (nv < 0) {
+        nv = 0;
+    }
+    if (nv != cur) {
+        cur = nv;
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
+                                                  whaleui_scroll_behavior_fn fn,
+                                                  void* userdata)
+{
+    if (!r) {
+        return -1;
+    }
+    r->scroll_fn = fn ? fn : scroll_default;
+    r->scroll_ud = userdata;
+    return 0;
 }
 
 extern "C" void whaleui_render_handle_key(whaleui_render_t* r, int keycode,

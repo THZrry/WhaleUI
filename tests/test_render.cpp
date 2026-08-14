@@ -312,12 +312,13 @@ int main(void)
         whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[w->render->tree->root->el] == 40);
-        /* no clamping while limits are disabled: it keeps accumulating */
+        /* clamps at the content limit (no scrolling past the bottom) */
         whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
-        assert(w->render->scrolls[w->render->tree->root->el] == 1040);
-        /* wheel-up reduces it, still without bouncing back */
+        assert(w->render->scrolls[w->render->tree->root->el] ==
+               w->render->tree->root->scroll_max);
+        /* and at the top: cannot scroll above the first content */
         whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
-        assert(w->render->scrolls[w->render->tree->root->el] == 40);
+        assert(w->render->scrolls[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }
 
@@ -424,12 +425,11 @@ int main(void)
         }
         assert(tiny != nullptr);
         assert(tiny->scroll_max == 0);
-        /* limits are off: the tiny box consumes the wheel itself (no
-         * bounce-back, no fallthrough to the page) */
+        /* the tiny box has no overflow room: the wheel clamps to 0, and
+         * since it consumed the event the page below does not scroll */
         whaleui_render_handle_wheel(w->render, tiny->border.x + 5,
                                     tiny->border.y + 5, -1.0f);
-        assert(w->render->scrolls.count(tiny->el) == 1);
-        assert(w->render->scrolls[tiny->el] > 0);
+        assert(w->render->scrolls[tiny->el] == 0);
         assert(w->render->scrolls.count(w->render->tree->root->el) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_layout_destroy(t);

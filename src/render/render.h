@@ -91,6 +91,10 @@ struct whaleui_render
     std::map<struct lxb_dom_element*, int> scrolls;
     /* wheel scrolling changed scrolls: repaint next frame without relayout */
     int scroll_dirty;
+    /* scroll behavior hook (default: clamped; replace for smooth scrolling) */
+    int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
+                     void*);
+    void* scroll_ud;
 
     /* text selection: anchor + focus (element, UTF-8 byte offset). The
      * focus end is the "active" end while dragging. In an editable element
@@ -164,6 +168,18 @@ void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y, int down);
 /* Mouse wheel: scrolls the nearest scrollable ancestor of the element under
  * (x, y) by dy wheel ticks (x/y may be -1 to reuse the last hover pos). */
 void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y, float dy);
+
+/* Scroll behavior hook: called for every wheel delta applied to an element.
+ * delta is the pixel amount to ADD to the element's scroll position (may be
+ * negative). Return 1 when the scroll position actually changed (a repaint
+ * is scheduled). The default clamps to [0, scroll_max]; a custom hook can
+ * implement velocity/acceleration-based smooth scrolling later. */
+typedef int (*whaleui_scroll_behavior_fn)(whaleui_render_t* r,
+                                          struct lxb_dom_element* el,
+                                          int delta, void* userdata);
+int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
+                                       whaleui_scroll_behavior_fn fn,
+                                       void* userdata);
 
 /* Keyboard: editing keys (arrows/backspace/delete/enter) on the focused
  * editable element. mods: SDL_Keymod bitmask (for ctrl shortcuts). */
