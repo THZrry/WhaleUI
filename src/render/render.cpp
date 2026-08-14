@@ -3135,7 +3135,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     float dpx = (dy >= -4.0f && dy <= 4.0f) ? dy * notch : dy;
 
     auto do_scroll = [r, dpx](whaleui_layout_node_t* sc) {
-        if (!sc->el || sc->scroll_max <= 0) {
+        if (!sc->el) {
             return;
         }
         int& cur = r->scrolls[sc->el];
@@ -3144,16 +3144,11 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
          * reveal content below (standard semantics, content opposite the
          * wheel). */
         int nv = cur - static_cast<int>(dpx);
-        if (nv > sc->scroll_max) {
-            nv = sc->scroll_max;
-        }
-        if (nv < 0) {
-            nv = 0;
-        }
+        /* Limits are DISABLED for now: no clamping, no bounce-back even
+         * with no content - raw scroll behavior is being verified first,
+         * limits get re-added later. */
         if (nv != cur) {
             cur = nv;
-            /* no relayout: the paint path applies the scroll offset (see
-             * scroll_delta), so wheel scrolling stays cheap on big pages */
             r->scroll_dirty = 1;
         }
     };
@@ -3161,17 +3156,14 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     /* nearest scrollable ancestor (the hit element itself included).
      * Text runs inherit their parent's overflow but are not scroll
-     * containers (scroll_max == 0): skip them so the walk reaches the
-     * actual box */
+     * containers: skip them so the walk reaches the actual box. Every
+     * overflow:auto/scroll box consumes the wheel while limits are off. */
     for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
         if (!n->el || n->is_text) {
             continue;
         }
         std::string ov = sget(n->style, "overflow");
-        /* only a box that can actually scroll consumes the wheel; a
-         * non-overflowing overflow:auto container must NOT block the page
-         * from scrolling */
-        if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
+        if (ov == "auto" || ov == "scroll") {
             do_scroll(n);
             return;
         }
