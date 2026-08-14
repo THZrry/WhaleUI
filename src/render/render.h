@@ -22,8 +22,6 @@ typedef struct SDL_Window SDL_Window;
 typedef struct SDL_GPUDevice SDL_GPUDevice;
 typedef struct SDL_GPUTexture SDL_GPUTexture;
 typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
-typedef struct SDL_Renderer SDL_Renderer;
-typedef struct SDL_Texture SDL_Texture;
 typedef struct TTF_Font TTF_Font;
 
 #ifdef __cplusplus
@@ -38,14 +36,11 @@ struct whaleui_render
     int width, height;     /* window size in pixels */
     int has_dirty;
 
-    /* CPU framebuffer (RGBA8) + GPU offscreen target.
-     * GPU path: offscreen + transfer. Software fallback (no GPU backend):
-     * SDL_Renderer + streaming texture present the same framebuffer. */
+    /* CPU framebuffer (0xAARRGGBB) + GPU offscreen target (B8G8R8A8 so the
+     * little-endian framebuffer bytes map 1:1). */
     std::vector<unsigned int> pixels;
     SDL_GPUTexture* offscreen;
     SDL_GPUTransferBuffer* transfer;
-    SDL_Renderer* renderer; /* non-NULL when running on the software path */
-    SDL_Texture* tex;
 
     /* owned stylesheet + last layout tree (rebuilt on dirty) */
     whaleui_layout_tree_t* tree;

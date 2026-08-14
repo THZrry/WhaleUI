@@ -6,7 +6,7 @@
 
 - **HTML + CSS**:DOM 解析由 [lexbor](https://github.com/lexbor/lexbor) 提供;自研轻量 CSS 解析器与样式引擎,支持选择器匹配(标签 / `#id` / `.class` / 后代 / 子代)、级联(specificity + `!important`)、`var()` 自定义属性、`@media`、`@keyframes`。
 - **布局**:自研盒模型与基础 flex 引擎——margin / padding / border / content、`content-box` 与 `border-box`、`px` / `%` / `em` / `auto` 长度、block 流、flex(`direction` / `justify-content` / `gap` / `flex-grow`)、`position`(static / relative / absolute / fixed)、`z-index`、`opacity`、`display: none`。
-- **渲染**:SDL3 GPU(`SDL_GPU` 离屏纹理 + blit 呈现);无 GPU 环境(虚拟机 / 远程桌面)自动回退到 SDL_Renderer 软件渲染。文本由 SDL3_ttf 栅格化,字体经虚拟文件系统注册。
+- **渲染**:SDL3 GPU(`SDL_GPU` 离屏纹理 + blit 呈现,底层 D3D11 / Vulkan / OpenGL 由 SDL 自动选择)。文本由 SDL3_ttf 栅格化,字体经虚拟文件系统注册。
 - **主题**:内置默认样式表(每个标签有预设,保留通用工具类),浅色 / 深色两套变量,跟随系统或手动切换,支持热切换。
 - **虚拟文件系统**:所有资源(HTML / CSS / 字体)读取走统一 VFS,默认磁盘实现,可整体替换(如 HTTP CDN)。
 - **三种构建目标**:`full`(SDL3 + SDL_Image + SDL3_ttf + lexbor + stb + utf8proc)、`lite`(无 SDL_Image / SDL3_ttf)、`minimal`(仅布局与渲染核心)。

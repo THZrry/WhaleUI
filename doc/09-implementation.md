@@ -19,7 +19,7 @@
 
 1. **布局不由 lexbor 计算**。lexbor 提供 HTML/CSS **解析**与选择器,没有可用的 CSS layout 引擎;`src/layout/` 自研盒模型 + 基础 flex(第二步文档中的假设不成立,已按实际修正)。
 2. **CSS 解析自研**,未接 lexbor 的 CSS 语法树(接口复杂且本项目只需子集);解析器位于 `src/style/css.cpp`。
-3. **渲染双路径**:`SDL_GPU`(离屏纹理 + 内置 blit 管线,无自定义 shader)为主;无 GPU 后端时自动回退 `SDL_Renderer` 软件渲染。自定义 shader 中间表示(SPIR-V 等)留待后续。
+3. **渲染统一走 SDL_GPU**:CPU framebuffer 上传离屏纹理后 blit 到 swapchain,底层 D3D11 / Vulkan / OpenGL 由 SDL 自动选择;无 GPU 驱动时 `whaleui_window_show` 明确报错(不静默降级)。自定义 shader 中间表示(SPIR-V 等)留待后续。
 4. **SDL3 采用官方预编译包**(`3rdparty/sdl3/` + `3rdparty/sdl3_ttf/`),因为 `SDL3_ttf.dll` 运行时依赖 `SDL3.dll`。
 
 ## CSS 支持矩阵
@@ -64,5 +64,5 @@ backdrop-filter, clip-path, 媒体查询的其余条件
 
 ```bash
 xmake run demo          # 交互 demo:T 切换深浅色,ESC 退出
-xmake run test_render   # 像素级渲染验证(软件路径,无 GPU 也可运行)
+xmake run test_render   # 像素级渲染验证(需 SDL_GPU 后端;无 GPU 时跳过绘制部分)
 ```

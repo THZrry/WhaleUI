@@ -1,4 +1,4 @@
-/* Renderer: CPU paint into an RGBA framebuffer, uploaded to an offscreen GPU
+﻿/* Renderer: CPU paint into an RGBA framebuffer, uploaded to an offscreen GPU
  * texture and blitted to the swapchain (SDL built-in blit pipeline; custom
  * shaders are a later step). Text comes from SDL3_ttf using fonts registered
  * through the font module. */
@@ -491,7 +491,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Window* window,
                                                    int width, int height)
 {
-    if (!window || width <= 0 || height <= 0) {
+    if (!device || !window || width <= 0 || height <= 0) {
         return nullptr;
     }
     whaleui_render_t* r = new whaleui_render_t;
@@ -504,56 +504,29 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->bg_color = 0xFF202020;
     r->pixels.resize(static_cast<size_t>(width) * height, 0xFF202020);
 
-    if (device) {
-        /* GPU path: offscreen target + transfer buffer */
-        SDL_GPUTextureCreateInfo tci;
-        std::memset(&tci, 0, sizeof(tci));
-        tci.type = SDL_GPU_TEXTURETYPE_2D;
-        tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tci.width = static_cast<Uint32>(width);
-        tci.height = static_cast<Uint32>(height);
-        tci.layer_count_or_depth = 1;
-        tci.num_levels = 1;
-        tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        r->offscreen = SDL_CreateGPUTexture(device, &tci);
+    /* GPU path: offscreen target + transfer buffer */
+    SDL_GPUTextureCreateInfo tci;
+    std::memset(&tci, 0, sizeof(tci));
+    tci.type = SDL_GPU_TEXTURETYPE_2D;
+    tci.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    tci.width = static_cast<Uint32>(width);
+    tci.height = static_cast<Uint32>(height);
+    tci.layer_count_or_depth = 1;
+    tci.num_levels = 1;
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    r->offscreen = SDL_CreateGPUTexture(device, &tci);
 
-        SDL_GPUTransferBufferCreateInfo tbi;
-        std::memset(&tbi, 0, sizeof(tbi));
-        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
-        r->transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
+    SDL_GPUTransferBufferCreateInfo tbi;
+    std::memset(&tbi, 0, sizeof(tbi));
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
+    r->transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
 
-        if (!r->offscreen || !r->transfer) {
-            SDL_ReleaseGPUTexture(device, r->offscreen);
-            SDL_ReleaseGPUTransferBuffer(device, r->transfer);
-            r->offscreen = nullptr;
-            r->transfer = nullptr;
-            device = nullptr;
-        }
-    }
-
-    if (!device) {
-        /* software fallback: SDL_Renderer + streaming texture */
-        r->renderer = SDL_CreateRenderer(window, nullptr);
-        if (!r->renderer) {
-            /* last resort: force the software driver */
-            SDL_PropertiesID props = SDL_CreateProperties();
-            SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "software");
-            SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window);
-            r->renderer = SDL_CreateRendererWithProperties(props);
-            SDL_DestroyProperties(props);
-        }
-        if (!r->renderer) {
-            delete r;
-            return nullptr;
-        }
-        r->tex = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA8888,
-                                   SDL_TEXTUREACCESS_STREAMING, width, height);
-        if (!r->tex) {
-            SDL_DestroyRenderer(r->renderer);
-            delete r;
-            return nullptr;
-        }
+    if (!r->offscreen || !r->transfer) {
+        SDL_ReleaseGPUTexture(device, r->offscreen);
+        SDL_ReleaseGPUTransferBuffer(device, r->transfer);
+        delete r;
+        return nullptr;
     }
 
     /* default font: first registered font, else system fallback */
@@ -586,13 +559,8 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     }
     TTF_CloseFont(r->font_default);
 #endif
-    if (r->renderer) {
-        SDL_DestroyTexture(r->tex);
-        SDL_DestroyRenderer(r->renderer);
-    } else {
-        SDL_ReleaseGPUTexture(r->device, r->offscreen);
-        SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
-    }
+    SDL_ReleaseGPUTexture(r->device, r->offscreen);
+    SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
     delete r;
 }
 
@@ -681,29 +649,23 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     r->width = width;
     r->height = height;
     r->pixels.assign(static_cast<size_t>(width) * height, r->bg_color);
-    if (r->renderer) {
-        SDL_DestroyTexture(r->tex);
-        r->tex = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA8888,
-                                   SDL_TEXTUREACCESS_STREAMING, width, height);
-    } else {
-        SDL_ReleaseGPUTexture(r->device, r->offscreen);
-        SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
-        SDL_GPUTextureCreateInfo tci;
-        std::memset(&tci, 0, sizeof(tci));
-        tci.type = SDL_GPU_TEXTURETYPE_2D;
-        tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tci.width = static_cast<Uint32>(width);
-        tci.height = static_cast<Uint32>(height);
-        tci.layer_count_or_depth = 1;
-        tci.num_levels = 1;
-        tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        r->offscreen = SDL_CreateGPUTexture(r->device, &tci);
-        SDL_GPUTransferBufferCreateInfo tbi;
-        std::memset(&tbi, 0, sizeof(tbi));
-        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
-        r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
-    }
+    SDL_ReleaseGPUTexture(r->device, r->offscreen);
+    SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
+    SDL_GPUTextureCreateInfo tci;
+    std::memset(&tci, 0, sizeof(tci));
+    tci.type = SDL_GPU_TEXTURETYPE_2D;
+    tci.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    tci.width = static_cast<Uint32>(width);
+    tci.height = static_cast<Uint32>(height);
+    tci.layer_count_or_depth = 1;
+    tci.num_levels = 1;
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    r->offscreen = SDL_CreateGPUTexture(r->device, &tci);
+    SDL_GPUTransferBufferCreateInfo tbi;
+    std::memset(&tbi, 0, sizeof(tbi));
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
+    r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
     r->has_dirty = 1;
     return 0;
 }
@@ -728,17 +690,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     Clip full = {0, 0, r->width, r->height};
     paint_node(r, r->tree->root, &full);
 
-    /* present: software path or GPU blit */
-    if (r->renderer) {
-        SDL_UpdateTexture(r->tex, nullptr, r->pixels.data(),
-                          static_cast<int>(r->width) * 4);
-        SDL_RenderClear(r->renderer);
-        SDL_RenderTexture(r->renderer, r->tex, nullptr, nullptr);
-        SDL_RenderPresent(r->renderer);
-        return 0;
-    }
-
-    /* upload + blit + present */
+    /* present: upload offscreen + blit to swapchain */
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
     if (!cmd) {
         return -3;

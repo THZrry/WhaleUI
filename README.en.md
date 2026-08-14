@@ -15,10 +15,10 @@ Built for small, fast desktop tool UIs.
   block flow, flex (`direction` / `justify-content` / `gap` / `flex-grow`),
   `position` (static / relative / absolute / fixed), `z-index`, `opacity`,
   `display: none`.
-- **Rendering**: SDL3 GPU (offscreen texture + blit to the swapchain) with an
-  automatic SDL_Renderer software fallback when no GPU backend is available
-  (VMs, RDP). Text is rasterized by SDL3_ttf from fonts registered through
-  the virtual file system.
+- **Rendering**: SDL3 GPU (offscreen texture + blit to the swapchain;
+  D3D11 / Vulkan / OpenGL backends chosen automatically by SDL). Text is
+  rasterized by SDL3_ttf from fonts registered through the virtual file
+  system.
 - **Themes**: built-in default stylesheet (presets for every tag, shared
   utility classes), light / dark variable sets, system-following or manual,
   hot-switchable.

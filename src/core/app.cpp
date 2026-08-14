@@ -159,10 +159,10 @@ extern "C" int whaleui_app_set_theme(whaleui_app_t* app, whaleui_theme_t theme)
         return -1;
     }
     app->theme = theme;
-    /* repaint windows with the new theme variables */
+    /* re-parse the stylesheet with the new theme variables, then repaint */
     for (whaleui_window_t* win : app->windows) {
         if (win->render) {
-            whaleui_render_invalidate(win->render);
+            whaleui_window_refresh_css(win);
         }
     }
     return 0;
@@ -180,6 +180,12 @@ extern "C" int whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex)
     }
     std::strncpy(app->accent, hex, sizeof(app->accent) - 1);
     app->accent[sizeof(app->accent) - 1] = '\0';
+    /* accent feeds --accent; refresh windows to pick it up */
+    for (whaleui_window_t* win : app->windows) {
+        if (win->render) {
+            whaleui_window_refresh_css(win);
+        }
+    }
     return 0;
 }
 

@@ -156,15 +156,20 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* GPU backend may be unavailable (VMs, RDP); render falls back
-             * to the SDL_Renderer software path automatically. */
+            /* SDL_GPU backend (D3D11/Vulkan/OpenGL); requires a GPU driver. */
             win->app->gpu = SDL_CreateGPUDevice(0, false, nullptr);
+            if (!win->app->gpu) {
+                SDL_DestroyWindow(win->sdl);
+                win->sdl = nullptr;
+                return -3;
+            }
         }
-        SDL_GPUDevice* gpu = nullptr;
-        if (win->app->gpu && SDL_ClaimWindowForGPUDevice(win->app->gpu, win->sdl)) {
-            gpu = win->app->gpu;
+        if (!SDL_ClaimWindowForGPUDevice(win->app->gpu, win->sdl)) {
+            SDL_DestroyWindow(win->sdl);
+            win->sdl = nullptr;
+            return -4;
         }
-        win->render = whaleui_render_create(gpu, win->sdl,
+        win->render = whaleui_render_create(win->app->gpu, win->sdl,
                                             win->width, win->height);
         if (!win->render) {
             return -5;
