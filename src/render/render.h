@@ -24,8 +24,10 @@ typedef struct SDL_GPUDevice SDL_GPUDevice;
 typedef struct SDL_GPUTexture SDL_GPUTexture;
 typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
 typedef struct SDL_GPUComputePipeline SDL_GPUComputePipeline;
+typedef struct SDL_Surface SDL_Surface;
 typedef struct TTF_Font TTF_Font;
 typedef struct TTF_TextEngine TTF_TextEngine;
+typedef struct TTF_Text TTF_Text;
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,6 +59,20 @@ struct whaleui_render
     TTF_Font* font_default;
     TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
 
+    /* text cache: one TTF_Text + rasterized surface per element+style,
+     * reused across frames. Rebuilding text objects AND re-rasterizing
+     * every run per frame was the dominant paint cost on text-heavy pages
+     * (~13fps); cached frames are millisecond cheap. The entry stores the
+     * last text so edits recreate the pair. */
+    struct TextCacheEntry
+    {
+        TTF_Text* t;
+        SDL_Surface* surf; /* rasterized glyphs (drawn with the default
+                              color; tinting happens at blend time) */
+        std::string text;
+    };
+    std::map<std::string, TextCacheEntry> text_cache;
+
     /* select dropdown interaction state. open_select is the DOM element
      * (stable across layout-tree rebuilds; layout nodes are recreated every
      * frame and would dangle) */
@@ -73,6 +89,8 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
+    /* wheel scrolling changed scrolls: repaint next frame without relayout */
+    int scroll_dirty;
 
     /* text selection: anchor + focus (element, UTF-8 byte offset). The
      * focus end is the "active" end while dragging. In an editable element

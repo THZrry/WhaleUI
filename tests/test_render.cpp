@@ -1,4 +1,4 @@
-﻿// test_render: paint pipeline verification on the SDL_GPU path.
+// test_render: paint pipeline verification on the SDL_GPU path.
 // Color parsing always runs; window-level assertions run only when a GPU
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
@@ -319,6 +319,55 @@ int main(void)
         /* scrolling the other way clamps at 0 */
         whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* cross-element selection: dragging up (anchor below focus) selects
+     * between the endpoints only; a click in the middle selects nothing */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "xsel", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"a\">aaa</p><p id=\"b\">bbb</p>"
+            "<p id=\"c\">ccc</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        /* the three <p> text runs, in document order */
+        whaleui_layout_node_t* runs[3] = {nullptr, nullptr, nullptr};
+        int run_idx = 0;
+        for (auto& n : t->arena) {
+            if (!n.visible || !n.is_text) {
+                continue;
+            }
+            if (run_idx < 3) {
+                runs[run_idx++] = &n;
+            }
+        }
+        whaleui_layout_node_t* ra = runs[0];
+        whaleui_layout_node_t* rb = runs[1];
+        whaleui_layout_node_t* rc = runs[2];
+        assert(ra != nullptr && rb != nullptr && rc != nullptr);
+        /* anchor in c, drag up into a */
+        int y = rc->border.y + rc->border.h / 2;
+        whaleui_render_set_pressed(w->render, rc->border.x + 5, y, 1);
+        y = ra->border.y + ra->border.h / 2;
+        whaleui_render_set_hover(w->render, ra->border.x + 5, y);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el == rc->el);
+        assert(w->render->sel_focus_el == ra->el);
+        /* painting the cross-element highlight must not crash */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* a plain click in the middle paragraph clears everything */
+        y = rb->border.y + rb->border.h / 2;
+        whaleui_render_set_pressed(w->render, rb->border.x + 5, y, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el == nullptr);
+        whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }
 
