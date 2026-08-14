@@ -92,16 +92,13 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 app->running = 0;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                if (e.key.key == SDLK_ESCAPE) {
-                    app->running = 0;
-                } else if (e.key.key == SDLK_T) {
-                    /* toggle based on the EFFECTIVE theme (SYSTEM resolves to
-                     * the OS scheme first, so the first press works even when
-                     * the app is still in WHALEUI_THEME_SYSTEM) */
-                    whaleui_theme_t cur = whaleui_app_resolved_theme(app);
-                    whaleui_app_set_theme(app, cur == WHALEUI_THEME_DARK
-                                                 ? WHALEUI_THEME_LIGHT
-                                                 : WHALEUI_THEME_DARK);
+                if (app->key_cb) {
+                    app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
+                }
+                break;
+            case SDL_EVENT_KEY_UP:
+                if (app->key_cb) {
+                    app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
                 }
                 break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -241,6 +238,17 @@ extern "C" int whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex)
             whaleui_window_refresh_css(win);
         }
     }
+    return 0;
+}
+
+extern "C" int whaleui_app_set_key_callback(whaleui_app_t* app,
+                                            whaleui_key_cb cb, void* userdata)
+{
+    if (!app) {
+        return -1;
+    }
+    app->key_cb = cb;
+    app->key_ud = userdata;
     return 0;
 }
 

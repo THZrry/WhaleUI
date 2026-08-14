@@ -35,6 +35,10 @@ struct whaleui_app
     whaleui_select_cb select_cb;
     void* select_ud;
 
+    /* key events (library dispatches; the app decides what to do) */
+    whaleui_key_cb key_cb;
+    void* key_ud;
+
     std::vector<whaleui_window_t*> windows;
 };
 

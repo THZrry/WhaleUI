@@ -38,6 +38,12 @@ int main(void)
         assert(whaleui_app_set_render_option(app, WHALEUI_RENDER_VSYNC, 0) == 0);
         assert(whaleui_app_set_render_option(app, (whaleui_render_option_t)99, 1) != 0);
 
+        /* key / select callbacks */
+        assert(whaleui_app_set_key_callback(app, nullptr, nullptr) == 0);
+        assert(whaleui_app_set_key_callback(nullptr, nullptr, nullptr) != 0);
+        assert(whaleui_app_set_select_callback(app, nullptr, nullptr) == 0);
+        assert(whaleui_app_set_select_callback(nullptr, nullptr, nullptr) != 0);
+
         /* run/quit (stub loop returns immediately) */
         assert(whaleui_app_run(app) == 0);
 

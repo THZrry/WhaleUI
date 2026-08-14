@@ -77,9 +77,14 @@ void base_css(const ThemeDef& d, std::string& css)
         d.card_radius);
     css += rad;
     css +=
-        ".row { display: flex; flex-direction: row; }\n"
+        ".row { display: flex; flex-direction: row; gap: 12px; }\n"
         ".column { display: flex; flex-direction: column; }\n"
         ".center { display: flex; justify-content: center; align-items: center; }\n"
+        ".app { display: flex; flex-direction: column; gap: 14px; padding: 24px 28px; }\n"
+        ".header { display: flex; justify-content: space-between; align-items: center; }\n"
+        ".badge { background: var(--accent); color: var(--accent-fg); padding: 3px 10px;\n"
+        "         border-radius: 999px; font-size: 11px; font-weight: 600;\n"
+        "         display: inline-block; }\n"
         ".hidden { display: none; }\n"
         ".muted { color: var(--muted); }\n"
         ".select-open { border-color: var(--accent); }\n";
@@ -121,6 +126,9 @@ void fill_vars(const ThemeDef& d, bool dark, const char* accent,
     out["--btn-bg"] = out["--accent"];
     out["--btn-fg"] = "#ffffff";
     out["--btn-bg-hover"] = out["--accent-hover"];
+    char rad[16];
+    std::snprintf(rad, sizeof(rad), "%dpx", d.card_radius);
+    out["--radius"] = rad;
 
     const char* style = d.name;
     if (std::strcmp(style, "metro") == 0) {

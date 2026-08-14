@@ -718,11 +718,16 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
     }
     int fs = 13;
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+    /* value text left, arrow pinned to the right edge */
+    int arrow_x = n->content.x + n->content.w - 16;
+    int text_w = arrow_x - n->content.x - 8;
+    if (text_w < 10) {
+        text_w = 10;
+    }
     draw_text_at(r, texts[sel], n->content.x + 2, n->content.y,
-                 n->content.w - 20, n->content.h, fs, "", fg, false, 0, clip);
-    /* arrow (▾) at the right edge */
-    draw_text_at(r, "\xe2\x96\xbe", n->content.x + n->content.w - 18, n->content.y,
-                 18, n->content.h, fs, "", fg, false, 0, clip);
+                 text_w, n->content.h, fs, "", fg, false, 0, clip);
+    draw_text_at(r, "\xe2\x96\xbe", arrow_x, n->content.y,
+                 16, n->content.h, fs, "", fg, false, 0, clip);
 
     if (r->open_select == n->el) {
         int list_x = n->border.x;

@@ -90,6 +90,14 @@ typedef void (*whaleui_select_cb)(whaleui_app_t* app, const char* value,
 int whaleui_app_set_select_callback(whaleui_app_t* app, whaleui_select_cb cb,
                                     void* userdata);
 
+/* Called on every key event. keycode is an SDL_Keycode (SDLK_*); pressed is
+ * 1 on key-down, 0 on key-up. Key handling stays in the app (the library
+ * only dispatches). */
+typedef void (*whaleui_key_cb)(whaleui_app_t* app, int keycode, int pressed,
+                               void* userdata);
+int whaleui_app_set_key_callback(whaleui_app_t* app, whaleui_key_cb cb,
+                                 void* userdata);
+
 /* ======================= render options ======================= */
 
 typedef enum whaleui_render_option {

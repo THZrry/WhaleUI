@@ -18,20 +18,9 @@
 
 static const char* kHtml =
     "<html><head><style>"
-    ":root { --radius: 10px; }"
     "@media (prefers-color-scheme: dark) {"
     "  .theme-note { color: #4cc2ff; }"
     "}"
-    ".app { display: flex; flex-direction: column; gap: 14px; padding: 28px; }"
-    ".header { display: flex; justify-content: space-between;"
-    "          align-items: center; }"
-    ".row { display: flex; gap: 14px; }"
-    ".card { background: var(--card); border: 1px solid var(--border);"
-    "        border-radius: var(--radius); padding: 16px 18px; flex: 1; }"
-    ".card h2 { margin-top: 0; }"
-    ".badge { background: var(--accent); color: var(--accent-fg);"
-    "         padding: 3px 10px; border-radius: 999px; font-size: 11px;"
-    "         font-weight: 600; display: inline-block; }"
     ".ta-right { text-align: right; }"
     ".ta-center { text-align: center; }"
     ".clip-box { overflow: hidden; background: var(--accent);"
@@ -54,7 +43,8 @@ static const char* kHtml =
     "<option value=\"macos\">macOS</option>"
     "</select>"
     "</div>"
-    "<p class=\"muted\">下拉选择主题 · T 切换深浅色 · ESC 退出</p>"
+    "<p class=\"muted\">下拉选择主题 · T 切换深浅色 · ESC 退出 · "
+    "主题由库内置样式提供,页面 CSS 仅做演示</p>"
 
     "<div class=\"row\">"
     "<div class=\"card\">"
@@ -92,6 +82,23 @@ static void on_theme_select(whaleui_app_t* app, const char* value, void* userdat
     whaleui_app_set_theme_style(app, value);
 }
 
+/* key handling lives in the app, not the library */
+static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
+{
+    (void)userdata;
+    if (!pressed) {
+        return;
+    }
+    if (keycode == SDLK_ESCAPE) {
+        whaleui_app_quit(app);
+    } else if (keycode == SDLK_T) {
+        whaleui_theme_t cur = whaleui_app_get_theme(app);
+        whaleui_app_set_theme(app, cur == WHALEUI_THEME_DARK
+                                       ? WHALEUI_THEME_LIGHT
+                                       : WHALEUI_THEME_DARK);
+    }
+}
+
 int main(void)
 {
     whaleui_app_t* app = whaleui_app_create();
@@ -104,8 +111,9 @@ int main(void)
     whaleui_font_register("C:/Windows/Fonts/arial.ttf");
     whaleui_font_register("C:/Windows/Fonts/msyh.ttc");
 
-    /* the theme dropdown switches the whole UI style */
+    /* the theme dropdown switches the whole UI style; keys are the app's job */
     whaleui_app_set_select_callback(app, on_theme_select, nullptr);
+    whaleui_app_set_key_callback(app, on_key, nullptr);
 
     whaleui_window_t* win = whaleui_window_create(app, "WhaleUI Demo", 780, 540);
     if (!win) {
