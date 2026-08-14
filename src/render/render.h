@@ -76,11 +76,15 @@ struct whaleui_render
 
     /* text selection: anchor + focus (element, UTF-8 byte offset). The
      * focus end is the "active" end while dragging. In an editable element
-     * the selection doubles as the caret (anchor == focus == caret). */
+     * the selection doubles as the caret (anchor == focus == caret).
+     * selecting turns on only after the drag passes a small threshold, so a
+     * plain click never creates a selection. */
     struct lxb_dom_element* sel_anchor_el;
     struct lxb_dom_element* sel_focus_el;
     int sel_anchor;
     int sel_focus;
+    int selecting;
+    int press_x, press_y; /* where the left button went down (drag gate) */
 
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */

@@ -260,6 +260,46 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* scroll container with a multi-line text run: the run shifts up by
+     * scroll_y (the demo scroll-box regression) */
+    {
+        const char* html = "<body><div id=\"sc\" style=\"overflow:auto;"
+            "height:50px;\">line1<br>line2<br>line3<br>line4</div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        std::map<lxb_dom_element*, int> scrolls;
+
+        whaleui_layout_tree_t* t0 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+        assert(t0 != nullptr);
+        whaleui_layout_node_t* sc = find_tag(t0->root, "div");
+        assert(sc != nullptr);
+        assert(sc->scroll_max > 0); /* 4 lines overflow the 50px box */
+        whaleui_layout_node_t* tr = sc->first_child;
+        assert(tr != nullptr && tr->is_text);
+        assert(tr->border.y == sc->content.y);
+        whaleui_layout_destroy(t0);
+
+        /* grab the element pointer from a throwaway layout pass */
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+        assert(t != nullptr);
+        scrolls[find_tag(t->root, "div")->el] = 30;
+        whaleui_layout_tree_t* t1 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls);
+        assert(t1 != nullptr);
+        whaleui_layout_node_t* sc1 = find_tag(t1->root, "div");
+        assert(sc1 != nullptr);
+        whaleui_layout_node_t* tr1 = sc1->first_child;
+        assert(tr1 != nullptr && tr1->is_text);
+        assert(tr1->border.y == sc1->content.y - 30);
+        assert(sc1->scroll_y == 30);
+        whaleui_layout_destroy(t1);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* text runs: <br> becomes a line break; height scales with lines */
     {
         whaleui_layout_tree_t* t = do_layout(
