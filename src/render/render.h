@@ -92,10 +92,6 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
-    /* smooth-scroll targets: wheel deltas land here and the frame loop
-     * eases the current scroll toward them (a few px per frame), so batched
-     * mouse-wheel notches animate instead of jumping in one frame */
-    std::map<struct lxb_dom_element*, int> scroll_targets;
     /* last-frame scroll snapshot: used to detect pure scroll deltas so the
      * frame can shift the previous image instead of repainting everything */
     std::map<struct lxb_dom_element*, int> last_scrolls;

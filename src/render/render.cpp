@@ -3967,11 +3967,10 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     do_scroll(r->tree->root);
 }
 
-/* default scroll behavior: wheel deltas land in scroll_targets; the frame
- * loop eases the current scroll toward the target (a step per frame), so
- * rapid wheel notches - which SDL/Windows often coalesce into one event
- * with a big delta - animate smoothly instead of jumping. Returns 1 when a
- * repaint is needed. */
+/* default scroll behavior: add delta to the element's scroll_y, clamped to
+ * the content range [0, scroll_max]. (Smooth/eased scrolling was tried via
+ * scroll targets + per-frame easing and backed out - it made wheel input
+ * unreliable; revisit with a proper velocity model later.) */
 static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
                           int delta, void* userdata)
 {
@@ -3984,19 +3983,19 @@ static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
     if (n) {
         max = n->scroll_max;
     }
-    int& tgt = r->scroll_targets[el];
-    int nv = tgt + delta;
+    int& cur = r->scrolls[el];
+    int nv = cur + delta;
     if (nv > max) {
         nv = max;
     }
     if (nv < 0) {
         nv = 0;
     }
-    if (nv == tgt && r->scrolls[el] == nv) {
-        return 0;
+    if (nv != cur) {
+        cur = nv;
+        return 1;
     }
-    tgt = nv;
-    return 1;
+    return 0;
 }
 
 extern "C" int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
@@ -4072,31 +4071,6 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return 0;
     }
     r->scroll_dirty = 0;
-    /* ease the current scroll toward its target: one step per frame, so
-     * batched wheel notches (one event carrying several notches) animate
-     * smoothly instead of jumping. ponytail: linear-ish 1/4 step; a real
-     * inertia/deceleration curve can replace this later. */
-    if (!r->scroll_targets.empty()) {
-        for (auto it = r->scroll_targets.begin();
-             it != r->scroll_targets.end();) {
-            int& cur = r->scrolls[it->first];
-            if (cur == it->second) {
-                it = r->scroll_targets.erase(it);
-                continue;
-            }
-            int d = it->second - cur;
-            int step = d / 4;
-            if (step == 0) {
-                step = d > 0 ? 2 : -2;
-            }
-            if ((d > 0 && step > d) || (d < 0 && step < d)) {
-                step = d; /* never overshoot */
-            }
-            cur += step;
-            r->scroll_dirty = 1;
-            ++it;
-        }
-    }
     /* FSR decision: auto mode watches display size + power state, so it can
      * flip at runtime; switching resolution rebuilds the framebuffer */
     {
@@ -4186,7 +4160,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * side + memmove of the text layer) and only repaint the exposed strip.
      * Any other dirty/animations fall back to a full repaint (dy=0). */
     int scroll_dy = 0;
-    if (!r->has_dirty && !animating && !r->edit_el && r->tree) {
+    if (!r->has_dirty && !r->scroll_dirty && !animating && !r->edit_el &&
+        r->tree) {
         std::map<lxb_dom_element*, int> cur;
         std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
