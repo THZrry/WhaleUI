@@ -704,8 +704,8 @@ bool is_select_node(whaleui_layout_node_t* n)
 
 const int kSelectItemH = 26;
 
-/* draw the current value + arrow, and the option list when expanded */
-void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
+/* draw the current value + arrow (always, from paint_node) */
+void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
     std::vector<std::string> texts, values;
     select_options(n->el, texts, values);
@@ -728,47 +728,69 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
                  text_w, n->content.h, fs, "", fg, false, 0, clip);
     draw_text_at(r, "\xe2\x96\xbe", arrow_x, n->content.y,
                  16, n->content.h, fs, "", fg, false, 0, clip);
+}
 
-    if (r->open_select == n->el) {
-        int list_x = n->border.x;
-        int list_y = n->border.y + n->border.h;
-        int list_w = n->border.w;
-        int list_h = static_cast<int>(texts.size()) * kSelectItemH;
-        unsigned int bg = 0xFF000000;
-        auto it = r->theme_vars.find("--card");
-        if (it != r->theme_vars.end()) {
-            whaleui_render_parse_color(it->second.c_str(), &bg);
-        }
-        fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, list_h, bg, clip);
-        unsigned int border_c = 0xFF000000;
-        auto itb = r->theme_vars.find("--border");
-        if (itb != r->theme_vars.end()) {
-            whaleui_render_parse_color(itb->second.c_str(), &border_c);
-        }
-        for (int i = 0; i < static_cast<int>(texts.size()); ++i) {
-            int iy = list_y + i * kSelectItemH;
-            if (i == r->open_select_hover) {
-                fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
-                          0x33000000 | (fg & 0x00FFFFFF), clip);
-            }
-            if (i == sel) {
-                /* mark the chosen option with the accent color */
-                unsigned int acc = 0xFF0067C0;
-                auto ita = r->theme_vars.find("--accent");
-                if (ita != r->theme_vars.end()) {
-                    whaleui_render_parse_color(ita->second.c_str(), &acc);
-                }
-                draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                             kSelectItemH, fs, "", acc, true, 0, clip);
-            } else {
-                draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                             kSelectItemH, fs, "", fg, false, 0, clip);
-            }
-        }
-        /* bottom border of the list */
-        fill_rect(r->pixels, r->width, r->height, list_x, list_y + list_h - 1,
-                  list_w, 1, border_c, clip);
+/* the expanded option list. Painted LAST (highest z), after the whole
+ * document, so later siblings cannot cover it. */
+void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
+{
+    std::vector<std::string> texts, values;
+    select_options(n->el, texts, values);
+    if (texts.empty()) {
+        return;
     }
+    int sel = r->select_index.count(n->el) ? r->select_index[n->el] : 0;
+    if (sel < 0 || sel >= static_cast<int>(texts.size())) {
+        sel = 0;
+    }
+    int fs = 13;
+    unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+    int list_x = n->border.x;
+    int list_y = n->border.y + n->border.h;
+    int list_w = n->border.w;
+    int list_h = static_cast<int>(texts.size()) * kSelectItemH;
+    unsigned int bg = 0xFF000000;
+    auto it = r->theme_vars.find("--card");
+    if (it != r->theme_vars.end()) {
+        whaleui_render_parse_color(it->second.c_str(), &bg);
+    }
+    fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, list_h, bg, clip);
+    unsigned int border_c = 0xFF000000;
+    auto itb = r->theme_vars.find("--border");
+    if (itb != r->theme_vars.end()) {
+        whaleui_render_parse_color(itb->second.c_str(), &border_c);
+    }
+    /* selected + hovered rows get a translucent accent wash */
+    unsigned int acc = 0xFF0067C0;
+    auto ita = r->theme_vars.find("--accent");
+    if (ita != r->theme_vars.end()) {
+        whaleui_render_parse_color(ita->second.c_str(), &acc);
+    }
+    unsigned int sel_wash = (0x26 << 24) | (acc & 0x00FFFFFF); /* ~15% accent */
+    unsigned int hover_wash = (0x14 << 24) | (acc & 0x00FFFFFF);
+    for (int i = 0; i < static_cast<int>(texts.size()); ++i) {
+        int iy = list_y + i * kSelectItemH;
+        if (i == r->open_select_hover) {
+            fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
+                      hover_wash, clip);
+        }
+        if (i == sel) {
+            fill_rect(r->pixels, r->width, r->height, list_x, iy, list_w, kSelectItemH,
+                      sel_wash, clip);
+            draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
+                         kSelectItemH, fs, "", acc, true, 0, clip);
+        } else {
+            draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
+                         kSelectItemH, fs, "", fg, false, 0, clip);
+        }
+    }
+    /* border around the list */
+    fill_rect(r->pixels, r->width, r->height, list_x, list_y, list_w, 1, border_c, clip);
+    fill_rect(r->pixels, r->width, r->height, list_x, list_y + list_h - 1,
+              list_w, 1, border_c, clip);
+    fill_rect(r->pixels, r->width, r->height, list_x, list_y, 1, list_h, border_c, clip);
+    fill_rect(r->pixels, r->width, r->height, list_x + list_w - 1, list_y,
+              1, list_h, border_c, clip);
 }
 
 /* depth-first hit test; coordinates are absolute (layout boxes are absolute).
@@ -876,9 +898,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, eff);
     }
-    /* <select> control paints on top of its children (value + list overlay) */
+    /* <select> control: value + arrow painted here; the expanded list is
+     * painted LAST in render_frame so nothing occludes it */
     if (is_select_node(n)) {
-        paint_select(r, n, eff);
+        paint_select_value(r, n, eff);
     }
 }
 
@@ -1149,6 +1172,29 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     if (!r || !r->tree) {
         return;
     }
+    /* hover inside the expanded list highlights the option under the mouse */
+    if (r->open_select) {
+        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        if (s) {
+            std::vector<std::string> texts, values;
+            select_options(s->el, texts, values);
+            int list_x = s->border.x;
+            int list_y = s->border.y + s->border.h;
+            int list_w = s->border.w;
+            int hov = -1;
+            if (x >= list_x && x < list_x + list_w &&
+                y >= list_y && y < list_y + kSelectItemH * static_cast<int>(values.size())) {
+                hov = (y - list_y) / kSelectItemH;
+                if (hov >= static_cast<int>(values.size())) {
+                    hov = -1;
+                }
+            }
+            if (hov != r->open_select_hover) {
+                r->open_select_hover = hov;
+                r->has_dirty = 1;
+            }
+        }
+    }
     whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
@@ -1177,6 +1223,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     std::fill(r->pixels.begin(), r->pixels.end(), r->bg_color);
     Clip full = {0, 0, r->width, r->height};
     paint_node(r, r->tree->root, &full);
+
+    /* expanded select list is drawn last (highest z) so later siblings and
+     * other content cannot cover it */
+    if (r->open_select) {
+        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        if (s) {
+            paint_select_list(r, s, &full);
+        }
+    }
 
     /* present: upload offscreen + blit to swapchain */
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
