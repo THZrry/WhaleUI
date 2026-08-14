@@ -606,6 +606,18 @@ int anim_runs(void)
     unsigned int r0 = (f0 >> 16) & 0xFF, r1 = (f1 >> 16) & 0xFF;
     assert(f1 != f0);
     assert(r1 > r0); /* red channel grows as opacity climbs */
+    /* FSR on a static box: force on, render at half res, the composite
+     * target must still show the red box at (0,0) */
+    whaleui_window_load_html(w,
+        "<html><body><div style=\"width:100px;height:100px;"
+        "background-color:#ff0000;\"></div></body></html>");
+    whaleui_render_set_fsr(w->render, 1, 0.5f, 0.4f);
+    assert(whaleui_render_frame(w->render, w->document) == 0);
+    assert(w->render->fsr_active == 1);
+    assert(gpixel(w->render, 0, 0) == 0xFFFF0000);
+    whaleui_render_set_fsr(w->render, 2, 0.5f, 0.4f);
+    assert(whaleui_render_frame(w->render, w->document) == 0);
+    assert(w->render->fsr_active == 0);
     whaleui_window_destroy(w);
     whaleui_app_destroy(app);
     return 1;

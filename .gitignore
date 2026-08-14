@@ -26,3 +26,7 @@ fsr-min/
 
 # DXC (HLSL->DXIL runtime compile): the dlls must ship with the app
 !3rdparty/dxc/bin/
+
+# reference FSR demos (SPIR-V bytes already vendored in src/render/)
+fsr-demo-gpu/
+fsr-min/

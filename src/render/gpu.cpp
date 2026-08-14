@@ -56,9 +56,11 @@ bool dxc_init()
 #endif
 
 /* compile HLSL to DXIL via DXC; returns a blob the caller owns (Release).
- * profile: L"vs_6_0" / L"ps_6_0" / L"cs_6_0". */
+ * profile: L"vs_6_0" / L"ps_6_0" / L"cs_6_0". When spirv is set, emits
+ * SPIR-V (-spirv) with the given -fvk-bind extras. */
 IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
-                       const wchar_t* profile)
+                       const wchar_t* profile, bool spirv,
+                       const wchar_t* const* extra, int nextra)
 {
 #ifdef _WIN32
     if (!dxc_init()) {
@@ -77,9 +79,20 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
     buf.Size = std::strlen(hlsl);
     buf.Encoding = DXC_CP_UTF8;
     std::wstring entry_w(entry, entry + std::strlen(entry));
-    const wchar_t* args[] = {L"-T", profile, L"-E", entry_w.c_str()};
+    std::vector<const wchar_t*> args;
+    args.push_back(L"-T");
+    args.push_back(profile);
+    args.push_back(L"-E");
+    args.push_back(entry_w.c_str());
+    if (spirv) {
+        args.push_back(L"-spirv");
+        for (int i = 0; i < nextra; ++i) {
+            args.push_back(extra[i]);
+        }
+    }
     IDxcResult* result = nullptr;
-    hr = compiler->Compile(&buf, args, 4, nullptr, IID_DXC_Result,
+    hr = compiler->Compile(&buf, args.data(), static_cast<UINT32>(args.size()),
+                           nullptr, IID_DXC_Result,
                           reinterpret_cast<void**>(&result));
     compiler->Release();
     if (FAILED(hr) || !result) {
@@ -127,8 +140,13 @@ SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
                               const char* entry, bool fragment)
 {
 #ifdef _WIN32
+    const char* drv = SDL_GetGPUDeviceDriver(dev);
+    const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
     const std::wstring profile = fragment ? L"ps_6_0" : L"vs_6_0";
-    IDxcBlob* blob = compile_dxil(hlsl, entry, profile.c_str());
+    const wchar_t* fbBind[5] = {L"-fvk-bind", L"b0", L"2", L"0"};
+    IDxcBlob* blob =
+        compile_dxil(hlsl, entry, profile.c_str(), vulkan,
+                     vulkan ? fbBind : nullptr, vulkan ? 4 : 0);
     if (!blob) {
         return nullptr;
     }
@@ -137,7 +155,8 @@ SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
     sci.code = static_cast<const Uint8*>(blob->GetBufferPointer());
     sci.code_size = blob->GetBufferSize();
     sci.entrypoint = entry;
-    sci.format = SDL_GPU_SHADERFORMAT_DXIL;
+    sci.format = vulkan ? SDL_GPU_SHADERFORMAT_SPIRV
+                        : SDL_GPU_SHADERFORMAT_DXIL;
     sci.stage = fragment ? SDL_GPU_SHADERSTAGE_FRAGMENT
                          : SDL_GPU_SHADERSTAGE_VERTEX;
     sci.num_samplers = fragment ? 1 : 0;
@@ -205,6 +224,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->text_layer = nullptr;
     g->layer_transfer = nullptr;
     g->layer_dirty = 0;
+    g->fb_w = static_cast<float>(w);
+    g->fb_h = static_cast<float>(h);
     g->atlas_w = 2048;
     g->atlas_h = 2048;
     g->atlas_cx = 0;
@@ -223,13 +244,14 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     /* solid pipeline */
     {
-        SDL_GPUVertexAttribute attrs[5];
+        SDL_GPUVertexAttribute attrs[6];
         std::memset(attrs, 0, sizeof(attrs));
         attrs[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
         attrs[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 8};
         attrs[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 16};
         attrs[3] = {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 32};
         attrs[4] = {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 40};
+        attrs[5] = {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 44};
         SDL_GPUVertexBufferDescription vbd;
         std::memset(&vbd, 0, sizeof(vbd));
         vbd.slot = 0;
@@ -241,7 +263,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         vis.vertex_buffer_descriptions = &vbd;
         vis.num_vertex_buffers = 1;
         vis.vertex_attributes = attrs;
-        vis.num_vertex_attributes = 5;
+        vis.num_vertex_attributes = 6;
 
         SDL_GPUColorTargetBlendState blend;
         std::memset(&blend, 0, sizeof(blend));
@@ -300,12 +322,14 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                              static_cast<uint32_t>(h),
                              SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
                              SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                                 SDL_GPU_TEXTUREUSAGE_SAMPLER);
+                                 SDL_GPU_TEXTUREUSAGE_SAMPLER |
+                                 SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ);
 
     g->target2 = make_texture(device, static_cast<uint32_t>(w),
                               static_cast<uint32_t>(h),
                               SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                               SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE |
+                                  SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
                                   SDL_GPU_TEXTUREUSAGE_SAMPLER);
 
     g->text_layer = make_texture(device, static_cast<uint32_t>(w),
@@ -367,9 +391,19 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         goto fail;
     }
 
-    /* text-composite compute pipeline: text_layer (t0) -> target (u0) */
+    /* text-composite compute pipeline: text_layer (t0,t1) -> target2 (u0) */
     {
-        IDxcBlob* cs = compile_dxil(kTextCompositeCS, "main", L"cs_6_0");
+        const char* drv = SDL_GetGPUDeviceDriver(device);
+        const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
+        /* SPIR-V layout (SDL 3.4): set0 = sampled/ro-storage, set1 =
+         * rw-storage; DXC needs explicit -fvk-bind to land there */
+        const wchar_t* binds[12] = {
+            L"-fvk-bind", L"t0", L"0", L"0",
+            L"-fvk-bind", L"t1", L"0", L"1",
+            L"-fvk-bind", L"u0", L"1", L"0"};
+        IDxcBlob* cs =
+            compile_dxil(kTextCompositeCS, "main", L"cs_6_0", vulkan,
+                         vulkan ? binds : nullptr, vulkan ? 12 : 0);
         if (!cs) {
             goto fail;
         }
@@ -378,7 +412,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
         cpi.code_size = cs->GetBufferSize();
         cpi.entrypoint = "main";
-        cpi.format = SDL_GPU_SHADERFORMAT_DXIL;
+        cpi.format = vulkan ? SDL_GPU_SHADERFORMAT_SPIRV
+                            : SDL_GPU_SHADERFORMAT_DXIL;
         cpi.num_samplers = 2;
         cpi.num_readwrite_storage_textures = 1;
         cpi.threadcount_x = 16;
@@ -453,7 +488,7 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
     float b = (color & 0xFF) / 255.0f;
     float a = ((color >> 24) & 0xFF) / 255.0f;
     gpu_vert_solid v[6];
-    /* two triangles, UV 0..1, same color, size + radius */
+    /* two triangles, UV 0..1, same color, size + radius + fb size */
     for (int i = 0; i < 6; ++i) {
         v[i].x = x;
         v[i].y = y;
@@ -464,6 +499,8 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
         v[i].size_x = w;
         v[i].size_y = h;
         v[i].radius = radius;
+        v[i].fb_w = g->fb_w;
+        v[i].fb_h = g->fb_h;
     }
     v[0].x = x;         v[0].y = y;         v[0].u = 0; v[0].v = 0;
     v[1].x = x + w;     v[1].y = y;         v[1].u = 1; v[1].v = 0;
@@ -568,20 +605,6 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     if (!g) {
         return nullptr;
     }
-    /* NDC: pixel -> clip space (y flipped) */
-    float sx = 2.0f / static_cast<float>(fb_w);
-    float sy = -2.0f / static_cast<float>(fb_h);
-    for (size_t i = 0; i < g->solids.size(); ++i) {
-        gpu_vert_solid& v = g->solids[i];
-        v.x = v.x * sx - 1.0f;
-        v.y = v.y * sy + 1.0f;
-    }
-    for (size_t i = 0; i < g->texts.size(); ++i) {
-        gpu_vert_text& v = g->texts[i];
-        v.x = v.x * sx - 1.0f;
-        v.y = v.y * sy + 1.0f;
-    }
-
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g->device);
     if (!cmd) {
         return nullptr;

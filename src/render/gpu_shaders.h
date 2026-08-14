@@ -13,7 +13,9 @@
 
 /* vertex: px position, uv (0..1 within the quad), color, quad size px,
  * corner radius px. SDL 3.4's D3D12 backend maps attribute locations to
- * "TEXCOORD"+location semantics (location 0 is TEXCOORD0, not POSITION). */
+ * "TEXCOORD"+location semantics (location 0 is TEXCOORD0, not POSITION).
+ * Pixel->NDC conversion happens here via a per-frame uniform, so the CPU
+ * never touches vertex data. */
 static const char* kSolidVS = R"(
 struct VSIn {
     float2 pos : TEXCOORD0;
@@ -21,6 +23,7 @@ struct VSIn {
     float4 col : TEXCOORD2;
     float2 size : TEXCOORD3;
     float radius : TEXCOORD4;
+    float2 fb : TEXCOORD5;
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -31,7 +34,9 @@ struct VSOut {
 };
 VSOut main(VSIn v) {
     VSOut o;
-    o.pos = float4(v.pos, 0, 1);
+    float2 ndc = v.pos / v.fb * 2.0 - 1.0;
+    ndc.y = -ndc.y; /* pixel y down, NDC y up */
+    o.pos = float4(ndc, 0, 1);
     o.uv = v.uv;
     o.col = v.col;
     o.size = v.size;

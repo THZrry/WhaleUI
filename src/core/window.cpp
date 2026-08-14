@@ -163,8 +163,14 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* D3D12 first (works everywhere, incl. Basic Display Adapter via
-             * WARP); DXBC from D3DCompile needs the device to declare it. */
+            /* Backend choice: WHALEUI_GPU=d3d12|vulkan selects explicitly
+             * (Vulkan preferred on machines with a driver; D3D12 is the
+             * default - it works everywhere, incl. Basic Display Adapter
+             * via WARP). The shader formats declared cover both. */
+            const char* want = SDL_getenv("WHALEUI_GPU");
+            if (want && *want) {
+                SDL_SetHint(SDL_HINT_GPU_DRIVER, want);
+            }
             SDL_PropertiesID props = SDL_CreateProperties();
             SDL_SetBooleanProperty(props,
                 SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXBC_BOOLEAN, true);

@@ -6,6 +6,8 @@
 #include "render/render.h"
 #include "render/fsr_shaders.h"
 #include "render/fsr_dxil.h"
+#include "render/fsr_demo_spv.h"
+#include "render/fsr_rcas_custom_spv.h"
 #include "render/gpu.h"
 #include "render/gpu_shaders.h"
 #include "animate/animate.h"
@@ -3113,38 +3115,54 @@ SDL_Cursor* render_cursor(whaleui_render_t* r, SDL_SystemCursor id);
 int render_fsr_create(whaleui_render_t* r)
 {
     SDL_GPUDevice* d = r->device;
-    /* pick the shader variant for the actual backend: SPIR-V on Vulkan,
-     * DXIL (compiled from HLSL with dxc) on D3D12 */
+    /* pick the shader variant for the actual backend: the official AMD FSR
+     * SPIR-V shaders (fsr-demo-gpu) on Vulkan, DXIL (compiled from HLSL
+     * with dxc) on D3D12 */
     const char* drv = SDL_GetGPUDeviceDriver(d);
     const bool vulkan = drv && std::strcmp(drv, "vulkan") == 0;
-    const uint32_t* easu_code = vulkan ? g_easu_spv : g_easu_dxil;
-    const uint32_t easu_words = vulkan ? g_easu_spv_size : g_easu_dxil_size;
-    const uint32_t* rcas_code = vulkan ? g_rcas_spv : g_rcas_dxil;
-    const uint32_t rcas_words = vulkan ? g_rcas_spv_size : g_rcas_dxil_size;
-    const SDL_GPUShaderFormat fmt =
-        vulkan ? SDL_GPU_SHADERFORMAT_SPIRV : SDL_GPU_SHADERFORMAT_DXIL;
     SDL_GPUComputePipelineCreateInfo ci;
     std::memset(&ci, 0, sizeof(ci));
     ci.entrypoint = "main";
-    ci.format = fmt;
     ci.num_readonly_storage_textures = 1;
     ci.num_readwrite_storage_textures = 1;
     ci.num_uniform_buffers = 1;
-    ci.threadcount_x = 8;
-    ci.threadcount_y = 8;
     ci.threadcount_z = 1;
-    ci.code_size = easu_words * 4;
-    ci.code = reinterpret_cast<const Uint8*>(easu_code);
+    if (vulkan) {
+        ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        ci.threadcount_x = 16; /* official EASU workgroup 16x16 */
+        ci.threadcount_y = 16;
+        ci.code_size = g_fsr_easu_spv_size * 4;
+        ci.code = reinterpret_cast<const Uint8*>(g_fsr_easu_spv);
+    } else {
+        ci.format = SDL_GPU_SHADERFORMAT_DXIL;
+        ci.threadcount_x = 8;
+        ci.threadcount_y = 8;
+        ci.code_size = g_easu_dxil_size * 4;
+        ci.code = reinterpret_cast<const Uint8*>(g_easu_dxil);
+    }
     r->fsr_easu_pipe = SDL_CreateGPUComputePipeline(d, &ci);
     if (!r->fsr_easu_pipe) {
         return 0;
     }
-    ci.code_size = rcas_words * 4;
-    ci.code = reinterpret_cast<const Uint8*>(rcas_code);
+    if (vulkan) {
+        ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        ci.threadcount_x = 8;
+        ci.threadcount_y = 8;
+        ci.code_size = g_fsr_rcas_custom_spv_size * 4;
+        ci.code = reinterpret_cast<const Uint8*>(g_fsr_rcas_custom_spv);
+    } else {
+        ci.format = SDL_GPU_SHADERFORMAT_DXIL;
+        ci.threadcount_x = 8;
+        ci.threadcount_y = 8;
+        ci.code_size = g_rcas_dxil_size * 4;
+        ci.code = reinterpret_cast<const Uint8*>(g_rcas_dxil);
+    }
     r->fsr_rcas_pipe = SDL_CreateGPUComputePipeline(d, &ci);
     if (!r->fsr_rcas_pipe) {
         return 0;
     }
+    /* EASU reads the GPU render target (needs no upload buffer anymore);
+     * RCAS writes straight into gpu->target2 which is the blit source */
     auto mkTex = [&](int w, int h, SDL_GPUTextureUsageFlags u,
                      SDL_GPUTexture** out) {
         SDL_GPUTextureCreateInfo t;
@@ -3159,22 +3177,17 @@ int render_fsr_create(whaleui_render_t* r)
         *out = SDL_CreateGPUTexture(d, &t);
         return *out != nullptr;
     };
-    const SDL_GPUTextureUsageFlags low_usage =
-        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ;
     const SDL_GPUTextureUsageFlags scratch_usage =
         SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
         SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
-    if (!mkTex(r->fb_w, r->fb_h, low_usage, &r->offscreen_low) ||
-        !mkTex(r->width, r->height, scratch_usage, &r->fsr_up) ||
-        !mkTex(r->width, r->height, scratch_usage, &r->fsr_out)) {
+    const SDL_GPUTextureUsageFlags out_usage =
+        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE |
+        SDL_GPU_TEXTUREUSAGE_SAMPLER; /* blit source after RCAS */
+    if (!mkTex(r->width, r->height, scratch_usage, &r->fsr_up) ||
+        !mkTex(r->width, r->height, out_usage, &r->fsr_out)) {
         return 0;
     }
-    SDL_GPUTransferBufferCreateInfo tbi;
-    std::memset(&tbi, 0, sizeof(tbi));
-    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbi.size = static_cast<Uint32>(static_cast<size_t>(r->fb_w) * r->fb_h * 4);
-    r->fsr_transfer = SDL_CreateGPUTransferBuffer(d, &tbi);
-    return r->fsr_transfer != nullptr;
+    return 1;
 }
 
 void render_fsr_destroy(whaleui_render_t* r)
@@ -3185,22 +3198,18 @@ void render_fsr_destroy(whaleui_render_t* r)
     SDL_GPUDevice* d = r->device;
     SDL_ReleaseGPUComputePipeline(d, r->fsr_easu_pipe);
     SDL_ReleaseGPUComputePipeline(d, r->fsr_rcas_pipe);
-    SDL_ReleaseGPUTexture(d, r->offscreen_low);
     SDL_ReleaseGPUTexture(d, r->fsr_up);
     SDL_ReleaseGPUTexture(d, r->fsr_out);
-    SDL_ReleaseGPUTransferBuffer(d, r->fsr_transfer);
     r->fsr_easu_pipe = nullptr;
     r->fsr_rcas_pipe = nullptr;
-    r->offscreen_low = nullptr;
     r->fsr_up = nullptr;
     r->fsr_out = nullptr;
-    r->fsr_transfer = nullptr;
 }
 
 /* should the current frame use the FSR path? mode 0 = auto. */
 int fsr_want_active(whaleui_render_t* r)
 {
-    if (!r->fsr_easu_pipe || !r->fsr_rcas_pipe || !r->offscreen_low) {
+    if (!r->fsr_easu_pipe || !r->fsr_rcas_pipe || !r->gpu) {
         return 0; /* resources failed to create */
     }
     if (r->fsr_mode == 2) {
@@ -3931,6 +3940,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             if (r->fb_w < 1) { r->fb_w = 1; }
             if (r->fb_h < 1) { r->fb_h = 1; }
             r->pixels.assign(static_cast<size_t>(r->fb_w) * r->fb_h, r->bg_color);
+            r->text_layer.assign(static_cast<size_t>(r->fb_w) * r->fb_h, 0);
+            /* the GPU targets follow the render resolution */
+            whaleui_gpu_destroy(r->gpu);
+            r->gpu = whaleui_gpu_create(r->device, r->fb_w, r->fb_h);
             render_fsr_destroy(r);
             render_fsr_create(r);
             r->has_dirty = 1;
@@ -4041,11 +4054,50 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         SDL_SubmitGPUCommandBuffer(cmd);
         return 0;
     }
+    /* FSR 1.0 upscale: EASU (target2 low-res -> fsr_up) + RCAS sharpen
+     * (fsr_up -> fsr_out), then blit fsr_out. Both passes read their input
+     * as compute storage (same as the pre-GPU path, but the input is now
+     * the GPU render target instead of an uploaded CPU framebuffer). */
+    SDL_GPUTexture* blit_src = r->gpu->target2;
+    Uint32 blit_w = static_cast<Uint32>(r->fb_w);
+    Uint32 blit_h = static_cast<Uint32>(r->fb_h);
+    if (r->fsr_active && r->fsr_easu_pipe && r->fsr_rcas_pipe && r->gpu) {
+        auto runPass = [&](SDL_GPUComputePipeline* p, SDL_GPUTexture* rw,
+                           SDL_GPUTexture* ro, const void* pc, Uint32 pcSz) {
+            SDL_GPUStorageTextureReadWriteBinding rwBind;
+            std::memset(&rwBind, 0, sizeof(rwBind));
+            rwBind.texture = rw;
+            rwBind.mip_level = 0;
+            rwBind.layer = 0;
+            rwBind.cycle = false;
+            SDL_GPUComputePass* cps =
+                SDL_BeginGPUComputePass(cmd, &rwBind, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, p);
+                SDL_BindGPUComputeStorageTextures(cps, 0, &ro, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, pc, pcSz);
+                SDL_DispatchGPUCompute(cps,
+                                       (static_cast<Uint32>(r->width) + 7) / 8,
+                                       (static_cast<Uint32>(r->height) + 7) / 8,
+                                       1);
+                SDL_EndGPUComputePass(cps);
+            }
+        };
+        float pf[4] = {static_cast<float>(r->fb_w), static_cast<float>(r->fb_h),
+                       static_cast<float>(r->fb_w) / static_cast<float>(r->width),
+                       static_cast<float>(r->fb_h) / static_cast<float>(r->height)};
+        runPass(r->fsr_easu_pipe, r->fsr_up, r->gpu->target2, pf, sizeof(pf));
+        float rp[4] = {r->fsr_sharpness, 0, 0, 0};
+        runPass(r->fsr_rcas_pipe, r->fsr_out, r->fsr_up, rp, sizeof(rp));
+        blit_src = r->fsr_out;
+        blit_w = static_cast<Uint32>(r->width);
+        blit_h = static_cast<Uint32>(r->height);
+    }
     SDL_GPUBlitInfo blit;
     std::memset(&blit, 0, sizeof(blit));
-    blit.source.texture = r->gpu->target2;
-    blit.source.w = static_cast<Uint32>(r->fb_w);
-    blit.source.h = static_cast<Uint32>(r->fb_h);
+    blit.source.texture = blit_src;
+    blit.source.w = blit_w;
+    blit.source.h = blit_h;
     blit.destination.texture = swapchain;
     blit.destination.w = sw;
     blit.destination.h = sh;

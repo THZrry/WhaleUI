@@ -34,6 +34,8 @@ struct gpu_vert_solid
     float r, g, b, a;  /* vertex color */
     float size_x, size_y; /* quad size in px */
     float radius;      /* corner radius px */
+    float fb_w, fb_h;  /* framebuffer size in px (per-vertex: SDL 3.4 D3D12
+                          DXIL vertex uniform crashes pipeline creation) */
 };
 
 /* text sprite quad, atlas UVs */
@@ -74,6 +76,7 @@ struct whaleui_gpu
     /* per-frame command lists */
     std::vector<gpu_vert_solid> solids;
     std::vector<gpu_vert_text> texts;
+    float fb_w, fb_h; /* render resolution (per-vertex NDC conversion) */
 
     /* glyph atlas CPU-side occupancy (R8) */
     std::vector<unsigned char> atlas;
