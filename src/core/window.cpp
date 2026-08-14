@@ -156,8 +156,12 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             return -2;
         }
         if (!win->app->gpu) {
-            /* SDL_GPU backend (D3D11/Vulkan/OpenGL); requires a GPU driver. */
-            win->app->gpu = SDL_CreateGPUDevice(0, false, nullptr);
+            /* SDL3 3.4.x requires explicit shader-format flags: D3D12/Vulkan
+             * PrepareDriver refuse format_flags==0. Declare DXIL (D3D12) +
+             * SPIR-V (Vulkan); SDL picks the first working backend. */
+            win->app->gpu = SDL_CreateGPUDevice(
+                SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV,
+                false, nullptr);
             if (!win->app->gpu) {
                 SDL_DestroyWindow(win->sdl);
                 win->sdl = nullptr;
