@@ -283,13 +283,38 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
             return 0;
         }
         if (i == n - 1) {
-            /* pseudo-classes apply to the target element itself */
+            /* pseudo-classes apply to the target element itself. :hover and
+             * :active bubble per CSS: they also match when the interaction
+             * target is a descendant of this element (a button containing a
+             * <span> stays :hover while the mouse is over the span) */
             lxb_dom_element* cur_el = lxb_dom_interface_element(cur);
-            if (part.hover && (!st || !st->hover || cur_el != st->hover)) {
-                return 0;
+            if (part.hover) {
+                bool ok = false;
+                for (lxb_dom_node* h = (st && st->hover) ? &st->hover->node : nullptr;
+                     h; h = h->parent) {
+                    if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                        lxb_dom_interface_element(h) == cur_el) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    return 0;
+                }
             }
-            if (part.active && (!st || !st->pressed || cur_el != st->pressed)) {
-                return 0;
+            if (part.active) {
+                bool ok = false;
+                for (lxb_dom_node* h = (st && st->pressed) ? &st->pressed->node : nullptr;
+                     h; h = h->parent) {
+                    if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                        lxb_dom_interface_element(h) == cur_el) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    return 0;
+                }
             }
             if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
                 return 0;

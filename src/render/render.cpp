@@ -1176,12 +1176,13 @@ void apply_text_transform(std::string& s, const std::string& t)
  * 1=center, 2=right. Shared by text runs and <select> controls.
  * ckey: element to cache the TTF_Text against (NULL = no caching).
  * lsp: letter-spacing in px (>0 paints glyph by glyph with that gap;
- * TTF_Text has no spacing control, so this is a per-glyph path). */
+ * TTF_Text has no spacing control, so this is a per-glyph path).
+ * wrap: wrap long text to bw (multi-line; height grows with line count). */
 void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
                   bool bold, int align, lxb_dom_element* ckey,
-                  const Clip* clip, int lsp = 0)
+                  const Clip* clip, int lsp = 0, bool wrap = false)
 {
 #ifdef WHALEUI_BUILD_FULL
     if (fs <= 0) {
@@ -1261,11 +1262,12 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     std::string cache_key;
     if (ckey) {
         /* reuse the cached text object; recreate when the style changed
-         * (key) or the content changed (TTF_Text is immutable) */
+         * (key) or the content changed (TTF_Text is immutable). Wrapped
+         * runs also key on the wrap width so they don't share objects. */
         char key[96];
-        std::snprintf(key, sizeof(key), "%p|%d|%c|%s",
+        std::snprintf(key, sizeof(key), "%p|%d|%c|%s|%d",
                       static_cast<void*>(ckey), fs, bold ? 'b' : 'n',
-                      family.c_str());
+                      family.c_str(), wrap ? bw : -1);
         cache_key = key;
         whaleui_render_t::TextCacheEntry& e = r->text_cache[cache_key];
         if (!e.t) {
@@ -1290,6 +1292,11 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     if (!t) {
         return;
     }
+    if (wrap && bw > 0) {
+        /* text runs wrap to their content width; the layout pass estimates
+         * the resulting height, the real size comes from TTF_Text here */
+        TTF_SetTextWrapWidth(t, bw);
+    }
     /* NOTE: TTF_SetTextColor (and Float) on the 3.2.2 prebuilt break
      * TTF_DrawSurfaceText (draws nothing, no error). Instead we render with
      * the default color and tint during blending. */
@@ -1304,8 +1311,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         /* line-box centering, shared by every text path; the <select>
          * value nudges itself up in paint_select_value instead, so this
-         * function has no global side effects on other text */
-        int ty = by + (bh - th) / 2;
+         * function has no global side effects on other text. Wrapped text
+         * taller than the box stays top-aligned (no negative centering). */
+        int ty = th <= bh ? by + (bh - th) / 2 : by;
         SDL_Surface* surf = nullptr;
         if (!cache_key.empty()) {
             /* reuse the rasterized surface; recreate on size change */
@@ -1975,7 +1983,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * glyphs in it, matching text_origin's hit/highlight geometry */
     draw_text_at(r, shown, box->content.x + off_x, n->border.y + off_y,
                  box->content.w, n->border.h,
-                 fs, family, color, bold, align, n->el, clip, lsp);
+                 fs, family, color, bold, align, n->el, clip, lsp, true);
 }
 
 /* --- <select> support --- */

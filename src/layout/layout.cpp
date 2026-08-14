@@ -466,8 +466,11 @@ struct Builder
                 fs = font_px > 0 ? font_px : 16;
             }
             /* multi-line text (\n from <br> or textarea content): height
-             * scales with the line count, width with the longest line */
-            size_t max_line = 0, cur = 0, lines = 1;
+             * scales with the line count, width with the longest line.
+             * Long text also wraps to the parent content width: estimate
+             * the wrapped line count (avg glyph ~ fs/2) so the box flows
+             * like the renderer will paint it. */
+            size_t total_chars = 0, max_line = 0, cur = 0, lines = 1;
             for (size_t i = 0; i < n->text.size(); ++i) {
                 if (n->text[i] == '\n') {
                     ++lines;
@@ -477,14 +480,31 @@ struct Builder
                     cur = 0;
                 } else {
                     ++cur;
+                    ++total_chars;
                 }
             }
             if (cur > max_line) {
                 max_line = cur;
             }
+            int avail = cw > 0 ? cw : 0x7FFFFFFF;
+            int avg_w = fs > 0 ? fs / 2 : 8;
+            size_t wrap_lines = 1;
+            if (avail > 0 && total_chars * static_cast<size_t>(avg_w) >
+                                static_cast<size_t>(avail)) {
+                size_t per_line = static_cast<size_t>(avail) /
+                                  static_cast<size_t>(avg_w > 0 ? avg_w : 1);
+                if (per_line < 1) {
+                    per_line = 1;
+                }
+                wrap_lines = (total_chars + per_line - 1) / per_line;
+            }
+            if (wrap_lines > lines) {
+                lines = wrap_lines;
+            }
             n->border.x = cx;
             n->border.y = *cursor_y;
-            n->border.w = static_cast<int>(max_line * fs * 0.5f);
+            int bw2 = static_cast<int>(max_line * fs * 0.5f);
+            n->border.w = bw2 > avail ? avail : bw2;
             n->border.h = static_cast<int>(fs * 1.2f) * static_cast<int>(lines);
             n->content = n->border;
             *cursor_y += n->border.h;
