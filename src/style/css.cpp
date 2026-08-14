@@ -1,16 +1,23 @@
 /* CSS parser: public C API implementation.
  *
- * Self-contained lightweight parser (no third-party dep): strips comments,
- * groups @media/@keyframes/@font-face, splits comma selector lists, drops
- * !important markers (flagged on the rule), keeps custom properties (--*).
- * Selector matching and cascade live in style.cpp. */
+ * Parsing is delegated to lexbor's CSS module (standard tokenizer: comments,
+ * escapes, strings, @media/@keyframes handling). The result is converted
+ * into the engine's flat rule table (selector + "prop=value" decls +
+ * rule-level !important) that style.cpp's cascade consumes. Selector
+ * matching and the cascade stay in style.cpp. */
 
 #include "style/css.h"
 #include "fs/fs.h"
 
+#include <lexbor/css/parser.h>
+#include <lexbor/css/stylesheet.h>
+#include <lexbor/css/rule.h>
+
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <functional>
+#include <string>
 
 namespace {
 
@@ -37,19 +44,6 @@ char* trim(char* s)
     return s;
 }
 
-/* strip a leading '@media ' / '@keyframes ' name from s, return the rest */
-const char* at_name(const char* s, const char* kw, size_t kwlen)
-{
-    if (std::strncmp(s, kw, kwlen) == 0) {
-        s += kwlen;
-        while (*s == ' ' || *s == '\t') {
-            ++s;
-        }
-        return s;
-    }
-    return nullptr;
-}
-
 void decl_append(whaleui_css_rule_t* rule, const char* name, const char* value,
                  bool important, bool* any_important)
 {
@@ -69,35 +63,6 @@ void decl_append(whaleui_css_rule_t* rule, const char* name, const char* value,
     if (important && any_important) {
         *any_important = 1;
     }
-}
-
-/* parse one "prop: value[!important];" declaration into rule */
-void parse_decl(whaleui_css_rule_t* rule, char* decl, bool* any_important)
-{
-    char* colon = std::strchr(decl, ':');
-    if (!colon) {
-        return;
-    }
-    *colon = '\0';
-    char* name = trim(decl);
-    char* value = trim(colon + 1);
-    if (!*name || !*value) {
-        return;
-    }
-    /* strip trailing ';' and !important */
-    size_t vlen = std::strlen(value);
-    if (vlen > 0 && value[vlen - 1] == ';') {
-        value[vlen - 1] = '\0';
-        value = trim(value);
-    }
-    bool important = false;
-    char* bang = std::strstr(value, "!important");
-    if (bang) {
-        *bang = '\0';
-        value = trim(value);
-        important = true;
-    }
-    decl_append(rule, name, value, important, any_important);
 }
 
 void rule_destroy(whaleui_css_rule_t* rule)
@@ -144,295 +109,255 @@ int rules_append(whaleui_css_rule_t** arr, size_t* count, size_t* cap,
     return 0;
 }
 
-/* parse the decls of one rule block (already copied to `body`) */
-void parse_body(whaleui_css_rule_t* rule, char* body)
+/* trimmed slice of the source css */
+std::string css_slice(const char* css, size_t begin, size_t end)
 {
-    char* d = body;
-    while (*d) {
-        char* semicolon = std::strchr(d, ';');
-        if (semicolon) {
-            *semicolon = '\0';
+    while (begin < end && (css[begin] == ' ' || css[begin] == '\t' ||
+                           css[begin] == '\n' || css[begin] == '\r')) {
+        ++begin;
+    }
+    while (end > begin && (css[end - 1] == ' ' || css[end - 1] == '\t' ||
+                           css[end - 1] == '\n' || css[end - 1] == '\r')) {
+        --end;
+    }
+    return std::string(css + begin, end - begin);
+}
+
+/* copy the decl strings of src into dst */
+void copy_decls(const whaleui_css_rule_t* src, whaleui_css_rule_t* dst)
+{
+    for (size_t i = 0; i < src->decl_count; ++i) {
+        char* kv = dup_range(src->decls[i], std::strlen(src->decls[i]));
+        if (!kv) {
+            continue;
+        }
+        char** nd = static_cast<char**>(std::realloc(dst->decls, (dst->decl_count + 1) * sizeof(char*)));
+        if (!nd) {
+            std::free(kv);
+            continue;
+        }
+        dst->decls = nd;
+        dst->decls[dst->decl_count++] = kv;
+    }
+}
+
+/* emit one rule per comma-separated selector from a style rule */
+void emit_style_rule(const whaleui_css_rule_t* tmp, const std::string& sel,
+                     const char* media,
+                     whaleui_css_rule_t** arr, size_t* count, size_t* cap)
+{
+    size_t start = 0;
+    for (size_t i = 0; i <= sel.size(); ++i) {
+        if (i == sel.size() || sel[i] == ',') {
+            std::string one = css_slice(sel.c_str(), start, i);
+            start = i + 1;
+            if (one.empty()) {
+                continue;
+            }
+            whaleui_css_rule_t r;
+            std::memset(&r, 0, sizeof(r));
+            r.selector = dup_range(one.c_str(), one.size());
+            if (!r.selector) {
+                continue;
+            }
+            r.media = media ? dup_range(media, std::strlen(media)) : nullptr;
+            r.important = tmp->important;
+            copy_decls(tmp, &r);
+            rules_append(arr, count, cap, &r);
+            rule_destroy(&r);
+        }
+    }
+}
+
+/* collect the declarations of a style rule (name/value from the source
+ * offsets so the original text is preserved) */
+void collect_decls(lxb_css_rule_declaration_list_t* dl, const char* css,
+                   whaleui_css_rule_t* out)
+{
+    if (!dl) {
+        return;
+    }
+    for (lxb_css_rule_t* d = (lxb_css_rule_t*)dl->first; d; d = d->next) {
+        if (d->type != LXB_CSS_RULE_DECLARATION) {
+            continue;
+        }
+        lxb_css_rule_declaration_t* dec = (lxb_css_rule_declaration_t*)d;
+        std::string nm = css_slice(css, dec->offset.name_begin,
+                                   dec->offset.name_end);
+        std::string vl = css_slice(css, dec->offset.value_begin,
+                                   dec->offset.value_end);
+        if (nm.empty() || vl.empty()) {
+            continue;
         }
         bool any = false;
-        parse_decl(rule, d, &any);
+        decl_append(out, nm.c_str(), vl.c_str(), dec->important, &any);
         if (any) {
-            rule->important = 1;
+            out->important = 1;
         }
-        if (!semicolon) {
-            break;
-        }
-        d = semicolon + 1;
     }
 }
 
-/* strip /* ... *​/ comments in place */
-void strip_comments(char* s)
+/* collect a @keyframes block: frames "0%/from/to -> decls" encoded as
+ * "key=prop=value;..." strings (matches the animate engine's format) */
+void collect_keyframes(lxb_css_rule_t* rules, const char* css,
+                       const std::string& name,
+                       whaleui_keyframes** kfs, size_t* kf_count)
 {
-    char* w = s;
-    char* r = s;
-    while (*r) {
-        if (r[0] == '/' && r[1] == '*') {
-            r += 2;
-            while (*r && !(r[0] == '*' && r[1] == '/')) {
-                ++r;
-            }
-            if (*r) {
-                r += 2;
-            }
-        } else {
-            *w++ = *r++;
-        }
+    whaleui_keyframes kf;
+    std::memset(&kf, 0, sizeof(kf));
+    kf.name = dup_range(name.c_str(), name.size());
+    if (!kf.name) {
+        return;
     }
-    *w = '\0';
+    std::function<void(lxb_css_rule_t*)> walk = [&](lxb_css_rule_t* rs) {
+        for (lxb_css_rule_t* r = rs; r; r = r->next) {
+            if (r->type == LXB_CSS_RULE_LIST) {
+                walk(((lxb_css_rule_list_t*)r)->first);
+            } else if (r->type == LXB_CSS_RULE_STYLE ||
+                       r->type == LXB_CSS_RULE_BAD_STYLE) {
+                /* "0%" keyframe selectors parse as BAD_STYLE (not a valid
+                 * selector); both carry prelude offsets + declarations */
+                size_t pb = 0, pe = 0;
+                lxb_css_rule_declaration_list_t* dl = nullptr;
+                if (r->type == LXB_CSS_RULE_STYLE) {
+                    lxb_css_rule_style_t* st = (lxb_css_rule_style_t*)r;
+                    pb = st->prelude_begin;
+                    pe = st->prelude_end;
+                    dl = st->declarations;
+                } else {
+                    lxb_css_rule_bad_style_t* bd =
+                        (lxb_css_rule_bad_style_t*)r;
+                    pb = bd->prelude_begin;
+                    pe = bd->prelude_end;
+                    dl = bd->declarations;
+                }
+                std::string key = css_slice(css, pb, pe);
+                if (key.empty()) {
+                    continue;
+                }
+                std::string enc = key + "=";
+                if (dl) {
+                    for (lxb_css_rule_t* d = (lxb_css_rule_t*)dl->first; d;
+                         d = d->next) {
+                        if (d->type != LXB_CSS_RULE_DECLARATION) {
+                            continue;
+                        }
+                        lxb_css_rule_declaration_t* dec =
+                            (lxb_css_rule_declaration_t*)d;
+                        std::string nm = css_slice(css, dec->offset.name_begin,
+                                                   dec->offset.name_end);
+                        std::string vl = css_slice(css, dec->offset.value_begin,
+                                                   dec->offset.value_end);
+                        if (!nm.empty() && !vl.empty()) {
+                            enc += nm + "=" + vl + ";";
+                        }
+                    }
+                }
+                char* es = dup_range(enc.c_str(), enc.size());
+                if (es) {
+                    char** nf = static_cast<char**>(std::realloc(
+                        kf.frames, (kf.frame_count + 1) * sizeof(char*)));
+                    if (nf) {
+                        kf.frames = nf;
+                        kf.frames[kf.frame_count++] = es;
+                    } else {
+                        std::free(es);
+                    }
+                }
+            }
+        }
+    };
+    walk(rules);
+    if (kf.frame_count) {
+        whaleui_keyframes* nk = static_cast<whaleui_keyframes*>(
+            std::realloc(*kfs, (*kf_count + 1) * sizeof(*nk)));
+        if (nk) {
+            *kfs = nk;
+            (*kfs)[(*kf_count)++] = kf;
+        } else {
+            std::free(kf.name);
+            std::free(kf.frames);
+        }
+    } else {
+        std::free(kf.name);
+        std::free(kf.frames);
+    }
 }
 
-/* full parse. Returns 0 on success (keyframes may be NULL). */
+/* walk the lexbor rule tree into the flat rule table */
+void collect_rules(lxb_css_rule_t* rules, const char* css,
+                   whaleui_css_rule_t** arr, size_t* count, size_t* cap,
+                   whaleui_keyframes** kfs, size_t* kf_count,
+                   const char* media)
+{
+    for (lxb_css_rule_t* r = rules; r; r = r->next) {
+        if (r->type == LXB_CSS_RULE_LIST) {
+            collect_rules(((lxb_css_rule_list_t*)r)->first, css, arr, count,
+                          cap, kfs, kf_count, media);
+        } else if (r->type == LXB_CSS_RULE_STYLE) {
+            lxb_css_rule_style_t* st = (lxb_css_rule_style_t*)r;
+            whaleui_css_rule_t tmp;
+            std::memset(&tmp, 0, sizeof(tmp));
+            collect_decls(st->declarations, css, &tmp);
+            std::string sel = css_slice(css, st->prelude_begin,
+                                        st->prelude_end);
+            emit_style_rule(&tmp, sel, media, arr, count, cap);
+            rule_destroy(&tmp);
+        } else if (r->type == LXB_CSS_RULE_AT_RULE) {
+            lxb_css_rule_at_t* at = (lxb_css_rule_at_t*)r;
+            if (at->type == LXB_CSS_AT_RULE_MEDIA && at->u.media) {
+                std::string cond = css_slice(css, at->prelude_begin,
+                                             at->prelude_end);
+                collect_rules((lxb_css_rule_t*)at->u.media->block, css, arr,
+                              count, cap, kfs, kf_count, cond.c_str());
+            } else if (at->type == LXB_CSS_AT_RULE__CUSTOM && at->u.custom) {
+                const lxb_char_t* nmd = at->u.custom->name.data;
+                std::string nm(nmd ? (const char*)nmd : "",
+                               at->u.custom->name.length);
+                if (nm == "keyframes") {
+                    std::string aname = css_slice(css, at->prelude_begin,
+                                                  at->prelude_end);
+                    if (!aname.empty()) {
+                        collect_keyframes(
+                            (lxb_css_rule_t*)at->u.custom->block, css,
+                            aname, kfs, kf_count);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* full parse. Returns 0 on success. */
 int parse_all(const char* css, size_t len,
               whaleui_css_rule_t** out_rules, size_t* out_count,
               whaleui_css_keyframes_t* out_kf)
 {
-    char* buf = dup_range(css, len);
-    if (!buf) {
+    lxb_css_parser_t* parser = lxb_css_parser_create();
+    if (!parser) {
         return -2;
     }
-    strip_comments(buf);
-
+    lxb_css_parser_init(parser, nullptr);
+    lxb_css_stylesheet_t* sst = lxb_css_stylesheet_create(nullptr);
+    if (!sst) {
+        lxb_css_parser_destroy(parser, true);
+        return -2;
+    }
+    lxb_status_t st = lxb_css_stylesheet_parse(sst, parser,
+                                               (const lxb_char_t*)css, len);
+    if (st != LXB_STATUS_OK) {
+        lxb_css_stylesheet_destroy(sst, true);
+        lxb_css_parser_destroy(parser, true);
+        return -1;
+    }
     whaleui_css_rule_t* arr = nullptr;
     size_t count = 0, cap = 0;
     whaleui_keyframes* kfs = nullptr;
     size_t kf_count = 0;
-
-    char* p = buf;
-    while (*p) {
-        /* skip whitespace */
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-            ++p;
-        }
-        if (!*p) {
-            break;
-        }
-
-        /* @-rules */
-        if (*p == '@') {
-            char* brace = std::strchr(p, '{');
-            if (!brace) {
-                break;
-            }
-            /* header: everything from p to brace */
-            char* head = dup_range(p, static_cast<size_t>(brace - p));
-            if (!head) {
-                break;
-            }
-            char* h = trim(head);
-            const char* cond = nullptr;
-            if ((cond = at_name(h, "@media", 6)) != nullptr) {
-                char* media = dup_range(cond, std::strlen(cond));
-                std::free(head);
-                /* find matching close brace (nested blocks possible) */
-                int depth = 1;
-                char* q = brace + 1;
-                char* close = nullptr;
-                while (*q && depth) {
-                    if (*q == '{') {
-                        ++depth;
-                    } else if (*q == '}') {
-                        --depth;
-                        if (depth == 0) {
-                            close = q;
-                            break;
-                        }
-                    }
-                    ++q;
-                }
-                if (!close) {
-                    std::free(media);
-                    break;
-                }
-                /* parse inner rules recursively with media context */
-                char* inner = dup_range(brace + 1, static_cast<size_t>(close - brace - 1));
-                if (inner) {
-                    whaleui_css_rule_t* sub = nullptr;
-                    size_t sub_count = 0;
-                    whaleui_css_keyframes_t sub_kf = {nullptr, 0};
-                    parse_all(inner, std::strlen(inner), &sub, &sub_count, &sub_kf);
-                    for (size_t i = 0; i < sub_count; ++i) {
-                        if (sub[i].media) {
-                            std::free(sub[i].media);
-                        }
-                        sub[i].media = dup_range(media, std::strlen(media));
-                        rules_append(&arr, &count, &cap, &sub[i]);
-                        rule_destroy(&sub[i]);
-                    }
-                    std::free(sub);
-                    std::free(inner);
-                }
-                std::free(media);
-                p = close + 1;
-                continue;
-            }
-            if ((cond = at_name(h, "@keyframes", 10)) != nullptr) {
-                /* animation name: first token of cond */
-                char* aname = dup_range(cond, std::strlen(cond));
-                char* at = trim(aname);
-                char* sp = std::strchr(at, ' ');
-                if (sp) {
-                    *sp = '\0';
-                }
-                std::free(head);
-                int depth = 1;
-                char* q = brace + 1;
-                char* close = nullptr;
-                while (*q && depth) {
-                    if (*q == '{') {
-                        ++depth;
-                    } else if (*q == '}') {
-                        --depth;
-                        if (depth == 0) {
-                            close = q;
-                            break;
-                        }
-                    }
-                    ++q;
-                }
-                if (!close) {
-                    std::free(aname);
-                    break;
-                }
-                /* collect frames: "key { decls }" blocks into one item */
-                whaleui_keyframes kf;
-                std::memset(&kf, 0, sizeof(kf));
-                kf.name = dup_range(at, std::strlen(at));
-                char* inner = dup_range(brace + 1, static_cast<size_t>(close - brace - 1));
-                if (inner && out_kf) {
-                    char* f = inner;
-                    while (*f) {
-                        char* fb = std::strchr(f, '{');
-                        if (!fb) {
-                            break;
-                        }
-                        char* fc = std::strchr(fb, '}');
-                        if (!fc) {
-                            break;
-                        }
-                        char* key = dup_range(f, static_cast<size_t>(fb - f));
-                        char* kt = trim(key);
-                        char* body = dup_range(fb + 1, static_cast<size_t>(fc - fb - 1));
-                        if (kt && *kt && body) {
-                            whaleui_css_rule_t tmp;
-                            std::memset(&tmp, 0, sizeof(tmp));
-                            parse_body(&tmp, body);
-                            /* encode frame as "key=prop:value;prop:value";
-                             * +1 for the terminating NUL that sprintf adds */
-                            size_t need = std::strlen(kt) + 1;
-                            for (size_t i = 0; i < tmp.decl_count; ++i) {
-                                need += std::strlen(tmp.decls[i]) + 1;
-                            }
-                            char* enc = static_cast<char*>(std::malloc(need + 1));
-                            if (enc) {
-                                char* w = enc;
-                                w += std::sprintf(w, "%s=", kt);
-                                for (size_t i = 0; i < tmp.decl_count; ++i) {
-                                    w += std::sprintf(w, "%s;", tmp.decls[i]);
-                                }
-                                char** nf = static_cast<char**>(std::realloc(kf.frames, (kf.frame_count + 1) * sizeof(char*)));
-                                if (nf) {
-                                    kf.frames = nf;
-                                    kf.frames[kf.frame_count++] = enc;
-                                } else {
-                                    std::free(enc);
-                                }
-                            }
-                            rule_destroy(&tmp);
-                        }
-                        std::free(key);
-                        std::free(body);
-                        f = fc + 1;
-                    }
-                }
-                std::free(inner);
-                if (out_kf && kf.frame_count) {
-                    whaleui_keyframes* nk = static_cast<whaleui_keyframes*>(
-                        std::realloc(kfs, (kf_count + 1) * sizeof(*nk)));
-                    if (nk) {
-                        kfs = nk;
-                        kfs[kf_count++] = kf;
-                    } else {
-                        std::free(kf.name);
-                        for (size_t i = 0; i < kf.frame_count; ++i) {
-                            std::free(kf.frames[i]);
-                        }
-                        std::free(kf.frames);
-                    }
-                } else {
-                    std::free(kf.name);
-                    std::free(kf.frames);
-                }
-                std::free(aname);
-                p = close + 1;
-                continue;
-            }
-            /* other at-rules (@font-face, @charset, ...): skip the block */
-            int depth = 1;
-            char* q = brace + 1;
-            while (*q && depth) {
-                if (*q == '{') {
-                    ++depth;
-                } else if (*q == '}') {
-                    --depth;
-                }
-                ++q;
-            }
-            std::free(head);
-            p = *q ? q + 1 : q;
-            continue;
-        }
-
-        /* plain rule: selector { ... } */
-        char* brace = std::strchr(p, '{');
-        if (!brace) {
-            break;
-        }
-        char* close = std::strchr(brace, '}');
-        if (!close) {
-            break;
-        }
-        char* sel = dup_range(p, static_cast<size_t>(brace - p));
-        if (!sel) {
-            break;
-        }
-        char* st = trim(sel);
-        /* split comma-separated selectors into separate rules */
-        char* body = dup_range(brace + 1, static_cast<size_t>(close - brace - 1));
-        whaleui_css_rule_t tmp;
-        std::memset(&tmp, 0, sizeof(tmp));
-        if (body) {
-            parse_body(&tmp, body);
-            std::free(body);
-        }
-        char* s = st;
-        while (*s) {
-            char* comma = std::strchr(s, ',');
-            if (comma) {
-                *comma = '\0';
-            }
-            char* one = trim(s);
-            if (*one) {
-                tmp.selector = dup_range(one, std::strlen(one));
-                rules_append(&arr, &count, &cap, &tmp);
-                std::free(tmp.selector);
-                tmp.selector = nullptr;
-            }
-            if (!comma) {
-                break;
-            }
-            s = comma + 1;
-        }
-        rule_destroy(&tmp);
-        std::free(sel);
-        p = close + 1;
-    }
-
-    std::free(buf);
+    collect_rules(sst->root, css, &arr, &count, &cap, &kfs, &kf_count,
+                  nullptr);
+    lxb_css_stylesheet_destroy(sst, true);
+    lxb_css_parser_destroy(parser, true);
     if (out_rules) {
         *out_rules = arr;
     }
@@ -545,7 +470,8 @@ const char* decl_get(char* const* decls, size_t count, const char* name)
 }
 } // namespace
 
-extern "C" const char* whaleui_css_get_property(const whaleui_css_rule_t* rule, const char* name)
+extern "C" const char* whaleui_css_get_property(const whaleui_css_rule_t* rule,
+                                                const char* name)
 {
     if (!rule || !name) {
         return nullptr;
@@ -553,9 +479,8 @@ extern "C" const char* whaleui_css_get_property(const whaleui_css_rule_t* rule, 
     return decl_get(rule->decls, rule->decl_count, name);
 }
 
-extern "C" int whaleui_css_has_property(const whaleui_css_rule_t* rule, const char* name)
+extern "C" int whaleui_css_has_property(const whaleui_css_rule_t* rule,
+                                        const char* name)
 {
     return whaleui_css_get_property(rule, name) != nullptr;
 }
-
-/* css_apply is implemented by the style engine (style.cpp) */
