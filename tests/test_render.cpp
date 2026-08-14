@@ -308,16 +308,16 @@ int main(void)
         /* scrolling must NOT rebuild the layout tree (perf: relayout is the
          * expensive part on big pages) */
         whaleui_layout_tree_t* tree_before = w->render->tree;
-        /* one notch (dy=+1) -> 40px, 40px per notch */
-        whaleui_render_handle_wheel(w->render, 150, 100, 1.0f);
+        /* rolling down (dy=-1) reveals content below: scroll_y += 40 */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[w->render->tree->root->el] == 40);
         /* large pixel delta (touchpad) clamps at the max */
-        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
+        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] ==
                w->render->tree->root->scroll_max);
-        /* scrolling the other way clamps at 0 */
-        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
+        /* rolling the other way clamps at 0 */
+        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }
@@ -367,7 +367,7 @@ int main(void)
         /* wheel over the container scrolls it, without rebuilding the tree */
         whaleui_layout_tree_t* tree_before = w->render->tree;
         whaleui_render_handle_wheel(w->render, sc->border.x + 5,
-                                    sc->border.y + 5, 1.0f);
+                                    sc->border.y + 5, -1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[sc->el] > 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
