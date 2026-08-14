@@ -1115,14 +1115,73 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
 struct whaleui_layout_node;
 whaleui_layout_node_t* editable_geo(whaleui_layout_node_t* n);
 
+/* byte length of the UTF-8 sequence starting with c (ASCII = 1) */
+size_t utf8_char_len(unsigned char c)
+{
+    if (c < 0x80) {
+        return 1;
+    }
+    if ((c & 0xE0) == 0xC0) {
+        return 2;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        return 3;
+    }
+    if ((c & 0xF8) == 0xF0) {
+        return 4;
+    }
+    return 1;
+}
+
+/* ASCII-only text-transform; multi-byte UTF-8 passes through untouched and
+ * never changes the byte length, so selection/caret offsets stay valid */
+void apply_text_transform(std::string& s, const std::string& t)
+{
+    if (t == "uppercase") {
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80 && c >= 'a' && c <= 'z') {
+                s[i] = static_cast<char>(c - 32);
+            }
+        }
+    } else if (t == "lowercase") {
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80 && c >= 'A' && c <= 'Z') {
+                s[i] = static_cast<char>(c + 32);
+            }
+        }
+    } else if (t == "capitalize") {
+        bool word_start = true;
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c >= 0x80) {
+                i += utf8_char_len(c) - 1;
+                word_start = false;
+                continue;
+            }
+            if (c == ' ' || c == '\t' || c == '-') {
+                word_start = true;
+            } else if (word_start) {
+                if (c >= 'a' && c <= 'z') {
+                    s[i] = static_cast<char>(c - 32);
+                }
+                word_start = false;
+            }
+        }
+    }
+}
+
 /* render one text string inside the box (bx,by,bw,bh). align: 0=left,
  * 1=center, 2=right. Shared by text runs and <select> controls.
- * ckey: element to cache the TTF_Text against (NULL = no caching). */
+ * ckey: element to cache the TTF_Text against (NULL = no caching).
+ * lsp: letter-spacing in px (>0 paints glyph by glyph with that gap;
+ * TTF_Text has no spacing control, so this is a per-glyph path). */
 void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
                   bool bold, int align, lxb_dom_element* ckey,
-                  const Clip* clip)
+                  const Clip* clip, int lsp = 0)
 {
 #ifdef WHALEUI_BUILD_FULL
     if (fs <= 0) {
@@ -1139,6 +1198,62 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         r->text_engine = engine;
     }
     if (!engine) {
+        return;
+    }
+    if (lsp > 0 && !text.empty()) {
+        /* letter-spacing: split into UTF-8 chars, measure once, then paint
+         * each glyph shifted by lsp. Short text in practice (headings,
+         * nav labels), so no caching here. */
+        std::vector<std::string> chs;
+        std::vector<int> cws;
+        int total = 0, th = 0;
+        for (size_t i = 0; i < text.size();) {
+            size_t n = utf8_char_len(static_cast<unsigned char>(text[i]));
+            if (i + n > text.size()) {
+                n = 1;
+            }
+            std::string ch = text.substr(i, n);
+            i += n;
+            TTF_Text* ct = TTF_CreateText(engine, font, ch.c_str(), ch.size());
+            int w = 0, h = 0;
+            if (ct) {
+                TTF_GetTextSize(ct, &w, &h);
+                TTF_DestroyText(ct);
+            }
+            if (h > th) {
+                th = h;
+            }
+            chs.push_back(ch);
+            cws.push_back(w);
+            total += w;
+        }
+        int tw = total + lsp * (static_cast<int>(chs.size()) - 1);
+        int tx = bx;
+        if (align == 1) {
+            tx = bx + (bw - tw) / 2;
+        } else if (align == 2) {
+            tx = bx + bw - tw;
+        }
+        int ty = by + (bh - th) / 2;
+        for (size_t i = 0; i < chs.size(); ++i) {
+            if (cws[i] <= 0) {
+                continue;
+            }
+            TTF_Text* ct = TTF_CreateText(engine, font, chs[i].c_str(), chs[i].size());
+            if (!ct) {
+                continue;
+            }
+            SDL_Surface* cs = SDL_CreateSurface(cws[i], th, SDL_PIXELFORMAT_RGBA8888);
+            if (cs) {
+                SDL_FillSurfaceRect(cs, nullptr, 0);
+                TTF_DrawSurfaceText(ct, 0, 0, cs);
+                blend_surface(r->pixels, r->fb_w, r->fb_h, cs, tx, ty, clip,
+                              &color);
+                SDL_DestroySurface(cs);
+            }
+            TTF_DestroyText(ct);
+            tx += cws[i] + lsp;
+        }
         return;
     }
     TTF_Text* t = nullptr;
@@ -1835,6 +1950,21 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     } else if (ta == "right") {
         align = 2;
     }
+    /* text-transform + letter-spacing apply to the painted text (ASCII
+     * transforms keep the byte length, so selection offsets stay valid) */
+    std::string shown = n->text;
+    std::string tt = sget(n->style, "text-transform");
+    if (!tt.empty() && tt != "none") {
+        apply_text_transform(shown, tt);
+    }
+    int lsp = 0;
+    std::string lsv = sget(n->style, "letter-spacing");
+    if (!lsv.empty() && lsv != "normal") {
+        float v = static_cast<float>(std::atof(lsv.c_str()));
+        lsp = static_cast<int>(lsv.find("em") != std::string::npos
+                                   ? v * fs
+                                   : v);
+    }
     whaleui_layout_node_t* box = n;
     if (n->parent && !n->parent->is_text) {
         box = n->parent;
@@ -1843,9 +1973,9 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                          sel_hi, clip);
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
-    draw_text_at(r, n->text, box->content.x + off_x, n->border.y + off_y,
+    draw_text_at(r, shown, box->content.x + off_x, n->border.y + off_y,
                  box->content.w, n->border.h,
-                 fs, family, color, bold, align, n->el, clip);
+                 fs, family, color, bold, align, n->el, clip, lsp);
 }
 
 /* --- <select> support --- */

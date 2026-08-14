@@ -30,12 +30,86 @@ std::string get(const WhaleUIComputedStyle& s, const char* k)
     return it == s.end() ? std::string() : it->second;
 }
 
+/* split "clamp(a,b,c)" / "min(a,b)" inner args on top-level commas
+ * (nested function calls keep their own commas) */
+static void split_len_args(const std::string& v, size_t open,
+                           std::vector<std::string>& out)
+{
+    size_t depth = 0;
+    size_t start = open;
+    for (size_t i = open; i < v.size(); ++i) {
+        char c = v[i];
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+        } else if (c == ',' && depth == 0) {
+            std::string arg = v.substr(start, i - start);
+            size_t b = arg.find_first_not_of(" \t");
+            size_t e = arg.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                out.push_back(arg.substr(b, e - b + 1));
+            }
+            start = i + 1;
+        }
+    }
+    std::string arg = v.substr(start);
+    size_t b = arg.find_first_not_of(" \t");
+    size_t e = arg.find_last_not_of(" \t\r\n");
+    if (b != std::string::npos) {
+        out.push_back(arg.substr(b, e - b + 1));
+    }
+}
+
 /* "12px"/"1.5em"/"50%"/"auto" -> px value relative to parent/base.
- * unit 0=px 1=% 2=em 4=unitless. Returns value in px. */
-float len_px(const std::string& v, float base_px, float em_base)
+ * Supports math functions clamp(MIN,VAL,MAX)/min()/max() and the vw/vh
+ * units (relative to viewport_w/viewport_h). unit 0=px 1=% 2=em 4=unitless.
+ * Returns value in px. */
+static float len_px_impl(const std::string& v, float base_px, float em_base,
+                         float vp_w, float vp_h)
 {
     if (v.empty() || v == "auto" || v == "none") {
         return 0;
+    }
+    if (v.compare(0, 6, "clamp(") == 0) {
+        std::vector<std::string> args;
+        split_len_args(v, 6, args);
+        if (args.size() != 3) {
+            return 0;
+        }
+        float mn = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
+        float val = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
+        float mx = len_px_impl(args[2], base_px, em_base, vp_w, vp_h);
+        if (val < mn) {
+            return mn;
+        }
+        if (val > mx) {
+            return mx;
+        }
+        return val;
+    }
+    if (v.compare(0, 4, "min(") == 0) {
+        std::vector<std::string> args;
+        split_len_args(v, 4, args);
+        if (args.size() != 2) {
+            return 0;
+        }
+        float a = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
+        float b = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
+        return a < b ? a : b;
+    }
+    if (v.compare(0, 4, "max(") == 0) {
+        std::vector<std::string> args;
+        split_len_args(v, 4, args);
+        if (args.size() != 2) {
+            return 0;
+        }
+        float a = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
+        float b = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
+        return a > b ? a : b;
     }
     char* end = nullptr;
     float n = std::strtof(v.c_str(), &end);
@@ -48,7 +122,26 @@ float len_px(const std::string& v, float base_px, float em_base)
     if (end[0] == 'e' && end[1] == 'm') {
         return n * em_base;
     }
+    if (end[0] == 'v' && end[1] == 'w') {
+        return n * vp_w / 100.0f;
+    }
+    if (end[0] == 'v' && end[1] == 'h') {
+        return n * vp_h / 100.0f;
+    }
     return n; /* px or unitless */
+}
+
+float len_px(const std::string& v, float base_px, float em_base)
+{
+    return len_px_impl(v, base_px, em_base, 0, 0);
+}
+
+/* like len_px but resolves vw/vh against the viewport (used by the layout
+ * pass, where the viewport size is known) */
+float len_px_vp(const std::string& v, float base_px, float em_base,
+                float vp_w, float vp_h)
+{
+    return len_px_impl(v, base_px, em_base, vp_w, vp_h);
 }
 
 /* parse a length that may be "auto" (out_auto set) */
@@ -60,6 +153,18 @@ float len_or_auto(const std::string& v, float base_px, float em_base, bool* is_a
     }
     *is_auto = false;
     return len_px(v, base_px, em_base);
+}
+
+/* len_or_auto with viewport resolution for vw/vh */
+float len_or_auto_vp(const std::string& v, float base_px, float em_base,
+                     float vp_w, float vp_h, bool* is_auto)
+{
+    if (v == "auto" || v.empty()) {
+        *is_auto = true;
+        return 0;
+    }
+    *is_auto = false;
+    return len_px_vp(v, base_px, em_base, vp_w, vp_h);
 }
 
 /* margin/padding/border-width shorthand: 1-4 values */
@@ -354,7 +459,9 @@ struct Builder
 
         if (text_run) {
             /* inline text: width approximated, real metrics at render time */
-            int fs = static_cast<int>(len_px(get(n->style, "font-size"), 0, em));
+            int fs = static_cast<int>(len_px_vp(get(n->style, "font-size"), 0, em,
+                                               static_cast<float>(tree->viewport_w),
+                                               static_cast<float>(tree->viewport_h)));
             if (fs <= 0) {
                 fs = font_px > 0 ? font_px : 16;
             }
@@ -419,15 +526,17 @@ struct Builder
 
         /* width/height */
         bool w_auto = true, h_auto = true;
-        float wpx = len_or_auto(get(n->style, "width"), static_cast<float>(cw), em, &w_auto);
-        float hpx = len_or_auto(get(n->style, "height"), static_cast<float>(ch), em, &h_auto);
+        float vw = static_cast<float>(tree->viewport_w);
+        float vh = static_cast<float>(tree->viewport_h);
+        float wpx = len_or_auto_vp(get(n->style, "width"), static_cast<float>(cw), em, vw, vh, &w_auto);
+        float hpx = len_or_auto_vp(get(n->style, "height"), static_cast<float>(ch), em, vw, vh, &h_auto);
         std::string box_sizing = get(n->style, "box-sizing");
         bool border_box = box_sizing == "border-box";
 
         /* position */
         int pkind = position_kind(get(n->style, "position"));
-        float off_top = len_px(get(n->style, "top"), static_cast<float>(ch), em);
-        float off_left = len_px(get(n->style, "left"), static_cast<float>(cw), em);
+        float off_top = len_px_vp(get(n->style, "top"), static_cast<float>(ch), em, vw, vh);
+        float off_left = len_px_vp(get(n->style, "left"), static_cast<float>(cw), em, vw, vh);
 
         int x = cx, y = *cursor_y;
         int avail_w = cw;

@@ -203,6 +203,52 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* length math functions: min()/clamp()/vw resolve against the viewport */
+    {
+        /* min(720px, 88vw) on an 800px viewport: 88vw = 704 wins */
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div style=\"width:min(720px,88vw)\"></div></body>",
+            46);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.w == 704);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+
+        /* clamp(100px, 50%, 300px): 50% = 400 clamps down to 300 */
+        doc = whaleui_dom_parse_html(
+            "<body><div style=\"width:clamp(100px,50%,300px)\"></div></body>",
+            54);
+        assert(doc != nullptr);
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
+                                   nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.w == 300);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+
+        /* clamp(100px, 50%, 300px) on a narrow viewport: 50% = 40px,
+         * clamps up to 100px */
+        doc = whaleui_dom_parse_html(
+            "<body><div style=\"width:clamp(100px,50%,300px)\"></div></body>",
+            54);
+        assert(doc != nullptr);
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 80, 600,
+                                   nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.w == 100);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* overflow:auto with a fixed height scrolls: children shift up by
      * scroll_y, scroll_max = content height - visible height */
     {
