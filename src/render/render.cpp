@@ -766,20 +766,22 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
     }
 }
 
-/* depth-first hit test; coordinates are absolute (layout boxes are absolute) */
+/* depth-first hit test; coordinates are absolute (layout boxes are absolute).
+ * Children are checked BEFORE the parent box: a child may stick out of the
+ * parent (e.g. space-between overflow), and must still be clickable. */
 whaleui_layout_node_t* hit_test(whaleui_layout_node_t* n, int x, int y)
 {
     if (!n || !n->visible) {
         return nullptr;
     }
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        whaleui_layout_node_t* hit = hit_test(c, x, y);
+        if (hit) {
+            return hit;
+        }
+    }
     if (x >= n->border.x && x < n->border.x + n->border.w &&
         y >= n->border.y && y < n->border.y + n->border.h) {
-        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-            whaleui_layout_node_t* hit = hit_test(c, x, y);
-            if (hit) {
-                return hit;
-            }
-        }
         return n;
     }
     return nullptr;

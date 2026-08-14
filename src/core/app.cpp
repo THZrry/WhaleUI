@@ -95,8 +95,11 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 if (e.key.key == SDLK_ESCAPE) {
                     app->running = 0;
                 } else if (e.key.key == SDLK_T) {
-                    /* toggle theme for the demo */
-                    whaleui_app_set_theme(app, app->theme == WHALEUI_THEME_DARK
+                    /* toggle based on the EFFECTIVE theme (SYSTEM resolves to
+                     * the OS scheme first, so the first press works even when
+                     * the app is still in WHALEUI_THEME_SYSTEM) */
+                    whaleui_theme_t cur = whaleui_app_resolved_theme(app);
+                    whaleui_app_set_theme(app, cur == WHALEUI_THEME_DARK
                                                  ? WHALEUI_THEME_LIGHT
                                                  : WHALEUI_THEME_DARK);
                 }

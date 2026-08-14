@@ -554,6 +554,15 @@ struct Builder
                 if (is_auto) {
                     w = estimate_content_width(k, em);
                 }
+                /* min-width caps the measurement so space-between doesn't
+                 * push items past the container edge */
+                std::string mnw = get(k->style, "min-width");
+                if (!mnw.empty()) {
+                    float m = len_px(mnw, static_cast<float>(inner_w), em);
+                    if (w < m) {
+                        w = m;
+                    }
+                }
                 main_size[i] = k->is_text ? static_cast<int>(k->text.size() * fs * 0.5f)
                                           : static_cast<int>(w);
             }
