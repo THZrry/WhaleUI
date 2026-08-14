@@ -189,6 +189,77 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* shorthand expansion (font / border-top) + * + :last-child + sibling */
+    {
+        const char* css =
+            "* { margin: 0; }\n"
+            "body p + p { margin-top: 14px; }\n"
+            ".last:last-child { color: red; }\n"
+            ".f { font: 900 20px/1.5 \"Noto Serif SC\", serif; }\n"
+            ".bt { border-top: 2px solid #ff0000; }\n"
+            ".bb { border-bottom: 1px solid #00ff00; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<html><body><div class=\"f bt\">x</div>"
+            "<p>a</p><p>b</p><p class=\"last bb\">c</p></body></html>",
+            83);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* body_el =
+            reinterpret_cast<lxb_dom_element*>(whaleui_dom_query_selector(doc, "body"));
+        lxb_dom_element* div_el =
+            reinterpret_cast<lxb_dom_element*>(whaleui_dom_query_selector(doc, ".f"));
+        assert(body_el != nullptr && div_el != nullptr);
+
+        /* font shorthand expands to longhands */
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(div_el, rules, count, vars, nullptr);
+        assert(cs["font-size"] == "20px");
+        assert(cs["font-weight"] == "900");
+        assert(cs["line-height"] == "1.5");
+        assert(cs["font-family"].find("serif") != std::string::npos);
+        assert(cs["font-family"].find("Noto Serif SC") != std::string::npos);
+
+        /* border-top shorthand -> width + color */
+        assert(cs["border-top-width"] == "2px");
+        assert(cs["border-color"] == "#ff0000");
+
+        /* universal selector applies */
+        assert(cs["margin"] == "0");
+
+        /* adjacent sibling: second p only */
+        lxb_dom_element* p2 =
+            reinterpret_cast<lxb_dom_element*>(whaleui_dom_query_selector(doc, "p"));
+        lxb_dom_element* p3 = nullptr;
+        lxb_dom_node* n2 = p2->node.next;
+        while (n2) {
+            if (n2->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                p3 = lxb_dom_interface_element(n2);
+                break;
+            }
+            n2 = n2->next;
+        }
+        assert(p2 != nullptr && p3 != nullptr);
+        cs = whaleui_style_compute(p2, rules, count, vars, nullptr);
+        assert(cs.find("margin-top") == cs.end()); /* first p: no sibling rule */
+        cs = whaleui_style_compute(p3, rules, count, vars, nullptr);
+        assert(cs["margin-top"] == "14px");
+
+        /* :last-child pseudo-class */
+        lxb_dom_element* last =
+            reinterpret_cast<lxb_dom_element*>(whaleui_dom_query_selector(doc, ".last"));
+        assert(last != nullptr);
+        cs = whaleui_style_compute(last, rules, count, vars, nullptr);
+        assert(cs["color"] == "red");
+        assert(cs["border-bottom-width"] == "1px");
+        assert(cs["border-color"] == "#00ff00"); /* bb overrides bt color */
+
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }
 

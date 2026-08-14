@@ -6,12 +6,15 @@
 
 #include "style/style.h"
 
+#include "render/render.h" /* whaleui_render_parse_color */
+
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 namespace {
 
@@ -19,19 +22,23 @@ namespace {
 
 struct SelPart
 {
-    std::string tag;    /* "" = any */
+    std::string tag;    /* "" = any, "*" = any */
     std::string id;     /* "" = any */
     std::string cls;    /* first class only ("" = any) */
     bool hover;         /* ":hover" pseudo-class present */
     bool active;        /* ":active" present */
     bool focus;         /* ":focus" / ":focus-visible" present */
     bool disabled;      /* ":disabled" present */
+    bool last_child;    /* ":last-child" present */
 };
 
 /* parse "tag#id.cls:hover" into SelPart (other pseudo-classes ignored) */
 bool parse_simple(const char* sel, size_t len, SelPart& out)
 {
     out = SelPart();
+    if (len == 1 && sel[0] == '*') {
+        return true; /* universal selector matches any element */
+    }
     const char* p = sel;
     const char* end = sel + len;
     if (p < end && *p != '#' && *p != '.') {
@@ -40,6 +47,9 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             ++p;
         }
         out.tag.assign(t, static_cast<size_t>(p - t));
+        if (out.tag == "*") {
+            out.tag.clear(); /* universal selector */
+        }
     }
     while (p < end) {
         if (*p == ':') {
@@ -57,6 +67,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 out.focus = true;
             } else if (v == "disabled") {
                 out.disabled = true;
+            } else if (v == "last-child") {
+                out.last_child = true;
             }
             continue;
         }
@@ -75,7 +87,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
         }
     }
     return !out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
-           out.hover || out.active || out.focus || out.disabled;
+           out.hover || out.active || out.focus || out.disabled ||
+           out.last_child;
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -127,6 +140,14 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
                                                             (const lxb_char_t*)"disabled", 8, &alen);
         if (!d || alen == 0) {
             return false;
+        }
+    }
+    if (p.last_child) {
+        /* no following ELEMENT siblings */
+        for (lxb_dom_node* s = el->node.next; s; s = s->next) {
+            if (s->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                return false;
+            }
         }
     }
     return true;
@@ -206,6 +227,186 @@ void resolve_var(std::string& val, const std::map<std::string, std::string>& var
     }
 }
 
+/* --- shorthand expansion (font, border-top/bottom/right/left, border) --- */
+
+std::vector<std::string> split_space(const std::string& s)
+{
+    std::vector<std::string> out;
+    const char* p = s.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* q = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        out.push_back(std::string(q, static_cast<size_t>(p - q)));
+    }
+    return out;
+}
+
+/* find a color token inside a value ("1px solid #fff"): returns the token */
+std::string value_color(const std::string& v)
+{
+    unsigned int c = 0;
+    if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+        std::string t = v;
+        size_t b = t.find_first_not_of(" \t");
+        size_t e = t.find_last_not_of(" \t");
+        return b == std::string::npos ? std::string() : t.substr(b, e - b + 1);
+    }
+    std::vector<std::string> toks = split_space(v);
+    for (size_t i = 0; i < toks.size(); ++i) {
+        if (whaleui_render_parse_color(toks[i].c_str(), &c) == 0) {
+            return toks[i];
+        }
+    }
+    return std::string();
+}
+
+/* "font: <weight|style> <size>[/<line-height>] <family...>" shorthand */
+void expand_font(WhaleUIComputedStyle& s)
+{
+    WhaleUIComputedStyle::const_iterator it = s.find("font");
+    if (it == s.end() || it->second.empty()) {
+        return;
+    }
+    if (s.find("font-size") != s.end()) {
+        return; /* longhand wins */
+    }
+    std::vector<std::string> toks = split_space(it->second);
+    std::string weight, style, size, lh, family;
+    size_t size_idx = std::string::npos;
+    for (size_t i = 0; i < toks.size(); ++i) {
+        const std::string& t = toks[i];
+        if (t == "italic" || t == "oblique") {
+            style = t;
+            continue;
+        }
+        if (t == "bold") {
+            weight = "bold";
+            continue;
+        }
+        if (t == "normal" || t == "bolder" || t == "lighter") {
+            if (weight.empty()) {
+                weight = t;
+            }
+            continue;
+        }
+        /* size: has a unit/function or a slash (line-height) */
+        bool has_unit = t.find("px") != std::string::npos ||
+                        t.find("em") != std::string::npos ||
+                        t.find("%") != std::string::npos ||
+                        t.find("clamp(") == 0 ||
+                        t.find("min(") == 0 || t.find("max(") == 0 ||
+                        t.find("rem") != std::string::npos ||
+                        t.find("vh") != std::string::npos ||
+                        t.find("vw") != std::string::npos;
+        if (has_unit) {
+            size_idx = i;
+            break;
+        }
+        /* bare number before a sized token = font-weight */
+        bool numeric = !t.empty() &&
+                       (t[0] >= '0' && t[0] <= '9' || t[0] == '.');
+        if (numeric) {
+            weight = t;
+            continue;
+        }
+        /* anything else so far is a weight keyword or family start */
+        if (weight.empty() &&
+            (t == "100" || t == "200" || t == "300" || t == "400" ||
+             t == "500" || t == "600" || t == "700" || t == "800" ||
+             t == "900")) {
+            weight = t;
+            continue;
+        }
+    }
+    if (size_idx == std::string::npos) {
+        return; /* malformed shorthand: ignore */
+    }
+    size = toks[size_idx];
+    size_t slash = size.find('/');
+    if (slash != std::string::npos) {
+        lh = size.substr(slash + 1);
+        size = size.substr(0, slash);
+    }
+    for (size_t j = size_idx + 1; j < toks.size(); ++j) {
+        if (!family.empty()) {
+            family += ' ';
+        }
+        family += toks[j];
+    }
+    s["font-size"] = size;
+    if (!lh.empty()) {
+        s["line-height"] = lh;
+    }
+    if (!weight.empty() && s.find("font-weight") == s.end()) {
+        s["font-weight"] = weight;
+    }
+    if (!style.empty() && s.find("font-style") == s.end()) {
+        s["font-style"] = style;
+    }
+    if (!family.empty() && s.find("font-family") == s.end()) {
+        s["font-family"] = family;
+    }
+}
+
+/* "border-top: 1px solid #fff" -> border-top-width + border-color */
+void expand_border_side(WhaleUIComputedStyle& s, const char* side,
+                        const char* wprop)
+{
+    WhaleUIComputedStyle::const_iterator it = s.find(side);
+    if (it == s.end() || it->second.empty()) {
+        return;
+    }
+    const std::string& v = it->second;
+    if (s.find(wprop) == s.end()) {
+        std::vector<std::string> toks = split_space(v);
+        for (size_t i = 0; i < toks.size(); ++i) {
+            const std::string& t = toks[i];
+            if (t == "solid" || t == "dashed" || t == "dotted" ||
+                t == "none" || t == "hidden" || t == "double" ||
+                t == "groove" || t == "ridge" || t == "inset" ||
+                t == "outset") {
+                continue;
+            }
+            char* end = nullptr;
+            std::strtof(t.c_str(), &end);
+            if (end != t.c_str() && *end != '\0' && t[0] != '#') {
+                s[wprop] = t; /* a length token */
+                break;
+            }
+        }
+    }
+    if (s.find("border-color") == s.end()) {
+        std::string c = value_color(v);
+        if (!c.empty()) {
+            s["border-color"] = c;
+        }
+    }
+}
+
+void expand_shorthands(WhaleUIComputedStyle& s)
+{
+    expand_font(s);
+    expand_border_side(s, "border-top", "border-top-width");
+    expand_border_side(s, "border-bottom", "border-bottom-width");
+    expand_border_side(s, "border-left", "border-left-width");
+    expand_border_side(s, "border-right", "border-right-width");
+    WhaleUIComputedStyle::const_iterator b = s.find("border");
+    if (b != s.end() && s.find("border-color") == s.end()) {
+        std::string c = value_color(b->second);
+        if (!c.empty()) {
+            s["border-color"] = c;
+        }
+    }
+}
+
 } // namespace
 
 extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
@@ -214,18 +415,25 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
     if (!selector || !el) {
         return 0;
     }
-    /* split on '>' and whitespace into a chain of simple selectors */
-    struct Chain { std::string sel; bool child; };
+    /* split on '>'/'+' and whitespace into a chain of simple selectors.
+     * comb: 0 = descendant, 1 = child (prev part's relation), 2 = adjacent
+     * sibling (this part must match the previous sibling of the target). */
+    struct Chain { std::string sel; int comb; };
     Chain chain[32];
     int n = 0;
-    bool child = false;
+    int comb = 0;
     const char* p = selector;
     while (*p && n < 32) {
         while (*p == ' ' || *p == '\t') {
             ++p;
         }
         if (*p == '>') {
-            child = true;
+            comb = 1;
+            ++p;
+            continue;
+        }
+        if (*p == '+') {
+            comb = 2;
             ++p;
             continue;
         }
@@ -233,95 +441,110 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
             break;
         }
         const char* s = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '>') {
+        while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '+') {
             ++p;
         }
         /* keep pseudo-classes: parse_simple handles ":hover" */
         std::string raw(s, static_cast<size_t>(p - s));
         if (!raw.empty()) {
             chain[n].sel = raw;
-            chain[n].child = child;
-            child = false;
+            chain[n].comb = comb;
+            comb = 0;
             ++n;
         }
     }
     if (n == 0) {
         return 0;
     }
-    /* match from the last part backwards.
-     * The LAST part must match the element itself; only the parts before it
-     * walk ancestors (direct parent for '>', any ancestor otherwise). */
+    /* match from the last part backwards. `cur` is the node the previous
+     * (right-hand) part matched; each combinator picks the next candidate
+     * from it: descendant = an ancestor, child = the direct parent,
+     * adjacent = the previous ELEMENT sibling. */
     lxb_dom_node* cur = &el->node;
     for (int i = n - 1; i >= 0; --i) {
         SelPart part;
         if (!parse_simple(chain[i].sel.c_str(), chain[i].sel.size(), part)) {
             return 0;
         }
-        bool matched = false;
         if (i == n - 1) {
             /* must match the element itself - no ancestor walk */
-            if (cur->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-                part_match(part, lxb_dom_interface_element(cur))) {
-                matched = true;
+            if (cur->type != LXB_DOM_NODE_TYPE_ELEMENT ||
+                !part_match(part, lxb_dom_interface_element(cur))) {
+                return 0;
             }
         } else {
-            /* walk ancestors, starting at the current node */
-            lxb_dom_node* a = cur;
-            while (a) {
-                if (a->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-                    part_match(part, lxb_dom_interface_element(a))) {
-                    matched = true;
+            const int c = chain[i + 1].comb;
+            if (c == 2) {
+                /* adjacent: the previous ELEMENT sibling of cur */
+                lxb_dom_node* s = cur->prev;
+                while (s && s->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                    s = s->prev;
+                }
+                if (!s || !part_match(part, lxb_dom_interface_element(s))) {
+                    return 0;
+                }
+                cur = s;
+            } else if (c == 1) {
+                /* child: the direct parent */
+                lxb_dom_node* a = cur->parent;
+                if (!a || a->type != LXB_DOM_NODE_TYPE_ELEMENT ||
+                    !part_match(part, lxb_dom_interface_element(a))) {
+                    return 0;
+                }
+                cur = a;
+            } else {
+                /* descendant: any ancestor */
+                bool matched = false;
+                for (lxb_dom_node* a = cur->parent; a; a = a->parent) {
+                    if (a->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                        part_match(part, lxb_dom_interface_element(a))) {
+                        cur = a;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    return 0;
+                }
+            }
+            continue; /* pseudo-classes only apply to the target element */
+        }
+        /* pseudo-classes apply to the target element itself. :hover and
+         * :active bubble per CSS: they also match when the interaction
+         * target is a descendant of this element (a button containing a
+         * <span> stays :hover while the mouse is over the span) */
+        lxb_dom_element* cur_el = lxb_dom_interface_element(cur);
+        if (part.hover) {
+            bool ok = false;
+            for (lxb_dom_node* h = (st && st->hover) ? &st->hover->node : nullptr;
+                 h; h = h->parent) {
+                if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                    lxb_dom_interface_element(h) == cur_el) {
+                    ok = true;
                     break;
                 }
-                if (chain[i].child) {
-                    break; /* '>' only allows the direct parent */
-                }
-                a = a->parent;
             }
-        }
-        if (!matched) {
-            return 0;
-        }
-        if (i == n - 1) {
-            /* pseudo-classes apply to the target element itself. :hover and
-             * :active bubble per CSS: they also match when the interaction
-             * target is a descendant of this element (a button containing a
-             * <span> stays :hover while the mouse is over the span) */
-            lxb_dom_element* cur_el = lxb_dom_interface_element(cur);
-            if (part.hover) {
-                bool ok = false;
-                for (lxb_dom_node* h = (st && st->hover) ? &st->hover->node : nullptr;
-                     h; h = h->parent) {
-                    if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-                        lxb_dom_interface_element(h) == cur_el) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok) {
-                    return 0;
-                }
-            }
-            if (part.active) {
-                bool ok = false;
-                for (lxb_dom_node* h = (st && st->pressed) ? &st->pressed->node : nullptr;
-                     h; h = h->parent) {
-                    if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-                        lxb_dom_interface_element(h) == cur_el) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok) {
-                    return 0;
-                }
-            }
-            if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
+            if (!ok) {
                 return 0;
             }
         }
-        /* move to parent for the next (outer) part */
-        cur = cur->parent;
+        if (part.active) {
+            bool ok = false;
+            for (lxb_dom_node* h = (st && st->pressed) ? &st->pressed->node : nullptr;
+                 h; h = h->parent) {
+                if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                    lxb_dom_interface_element(h) == cur_el) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                return 0;
+            }
+        }
+        if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
+            return 0;
+        }
     }
     return 1;
 }
@@ -507,6 +730,8 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     for (auto& kv : out) {
         resolve_var(kv.second, vars);
     }
+    /* expand shorthands the layout/render consume as longhands */
+    expand_shorthands(out);
     return out;
 }
 
