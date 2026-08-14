@@ -582,19 +582,31 @@ extern "C" int whaleui_style_match_pseudo(const char* selector,
     return 1;
 }
 
-extern "C" int whaleui_style_media_ok(const char* media, int theme, int viewport_w)
+extern "C" int whaleui_style_media_ok(const char* media, int theme,
+                                      int viewport_w, int reduced_motion)
 {
     if (!media || !*media) {
         return 1;
     }
     std::string m(media);
-    /* prefers-reduced-motion: this engine never reduces motion unless told
-     * so, so a "reduce" condition never matches - page-load animations stay
-     * enabled */
-    if (m.find("prefers-reduced-motion") != std::string::npos) {
-        return 0;
-    }
     size_t pos = 0;
+    while ((pos = m.find("prefers-reduced-motion", pos)) != std::string::npos) {
+        size_t colon = m.find(':', pos);
+        if (colon != std::string::npos) {
+            std::string v = m.substr(colon + 1);
+            size_t b = v.find_first_not_of(" \t");
+            bool reduce = b != std::string::npos &&
+                          v.compare(b, 6, "reduce") == 0;
+            if (reduce && !reduced_motion) {
+                return 0;
+            }
+            if (!reduce && reduced_motion) {
+                return 0; /* "no-preference" does not match reduced mode */
+            }
+        }
+        pos += 23;
+    }
+    pos = 0;
     while ((pos = m.find("prefers-color-scheme", pos)) != std::string::npos) {
         size_t colon = m.find(':', pos);
         if (colon != std::string::npos) {

@@ -7,6 +7,7 @@
  * matching and the cascade stay in style.cpp. */
 
 #include "style/css.h"
+#include "style/style.h"
 #include "fs/fs.h"
 
 #include <lexbor/css/parser.h>
@@ -499,4 +500,30 @@ extern "C" int whaleui_css_has_property(const whaleui_css_rule_t* rule,
                                         const char* name)
 {
     return whaleui_css_get_property(rule, name) != nullptr;
+}
+
+/* Drop rules whose @media condition does not match the current context
+ * (theme, viewport width, reduced-motion). In-place compaction. */
+extern "C" int whaleui_style_filter_media(whaleui_css_rule_t* rules,
+                                          size_t* count, int theme,
+                                          int viewport_w, int reduced_motion)
+{
+    if (!rules || !count) {
+        return -1;
+    }
+    size_t w = 0;
+    for (size_t i = 0; i < *count; ++i) {
+        if (rules[i].media &&
+            !whaleui_style_media_ok(rules[i].media, theme, viewport_w,
+                                    reduced_motion)) {
+            rule_destroy(&rules[i]);
+            continue;
+        }
+        if (w != i) {
+            rules[w] = rules[i];
+        }
+        ++w;
+    }
+    *count = w;
+    return 0;
 }

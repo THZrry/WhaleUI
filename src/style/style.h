@@ -46,7 +46,14 @@ int whaleui_style_match_pseudo(const char* selector, lxb_dom_element* el,
 
 /* Evaluate an @media condition against the current theme + viewport width.
  * Unsupported conditions evaluate to false (safe default). */
-int whaleui_style_media_ok(const char* media, int theme, int viewport_w);
+int whaleui_style_media_ok(const char* media, int theme, int viewport_w,
+                           int reduced_motion);
+
+/* Drop rules whose @media condition does not match the current context
+ * (theme, viewport width, reduced-motion). In-place compaction of the
+ * array; destroyed rules are freed. */
+int whaleui_style_filter_media(whaleui_css_rule_t* rules, size_t* count,
+                               int theme, int viewport_w, int reduced_motion);
 
 /* Collect custom properties (--*) defined on root into vars. */
 void whaleui_style_collect_vars(lxb_dom_element* root,

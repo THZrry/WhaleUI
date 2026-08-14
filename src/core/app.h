@@ -27,6 +27,7 @@ struct whaleui_app
     int battery_saver;
     int vsync;
     int running;
+    int reduced_motion; /* prefers-reduced-motion: reduce */
 
     /* SDL3 GPU device shared by all windows (created lazily on the first
      * window show, owned by the app, destroyed in whaleui_app_destroy). */

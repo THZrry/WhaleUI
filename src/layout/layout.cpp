@@ -144,10 +144,12 @@ float len_px_vp(const std::string& v, float base_px, float em_base,
     return len_px_impl(v, base_px, em_base, vp_w, vp_h);
 }
 
-/* parse a length that may be "auto" (out_auto set) */
+/* parse a length that may be "auto" (out_auto set). "max-content" and
+ * friends size to the content, same as auto for our layout. */
 float len_or_auto(const std::string& v, float base_px, float em_base, bool* is_auto)
 {
-    if (v == "auto" || v.empty()) {
+    if (v == "auto" || v == "max-content" || v == "min-content" ||
+        v == "fit-content" || v.empty()) {
         *is_auto = true;
         return 0;
     }
@@ -159,7 +161,8 @@ float len_or_auto(const std::string& v, float base_px, float em_base, bool* is_a
 float len_or_auto_vp(const std::string& v, float base_px, float em_base,
                      float vp_w, float vp_h, bool* is_auto)
 {
-    if (v == "auto" || v.empty()) {
+    if (v == "auto" || v == "max-content" || v == "min-content" ||
+        v == "fit-content" || v.empty()) {
         *is_auto = true;
         return 0;
     }
@@ -292,8 +295,59 @@ float flex_grow(const WhaleUIComputedStyle& s)
     return 0;
 }
 
-/* rough content width of a node: summed direct text runs + padding.
- * Used to size auto-width flex row items so they don't collapse to 1px. */
+/* estimated pixel width of a UTF-8 string: ASCII ~0.5em, CJK/fullwidth
+ * glyphs ~1em (half-width estimate under-counts CJK, causing wrapped text
+ * to overflow its box) */
+float text_est_width(const std::string& s, float fs)
+{
+    float w = 0;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {
+            w += fs * 0.5f;
+            ++i;
+        } else {
+            size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+            w += fs * 0.95f;
+            i += n;
+        }
+    }
+    return w;
+}
+
+/* estimated line count when `text` wraps at `avail` px (avg glyph width
+ * by character class, matching text_est_width) */
+size_t est_wrap_lines(const std::string& s, float fs, int avail)
+{
+    if (avail <= 0) {
+        return 1;
+    }
+    float cur = 0;
+    size_t lines = 1;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        float w;
+        if (c < 0x80) {
+            w = fs * 0.5f;
+            ++i;
+        } else {
+            size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+            w = fs * 0.95f;
+            i += n;
+        }
+        if (cur + w > static_cast<float>(avail) && cur > 0) {
+            ++lines;
+            cur = w;
+        } else {
+            cur += w;
+        }
+    }
+    return lines;
+}
+
+/* rough content width of a node: summed direct text runs + padding,
+ * recursively including element children (nested flex rows, grid tracks)
+ * so auto-width containers don't collapse to 1px. */
 float estimate_content_width(whaleui_layout_node_t* k, float em)
 {
     float fs = len_px(get(k->style, "font-size"), 0, em);
@@ -303,7 +357,9 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
-            w += static_cast<float>(c->text.size()) * fs * 0.5f;
+            w += text_est_width(c->text, fs);
+        } else {
+            w += estimate_content_width(c, em);
         }
     }
     /* padding left/right */
@@ -585,7 +641,7 @@ struct Builder
              * Long text also wraps to the parent content width: estimate
              * the wrapped line count (avg glyph ~ fs/2) so the box flows
              * like the renderer will paint it. */
-            size_t total_chars = 0, max_line = 0, cur = 0, lines = 1;
+            size_t max_line = 0, cur = 0, lines = 1;
             for (size_t i = 0; i < n->text.size(); ++i) {
                 if (n->text[i] == '\n') {
                     ++lines;
@@ -595,30 +651,36 @@ struct Builder
                     cur = 0;
                 } else {
                     ++cur;
-                    ++total_chars;
                 }
             }
             if (cur > max_line) {
                 max_line = cur;
             }
             int avail = cw > 0 ? cw : 0x7FFFFFFF;
-            int avg_w = fs > 0 ? fs / 2 : 8;
-            size_t wrap_lines = 1;
-            if (avail > 0 && total_chars * static_cast<size_t>(avg_w) >
-                                static_cast<size_t>(avail)) {
-                size_t per_line = static_cast<size_t>(avail) /
-                                  static_cast<size_t>(avg_w > 0 ? avg_w : 1);
-                if (per_line < 1) {
-                    per_line = 1;
-                }
-                wrap_lines = (total_chars + per_line - 1) / per_line;
-            }
+            /* wrap estimate per character class (ASCII half, CJK full);
+             * longest run (a single \n-free line) sets the width */
+            size_t wrap_lines = est_wrap_lines(n->text, fs, avail);
             if (wrap_lines > lines) {
                 lines = wrap_lines;
             }
             n->border.x = cx;
             n->border.y = *cursor_y;
-            int bw2 = static_cast<int>(max_line * fs * 0.5f);
+            float max_w = 0;
+            for (size_t i = 0; i <= n->text.size();) {
+                size_t j = n->text.find('\n', i);
+                if (j == std::string::npos) {
+                    j = n->text.size();
+                }
+                float lw = text_est_width(n->text.substr(i, j - i), fs);
+                if (lw > max_w) {
+                    max_w = lw;
+                }
+                if (j == n->text.size()) {
+                    break;
+                }
+                i = j + 1;
+            }
+            int bw2 = static_cast<int>(max_w);
             n->border.w = bw2 > avail ? avail : bw2;
             n->border.h = static_cast<int>(fs * 1.2f) * static_cast<int>(lines);
             n->content = n->border;
@@ -888,7 +950,7 @@ struct Builder
                 if (is_auto) {
                     h = estimate_content_width(k, em); /* rough height proxy */
                 }
-                main_size[i] = k->is_text ? static_cast<int>(k->text.size() * fs * 0.5f)
+                main_size[i] = k->is_text ? static_cast<int>(text_est_width(k->text, fs))
                                           : static_cast<int>(h);
             } else {
                 float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
@@ -904,7 +966,7 @@ struct Builder
                         w = m;
                     }
                 }
-                main_size[i] = k->is_text ? static_cast<int>(k->text.size() * fs * 0.5f)
+                main_size[i] = k->is_text ? static_cast<int>(text_est_width(k->text, fs))
                                           : static_cast<int>(w);
             }
             if (is_auto && main_size[i] == 0) {
@@ -1084,22 +1146,15 @@ struct Builder
                 fs = 16;
             }
             size_t chars = 0;
+            std::string all;
             for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
                 if (c->is_text) {
                     chars += c->text.size();
+                    all += c->text;
                 }
             }
             if (chars > 0) {
-                int avg_w = static_cast<int>(fs * 0.5f);
-                if (avg_w < 1) {
-                    avg_w = 1;
-                }
-                int per_line = inner_w > 0 ? inner_w / avg_w : 0;
-                if (per_line < 1) {
-                    per_line = 1;
-                }
-                size_t lines = (chars + static_cast<size_t>(per_line) - 1) /
-                               static_cast<size_t>(per_line);
+                size_t lines = est_wrap_lines(all, fs, inner_w);
                 h = static_cast<float>(lines) * fs * 1.2f;
             } else {
                 /* no direct text: the height is the sum of the block-flow

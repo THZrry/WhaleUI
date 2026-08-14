@@ -143,6 +143,11 @@ int whaleui_app_set_render_option(whaleui_app_t* app,
  * e.g. 1.25 = 125%). Relayouts and repaints. Returns 0 on success. */
 int whaleui_app_set_text_scale(whaleui_app_t* app, float scale);
 
+/* Set the prefers-reduced-motion preference (1 = reduce). Pages with a
+ * "reduce" branch (e.g. reveal-on-scroll content without JS) then show
+ * their static content. Reloads the stylesheet. Returns 0 on success. */
+int whaleui_app_set_reduced_motion(whaleui_app_t* app, int reduce);
+
 /* ======================= window ======================= */
 
 typedef struct whaleui_window whaleui_window_t;

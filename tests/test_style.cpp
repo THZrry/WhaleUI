@@ -1,4 +1,4 @@
-﻿// test_style: CSS API contract tests.
+// test_style: CSS API contract tests.
 #include "whaleui.h"
 #include "style/css.h"  /* rule struct for element access in this white-box test */
 #include "style/style.h" /* selector matching + cascade + var resolution */
@@ -148,11 +148,11 @@ int main(void)
         assert(!whaleui_style_match("div", body_el, &st));
 
         /* media */
-        assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800));
-        assert(whaleui_style_media_ok("(prefers-color-scheme: dark)", WHALEUI_THEME_DARK, 800));
-        assert(!whaleui_style_media_ok("(prefers-color-scheme: dark)", WHALEUI_THEME_LIGHT, 800));
-        assert(whaleui_style_media_ok("(min-width: 600px)", WHALEUI_THEME_LIGHT, 800));
-        assert(!whaleui_style_media_ok("(min-width: 600px)", WHALEUI_THEME_LIGHT, 400));
+        assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800, 0));
+        assert(whaleui_style_media_ok("(prefers-color-scheme: dark)", WHALEUI_THEME_DARK, 800, 0));
+        assert(!whaleui_style_media_ok("(prefers-color-scheme: dark)", WHALEUI_THEME_LIGHT, 800, 0));
+        assert(whaleui_style_media_ok("(min-width: 600px)", WHALEUI_THEME_LIGHT, 800, 0));
+        assert(!whaleui_style_media_ok("(min-width: 600px)", WHALEUI_THEME_LIGHT, 400, 0));
 
         /* cascade: specificity + !important + inline */
         const char* css = "div { color: red; font-size: 12px; }\n"

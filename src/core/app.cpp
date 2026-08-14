@@ -55,6 +55,7 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->battery_saver = 1; /* default 60fps in battery saver */
     app->vsync = 1;
     app->running = 0;
+    app->reduced_motion = 0;
     app->gpu = nullptr;
     app->select_cb = nullptr;
     app->select_ud = nullptr;
@@ -354,6 +355,18 @@ extern "C" int whaleui_app_set_text_scale(whaleui_app_t* app, float scale)
             win->render->text_scale = scale;
             win->render->has_dirty = 1;
         }
+    }
+    return 0;
+}
+
+extern "C" int whaleui_app_set_reduced_motion(whaleui_app_t* app, int reduce)
+{
+    if (!app) {
+        return -1;
+    }
+    app->reduced_motion = reduce ? 1 : 0;
+    for (whaleui_window_t* win : app->windows) {
+        whaleui_window_refresh_css(win);
     }
     return 0;
 }

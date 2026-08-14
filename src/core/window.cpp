@@ -90,6 +90,11 @@ void window_reload_css(whaleui_window_t* win)
     if (whaleui_css_parse_full(css.c_str(), css.size(), &rules, &count, &kf) != 0) {
         return;
     }
+    /* drop rules whose @media condition does not match the current window
+     * (theme, viewport width, reduced-motion preference) */
+    whaleui_style_filter_media(rules, &count,
+                               whaleui_app_resolved_theme(win->app),
+                               win->width, win->app->reduced_motion);
     std::map<std::string, std::string> theme_vars;
     whaleui_theme_vars(win->app->theme_style,
                        whaleui_app_resolved_theme(win->app),
