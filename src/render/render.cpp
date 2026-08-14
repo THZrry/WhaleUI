@@ -1580,15 +1580,16 @@ unsigned int accent_hl(whaleui_render_t* r, unsigned int alpha)
     return hl;
 }
 
-/* paint-time scroll offset of a scrollable box: current scrolls minus the
- * value baked into the (possibly stale) layout tree. Zero when the tree is
- * fresh, so scrolling never needs a relayout. */
+/* paint-time scroll offset of a scrollable box: the layout tree already
+ * shifted the content up by the scroll_y baked in at build time; the paint
+ * path adds (current - baked) MORE shift. Since a larger scroll_y moves
+ * content UP, the extra offset is negative: baked - current. */
 int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n)
 {
     if (n->scroll_max > 0 && n->el) {
         auto it = r->scrolls.find(n->el);
         if (it != r->scrolls.end()) {
-            return it->second - n->scroll_y;
+            return n->scroll_y - it->second;
         }
     }
     return 0;
@@ -1742,7 +1743,11 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
         thumb_h = track_h;
     }
     /* live scroll position (layout tree may be stale between scrolls) */
-    int sy = scroll_delta(r, n) + n->scroll_y;
+    int sy = n->scroll_y;
+    auto sit = r->scrolls.find(n->el);
+    if (sit != r->scrolls.end()) {
+        sy = sit->second;
+    }
     int thumb_y = track_y +
                   (track_h - thumb_h) * sy /
                       (n->scroll_max > 0 ? n->scroll_max : 1);

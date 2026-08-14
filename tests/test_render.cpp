@@ -375,6 +375,27 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* scroll shifts content UP (reveals content below): pixel check */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "pixscroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"height:150px;background-color:#ff0000\">"
+            "</div><div style=\"height:150px;background-color:#0000ff\">"
+            "</div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* before scrolling, (150,150) is inside the blue block (150..300) */
+        assert(w->render->pixels[150 * 300 + 150] == 0xFF0000FF);
+        /* wheel-down 40px: content moves UP, blue block starts at 110 */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->pixels[150 * 300 + 150] == 0xFF0000FF); /* still blue */
+        /* y=130 is inside the shifted blue block (110..260), not red */
+        assert(w->render->pixels[130 * 300 + 150] == 0xFF0000FF);
+        whaleui_window_destroy(w);
+    }
+
     /* a non-overflowing overflow:auto box must NOT block page scrolling */
     {
         whaleui_window_t* w = whaleui_window_create(app, "noscroll", 300, 200);
