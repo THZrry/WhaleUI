@@ -324,6 +324,13 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                              SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER |
                                  SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ);
+    g->target_b = make_texture(device, static_cast<uint32_t>(w),
+                               static_cast<uint32_t>(h),
+                               SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+                               SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                   SDL_GPU_TEXTUREUSAGE_SAMPLER |
+                                   SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ);
+    g->geom_cur = g->target;
 
     g->target2 = make_texture(device, static_cast<uint32_t>(w),
                               static_cast<uint32_t>(h),
@@ -336,8 +343,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                                  static_cast<uint32_t>(h),
                                  SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER);
-    if (!g->white_tex || !g->glyph_atlas || !g->target || !g->target2 ||
-        !g->text_layer) {
+    if (!g->white_tex || !g->glyph_atlas || !g->target || !g->target_b ||
+        !g->target2 || !g->text_layer) {
         goto fail;
     }
     /* upload the white pixel */
@@ -451,6 +458,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->glyph_atlas) SDL_ReleaseGPUTexture(g->device, g->glyph_atlas);
         if (g->text_layer) SDL_ReleaseGPUTexture(g->device, g->text_layer);
         if (g->target) SDL_ReleaseGPUTexture(g->device, g->target);
+        if (g->target_b) SDL_ReleaseGPUTexture(g->device, g->target_b);
         if (g->target2) SDL_ReleaseGPUTexture(g->device, g->target2);
         if (g->vb_solid) SDL_ReleaseGPUBuffer(g->device, g->vb_solid);
         if (g->vb_text) SDL_ReleaseGPUBuffer(g->device, g->vb_text);
@@ -600,7 +608,7 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
 }
 
 SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
-                      unsigned int clear_color)
+                                        unsigned int clear_color, int scroll_dy)
 {
     if (!g) {
         return nullptr;
@@ -608,6 +616,31 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g->device);
     if (!cmd) {
         return nullptr;
+    }
+
+    /* scroll: shift the previous geometry by blitting it into the other
+     * ping-pong target (newly exposed strip is repainted by the caller) */
+    if (scroll_dy != 0 && g->target_b) {
+        SDL_GPUTexture* dst = (g->geom_cur == g->target) ? g->target_b : g->target;
+        int strip = scroll_dy < 0 ? -scroll_dy : scroll_dy;
+        if (strip < fb_h) {
+            SDL_GPUBlitInfo blit;
+            std::memset(&blit, 0, sizeof(blit));
+            blit.source.texture = g->geom_cur;
+            blit.source.x = 0;
+            blit.source.y = scroll_dy > 0 ? static_cast<Uint32>(scroll_dy) : 0;
+            blit.source.w = static_cast<Uint32>(fb_w);
+            blit.source.h = static_cast<Uint32>(fb_h - strip);
+            blit.destination.texture = dst;
+            blit.destination.x = 0;
+            blit.destination.y = scroll_dy > 0 ? 0 : static_cast<Uint32>(-scroll_dy);
+            blit.destination.w = static_cast<Uint32>(fb_w);
+            blit.destination.h = static_cast<Uint32>(fb_h - strip);
+            blit.load_op = SDL_GPU_LOADOP_LOAD;
+            blit.filter = SDL_GPU_FILTER_NEAREST;
+            SDL_BlitGPUTexture(cmd, &blit);
+        }
+        g->geom_cur = dst;
     }
 
     /* upload vertex data + atlas/text layer when dirty */
@@ -689,13 +722,13 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     /* render pass into the offscreen target */
     SDL_GPUColorTargetInfo ct;
     std::memset(&ct, 0, sizeof(ct));
-    ct.texture = g->target;
+    ct.texture = g->geom_cur;
     ct.clear_color = SDL_FColor{
         ((clear_color >> 16) & 0xFF) / 255.0f,
         ((clear_color >> 8) & 0xFF) / 255.0f,
         (clear_color & 0xFF) / 255.0f,
         ((clear_color >> 24) & 0xFF) / 255.0f};
-    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.load_op = scroll_dy != 0 ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
     ct.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
     if (!rp) {
@@ -756,7 +789,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
             SDL_BindGPUComputePipeline(cps, g->pipe_text_composite);
             SDL_GPUTextureSamplerBinding tsb[2];
             std::memset(tsb, 0, sizeof(tsb));
-            tsb[0].texture = g->target;
+            tsb[0].texture = g->geom_cur;
             tsb[1].texture = g->text_layer;
             tsb[0].sampler = g->sampler;
             tsb[1].sampler = g->sampler;

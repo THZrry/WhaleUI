@@ -4011,16 +4011,75 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return -2;
     }
 
-    /* paint: collect batched GPU draw commands (CPU never touches pixels;
-     * the painter appends rects/text sprites to the command list). Text
-     * goes to the CPU layer, uploaded + composited by a compute pass. */
-    std::fill(r->text_layer.begin(), r->text_layer.end(), 0);
-    g_gpu = r->gpu;
+    /* pure scroll: shift the previous image (ping-pong blit on the GPU
+     * side + memmove of the text layer) and only repaint the exposed strip.
+     * Any other dirty/animations fall back to a full repaint (dy=0). */
+    int scroll_dy = 0;
+    if (!r->has_dirty && !r->scroll_dirty && !animating && !r->edit_el &&
+        r->tree) {
+        std::map<lxb_dom_element*, int> cur;
+        std::function<void(whaleui_layout_node_t*)> collect =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->scroll_max > 0 && nd->el) {
+                    auto it = r->scrolls.find(nd->el);
+                    if (it != r->scrolls.end()) {
+                        cur[nd->el] = it->second;
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    collect(c);
+                }
+            };
+        collect(r->tree->root);
+        for (auto& kv : cur) {
+            auto it = r->last_scrolls.find(kv.first);
+            if (it != r->last_scrolls.end()) {
+                scroll_dy += kv.second - it->second;
+            }
+        }
+        r->last_scrolls = std::move(cur);
+    }
+
+    /* paint: collect batched GPU draw commands. Text goes to the CPU layer
+     * (moved on scroll), uploaded + composited by a compute pass. */
     Clip full = {0, 0, r->fb_w, r->fb_h};
+    Clip strip = full;
+    if (scroll_dy > 0) { /* content moved up: bottom strip is new */
+        strip.y = r->fb_h - scroll_dy;
+        strip.h = scroll_dy < r->fb_h ? scroll_dy : r->fb_h;
+        std::fill(r->text_layer.begin() + static_cast<size_t>(strip.y) * r->fb_w,
+                  r->text_layer.end(), 0);
+    } else if (scroll_dy < 0) { /* content moved down: top strip is new */
+        strip.y = 0;
+        strip.h = -scroll_dy;
+        std::fill(r->text_layer.begin(),
+                  r->text_layer.begin() + static_cast<size_t>(strip.h) * r->fb_w,
+                  0);
+    }
+    if (scroll_dy != 0) {
+        /* shift the existing text layer rows (opposite of the scroll) */
+        int rows = r->fb_h - (scroll_dy < 0 ? -scroll_dy : scroll_dy);
+        if (scroll_dy > 0) { /* content up: row y takes row y+dy */
+            for (int y = 0; y < rows; ++y) {
+                std::memcpy(&r->text_layer[static_cast<size_t>(y) * r->fb_w],
+                            &r->text_layer[static_cast<size_t>(y + scroll_dy) * r->fb_w],
+                            static_cast<size_t>(r->fb_w) * 4);
+            }
+        } else { /* content down: row y-dy takes row y */
+            for (int y = rows - 1; y >= 0; --y) {
+                std::memcpy(&r->text_layer[static_cast<size_t>(y - scroll_dy) * r->fb_w],
+                            &r->text_layer[static_cast<size_t>(y) * r->fb_w],
+                            static_cast<size_t>(r->fb_w) * 4);
+            }
+        }
+    }
+    g_gpu = r->gpu;
     int sel_lo = 0, sel_hi = 0;
     sel_seq(r, &sel_lo, &sel_hi);
     int seq = 0;
-    paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi, &full);
+    paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi,
+               scroll_dy != 0 ? &strip : &full);
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's
@@ -4044,7 +4103,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* present: one batched render pass into the offscreen target, then a
      * single blit to the swapchain - no per-element GPU round-trips */
     SDL_GPUCommandBuffer* cmd =
-        whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color);
+        whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color, scroll_dy);
     if (!cmd) {
         return -3;
     }

@@ -92,6 +92,9 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
+    /* last-frame scroll snapshot: used to detect pure scroll deltas so the
+     * frame can shift the previous image instead of repainting everything */
+    std::map<struct lxb_dom_element*, int> last_scrolls;
     /* wheel scrolling changed scrolls: repaint next frame without relayout */
     int scroll_dirty;
     /* scroll behavior hook (default: clamped; replace for smooth scrolling) */

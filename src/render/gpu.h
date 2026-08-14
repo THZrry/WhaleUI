@@ -62,6 +62,8 @@ struct whaleui_gpu
     SDL_GPUTexture* white_tex;
     SDL_GPUTexture* glyph_atlas; /* 2048x2048 R8 */
     SDL_GPUTexture* target;      /* geometry render target (COLOR_TARGET) */
+    SDL_GPUTexture* target_b;    /* second geometry target (scroll ping-pong) */
+    SDL_GPUTexture* geom_cur;    /* == target or target_b (draw target) */
     SDL_GPUTexture* target2;     /* composited result (COMPUTE_STORAGE_WRITE);
                                     compute reads target + text_layer into it */
     SDL_GPUTexture* text_layer;  /* CPU-rasterized text (RGBA8) */
@@ -119,9 +121,11 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
 
 /* submit the collected commands: upload vertices, render to the offscreen
  * target, return the (not yet submitted) command buffer so the caller can
- * blit to the swapchain and submit. Returns NULL on failure. */
+ * blit to the swapchain and submit. scroll_dy != 0 shifts the previous
+ * frame's geometry via a ping-pong blit (the caller repaints the exposed
+ * strip). Returns NULL on failure. */
 SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
-                                        unsigned int clear_color);
+                                        unsigned int clear_color, int scroll_dy);
 
 #ifdef __cplusplus
 }
