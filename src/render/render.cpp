@@ -18,11 +18,14 @@
 #include <SDL3/SDL_gpu.h>
 #ifdef WHALEUI_BUILD_FULL
 #include <SDL3_ttf/SDL_ttf.h>
+#include <SDL3_image/SDL_image.h>
 #else
 /* stb_truetype text backend for lite/minimal builds (header-only) */
 #define STB_TRUETYPE_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
 #endif
 #include <stb/stb_truetype.h>
+#include <stb/stb_image.h>
 
 #include <lexbor/dom/dom.h>
 
@@ -38,6 +41,11 @@ namespace {
  * render_frame before painting, cleared after). When set, every fill/rect
  * call appends a batched command instead of writing CPU pixels. */
 whaleui_gpu_t* g_gpu = nullptr;
+
+/* shadow parsing (defined below; forward-declared for paint_text) */
+int parse_shadow_any(const std::string& v, int& ox, int& oy, int& blur,
+                     unsigned int& col);
+std::vector<std::string> split_space2(const std::string& v);
 
 /* --- color --- */
 
@@ -2434,11 +2442,92 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     paint_text_selection(r, n, fs, family, bold, off_x, off_y, seq, sel_lo,
                          sel_hi, clip);
+    bool wrap = sget(n->style, "white-space") != "nowrap";
+    int tx0 = box->content.x + off_x;
+    int ty0 = n->border.y + off_y;
+
+    /* text-shadow: offset copy (plus 2 spread layers approximating the
+     * blur) painted under the glyphs. The glyph raster is cached per
+     * element, so the copies only re-tint at blend time. */
+    std::string tsh = sget(n->style, "text-shadow");
+    if (!tsh.empty() && tsh != "none") {
+        int sox = 0, soy = 0, sblur = 0;
+        unsigned int scol = 0;
+        if (parse_shadow_any(tsh, sox, soy, sblur, scol) == 0) {
+            unsigned int sa = (scol >> 24) & 0xFF;
+            if (sblur > 0) {
+                for (int k = 1; k <= 2 && k <= sblur; ++k) {
+                    unsigned int ka =
+                        static_cast<unsigned>(sa * (sblur - k + 1) /
+                                              (sblur + 1));
+                    unsigned int sc = (ka << 24) | (scol & 0x00FFFFFF);
+                    draw_text_at(r, shown, tx0 + sox - k, ty0 + soy - k,
+                                 box->content.w, n->border.h, fs, family, sc,
+                                 bold, align, n->el, clip, lsp, wrap);
+                }
+            }
+            draw_text_at(r, shown, tx0 + sox, ty0 + soy, box->content.w,
+                         n->border.h, fs, family, scol, bold, align, n->el,
+                         clip, lsp, wrap);
+        }
+    }
+    /* -webkit-text-stroke: 8-direction outline copies (stroke width is
+     * usually 1px; outline color replaces the transparent fill) */
+    std::string tsk = sget(n->style, "-webkit-text-stroke");
+    if (tsk.empty()) {
+        tsk = sget(n->style, "text-stroke");
+    }
+    if (!tsk.empty() && tsk != "none") {
+        std::vector<std::string> toks = split_space2(tsk);
+        int sw = 1;
+        unsigned int scc = 0xFF000000;
+        if (!toks.empty()) {
+            char* end = nullptr;
+            float w = std::strtof(toks[0].c_str(), &end);
+            if (end != toks[0].c_str()) {
+                sw = w > 0 ? static_cast<int>(w) : 1;
+            }
+            std::string cstr;
+            for (size_t i = 1; i < toks.size(); ++i) {
+                if (!cstr.empty()) {
+                    cstr += ' ';
+                }
+                cstr += toks[i];
+            }
+            if (!cstr.empty()) {
+                whaleui_render_parse_color(cstr.c_str(), &scc);
+            }
+        }
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (!dx && !dy) {
+                    continue;
+                }
+                draw_text_at(r, shown, tx0 + dx * sw, ty0 + dy * sw,
+                             box->content.w, n->border.h, fs, family, scc,
+                             bold, align, n->el, clip, lsp, wrap);
+            }
+        }
+    }
+
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
-    draw_text_at(r, shown, box->content.x + off_x, n->border.y + off_y,
-                 box->content.w, n->border.h,
-                 fs, family, color, bold, align, n->el, clip, lsp, true);
+    draw_text_at(r, shown, tx0, ty0, box->content.w, n->border.h,
+                 fs, family, color, bold, align, n->el, clip, lsp, wrap);
+
+    /* text-decoration: underline / line-through lines over the box */
+    std::string td = sget(n->style, "text-decoration");
+    if (!td.empty() && td != "none") {
+        int lw = box->content.w > 0 ? box->content.w : 1;
+        if (td.find("underline") != std::string::npos) {
+            fill_rect(r->pixels, r->fb_w, r->fb_h, tx0,
+                      ty0 + n->border.h - 2, lw, 1, color, clip);
+        }
+        if (td.find("line-through") != std::string::npos) {
+            fill_rect(r->pixels, r->fb_w, r->fb_h, tx0,
+                      ty0 + n->border.h / 2, lw, 1, color, clip);
+        }
+    }
 }
 
 /* --- <select> support --- */
@@ -2691,6 +2780,78 @@ int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
     return whaleui_render_parse_color(colstr.c_str(), &col);
 }
 
+/* parse_shadow variant that accepts blur == 0 (text-shadow without a
+ * blur radius) */
+int parse_shadow_any(const std::string& v, int& ox, int& oy, int& blur,
+                     unsigned int& col)
+{
+    int rc = parse_shadow(v, ox, oy, blur, col);
+    if (rc != 0) {
+        /* retry allowing zero blur: split tokens and treat the color as
+         * the last token */
+        std::vector<std::string> tok;
+        const char* p = v.c_str();
+        while (*p) {
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (!*p) {
+                break;
+            }
+            const char* s = p;
+            while (*p && *p != ' ' && *p != '\t') {
+                ++p;
+            }
+            tok.emplace_back(s, static_cast<size_t>(p - s));
+        }
+        ox = oy = blur = 0;
+        col = 0;
+        int nums[2] = {0, 0};
+        size_t ni = 0;
+        std::string colstr;
+        for (size_t i = 0; i < tok.size(); ++i) {
+            const std::string& t = tok[i];
+            if (ni < 2 && !t.empty() &&
+                (t[0] == '-' || (t[0] >= '0' && t[0] <= '9'))) {
+                nums[ni++] = std::atoi(t.c_str());
+            } else if (!colstr.empty()) {
+                colstr += ' ';
+                colstr += t;
+            } else {
+                colstr = t;
+            }
+        }
+        ox = nums[0];
+        oy = nums[1];
+        if (colstr.empty()) {
+            return -1;
+        }
+        return whaleui_render_parse_color(colstr.c_str(), &col);
+    }
+    return rc;
+}
+
+/* whitespace tokenizer */
+std::vector<std::string> split_space2(const std::string& v)
+{
+    std::vector<std::string> out;
+    const char* p = v.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        out.emplace_back(s, static_cast<size_t>(p - s));
+    }
+    return out;
+}
+
 /* soft shadow under a box: concentric rounded rects expanding up to `blur`
  * px, alpha fading outwards. Painted BEFORE the background so the element
  * body covers the inner layers. */
@@ -2722,6 +2883,18 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (a == 0) {
         return;
     }
+    /* GPU path: the mipmap blur approximation (blur_tex + multi-level
+     * resampling) - one shape + one sampling quad instead of blur/2
+     * concentric fills */
+    if (g_gpu) {
+        whaleui_gpu_shadow(g_gpu, static_cast<float>(n->border.x + off_x + ox),
+                           static_cast<float>(n->border.y + off_y + oy),
+                           static_cast<float>(n->border.w),
+                           static_cast<float>(n->border.h),
+                           static_cast<float>(radius),
+                           static_cast<float>(blur), col);
+        return;
+    }
     /* concentric layers, alpha fading outwards; skip the near-invisible
      * outermost ring and step by 2px (half the fill cost, gradient still
      * smooth) */
@@ -2742,6 +2915,116 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
             fill_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh, c, clip);
         }
     }
+}
+
+/* decode an <img> src into a surface. Only local sources load (file:// or
+ * a plain path); http(s) and data: URIs have no network stack here and fall
+ * back to the placeholder box. Results cached per src (NULL = not
+ * loadable). */
+SDL_Surface* img_surface(whaleui_render_t* r, const std::string& src)
+{
+    if (src.empty()) {
+        return nullptr;
+    }
+    auto it = r->images.find(src);
+    if (it != r->images.end()) {
+        return it->second;
+    }
+    SDL_Surface* s = nullptr;
+    if (src.compare(0, 7, "http://") != 0 &&
+        src.compare(0, 8, "https://") != 0 &&
+        src.compare(0, 5, "data:") != 0) {
+        std::string path = src;
+        if (path.compare(0, 7, "file://") == 0) {
+            path = path.substr(7);
+            if (!path.empty() && (path[0] == '/' || path[0] == '\\')) {
+                path = path.substr(1); /* file:///C:/x -> C:/x */
+            }
+        }
+#ifdef WHALEUI_BUILD_FULL
+        s = IMG_Load(path.c_str());
+#else
+        /* stb_image decode (lite/minimal have no SDL_image) */
+        int iw = 0, ih = 0, ich = 0;
+        unsigned char* px = stbi_load(path.c_str(), &iw, &ih, &ich, 4);
+        if (px && iw > 0 && ih > 0) {
+            s = SDL_CreateSurface(iw, ih, SDL_PIXELFORMAT_RGBA32);
+            if (s) {
+                std::memcpy(s->pixels, px, static_cast<size_t>(iw) * ih * 4);
+            }
+        }
+        if (px) {
+            stbi_image_free(px);
+        }
+#endif
+    }
+    r->images[src] = s;
+    return s;
+}
+
+/* paint an <img> element: decoded bitmap honoring object-fit, or a
+ * placeholder box when the source is missing/remote/undecodable. The bitmap
+ * blends into the CPU text layer (GPU path) / framebuffer (CPU path) - the
+ * layer composites above geometry, which suits page content images
+ * (ponytail: z-order above the parent border is a known corner). */
+void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+               int off_y, const Clip* clip)
+{
+    size_t alen = 0;
+    const lxb_char_t* src = lxb_dom_element_get_attribute(
+        n->el, (const lxb_char_t*)"src", 3, &alen);
+    std::string srcs = src ? std::string(reinterpret_cast<const char*>(src),
+                                         alen)
+                           : std::string();
+    int x = n->border.x + off_x;
+    int y = n->border.y + off_y;
+    int w = n->border.w;
+    int h = n->border.h;
+    if (x + w <= 0 || y + h <= 0 || x >= r->fb_w || y >= r->fb_h) {
+        return;
+    }
+    SDL_Surface* img = img_surface(r, srcs);
+    if (img && img->w > 0 && img->h > 0) {
+        /* object-fit: cover keeps the aspect and crops, contain letterboxes,
+         * fill (default) stretches */
+        std::string of = sget(n->style, "object-fit");
+        int dw = w, dh = h, dx = x, dy = y;
+        if (of == "cover" || of == "contain") {
+            float ar = static_cast<float>(img->w) / img->h;
+            float dar = w > 0 ? static_cast<float>(w) / h : 1.0f;
+            if ((of == "cover") == (ar > dar)) {
+                dh = static_cast<int>(w / ar);
+                dy = y + (h - dh) / 2;
+            } else {
+                dw = static_cast<int>(h * ar);
+                dx = x + (w - dw) / 2;
+            }
+        }
+        if (dw > 0 && dh > 0) {
+            SDL_Surface* scaled = SDL_ScaleSurface(img, dw, dh,
+                                                   SDL_SCALEMODE_LINEAR);
+            if (scaled) {
+                if (g_gpu) {
+                    blend_surface(r->text_layer, r->fb_w, r->fb_h, scaled,
+                                  dx, dy, clip, nullptr);
+                } else {
+                    blend_surface(r->pixels, r->fb_w, r->fb_h, scaled,
+                                  dx, dy, clip, nullptr);
+                }
+                SDL_DestroySurface(scaled);
+            }
+        }
+        return;
+    }
+    /* placeholder box: dim fill + hairline border, so broken images still
+     * occupy their laid-out space visibly */
+    unsigned int dim = 0xFF2A2E38;
+    fill_rect(r->pixels, r->fb_w, r->fb_h, x, y, w, h, dim, clip);
+    unsigned int edge = 0xFF3A4150;
+    fill_rect(r->pixels, r->fb_w, r->fb_h, x, y, w, 1, edge, clip);
+    fill_rect(r->pixels, r->fb_w, r->fb_h, x, y + h - 1, w, 1, edge, clip);
+    fill_rect(r->pixels, r->fb_w, r->fb_h, x, y, 1, h, edge, clip);
+    fill_rect(r->pixels, r->fb_w, r->fb_h, x + w - 1, y, 1, h, edge, clip);
 }
 
 
@@ -2839,6 +3122,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         off_x = 0;
         off_y = 0;
     }
+    /* position:sticky: keep the box pinned at top:N once scrolling would
+     * push it past that edge (the layout pass already shifted the box by
+     * the scroll amount, so border.y + off_y is the current viewport
+     * position). Simplified to the page/root scroll; container-bottom
+     * clamping is skipped (ponytail: add when a page needs it). */
+    if (sget(n->style, "position") == "sticky") {
+        /* top is usually px; %/vh are rare on sticky (ponytail) */
+        int st = std::atoi(sget(n->style, "top").c_str());
+        int cur = n->border.y + off_y;
+        if (cur < st) {
+            off_y += st - cur;
+        }
+    }
     /* transform: translate (px/%) + uniform scale around the element's
      * center (default transform-origin). The shifted box is drawn here and
      * off_x/off_y carry the translation into the subtree. Child coordinates
@@ -2883,6 +3179,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* soft shadow first, so the element body covers the inner layers */
     paint_shadow(r, n, nox, noy, eff);
+    /* <img>: bitmap (object-fit) or placeholder replaces the background */
+    if (n->el && tag_eq(n->el, "img")) {
+        paint_img(r, n, nox, noy, eff);
+    }
     /* background (border-radius supported). A gradient in `background`/
      * `background-image` paints over the plain color (which shows through
      * the gradient's transparent stops). */
@@ -2902,14 +3202,35 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
         unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
         bg_c = c;
+    }
+    /* backdrop-filter: blur the already-painted background under this box.
+     * GPU path: pass C (in gpu_flush) overwrites the region with the
+     * blurred geometry and blends the body color on top, so the plain body
+     * paint below is skipped. CPU path has no access to the GPU geometry:
+     * the body background still paints (ponytail: real CPU backdrop blur
+     * when a CPU framebuffer path needs it). */
+    std::string bdf = sget(n->style, "backdrop-filter");
+    bool backdrop = !bdf.empty() && bdf != "none";
+    if (backdrop && g_gpu) {
+        float bblur = 8.0f;
+        size_t bp = bdf.find("blur(");
+        if (bp != std::string::npos) {
+            bblur = static_cast<float>(std::atof(bdf.c_str() + bp + 5));
+        }
+        whaleui_gpu_backdrop(g_gpu, static_cast<float>(n->border.x + nox),
+                             static_cast<float>(n->border.y + noy),
+                             static_cast<float>(bw), static_cast<float>(bh),
+                             static_cast<float>(radius), bblur, bg_c);
+    } else {
+    if (bg != 0) {
         if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
-                            bw, bh, radius, c, eff);
+                            bw, bh, radius, bg_c, eff);
         } else {
             fill_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                       n->border.y + noy,
-                      bw, bh, c, eff);
+                      bw, bh, bg_c, eff);
         }
     }
     Gradient grad;
@@ -2967,6 +3288,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             }
         }
     }
+    } /* end else: plain body paint (skipped for GPU backdrop-filter) */
     int child_off_y = noy + scroll_delta(r, n);
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff, tc);
@@ -3440,6 +3762,9 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     for (auto& e : r->text_cache) {
         TTF_DestroyText(e.second.t);
         SDL_DestroySurface(e.second.surf);
+    }
+    for (auto& im : r->images) {
+        SDL_DestroySurface(im.second);
     }
     if (r->cursor_arrow) {
         SDL_DestroyCursor(r->cursor_arrow);

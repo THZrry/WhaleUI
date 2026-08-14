@@ -76,6 +76,11 @@ struct whaleui_render
     };
     std::map<std::string, TextCacheEntry> text_cache;
 
+    /* decoded <img> bitmaps by src (owned; freed in destroy). Only local
+     * file:// / relative URIs are loadable; remote or missing sources fall
+     * back to a placeholder box. */
+    std::map<std::string, SDL_Surface*> images;
+
     /* select dropdown interaction state. open_select is the DOM element
      * (stable across layout-tree rebuilds; layout nodes are recreated every
      * frame and would dangle) */

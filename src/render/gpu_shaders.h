@@ -107,6 +107,97 @@ float4 main(VSOut i) : SV_Target {
  * blend/format path); the pixel shader uses vertex color only. */
 static const unsigned char kSolidPixel[4] = {255, 255, 255, 255};
 
+/* blur sampling compute passes (box-shadow / backdrop-filter), the
+ * mipmap-approximation of a gaussian: the source is mipmapped into
+ * blur_tex, then each pixel re-samples 3 levels (gaussian weights) with
+ * explicit LOD (SampleLevel - compute rejects implicit-derivative Sample,
+ * and SDL 3.4 D3D12 graphics-side SRV is broken anyway). Parameters come
+ * from a StructuredBuffer: [0]={count,fb_w,fb_h,0}, then per record
+ * {x,y,w,h}, {blur,r,g,b}, {a,...} (a = shadow alpha for kShadowCS,
+ * backdrop body color+alpha for kBackdropCS). */
+
+static const char* kShadowCS = R"(
+[[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
+[[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+SamplerState samp : register(s0);
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float2 px = float2(id.xy) + 0.5;
+    float4 hdr = params[0];
+    int n = int(hdr.x);
+    float4 acc = 0;
+    for (int i = 0; i < n; ++i) {
+        float4 r = params[1 + i * 3];
+        float4 c = params[2 + i * 3];
+        float4 d = params[3 + i * 3];
+        if (px.x >= r.x && px.x < r.x + r.z &&
+            px.y >= r.y && px.y < r.y + r.w) {
+            /* framebuffer px -> blur_tex uv (blur tex is fb / 2) */
+            float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
+            /* blur radius -> mip level: a 2x2 box-filtered level L has an
+             * equivalent radius of ~2^L blur_texels = 2^(L+1) px */
+            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
+            float4 m = 0;
+            float ws = 0;
+            for (int k = -1; k <= 1; ++k) {
+                float w = exp(-0.5 * float(k * k));
+                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
+                ws += w;
+            }
+            m /= ws;
+            acc = float4(c.yzw, d.x) * m.a;
+            break;
+        }
+    }
+    out_tex[id.xy] = acc;
+}
+)";
+
+static const char* kBackdropCS = R"(
+[[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
+[[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+SamplerState samp : register(s0);
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float2 px = float2(id.xy) + 0.5;
+    float4 hdr = params[0];
+    int n = int(hdr.x);
+    /* default: keep the painted pixel (target is SIMULTANEOUS read+write) */
+    float4 acc = out_tex[id.xy];
+    for (int i = 0; i < n; ++i) {
+        float4 r = params[1 + i * 3];
+        float4 c = params[2 + i * 3];
+        float4 d = params[3 + i * 3];
+        if (px.x >= r.x && px.x < r.x + r.z &&
+            px.y >= r.y && px.y < r.y + r.w) {
+            float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
+            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
+            float4 m = 0;
+            float ws = 0;
+            for (int k = -1; k <= 1; ++k) {
+                float w = exp(-0.5 * float(k * k));
+                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
+                ws += w;
+            }
+            m /= ws;
+            /* blurred background + the element's own body color. Record
+             * layout: {x,y,w,h} {blur,r,g,b} {a,br,bg,bb} - for a backdrop
+             * record a = body alpha and br/bg/bb = body color (d.yzw) */
+            float ba = d.x;
+            float3 blurred = m.rgb;
+            float3 body = float3(d.y, d.z, d.w);
+            float3 outcol = lerp(blurred, body, ba);
+            float outa = m.a * (1.0 - ba) + ba;
+            acc = float4(outcol, outa);
+            break;
+        }
+    }
+    out_tex[id.xy] = acc;
+}
+)";
+
 /* compute: composite the CPU-rasterized text layer (RGBA8, transparent
  * where empty) over the geometry already drawn into the target. SDL 3.4
  * SPIR-V layout: set0 = sampled textures, set1 = read-write storage. The

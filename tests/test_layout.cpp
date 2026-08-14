@@ -496,7 +496,7 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
-    /* ::after content is appended to the element's text run */
+    /* ::after content is a separate text run (pseudo styles apply to it) */
     {
         const char* css = "a::after { content: ' X'; }\n";
         whaleui_css_rule_t* rules = nullptr;
@@ -513,7 +513,10 @@ int main(void)
         assert(a != nullptr);
         whaleui_layout_node_t* run = a->first_child;
         assert(run != nullptr && run->is_text);
-        assert(run->text == "click X");
+        assert(run->text == "click");
+        whaleui_layout_node_t* run2 = run->next;
+        assert(run2 != nullptr && run2->is_text);
+        assert(run2->text == " X");
         whaleui_layout_destroy(t);
         whaleui_css_rules_destroy(rules, count);
         whaleui_dom_document_destroy(doc);

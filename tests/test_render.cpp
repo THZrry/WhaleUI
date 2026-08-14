@@ -155,6 +155,34 @@ int main(void)
     assert(gpixel(win3->render, 50, 20) == 0xFFFF0000);
     whaleui_window_destroy(win3);
 
+    /* GPU blur approximation: box-shadow (mipmap-blurred shape under the
+     * box) + backdrop-filter (blurred geometry + body color on top) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "blur", 200, 150);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body>"
+            "<div id=\"panel\" style=\"width:120px;height:90px;"
+            "background-color:#00ff00;margin:20px;"
+            "box-shadow:0 10px 30px rgba(0,0,0,0.5);\"></div>"
+            "<div id=\"back\" style=\"position:fixed;top:0;left:0;right:0;"
+            "height:20px;backdrop-filter:blur(8px);"
+            "background:rgba(255,0,0,0.5);\"></div>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* panel body is green */
+        assert(gpixel(w->render, 60, 60) == 0xFF00FF00);
+        /* shadow below the panel (box at 20,20-140,110; shadow spreads
+         * 10px down + 30 blur): darker than the body background */
+        unsigned int sh = gpixel(w->render, 100, 125);
+        assert(((sh >> 16) & 0xFF) < 0xC0);
+        /* backdrop top strip: blurred body + 50% red -> red-dominant */
+        unsigned int bd = gpixel(w->render, 150, 10);
+        assert(((bd >> 16) & 0xFF) > ((bd >> 8) & 0xFF) + 40);
+        whaleui_window_destroy(w);
+    }
+
     /* <select> dropdown interaction */
     {
         whaleui_window_t* w = whaleui_window_create(app, "select", 300, 200);

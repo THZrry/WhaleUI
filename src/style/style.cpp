@@ -30,7 +30,63 @@ struct SelPart
     bool focus;         /* ":focus" / ":focus-visible" present */
     bool disabled;      /* ":disabled" present */
     bool last_child;    /* ":last-child" present */
+    bool first_child;   /* ":first-child" present */
+    bool nth;           /* ":nth-child(An+B)" present */
+    int nth_a, nth_b;   /* position p matches when p = A*n + B, n >= 0 */
 };
+
+/* parse ":nth-child(odd|even|N|n|n+B|An+B)" into a/b. Returns false on
+ * malformed input. */
+bool parse_nth(const char* s, size_t len, int& a, int& b)
+{
+    a = 0;
+    b = 0;
+    std::string v(s, len);
+    size_t trim_b = v.find_first_not_of(" \t");
+    size_t trim_e = v.find_last_not_of(" \t");
+    if (trim_b == std::string::npos) {
+        return false;
+    }
+    v = v.substr(trim_b, trim_e - trim_b + 1);
+    if (v == "odd") {
+        a = 2;
+        b = 1;
+        return true;
+    }
+    if (v == "even") {
+        a = 2;
+        b = 0;
+        return true;
+    }
+    /* pure number */
+    char* end = nullptr;
+    long n = std::strtol(v.c_str(), &end, 10);
+    if (end && *end == '\0' && v.size()) {
+        a = 0;
+        b = static_cast<int>(n);
+        return true;
+    }
+    /* An+B / n+B / n-B */
+    size_t npos = v.find('n');
+    if (npos == std::string::npos) {
+        return false;
+    }
+    std::string coef = v.substr(0, npos);
+    if (coef.empty() || coef == "+") {
+        a = 1;
+    } else if (coef == "-") {
+        a = -1;
+    } else {
+        a = std::atoi(coef.c_str());
+    }
+    std::string rest = v.substr(npos + 1);
+    if (rest.empty()) {
+        b = 0;
+    } else {
+        b = std::atoi(rest.c_str());
+    }
+    return true;
+}
 
 /* parse "tag#id.cls:hover" into SelPart (other pseudo-classes ignored) */
 bool parse_simple(const char* sel, size_t len, SelPart& out)
@@ -59,8 +115,7 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 ++p;
             }
             std::string v(s, static_cast<size_t>(p - s));
-            if (v == "hover") {
-                out.hover = true;
+            if (v == "hover") {                out.hover = true;
             } else if (v == "active") {
                 out.active = true;
             } else if (v == "focus" || v == "focus-visible") {
@@ -69,6 +124,15 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 out.disabled = true;
             } else if (v == "last-child") {
                 out.last_child = true;
+            } else if (v == "first-child") {
+                out.first_child = true;
+            } else if (v.compare(0, 10, "nth-child(") == 0 &&
+                       !v.empty() && v.back() == ')') {
+                /* "nth-child(" is 10 chars; inner expr = v[10..size-2] */
+                if (parse_nth(v.c_str() + 10, v.size() - 11, out.nth_a,
+                              out.nth_b)) {
+                    out.nth = true;
+                }
             }
             continue;
         }
@@ -88,7 +152,7 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     }
     return !out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
            out.hover || out.active || out.focus || out.disabled ||
-           out.last_child;
+           out.last_child || out.first_child || out.nth;
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -147,6 +211,32 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
         for (lxb_dom_node* s = el->node.next; s; s = s->next) {
             if (s->type == LXB_DOM_NODE_TYPE_ELEMENT) {
                 return false;
+            }
+        }
+    }
+    if (p.first_child || p.nth) {
+        /* 1-based position among ELEMENT siblings (nth-child counts only
+         * elements, unlike :nth-of-type which filters by tag) */
+        int pos = 0;
+        for (lxb_dom_node* s = el->node.prev; s; s = s->prev) {
+            if (s->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                ++pos;
+            }
+        }
+        ++pos;
+        if (p.first_child && pos != 1) {
+            return false;
+        }
+        if (p.nth) {
+            if (p.nth_a == 0) {
+                if (pos != p.nth_b) {
+                    return false;
+                }
+            } else {
+                int d = pos - p.nth_b;
+                if (d < 0 || d % p.nth_a != 0) {
+                    return false;
+                }
             }
         }
     }
@@ -394,10 +484,43 @@ void expand_border_side(WhaleUIComputedStyle& s, const char* side,
 void expand_shorthands(WhaleUIComputedStyle& s)
 {
     expand_font(s);
+    /* border-block: 1px solid red -> border-top + border-bottom (before the
+     * side expansion so the width/color shorthands apply to both) */
+    WhaleUIComputedStyle::const_iterator bb = s.find("border-block");
+    if (bb != s.end()) {
+        if (s.find("border-top") == s.end()) {
+            s["border-top"] = bb->second;
+        }
+        if (s.find("border-bottom") == s.end()) {
+            s["border-bottom"] = bb->second;
+        }
+    }
     expand_border_side(s, "border-top", "border-top-width");
     expand_border_side(s, "border-bottom", "border-bottom-width");
     expand_border_side(s, "border-left", "border-left-width");
     expand_border_side(s, "border-right", "border-right-width");
+    /* inset: TRBL shorthand -> top/right/bottom/left ("inset: 0" covers
+     * fixed/absolute elements pinning to all four edges) */
+    WhaleUIComputedStyle::const_iterator ins = s.find("inset");
+    if (ins != s.end()) {
+        std::vector<std::string> toks = split_space(ins->second);
+        static const char* kInset[] = {"top", "right", "bottom", "left"};
+        for (int i = 0; i < 4; ++i) {
+            if (s.find(kInset[i]) != s.end()) {
+                continue; /* longhand wins */
+            }
+            size_t n = toks.size();
+            if (n == 1) {
+                s[kInset[i]] = toks[0];
+            } else if (n == 2) {
+                s[kInset[i]] = toks[i % 2];
+            } else if (n == 3) {
+                s[kInset[i]] = toks[i == 3 ? 1 : i];
+            } else if (n >= 4) {
+                s[kInset[i]] = toks[i];
+            }
+        }
+    }
     WhaleUIComputedStyle::const_iterator b = s.find("border");
     if (b != s.end() && s.find("border-color") == s.end()) {
         std::string c = value_color(b->second);
@@ -441,8 +564,23 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
             break;
         }
         const char* s = p;
+        /* scan one simple selector; '('..')' is a function argument (e.g.
+         * nth-child(n+4)) whose commas/pluses must not split the chain */
         while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '+') {
-            ++p;
+            if (*p == '(') {
+                int depth = 1;
+                ++p;
+                while (*p && depth) {
+                    if (*p == '(') {
+                        ++depth;
+                    } else if (*p == ')') {
+                        --depth;
+                    }
+                    ++p;
+                }
+            } else {
+                ++p;
+            }
         }
         /* keep pseudo-classes: parse_simple handles ":hover" */
         std::string raw(s, static_cast<size_t>(p - s));

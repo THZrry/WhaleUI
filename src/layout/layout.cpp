@@ -404,6 +404,9 @@ int position_kind(const std::string& p)
     if (p == "relative") {
         return 3;
     }
+    if (p == "sticky") {
+        return 4;
+    }
     return 0; /* static */
 }
 
@@ -493,6 +496,118 @@ struct Builder
         }
     }
 
+    /* merge the matching ::before/::after rule's paint-relevant properties
+     * (color/font/decoration) into a copy of the element's computed style */
+    WhaleUIComputedStyle pseudo_style(const WhaleUIComputedStyle& base,
+                                      lxb_dom_element* el, int which)
+    {
+        WhaleUIComputedStyle s = base;
+        if (!el || !rules) {
+            return s;
+        }
+        for (size_t i = 0; i < rule_count; ++i) {
+            int pseudo = 0;
+            if (!whaleui_style_match_pseudo(rules[i].selector, el, &st,
+                                            &pseudo) ||
+                pseudo != which) {
+                continue;
+            }
+            for (size_t d = 0; d < rules[i].decl_count; ++d) {
+                char* kv = rules[i].decls[d];
+                char* eq = std::strchr(kv, '=');
+                if (!eq) {
+                    continue;
+                }
+                std::string name(kv, static_cast<size_t>(eq - kv));
+                static const char* kPaint[] = {
+                    "color", "font-size", "font-family", "font-weight",
+                    "font-style", "letter-spacing", "text-transform",
+                    "text-decoration", "background", "background-color",
+                    "white-space",
+                };
+                for (size_t p = 0; p < sizeof(kPaint) / sizeof(kPaint[0]);
+                     ++p) {
+                    if (name == kPaint[p]) {
+                        s[name] = resolve_var_in(eq + 1);
+                        break;
+                    }
+                }
+            }
+        }
+        return s;
+    }
+
+    /* resolve var(--x[, fallback]) inside a single value (mirrors the
+     * cascade pass; pseudo rules are merged after whaleui_style_compute) */
+    std::string resolve_var_in(const std::string& input)
+    {
+        std::string val = input;
+        for (;;) {
+            size_t start = val.find("var(");
+            if (start == std::string::npos) {
+                return val;
+            }
+            size_t end = val.find(')', start);
+            if (end == std::string::npos) {
+                return val;
+            }
+            std::string inner = val.substr(start + 4, end - start - 4);
+            size_t b = inner.find_first_not_of(" \t");
+            size_t e = inner.find_last_not_of(" \t");
+            if (b == std::string::npos) {
+                return val;
+            }
+            inner = inner.substr(b, e - b + 1);
+            size_t comma = inner.find(',');
+            std::string name = comma == std::string::npos
+                                   ? inner
+                                   : inner.substr(0, comma);
+            size_t nb = name.find_first_not_of(" \t");
+            size_t ne = name.find_last_not_of(" \t");
+            name = name.substr(nb, ne - nb + 1);
+            std::string repl;
+            auto it = vars.find(name);
+            if (it != vars.end()) {
+                repl = it->second;
+            } else if (comma != std::string::npos) {
+                repl = inner.substr(comma + 1);
+                size_t rb = repl.find_first_not_of(" \t");
+                size_t re = repl.find_last_not_of(" \t");
+                repl = repl.substr(rb, re - rb + 1);
+            }
+            val.replace(start, end - start + 1, repl);
+            if (repl.empty()) {
+                return val;
+            }
+        }
+    }
+
+    /* append a text-run node under n */
+    whaleui_layout_node_t* add_run(whaleui_layout_node_t* n,
+                                   const std::string& text,
+                                   const WhaleUIComputedStyle& style)
+    {
+        tree->text_arena.push_back(text);
+        whaleui_layout_node_t* t = new_node();
+        t->el = n->el;
+        t->parent = n;
+        t->is_text = 1;
+        t->visible = 1;
+        t->opacity = n->opacity;
+        t->text = tree->text_arena.back();
+        t->style = style;
+        if (!n->first_child) {
+            n->first_child = t;
+        } else {
+            whaleui_layout_node_t* last = n->first_child;
+            while (last->next) {
+                last = last->next;
+            }
+            last->next = t;
+        }
+        return t;
+    }
+
     /* build node + children; returns the node (display:none still built) */
     whaleui_layout_node_t* build(lxb_dom_element* el, whaleui_layout_node_t* parent)
     {
@@ -520,6 +635,24 @@ struct Builder
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
         n->style = whaleui_style_compute(el, rules, rule_count, vars, &st);
+
+        /* <img> has intrinsic size (300x150, browser default) and is
+         * inline-level when the page sets nothing; explicit CSS wins */
+        size_t tlen0 = 0;
+        const lxb_char_t* tname0 = lxb_dom_element_local_name(el, &tlen0);
+        bool is_img = tname0 && tlen0 == 3 &&
+                      std::memcmp(tname0, "img", 3) == 0;
+        if (is_img) {
+            if (n->style.find("width") == n->style.end()) {
+                n->style["width"] = "300px";
+            }
+            if (n->style.find("height") == n->style.end()) {
+                n->style["height"] = "150px";
+            }
+            if (n->style.find("display") == n->style.end()) {
+                n->style["display"] = "inline-block";
+            }
+        }
 
         /* global text scale: multiply px/unitless font-size values so the
          * renderer (which reads font-size from the style) and all em-based
@@ -593,35 +726,22 @@ struct Builder
             n->opacity *= parent->opacity;
         }
 
-        /* text run (if any text children) */
+        /* text runs: ::before/::after pseudo content becomes its own run
+         * so pseudo styles (color/font) apply to it; the element's own
+         * text is a separate run */
         std::string txt = collect_text(el);
-        /* ::before/::after pseudo-elements render inline with the element's
-         * own text. ponytail: per-pseudo styling (color/float) and
-         * placement as separate boxes are a later step. */
         std::string pre, post;
         pseudo_content(el, 1, pre);
         pseudo_content(el, 2, post);
-        if (!pre.empty() || !post.empty()) {
-            txt = pre + txt + post;
-        }
-        if (!txt.empty() && n->visible) {
-            tree->text_arena.push_back(txt);
-            whaleui_layout_node_t* t = new_node();
-            t->el = el;
-            t->parent = n;
-            t->is_text = 1;
-            t->visible = 1;
-            t->opacity = n->opacity;
-            t->text = tree->text_arena.back();
-            t->style = n->style;
-            if (!n->first_child) {
-                n->first_child = t;
-            } else {
-                whaleui_layout_node_t* last = n->first_child;
-                while (last->next) {
-                    last = last->next;
-                }
-                last->next = t;
+        if (n->visible) {
+            if (!pre.empty()) {
+                add_run(n, pre, pseudo_style(n->style, el, 1));
+            }
+            if (!txt.empty()) {
+                add_run(n, txt, n->style);
+            }
+            if (!post.empty()) {
+                add_run(n, post, pseudo_style(n->style, el, 2));
             }
         }
 
@@ -686,6 +806,10 @@ struct Builder
                 max_line = cur;
             }
             int avail = cw > 0 ? cw : 0x7FFFFFFF;
+            /* white-space: nowrap -> no wrapping (ticker tracks etc.) */
+            if (get(n->style, "white-space") == "nowrap") {
+                avail = 0x7FFFFFFF;
+            }
             /* wrap estimate per character class (ASCII half, CJK full);
              * longest run (a single \n-free line) sets the width */
             size_t wrap_lines = est_wrap_lines(n->text, fs, avail);
@@ -766,24 +890,22 @@ struct Builder
 
         /* position */
         int pkind = position_kind(get(n->style, "position"));
+        std::string pos_v = get(n->style, "position");
         float off_top = len_px_vp(get(n->style, "top"), static_cast<float>(ch), em, vw, vh);
         float off_left = len_px_vp(get(n->style, "left"), static_cast<float>(cw), em, vw, vh);
+        float off_right = len_px_vp(get(n->style, "right"), static_cast<float>(cw), em, vw, vh);
+        float off_bottom = len_px_vp(get(n->style, "bottom"), static_cast<float>(ch), em, vw, vh);
+        bool has_left = !get(n->style, "left").empty();
+        bool has_right = !get(n->style, "right").empty();
+        bool has_top = !get(n->style, "top").empty();
+        bool has_bottom = !get(n->style, "bottom").empty();
 
         int x = cx, y = *cursor_y;
         int avail_w = cw;
         if (pkind == 2) {
-            /* fixed: relative to the viewport, immune to ancestor scroll */
-            x = static_cast<int>(off_left);
-            y = static_cast<int>(off_top);
+            /* fixed: laid out against the viewport (immune to ancestor
+             * scroll); the renderer zeroes ancestor offsets when painting */
             avail_w = tree->viewport_w;
-        } else if (pkind == 1) {
-            /* absolute: relative to the (positioned) ancestor */
-            x = cx + static_cast<int>(off_left);
-            y = cy + static_cast<int>(off_top);
-            avail_w = cw;
-        } else if (pkind == 3) {
-            x = cx + static_cast<int>(off_left);
-            y = *cursor_y + static_cast<int>(off_top);
         }
 
         int my = m[0] + m[2], mx = m[1] + m[3];
@@ -821,6 +943,36 @@ struct Builder
             } else if (ml_auto) {
                 x += free_w;
             }
+        }
+        /* resolve offsets now that bw is known: right/bottom anchor to the
+         * far edge (right: -2% -> 2% past the container's right edge).
+         * bottom needs the height; auto-height boxes fall back to the top
+         * edge (ponytail: bottom + auto height unsupported). sticky stays
+         * in flow here; paint_node pins it while scrolling. */
+        int bh_est = static_cast<int>(hpx);
+        if (!h_auto && !border_box) {
+            bh_est += p[0] + p[2] + n->border_w[0] + n->border_w[2];
+        }
+        if (pkind == 1) {
+            /* absolute: relative to the (positioned) ancestor */
+            x = has_left ? cx + static_cast<int>(off_left)
+                         : cx + cw - bw - m[3] - static_cast<int>(off_right);
+            y = has_top ? cy + static_cast<int>(off_top)
+                        : (has_bottom && !h_auto)
+                              ? cy + ch - bh_est - static_cast<int>(off_bottom)
+                              : *cursor_y;
+        } else if (pkind == 2) {
+            /* fixed: relative to the viewport */
+            x = has_left ? static_cast<int>(off_left)
+                         : tree->viewport_w - bw - m[3] - static_cast<int>(off_right);
+            y = has_top ? static_cast<int>(off_top)
+                        : (has_bottom && !h_auto)
+                              ? tree->viewport_h - bh_est - static_cast<int>(off_bottom)
+                              : 0;
+        } else if (pkind == 3 || pkind == 4) {
+            /* relative / sticky: shift from the static position */
+            x = cx + static_cast<int>(off_left);
+            y = *cursor_y + static_cast<int>(off_top);
         }
         n->border.x = x + m[1];
         n->border.y = y + m[0];
@@ -901,26 +1053,26 @@ struct Builder
             }
         }
 
-        /* min/max */
+        /* min/max (viewport units resolve via len_px_vp) */
         std::string mn = get(n->style, "min-width");
         std::string mw = get(n->style, "max-width");
-        if (!mn.empty() && n->border.w < static_cast<int>(len_px(mn, static_cast<float>(cw), em))) {
-            n->border.w = static_cast<int>(len_px(mn, static_cast<float>(cw), em));
+        if (!mn.empty() && n->border.w < static_cast<int>(len_px_vp(mn, static_cast<float>(cw), em, vw, vh))) {
+            n->border.w = static_cast<int>(len_px_vp(mn, static_cast<float>(cw), em, vw, vh));
         }
-        if (!mw.empty() && n->border.w > static_cast<int>(len_px(mw, static_cast<float>(cw), em))) {
-            n->border.w = static_cast<int>(len_px(mw, static_cast<float>(cw), em));
+        if (!mw.empty() && n->border.w > static_cast<int>(len_px_vp(mw, static_cast<float>(cw), em, vw, vh))) {
+            n->border.w = static_cast<int>(len_px_vp(mw, static_cast<float>(cw), em, vw, vh));
         }
         std::string mnh = get(n->style, "min-height");
         std::string mxh = get(n->style, "max-height");
-        if (!mnh.empty() && n->border.h < static_cast<int>(len_px(mnh, static_cast<float>(ch), em))) {
-            n->border.h = static_cast<int>(len_px(mnh, static_cast<float>(ch), em));
+        if (!mnh.empty() && n->border.h < static_cast<int>(len_px_vp(mnh, static_cast<float>(ch), em, vw, vh))) {
+            n->border.h = static_cast<int>(len_px_vp(mnh, static_cast<float>(ch), em, vw, vh));
         }
-        if (!mxh.empty() && n->border.h > static_cast<int>(len_px(mxh, static_cast<float>(ch), em))) {
-            n->border.h = static_cast<int>(len_px(mxh, static_cast<float>(ch), em));
+        if (!mxh.empty() && n->border.h > static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh))) {
+            n->border.h = static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh));
         }
 
-        /* advance flow cursor for block flow (static/relative) */
-        if (pkind == 0 || pkind == 3) {
+        /* advance flow cursor for block flow (static/relative/sticky) */
+        if (pkind == 0 || pkind == 3 || pkind == 4) {
             *cursor_y = y + m[0] + n->border.h + m[2];
         }
         if (cursor_y && pkind == 0) {

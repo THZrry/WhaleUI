@@ -47,6 +47,26 @@ struct gpu_vert_text
     float u2, v2;      /* atlas UV (bottom-right) */
 };
 
+/* per-shadow / per-backdrop parameter record for the compute blur passes.
+ * The GPU blur is the mipmap approximation: the source (a rounded-rect
+ * shape for box-shadow, the painted geometry for backdrop-filter) goes into
+ * the low-res mipmapped blur_tex, and a compute shader re-samples several
+ * mip levels (gaussian weights) straight into the target - no per-pixel
+ * kernel, no graphics-side texture sampling (SDL 3.4 D3D12 graphics SRV is
+ * broken: kSolidPS works around it with vertex colors).
+ * Layout is 12 floats = 3 float4s as the shaders index them:
+ *   {x,y,w,h} {blur,r,g,b} {a,br,bg,bb}
+ * (r/g/b = shadow color, a = shadow alpha; br/bg/bb = backdrop body
+ * color, a = body alpha when used as a backdrop record). */
+struct gpu_blur_param
+{
+    float x, y, w, h;    /* region, px (framebuffer coords) */
+    float blur;          /* blur radius px (selects the mip level) */
+    float r, g, b;       /* shadow color (box-shadow) */
+    float a;             /* shadow alpha (box-shadow) */
+    float br, bg, bb;    /* backdrop body color (blended over the blur) */
+};
+
 /* per-window GPU rendering state */
 struct whaleui_gpu
 {
@@ -56,7 +76,10 @@ struct whaleui_gpu
     SDL_GPUGraphicsPipeline* pipe_solid;
     SDL_GPUGraphicsPipeline* pipe_text;
     SDL_GPUSampler* sampler;
+    SDL_GPUSampler* sampler_mip; /* linear min/mag + linear mip filter */
     SDL_GPUComputePipeline* pipe_text_composite; /* text layer -> target */
+    SDL_GPUComputePipeline* pipe_shadow_cs;  /* blur_tex -> target (shadows) */
+    SDL_GPUComputePipeline* pipe_backdrop_cs; /* blur_tex -> target (backdrop) */
 
     /* 1x1 white texture for the solid pipeline */
     SDL_GPUTexture* white_tex;
@@ -66,6 +89,12 @@ struct whaleui_gpu
     SDL_GPUTexture* geom_cur;    /* == target or target_b (draw target) */
     SDL_GPUTexture* target2;     /* composited result (COMPUTE_STORAGE_WRITE);
                                     compute reads target + text_layer into it */
+    /* low-res mipmapped texture backing the blur approximation. Each frame
+     * it holds either the shadow shapes (white rounded rects) or a copy of
+     * the geometry (backdrop-filter), then SDL_GenerateMipmapsForGPUTexture
+     * builds the chain and kShadowPS re-samples several levels. */
+    SDL_GPUTexture* blur_tex;
+    int blur_w, blur_h; /* blur_tex size = fb / kBlurDiv */
     /* CPU-rasterized text (RGBA8) */
     SDL_GPUTexture* text_layer;
     /* last text-layer upload region (pixels_per_row keeps the full-layer
@@ -79,10 +108,25 @@ struct whaleui_gpu
     SDL_GPUTransferBuffer* atlas_transfer; /* full-atlas upload (4MB) */
     SDL_GPUTransferBuffer* layer_transfer; /* text-layer upload */
 
+    /* blur machinery buffers: vb_shapes holds the solid quads drawn into
+     * blur_tex (shadow shapes + backdrop body fills); the param storage
+     * buffers feed the compute blur passes (one transfer buffer uploads all
+     * three) */
+    SDL_GPUBuffer* vb_shapes;
+    SDL_GPUBuffer* shadow_params_buf;
+    SDL_GPUBuffer* backdrop_params_buf;
+    SDL_GPUTransferBuffer* shadow_transfer;
+
     /* per-frame command lists */
     std::vector<gpu_vert_solid> solids;
     std::vector<gpu_vert_text> texts;
     float fb_w, fb_h; /* render resolution (per-vertex NDC conversion) */
+
+    /* box-shadow / backdrop-filter records (fed to the compute passes) */
+    std::vector<gpu_blur_param> shadows;
+    std::vector<gpu_blur_param> backdrops;
+    /* shadow shapes (white rounded rects) painted into blur_tex (pass A) */
+    std::vector<gpu_vert_solid> shapes;
 
     /* glyph atlas CPU-side occupancy (R8) */
     std::vector<unsigned char> atlas;
@@ -95,6 +139,9 @@ struct whaleui_gpu
 
 typedef struct whaleui_gpu whaleui_gpu_t;
 
+/* blur texture scale: blur_tex is fb / kBlurDiv on each axis */
+enum { kBlurDiv = 2, kBlurLevels = 8 };
+
 /* create/destroy GPU rendering state (device borrowed). target format is
  * the offscreen texture the swapchain blits from. */
 whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h);
@@ -104,6 +151,22 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g);
  * intersect (rounded corners are approximated when clipped). */
 void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
                       float radius, unsigned int color, const int* clip);
+
+/* push a soft box-shadow: a rounded-rect shape (radius, px, framebuffer
+ * coords) blurred by `blur` px and drawn with `color` (0xAARRGGBB) under
+ * the element. The blur is the mipmap approximation: the shape is painted
+ * into the low-res blur_tex, mipmapped, and a compute pass re-samples
+ * several levels back into the target. */
+void whaleui_gpu_shadow(whaleui_gpu_t* g, float x, float y, float w, float h,
+                        float radius, float blur, unsigned int color);
+
+/* push a backdrop-filter region: after the geometry pass, the target is
+ * copied into blur_tex, mipmapped, and a compute pass replaces the region
+ * with the blurred geometry. body_color (may be 0) is blended on top
+ * afterwards (the element's own background). */
+void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
+                          float h, float radius, float blur,
+                          unsigned int body_color);
 
 /* push a text sprite; atlas uv comes from the glyph atlas manager */
 void whaleui_gpu_text(whaleui_gpu_t* g, float x, float y, float w, float h,
