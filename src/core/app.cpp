@@ -163,6 +163,18 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                     }
                 }
                 break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+            case SDL_EVENT_WINDOW_RESTORED:
+                /* the window just became visible again (e.g. unminimized):
+                 * force a repaint so it isn't left stale */
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->render &&
+                        SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                        whaleui_render_invalidate(win->render);
+                        break;
+                    }
+                }
+                break;
             case SDL_EVENT_WINDOW_RESIZED: {
                 for (whaleui_window_t* win : app->windows) {
                     if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
@@ -222,9 +234,14 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
             }
         }
 
-        /* paint all visible windows */
+        /* paint all visible windows. Minimized windows are skipped entirely:
+         * they consume GPU work and upload bandwidth for pixels nobody sees
+         * (the biggest GPU-saving win on low-end machines). */
         for (whaleui_window_t* win : app->windows) {
             if (win->visible && win->sdl && win->render && win->document) {
+                if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
+                    continue;
+                }
                 whaleui_render_frame(win->render, win->document);
             }
         }

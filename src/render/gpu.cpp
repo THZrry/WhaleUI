@@ -235,6 +235,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->text_layer = nullptr;
     g->layer_transfer = nullptr;
     g->layer_dirty = 0;
+    g->layer_rx = g->layer_ry = g->layer_rw = g->layer_rh = 0;
     g->fb_w = static_cast<float>(w);
     g->fb_h = static_cast<float>(h);
     g->atlas_w = 2048;
@@ -586,12 +587,21 @@ void whaleui_gpu_atlas_dirty(whaleui_gpu_t* g)
 }
 
 void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
-                            int w, int h)
+                            int w, int h, int rx, int ry, int rw, int rh)
 {
     if (!g || !pixels || w <= 0 || h <= 0 || !g->layer_transfer) {
         return;
     }
-    size_t bytes = static_cast<size_t>(w) * h * 4;
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+    if (rx + rw > w) rw = w - rx;
+    if (ry + rh > h) rh = h - ry;
+    if (rw <= 0 || rh <= 0) {
+        return;
+    }
+    /* the transfer buffer holds only the region rows (each padded to the
+     * full layer width, see pixels_per_row in flush) */
+    size_t bytes = static_cast<size_t>(rh) * w * 4;
     void* mapped = SDL_MapGPUTransferBuffer(g->device, g->layer_transfer, false);
     if (!mapped) {
         return;
@@ -599,13 +609,21 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
     /* CPU pixels are 0xAARRGGBB; the RGBA8 layer wants R,G,B,A */
     const unsigned char* src = reinterpret_cast<const unsigned char*>(pixels);
     unsigned char* dst = static_cast<unsigned char*>(mapped);
-    for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
-        dst[i * 4 + 0] = src[i * 4 + 2];
-        dst[i * 4 + 1] = src[i * 4 + 1];
-        dst[i * 4 + 2] = src[i * 4 + 0];
-        dst[i * 4 + 3] = src[i * 4 + 3];
+    for (int yy = ry; yy < ry + rh; ++yy) {
+        const unsigned char* srow = src + (static_cast<size_t>(yy) * w + rx) * 4;
+        unsigned char* drow = dst + (static_cast<size_t>(yy - ry) * w) * 4;
+        for (int xx = 0; xx < rw; ++xx) {
+            drow[xx * 4 + 0] = srow[xx * 4 + 2];
+            drow[xx * 4 + 1] = srow[xx * 4 + 1];
+            drow[xx * 4 + 2] = srow[xx * 4 + 0];
+            drow[xx * 4 + 3] = srow[xx * 4 + 3];
+        }
     }
     SDL_UnmapGPUTransferBuffer(g->device, g->layer_transfer);
+    g->layer_rx = rx;
+    g->layer_ry = ry;
+    g->layer_rw = rw;
+    g->layer_rh = rh;
     g->layer_dirty = 1;
 }
 
@@ -710,11 +728,14 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 std::memset(&ti, 0, sizeof(ti));
                 ti.transfer_buffer = g->layer_transfer;
                 ti.offset = 0;
+                ti.pixels_per_row = static_cast<Uint32>(fb_w);
                 SDL_GPUTextureRegion reg;
                 std::memset(&reg, 0, sizeof(reg));
                 reg.texture = g->text_layer;
-                reg.w = static_cast<Uint32>(fb_w);
-                reg.h = static_cast<Uint32>(fb_h);
+                reg.x = static_cast<Uint32>(g->layer_rx);
+                reg.y = static_cast<Uint32>(g->layer_ry);
+                reg.w = static_cast<Uint32>(g->layer_rw);
+                reg.h = static_cast<Uint32>(g->layer_rh);
                 reg.d = 1;
                 SDL_UploadToGPUTexture(cp, &ti, &reg, false);
             }

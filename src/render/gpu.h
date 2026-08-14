@@ -66,7 +66,11 @@ struct whaleui_gpu
     SDL_GPUTexture* geom_cur;    /* == target or target_b (draw target) */
     SDL_GPUTexture* target2;     /* composited result (COMPUTE_STORAGE_WRITE);
                                     compute reads target + text_layer into it */
-    SDL_GPUTexture* text_layer;  /* CPU-rasterized text (RGBA8) */
+    /* CPU-rasterized text (RGBA8) */
+    SDL_GPUTexture* text_layer;
+    /* last text-layer upload region (pixels_per_row keeps the full-layer
+     * row stride; flush copies only this sub-rect into the texture) */
+    int layer_rx, layer_ry, layer_rw, layer_rh;
 
     /* dynamic vertex buffers */
     SDL_GPUBuffer* vb_solid;
@@ -115,9 +119,11 @@ int whaleui_gpu_atlas_alloc(whaleui_gpu_t* g, int w, int h, int* x, int* y);
 void whaleui_gpu_atlas_dirty(whaleui_gpu_t* g);
 
 /* upload the CPU text layer (RGBA8, fb_w x fb_h) and composite it into the
- * target during the next flush. Call right before whaleui_gpu_flush. */
+ * target during the next flush. Call right before whaleui_gpu_flush. Only
+ * the (rx, ry, rw, rh) region is uploaded - partial repaints (dirty-rect
+ * animations) upload just the painted area instead of the whole layer. */
 void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
-                            int w, int h);
+                            int w, int h, int rx, int ry, int rw, int rh);
 
 /* submit the collected commands: upload vertices, render to the offscreen
  * target, return the (not yet submitted) command buffer so the caller can

@@ -178,6 +178,15 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
                 SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
             SDL_SetBooleanProperty(props,
                 SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+            /* prefer the integrated (low-power) adapter: WHALEUI_GPU_LOWPOWER=1.
+             * Default off - on desktops the discrete GPU is usually the sane
+             * choice, and Windows' per-app graphics settings (Settings >
+             * System > Display > Graphics) override this anyway. */
+            const char* lp = SDL_getenv("WHALEUI_GPU_LOWPOWER");
+            if (lp && *lp && lp[0] != '0') {
+                SDL_SetBooleanProperty(props,
+                    SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true);
+            }
             win->app->gpu = SDL_CreateGPUDeviceWithProperties(props);
             SDL_DestroyProperties(props);
             if (!win->app->gpu) {

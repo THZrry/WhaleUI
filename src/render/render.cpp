@@ -2772,21 +2772,21 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
     n->bounds = b;
 }
 
-/* cull a subtree from a partial repaint when its paint bounds (shifted by
- * the off_x/off_y offset chain: transform translation + scroll delta) are
- * entirely outside the clip. A margin covers box-shadow bleed and selection
- * padding. Full-viewport clips never cull; transformed / fixed subtrees are
- * culled by paint_node and sel_seq through the `tc` flag instead (their
+/* cull a subtree from a repaint when its paint bounds (shifted by the
+ * off_x/off_y offset chain: transform translation + scroll delta) are
+ * entirely outside the clip. The clip is the dirty region for partial
+ * repaints and the whole viewport for full repaints - on a scrolled page
+ * most of the document is off-screen either way, so skipping their subtrees
+ * is the biggest paint win. A margin covers box-shadow bleed and selection
+ * padding. Full-viewport clips cull too; transformed / fixed subtrees are
+ * handled by paint_node and sel_seq through the `tc` flag instead (their
  * painted box differs from the laid-out bounds). */
 const int kCullMargin = 64;
 bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, const Clip* clip)
 {
+    (void)r;
     if (!clip || clip->w <= 0 || clip->h <= 0) {
-        return false;
-    }
-    if (clip->x <= 0 && clip->y <= 0 && clip->w >= r->fb_w &&
-        clip->h >= r->fb_h) {
         return false;
     }
     int x0 = n->bounds.x + off_x - kCullMargin;
@@ -2805,14 +2805,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         return;
     }
     const int my_seq = seq++;
-    /* transformed / fixed subtrees are painted at offset positions the
-     * layout bounds don't know about: never cull them, and propagate the
-     * flag down so descendants use the same rule */
-    if (!tc && n->el && !n->is_text) {
-        std::string tv = sget(n->style, "transform");
-        if (!tv.empty() && tv != "none") {
+    /* transform value read ONCE per node (the tc check below and the paint
+     * transform block both need it); position:fixed is checked only when no
+     * transform is present. Transformed / fixed subtrees are painted at
+     * offset positions the layout bounds don't know about: never cull them,
+     * and propagate the flag down so descendants use the same rule. */
+    std::string ntv; /* "transform" value of this node ("" = none) */
+    bool has_xf = false;
+    if (n->el && !n->is_text) {
+        ntv = sget(n->style, "transform");
+        has_xf = !ntv.empty() && ntv != "none";
+        if (!tc && has_xf) {
             tc = true;
-        } else if (sget(n->style, "position") == "fixed") {
+        } else if (!tc && sget(n->style, "position") == "fixed") {
             tc = true;
         }
     }
@@ -2840,10 +2845,9 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * are NOT scaled. ponytail: scale is visual on this box; true 2D
      * transform stacks + hit-testing are a later step. */
     float tdx = 0.0f, tdy = 0.0f, ts = 1.0f;
-    std::string tv = sget(n->style, "transform");
-    if (!tv.empty() && tv != "none") {
+    if (has_xf) {
         whaleui_transform_t tf;
-        if (whaleui_transform_eval(tv.c_str(),
+        if (whaleui_transform_eval(ntv.c_str(),
                                    static_cast<float>(n->border.w),
                                    static_cast<float>(n->border.h), &tf) == 0) {
             tdx = tf.tx;
@@ -3949,7 +3953,18 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
         }
     };
 
-    whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
+    /* hit-test once per pointer position: wheel bursts (rapid scrolling
+     * without moving the mouse) keep hitting the same scroll container, so
+     * the full-tree walk is skipped on repeated coordinates */
+    whaleui_layout_node_t* hit = nullptr;
+    if (r->wheel_node && r->wheel_x == x && r->wheel_y == y) {
+        hit = r->wheel_node;
+    } else {
+        hit = hit_test(r, r->tree->root, x, y, 0);
+        r->wheel_node = hit;
+        r->wheel_x = x;
+        r->wheel_y = y;
+    }
     /* nearest scrollable ancestor (the hit element itself included).
      * Text runs inherit their parent's overflow but are not scroll
      * containers: skip them so the walk reaches the actual box. */
@@ -3979,9 +3994,13 @@ static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
         return 0;
     }
     int max = 0;
-    whaleui_layout_node_t* n = find_node_by_el(r->tree->root, el);
-    if (n) {
-        max = n->scroll_max;
+    if (r->scroll_max_el == el) {
+        max = r->scroll_max_cache; /* wheel bursts hit the same element */
+    } else {
+        whaleui_layout_node_t* n = find_node_by_el(r->tree->root, el);
+        max = n ? n->scroll_max : 0;
+        r->scroll_max_el = el;
+        r->scroll_max_cache = max;
     }
     int& cur = r->scrolls[el];
     int nv = cur + delta;
@@ -4113,6 +4132,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->has_dirty = 0;
         r->bounds_valid = 0; /* subtree paint bounds are stale */
         r->drag_scroll_node = nullptr; /* layout nodes were recreated */
+        r->scroll_max_el = nullptr;    /* scroll_max may have changed */
+        r->wheel_node = nullptr;       /* hit cache is stale */
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles
          * and refresh the cascaded opacity (children inherit it) */
@@ -4300,9 +4321,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     }
     g_gpu = nullptr;
 
-    /* upload the text layer every frame (cleared to zero before painting;
-     * the compute pass composites it over the geometry) */
-    whaleui_gpu_text_layer(r->gpu, r->text_layer.data(), r->fb_w, r->fb_h);
+    /* upload the text layer (cleared to zero before painting; the compute
+     * pass composites it over the geometry). Dirty-rect repaints upload
+     * only the painted region - the rest of the layer is unchanged. */
+    if (partial) {
+        whaleui_gpu_text_layer(r->gpu, r->text_layer.data(), r->fb_w, r->fb_h,
+                               strip.x, strip.y, strip.w, strip.h);
+    } else {
+        whaleui_gpu_text_layer(r->gpu, r->text_layer.data(), r->fb_w, r->fb_h,
+                               0, 0, r->fb_w, r->fb_h);
+    }
 
     /* present: one batched render pass into the offscreen target, then a
      * single blit to the swapchain - no per-element GPU round-trips */

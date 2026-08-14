@@ -101,6 +101,15 @@ struct whaleui_render
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);
     void* scroll_ud;
+    /* cached scroll_max for the last wheel-scrolled element (find_node_by_el
+     * is a full-tree walk; wheel events arrive in bursts) */
+    struct lxb_dom_element* scroll_max_el;
+    int scroll_max_cache;
+    /* last wheel-hit layout node + pointer position: wheel bursts without
+     * mouse movement keep scrolling the same container, so hit-testing is
+     * skipped on repeated coordinates (invalidated on layout rebuild) */
+    struct whaleui_layout_node* wheel_node;
+    int wheel_x, wheel_y;
     /* scrollbar being dragged (element owning the scrollable box) */
     struct lxb_dom_element* drag_scroll_el;
     /* cached layout node of drag_scroll_el (drag frames do not rebuild the
