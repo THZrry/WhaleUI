@@ -5,6 +5,7 @@
 
 #include "font/font.h"
 #include "fs/fs.h"
+#include "platform/platform.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -137,4 +138,50 @@ extern "C" const char* whaleui_font_list(void)
         }
     }
     return buf;
+}
+
+extern "C" int whaleui_font_register_system_defaults(void)
+{
+    /* candidate files (lowercased base names) tried in order; the first that
+     * loads becomes the fallback chain for CJK + emoji on Windows. */
+    static const char* kFiles[] = {
+        "segoeui.ttf",   /* Segoe UI */
+        "seguiemj.ttf",  /* Segoe UI Emoji */
+        "msyh.ttc",      /* Microsoft YaHei */
+        "simhei.ttf",    /* SimHei */
+        "simsun.ttc",    /* SimSun */
+        "arial.ttf",     /* Arial */
+    };
+    const char* dirs[4];
+    int ndirs = whaleui_platform_system_font_dirs(dirs, 4);
+    int added = 0;
+    for (int d = 0; d < ndirs && added < 6; ++d) {
+        for (size_t i = 0; i < sizeof(kFiles) / sizeof(kFiles[0]); ++i) {
+            if (added >= 6) {
+                break;
+            }
+            char path[1024];
+            std::snprintf(path, sizeof(path), "%s/%s", dirs[d], kFiles[i]);
+            /* skip if this family is already registered */
+            whaleui_font_registry* reg = registry();
+            bool known = false;
+            for (size_t j = 0; j < reg->count; ++j) {
+                const char* fam = reg->fonts[j].family;
+                size_t blen = std::strlen(kFiles[i]);
+                const char* dot = std::strrchr(fam, '.');
+                size_t flen = dot ? static_cast<size_t>(dot - fam) : std::strlen(fam);
+                if (flen >= blen - 4 && std::strncmp(fam, kFiles[i], flen) == 0) {
+                    known = true;
+                    break;
+                }
+            }
+            if (known) {
+                continue;
+            }
+            if (whaleui_font_register(path) != nullptr) {
+                added++;
+            }
+        }
+    }
+    return added;
 }

@@ -33,6 +33,11 @@ struct whaleui_font_registry
 
 whaleui_font_registry* whaleui_font_registry_get(void);
 
+/* Register the platform's common UI fonts (Segoe UI, Segoe UI Emoji, YaHei,
+ * SimHei, SimSun, Arial...) so text rendering can fall back across them.
+ * Idempotent. Returns the number of fonts newly registered. */
+int whaleui_font_register_system_defaults(void);
+
 #ifdef __cplusplus
 }
 #endif

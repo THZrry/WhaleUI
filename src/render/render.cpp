@@ -248,13 +248,17 @@ void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
 }
 
 void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
-                   const SDL_Surface* surf, int dx, int dy, const Clip* clip)
+                   const SDL_Surface* surf, int dx, int dy, const Clip* clip,
+                   const unsigned int* tint)
 {
     if (!surf || !surf->pixels) {
         return;
     }
     const unsigned char* src = static_cast<const unsigned char*>(surf->pixels);
     int pitch = surf->pitch;
+    unsigned int tr = tint ? (*tint >> 16) & 0xFF : 0;
+    unsigned int tg = tint ? (*tint >> 8) & 0xFF : 0;
+    unsigned int tb = tint ? *tint & 0xFF : 0;
     for (int y = 0; y < surf->h; ++y) {
         int ty = dy + y;
         if (ty < 0 || ty >= fbh) {
@@ -276,15 +280,17 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
             if (a == 0) {
                 continue;
             }
+            unsigned int sr = tint ? tr : s[0];
+            unsigned int sg = tint ? tg : s[1];
+            unsigned int sb = tint ? tb : s[2];
             unsigned int& d = fb[static_cast<size_t>(ty) * fbw + tx];
             unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
             if (a == 255) {
-                d = 0xFF000000 | (static_cast<unsigned>(s[0]) << 16) |
-                    (static_cast<unsigned>(s[1]) << 8) | s[2];
+                d = 0xFF000000 | (sr << 16) | (sg << 8) | sb;
             } else {
-                unsigned int nr = (s[0] * a + dr * (255 - a)) / 255;
-                unsigned int ng = (s[1] * a + dg * (255 - a)) / 255;
-                unsigned int nb = (s[2] * a + db * (255 - a)) / 255;
+                unsigned int nr = (sr * a + dr * (255 - a)) / 255;
+                unsigned int ng = (sg * a + dg * (255 - a)) / 255;
+                unsigned int nb = (sb * a + db * (255 - a)) / 255;
                 d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
             }
         }
@@ -361,6 +367,119 @@ namespace {
 /* --- fonts --- */
 
 #ifdef WHALEUI_BUILD_FULL
+
+/* split a font-family value ("Segoe UI, \"MS YaHei\", sans-serif") into a
+ * list of family names (quotes and whitespace stripped) */
+std::vector<std::string> split_families(const std::string& s)
+{
+    std::vector<std::string> out;
+    const char* p = s.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* start = p;
+        bool quoted = *p == '"' || *p == '\'';
+        if (quoted) {
+            ++start;
+            ++p;
+            while (*p && *p != '"' && *p != '\'') {
+                ++p;
+            }
+            out.emplace_back(start, static_cast<size_t>(p - start));
+            if (*p) {
+                ++p;
+            }
+            continue;
+        }
+        while (*p && *p != ',') {
+            ++p;
+        }
+        std::string fam(start, static_cast<size_t>(p - start));
+        size_t b = fam.find_first_not_of(" \t");
+        size_t e = fam.find_last_not_of(" \t");
+        if (b != std::string::npos) {
+            out.push_back(fam.substr(b, e - b + 1));
+        }
+    }
+    return out;
+}
+
+/* open a font for a family (no fallback chain); "" or generic families pick
+ * the default font */
+TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family, int size,
+                           bool bold, bool use_cache)
+{
+    if (size <= 0) {
+        size = 16;
+    }
+    std::string key = family + "|" + std::to_string(size) + "|" + (bold ? "b" : "n");
+    if (use_cache) {
+        for (auto& f : r->fonts) {
+            if (f.first == key) {
+                return f.second;
+            }
+        }
+    }
+    /* find the font file in the registry */
+    const unsigned char* data = nullptr;
+    size_t len = 0;
+    bool generic = family == "sans-serif" || family == "serif" || family == "monospace";
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    if (!family.empty() && !generic) {
+        for (size_t i = 0; i < reg->count; ++i) {
+            if (std::strcmp(reg->fonts[i].family, family.c_str()) == 0) {
+                data = reg->fonts[i].data;
+                len = reg->fonts[i].len;
+                break;
+            }
+        }
+    } else if (reg->count > 0) {
+        data = reg->fonts[0].data;
+        len = reg->fonts[0].len;
+    }
+    TTF_Font* font = nullptr;
+    if (data && len) {
+        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(data), len);
+        if (io) {
+            font = TTF_OpenFontIO(io, true, static_cast<float>(size));
+        }
+    }
+    if (font && bold) {
+        TTF_SetFontStyle(font, TTF_STYLE_BOLD);
+    }
+    if (use_cache && font) {
+        r->fonts.emplace_back(key, font);
+    }
+    return font;
+}
+
+/* attach every other registered font as a fallback (same size) so glyphs
+ * missing from `font` (CJK, emoji, ...) resolve through the library */
+void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, bool bold)
+{
+    if (!font) {
+        return;
+    }
+    if (size <= 0) {
+        size = 16;
+    }
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    for (size_t i = 0; i < reg->count; ++i) {
+        TTF_Font* fb = render_open_font(r, reg->fonts[i].family, size, bold, true);
+        if (fb && fb != font) {
+            TTF_AddFallbackFont(font, fb);
+        }
+    }
+    /* the default font itself is a last-resort fallback */
+    if (r->font_default && r->font_default != font) {
+        TTF_AddFallbackFont(font, r->font_default);
+    }
+}
+
 TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size,
                           bool bold)
 {
@@ -373,41 +492,29 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
             return f.second;
         }
     }
-    /* find the font file in the registry */
-    const unsigned char* data = nullptr;
-    size_t len = 0;
-    whaleui_font_registry* reg = whaleui_font_registry_get();
-    for (size_t i = 0; i < reg->count; ++i) {
-        const char* fam = reg->fonts[i].family;
-        if (family.empty() || std::strcmp(fam, family.c_str()) == 0 ||
-            (family == "sans-serif" || family == "serif" || family == "monospace")) {
-            data = reg->fonts[i].data;
-            len = reg->fonts[i].len;
+    /* try each family in the CSS list, in order */
+    std::vector<std::string> fams = split_families(family);
+    if (fams.empty()) {
+        fams.push_back("");
+    }
+    TTF_Font* font = nullptr;
+    for (const std::string& fam : fams) {
+        font = render_open_font(r, fam, size, bold, false);
+        if (font) {
             break;
         }
     }
-    TTF_Font* font = nullptr;
-    if (data && len) {
-        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(data), len);
-        if (io) {
-            font = TTF_OpenFontIO(io, true, static_cast<float>(size));
-        }
-    }
-    if (!font && !family.empty() && family != "sans-serif" && family != "serif" &&
-        family != "monospace") {
-        /* fall back to default font */
-        return render_get_font(r, "", size, bold);
-    }
     if (!font) {
+        /* nothing matched: use the default font */
         if (bold && r->font_default) {
             TTF_SetFontStyle(r->font_default, TTF_STYLE_BOLD);
         }
-        return r->font_default ? r->font_default : nullptr;
+        font = r->font_default;
     }
-    if (bold) {
-        TTF_SetFontStyle(font, TTF_STYLE_BOLD);
+    if (font) {
+        render_build_fallback(r, font, size, bold);
+        r->fonts.emplace_back(key, font);
     }
-    r->fonts.emplace_back(key, font);
     return font;
 }
 #else /* !WHALEUI_BUILD_FULL: text rendering needs SDL3_ttf (full only).
@@ -485,31 +592,43 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     if (!font) {
         return;
     }
-    SDL_Color fg = {
-        static_cast<Uint8>((color >> 16) & 0xFF),
-        static_cast<Uint8>((color >> 8) & 0xFF),
-        static_cast<Uint8>(color & 0xFF),
-        static_cast<Uint8>((color >> 24) & 0xFF)
-    };
-    SDL_Surface* surf = TTF_RenderText_Blended(font, n->text.c_str(), n->text.size(), fg);
-    if (!surf) {
+    /* TTF_Text honors the fallback chain (CJK/emoji glyphs) */
+    TTF_TextEngine* engine = r->text_engine;
+    if (!engine) {
+        engine = TTF_CreateSurfaceTextEngine();
+        r->text_engine = engine;
+    }
+    if (!engine) {
         return;
     }
-    SDL_Surface* conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGBA8888);
-    if (conv) {
-        /* text-align within the box */
-        std::string ta = sget(n->style, "text-align");
-        int tx = n->border.x;
-        if (ta == "center") {
-            tx = n->border.x + (n->border.w - conv->w) / 2;
-        } else if (ta == "right") {
-            tx = n->border.x + n->border.w - conv->w;
-        }
-        int ty = n->border.y + (n->border.h - conv->h) / 2;
-        blend_surface(r->pixels, r->width, r->height, conv, tx, ty, clip);
-        SDL_DestroySurface(conv);
+    TTF_Text* t = TTF_CreateText(engine, font, n->text.c_str(), n->text.size());
+    if (!t) {
+        return;
     }
-    SDL_DestroySurface(surf);
+    /* NOTE: TTF_SetTextColor (and Float) on the 3.2.2 prebuilt break
+     * TTF_DrawSurfaceText (draws nothing, no error). Instead we render with
+     * the default color and tint during blending. */
+    int tw = 0, th = 0;
+    TTF_GetTextSize(t, &tw, &th);
+    if (tw > 0 && th > 0) {
+        SDL_Surface* surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
+        if (surf) {
+            SDL_FillSurfaceRect(surf, nullptr, 0);
+            TTF_DrawSurfaceText(t, 0, 0, surf);
+            /* text-align within the box */
+            std::string ta = sget(n->style, "text-align");
+            int tx = n->border.x;
+            if (ta == "center") {
+                tx = n->border.x + (n->border.w - tw) / 2;
+            } else if (ta == "right") {
+                tx = n->border.x + n->border.w - tw;
+            }
+            int ty = n->border.y + (n->border.h - th) / 2;
+            blend_surface(r->pixels, r->width, r->height, surf, tx, ty, clip, &color);
+            SDL_DestroySurface(surf);
+        }
+    }
+    TTF_DestroyText(t);
 #endif /* WHALEUI_BUILD_FULL */
 }
 
@@ -642,14 +761,19 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
         return nullptr;
     }
 
-    /* default font: first registered font, else system fallback */
+    /* default font: register the platform UI fonts (CJK/emoji fallback
+     * chain), then open the first as default and chain fallbacks */
 #ifdef WHALEUI_BUILD_FULL
+    whaleui_font_register_system_defaults();
     whaleui_font_registry* reg = whaleui_font_registry_get();
     if (reg->count > 0) {
         SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(reg->fonts[0].data),
                                          reg->fonts[0].len);
         if (io) {
             r->font_default = TTF_OpenFontIO(io, true, 16.0f);
+            if (r->font_default) {
+                render_build_fallback(r, r->font_default, 16, false);
+            }
         }
     }
 #endif
@@ -671,6 +795,9 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
         TTF_CloseFont(f.second);
     }
     TTF_CloseFont(r->font_default);
+    if (r->text_engine) {
+        TTF_DestroySurfaceTextEngine(r->text_engine);
+    }
 #endif
     SDL_ReleaseGPUTexture(r->device, r->offscreen);
     SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);

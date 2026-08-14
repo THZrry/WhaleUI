@@ -54,6 +54,7 @@ backdrop-filter, clip-path, 媒体查询的其余条件
 ## 已知限制
 
 - **文本换行**:布局阶段按字符数近似文本宽度,实际度量在渲染时完成;长文本可能溢出盒子,`overflow` 裁剪尚未实现。
+- **文本渲染**:SDL3_ttf 的 `TTF_Text` API(surface engine),自动注册系统 UI 字体(Segoe UI / Segoe UI Emoji / Microsoft YaHei / SimHei / SimSun / Arial)并按注册顺序建立 fallback 链——缺字形时(CJK、emoji)自动回退到后续字体。注意:SDL3_ttf 3.2.2 的 `TTF_SetTextColor` 会使 `TTF_DrawSurfaceText` 静默不绘制,因此文字颜色改为渲染后 tint 混合。
 - **lite/minimal 文本渲染**:SDL3_ttf 仅随 `full` 目标;lite/minimal 的文本绘制(stb_font)待实现。
 - **font-weight 粗体**:未做字形合成,`strong`/`b` 与普通文本同字形。
 - **线程模型**:单线程渲染,`whaleui_app_run` 阻塞;多线程/异步流程留待后续。

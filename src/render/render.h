@@ -23,6 +23,7 @@ typedef struct SDL_GPUDevice SDL_GPUDevice;
 typedef struct SDL_GPUTexture SDL_GPUTexture;
 typedef struct SDL_GPUTransferBuffer SDL_GPUTransferBuffer;
 typedef struct TTF_Font TTF_Font;
+typedef struct TTF_TextEngine TTF_TextEngine;
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +53,7 @@ struct whaleui_render
     /* font cache: "family|size" -> TTF_Font */
     std::vector<std::pair<std::string, TTF_Font*>> fonts;
     TTF_Font* font_default;
+    TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
 
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
