@@ -112,7 +112,7 @@ int main(void)
         /* locate the select box via a fresh layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         whaleui_layout_node_t* sel = nullptr;
         for (auto& n : t->arena) {
             if (n.visible && n.el) {
@@ -156,7 +156,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* inp = nullptr;
         for (auto& n : t->arena) {
@@ -215,7 +215,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* p = nullptr;
         whaleui_layout_node_t* tr = nullptr;
@@ -274,7 +274,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* ta = nullptr;
         for (auto& n : t->arena) {
@@ -342,7 +342,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* sc = nullptr;
         for (auto& n : t->arena) {
@@ -417,7 +417,7 @@ int main(void)
          * fall through to the page */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* tiny = nullptr;
         for (auto& n : t->arena) {
@@ -477,7 +477,7 @@ int main(void)
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         /* the three <p> text runs, in document order */
         whaleui_layout_node_t* runs[3] = {nullptr, nullptr, nullptr};

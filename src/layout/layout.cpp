@@ -9,6 +9,8 @@
 
 #include "layout/layout.h"
 
+#include "animate/animate.h"
+
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
 
@@ -214,6 +216,7 @@ struct Builder
     std::map<std::string, std::string> vars;
     whaleui_style_state st;
     const std::map<lxb_dom_element*, int>* scrolls;
+    whaleui_anim_t* anim;
 
     whaleui_layout_node_t* new_node()
     {
@@ -248,6 +251,12 @@ struct Builder
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
         n->style = whaleui_style_compute(el, rules, rule_count, vars, &st);
+
+        /* animations/transitions interpolate on top of the computed style,
+         * so layout (opacity, width, ...) and paint (colors) see them */
+        if (anim) {
+            whaleui_anim_apply(anim, el, n->style, whaleui_anim_now());
+        }
 
         /* inherit font-size / color / font-family from parent */
         if (parent) {
@@ -725,7 +734,8 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     const std::map<std::string, std::string>* theme_vars,
     int viewport_w, int viewport_h,
     const whaleui_style_state* st,
-    const std::map<lxb_dom_element*, int>* scrolls)
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -746,6 +756,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.rule_count = count;
     b.st = st ? *st : whaleui_style_state();
     b.scrolls = scrolls;
+    b.anim = anim;
     if (theme_vars) {
         b.vars = *theme_vars;
     }

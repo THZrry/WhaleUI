@@ -13,7 +13,7 @@ whaleui_layout_tree_t* do_layout(const char* html, int w, int h)
 {
     whaleui_dom_document_t* doc = whaleui_dom_parse_html(html, std::strlen(html));
     assert(doc != nullptr);
-    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr, nullptr);
+    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr, nullptr, nullptr);
 }
 
 /* find first element node with the given tag, depth-first */
@@ -214,7 +214,7 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         whaleui_layout_node_t* sc = find_tag(t->root, "div");
         assert(sc != nullptr);
@@ -227,7 +227,7 @@ int main(void)
 
         scrolls[sc->el] = 50;
         whaleui_layout_tree_t* t2 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr);
         assert(t2 != nullptr);
         whaleui_layout_node_t* sc2 = find_tag(t2->root, "div");
         assert(sc2 != nullptr);
@@ -237,7 +237,7 @@ int main(void)
         /* scrolling the max amount reaches the content end */
         scrolls[sc2->el] = sc2->scroll_max;
         whaleui_layout_tree_t* t3 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls);
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, &scrolls, nullptr);
         assert(t3 != nullptr);
         whaleui_layout_node_t* sc3 = find_tag(t3->root, "div");
         assert(sc3 != nullptr);
@@ -271,7 +271,7 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t0 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
         assert(t0 != nullptr);
         whaleui_layout_node_t* sc = find_tag(t0->root, "div");
         assert(sc != nullptr);
@@ -283,11 +283,11 @@ int main(void)
 
         /* grab the element pointer from a throwaway layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         scrolls[find_tag(t->root, "div")->el] = 30;
         whaleui_layout_tree_t* t1 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
         assert(t1 != nullptr);
         whaleui_layout_node_t* sc1 = find_tag(t1->root, "div");
         assert(sc1 != nullptr);
@@ -324,19 +324,19 @@ int main(void)
         std::map<lxb_dom_element*, int> scrolls;
 
         whaleui_layout_tree_t* t = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
         assert(t != nullptr);
         assert(t->root->scroll_max == 500); /* 800 content - 300 viewport */
         whaleui_layout_destroy(t);
 
         /* scrolling the page shifts the root's children up */
         whaleui_layout_tree_t* t0 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
         assert(t0 != nullptr);
         scrolls.clear();
         scrolls[t0->root->el] = 200;
         whaleui_layout_tree_t* t1 = whaleui_layout_compute(
-            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls);
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
         assert(t1 != nullptr);
         assert(t1->root->scroll_max == 500);
         whaleui_layout_node_t* d = find_tag(t1->root, "div");

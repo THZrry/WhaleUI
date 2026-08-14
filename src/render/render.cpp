@@ -6,6 +6,7 @@
 #include "render/render.h"
 #include "render/fsr_shaders.h"
 #include "render/fsr_dxil.h"
+#include "animate/animate.h"
 #include "font/font.h"
 #include "style/style.h"
 
@@ -2148,131 +2149,6 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
 }
 
-/* parse "background-color 100ms" / "all 0.1s" -> duration in ms (0 = none) */
-uint32_t transition_ms(const WhaleUIComputedStyle& s)
-{
-    std::string v = sget(s, "transition");
-    if (v.empty() || v == "none") {
-        return 0;
-    }
-    const char* p = v.c_str();
-    while (*p) {
-        if ((*p >= '0' && *p <= '9') || *p == '.') {
-            float num = static_cast<float>(std::atof(p));
-            const char* q = p;
-            while ((*q >= '0' && *q <= '9') || *q == '.') {
-                ++q;
-            }
-            while (*q == ' ' || *q == '\t') {
-                ++q;
-            }
-            if (*q == 'm' && q[1] == 's') {
-                return static_cast<uint32_t>(num);
-            }
-            if (*q == 's') {
-                return static_cast<uint32_t>(num * 1000.0f);
-            }
-            p = q;
-        } else {
-            ++p;
-        }
-    }
-    return 0;
-}
-
-unsigned int lerp_color(unsigned int from, unsigned int to, float t)
-{
-    auto ch = [t](unsigned int f, unsigned int g) -> unsigned int {
-        return static_cast<unsigned int>(f + (static_cast<float>(g) - f) * t + 0.5f);
-    };
-    unsigned int fr = (from >> 16) & 0xFF, fg = (from >> 8) & 0xFF,
-                 fb = from & 0xFF, fa = (from >> 24) & 0xFF;
-    unsigned int tr = (to >> 16) & 0xFF, tg = (to >> 8) & 0xFF,
-                 tb = to & 0xFF, ta = (to >> 24) & 0xFF;
-    return (ch(fa, ta) << 24) | (ch(fr, tr) << 16) | (ch(fg, tg) << 8) |
-           ch(fb, tb);
-}
-
-/* interpolated value at `now`; updates anim_last so the next frame's change
- * detection keeps working */
-unsigned int current_anim_color(whaleui_render_t* r,
-                                whaleui_render_t::ColorAnim& a,
-                                const std::string& key);
-
-/* resolve the drawn color for (el, prop): snaps unless a transition is
- * configured, in which case it starts/advances a ColorAnim and reports the
- * interpolated value. `running` is set while an animation is active. */
-unsigned int anim_color(whaleui_render_t* r, whaleui_layout_node_t* n,
-                        const char* prop, unsigned int target, bool* running)
-{
-    *running = false;
-    if (!n->el) {
-        return target;
-    }
-    std::string key = std::string(prop) + "@" +
-                      std::to_string(reinterpret_cast<size_t>(n->el));
-    const uint64_t now = SDL_GetTicks();
-    auto it = r->anim_last.find(key);
-    if (it == r->anim_last.end()) {
-        r->anim_last[key] = target;
-        return target;
-    }
-    if (it->second == target) {
-        return target;
-    }
-    /* an animation is only continued, never restarted mid-flight */
-    whaleui_render_t::ColorAnim* active = nullptr;
-    for (auto& a : r->anims) {
-        if (a.el == n->el && a.prop == prop) {
-            active = &a;
-            break;
-        }
-    }
-    const uint32_t dur = transition_ms(n->style);
-    if (!active && dur > 0) {
-        whaleui_render_t::ColorAnim a;
-        a.el = n->el;
-        a.prop = prop;
-        a.from = it->second;
-        a.to = target;
-        a.start = now;
-        a.dur = dur;
-        r->anims.push_back(a);
-        active = &r->anims.back();
-    } else if (!active) {
-        it->second = target; /* no transition: snap */
-        return target;
-    }
-    if (active->to != target) {
-        /* target changed mid-flight: retarget from the current value */
-        float p = static_cast<float>(now - active->start) /
-                  static_cast<float>(active->dur);
-        if (p > 1.0f) {
-            p = 1.0f;
-        }
-        active->from = lerp_color(active->from, active->to, p);
-        active->to = target;
-        active->start = now;
-    }
-    *running = true;
-    return current_anim_color(r, *active, key);
-}
-
-/* interpolated value at `now`; updates anim_last so the next frame's change
- * detection keeps working */
-unsigned int current_anim_color(whaleui_render_t* r,
-                                whaleui_render_t::ColorAnim& a,
-                                const std::string& key)
-{
-    const uint64_t now = SDL_GetTicks();
-    float p = static_cast<float>(now - a.start) / static_cast<float>(a.dur);
-    if (p >= 1.0f) {
-        p = 1.0f;
-    }
-    unsigned int v = lerp_color(a.from, a.to, p);
-    r->anim_last[key] = v;
-    return v;
-}
 
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
                 int& seq, int sel_lo, int sel_hi, const Clip* clip)
@@ -2315,8 +2191,6 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
         unsigned int a = (bg >> 24) & 0xFF;
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
         unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
-        bool running = false;
-        c = anim_color(r, n, "background-color", c, &running);
         int radius = 0;
         std::string br = sget(n->style, "border-radius");
         if (!br.empty()) {
@@ -2342,8 +2216,6 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
             unsigned int a = (bc >> 24) & 0xFF;
             unsigned int a8 = static_cast<unsigned>(a * n->opacity);
             unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
-            bool running = false;
-            c = anim_color(r, n, "border-color", c, &running);
             int radius = 0;
             std::string br2 = sget(n->style, "border-radius");
             if (!br2.empty()) {
@@ -2786,6 +2658,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_arrow = nullptr;
     r->cursor_text = nullptr;
     r->cursor_pointer = nullptr;
+    r->anim = whaleui_anim_create();
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
 
     /* GPU path: offscreen target + transfer buffer */
@@ -2840,6 +2713,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
         return;
     }
     whaleui_layout_destroy(r->tree);
+    whaleui_anim_destroy(r->anim);
     if (r->rules) {
         whaleui_css_rules_destroy(r->rules, r->rule_count);
     }
@@ -2931,6 +2805,10 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
     if (theme_vars) {
         r->theme_vars = *theme_vars;
     }
+    /* new stylesheet: drop stale animation state, point the engine at the
+     * fresh keyframes copy */
+    whaleui_anim_reset(r->anim);
+    whaleui_anim_set_keyframes(r->anim, &r->keyframes);
     r->has_dirty = 1;
 }
 
@@ -3446,10 +3324,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return -1;
     }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
-     * Repaint when the layout/state is dirty, a wheel scroll happened, a
-     * transition is running, or an editable caret is blinking. */
+     * Repaint when the layout/state is dirty, a wheel scroll happened, an
+     * animation/transition is running, or an editable caret is blinking. */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
-        r->anims.empty() && !r->edit_el) {
+        !whaleui_anim_active(r->anim) && !r->edit_el) {
         return 0;
     }
     r->scroll_dirty = 0;
@@ -3478,11 +3356,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         st.pressed = r->pressed_el;
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
                                          &r->theme_vars, r->fb_w, r->fb_h,
-                                         &st, &r->scrolls);
+                                         &st, &r->scrolls, r->anim);
         r->has_dirty = 0;
     }
     if (!r->tree) {
         return -2;
+    }
+    /* an animation started or is still running: keep repainting (the layout
+     * pass above advanced it; active is only true while it has somewhere
+     * left to go) */
+    if (whaleui_anim_active(r->anim)) {
+        r->has_dirty = 1;
     }
 
     /* paint */
@@ -3505,27 +3389,6 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             }
             paint_select_list(r, s, soff, &full);
         }
-    }
-
-    /* advance color transitions: keep repainting while any is running, then
-     * drop finished ones */
-    {
-        const uint64_t now = SDL_GetTicks();
-        bool any = false;
-        for (auto& a : r->anims) {
-            if (now < a.start + a.dur) {
-                any = true;
-            }
-        }
-        if (any) {
-            r->has_dirty = 1;
-        }
-        auto& an = r->anims;
-        an.erase(std::remove_if(an.begin(), an.end(),
-                                [now](const whaleui_render_t::ColorAnim& a) {
-                                    return now >= a.start + a.dur;
-                                }),
-                 an.end());
     }
 
     /* present: upload offscreen + blit to swapchain */

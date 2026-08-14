@@ -17,6 +17,8 @@
 
 /* lexbor element type */
 struct lxb_dom_element;
+/* animation engine (animate.h) */
+struct whaleui_anim;
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,7 +81,8 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               const std::map<std::string, std::string>* theme_vars,
                                               int viewport_w, int viewport_h,
                                               const whaleui_style_state* st,
-                                              const std::map<struct lxb_dom_element*, int>* scrolls);
+                                              const std::map<struct lxb_dom_element*, int>* scrolls,
+                                              struct whaleui_anim* anim);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
 #ifdef __cplusplus

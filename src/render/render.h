@@ -121,19 +121,10 @@ struct whaleui_render
     /* IME composition text (SDL_EVENT_TEXT_EDITING), drawn at the caret */
     std::string compose;
 
-    /* color transitions (CSS `transition` on color properties): one active
-     * animation per element+property, plus the last-drawn color used to
-     * detect changes and keep animating */
-    struct ColorAnim
-    {
-        struct lxb_dom_element* el;
-        std::string prop;
-        unsigned int from, to;
-        uint64_t start; /* SDL_GetTicks ms */
-        uint32_t dur;
-    };
-    std::vector<ColorAnim> anims;
-    std::map<std::string, unsigned int> anim_last;
+    /* CSS animation engine (animate.h): @keyframes + transition. Animations
+     * are interpolated into the computed styles during the layout pass;
+     * anim_active tells the frame loop to keep repainting. */
+    struct whaleui_anim* anim;
 
     /* FSR 1.0 (GPU compute upscale, shaders in fsr_shaders.h).
      * fsr_mode: 0 = auto (default; enable on 4K display or on battery,
