@@ -212,6 +212,45 @@ void sides(const std::string& v, int out[4], float base_px, float em_base, int d
     }
 }
 
+/* are the left/right margins set to "auto"? (margin: 0 auto -> centered) */
+void margin_auto_halves(const std::string& v, bool& left, bool& right)
+{
+    left = right = false;
+    if (v.empty()) {
+        return;
+    }
+    std::vector<std::string> toks;
+    const char* p = v.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        toks.push_back(std::string(s, static_cast<size_t>(p - s)));
+    }
+    size_t n = toks.size();
+    bool a0 = n > 0 && toks[0] == "auto";
+    bool a1 = n > 1 && toks[1] == "auto";
+    bool a2 = n > 2 && toks[2] == "auto";
+    bool a3 = n > 3 && toks[3] == "auto";
+    if (n == 1) {
+        left = right = a0;
+    } else if (n == 2) {
+        left = right = a1;
+    } else if (n == 3) {
+        left = right = a2;
+    } else if (n >= 4) {
+        left = a3;
+        right = a1;
+    }
+}
+
 int border_width(const std::string& v, float em_base)
 {
     if (v.empty() || v == "none" || v == "0") {
@@ -332,6 +371,37 @@ struct Builder
         return &tree->arena.back();
     }
 
+    /* content of a ::before(1)/::after(2) pseudo-element for el: first
+     * matching rule wins, surrounding quotes stripped */
+    void pseudo_content(lxb_dom_element* el, int which, std::string& out)
+    {
+        out.clear();
+        if (!el || !rules) {
+            return;
+        }
+        for (size_t i = 0; i < rule_count; ++i) {
+            int pseudo = 0;
+            if (!whaleui_style_match_pseudo(rules[i].selector, el, &st,
+                                            &pseudo)) {
+                continue;
+            }
+            if (pseudo != which) {
+                continue;
+            }
+            const char* c = whaleui_css_get_property(&rules[i], "content");
+            if (!c || !*c || std::strcmp(c, "none") == 0) {
+                continue;
+            }
+            out = c;
+            if (out.size() >= 2 &&
+                ((out[0] == '\'' && out[out.size() - 1] == '\'') ||
+                 (out[0] == '"' && out[out.size() - 1] == '"'))) {
+                out = out.substr(1, out.size() - 2);
+            }
+            return;
+        }
+    }
+
     /* build node + children; returns the node (display:none still built) */
     whaleui_layout_node_t* build(lxb_dom_element* el, whaleui_layout_node_t* parent)
     {
@@ -407,6 +477,15 @@ struct Builder
 
         /* text run (if any text children) */
         std::string txt = collect_text(el);
+        /* ::before/::after pseudo-elements render inline with the element's
+         * own text. ponytail: per-pseudo styling (color/float) and
+         * placement as separate boxes are a later step. */
+        std::string pre, post;
+        pseudo_content(el, 1, pre);
+        pseudo_content(el, 2, post);
+        if (!pre.empty() || !post.empty()) {
+            txt = pre + txt + post;
+        }
         if (!txt.empty() && n->visible) {
             tree->text_arena.push_back(txt);
             whaleui_layout_node_t* t = new_node();
@@ -518,6 +597,9 @@ struct Builder
         int m[4], p[4];
         sides(get(n->style, "margin"), m, static_cast<float>(cw), em, 0);
         sides(get(n->style, "padding"), p, static_cast<float>(cw), em, 0);
+        /* margin: X auto centers a fixed-width block ("0 auto" -> centered) */
+        bool ml_auto = false, mr_auto = false;
+        margin_auto_halves(get(n->style, "margin"), ml_auto, mr_auto);
         static const char* kBorderWidth[] = {
             "border-top-width", "border-right-width",
             "border-bottom-width", "border-left-width",
@@ -598,6 +680,21 @@ struct Builder
         }
         if (bw < 0) {
             bw = 0;
+        }
+        /* auto horizontal margins center a fixed-width block in the
+         * available space ("margin: 0 auto" -> the page column stays
+         * centered when the window is resized) */
+        if ((ml_auto || mr_auto) && !w_auto && (pkind == 0 || pkind == 3)) {
+            int taken = bw + (ml_auto ? 0 : m[1]) + (mr_auto ? 0 : m[3]);
+            int free_w = avail_w - taken;
+            if (free_w < 0) {
+                free_w = 0;
+            }
+            if (ml_auto && mr_auto) {
+                x += free_w / 2;
+            } else if (ml_auto) {
+                x += free_w;
+            }
         }
         n->border.x = x + m[1];
         n->border.y = y + m[0];
@@ -946,7 +1043,34 @@ struct Builder
         float h = len_or_auto(get(k->style, "height"),
                               static_cast<float>(inner_w), em, &is_auto);
         if (is_auto) {
-            h = estimate_content_width(k, em);
+            /* estimate the height from wrapped text (like the text-run
+             * layout does): line count = chars / chars-per-line, NOT the
+             * text width - using the width made long paragraphs blow up */
+            float fs = len_px(get(k->style, "font-size"), 0, em);
+            if (fs <= 0) {
+                fs = 16;
+            }
+            size_t chars = 0;
+            for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
+                if (c->is_text) {
+                    chars += c->text.size();
+                }
+            }
+            if (chars > 0) {
+                int avg_w = static_cast<int>(fs * 0.5f);
+                if (avg_w < 1) {
+                    avg_w = 1;
+                }
+                int per_line = inner_w > 0 ? inner_w / avg_w : 0;
+                if (per_line < 1) {
+                    per_line = 1;
+                }
+                size_t lines = (chars + static_cast<size_t>(per_line) - 1) /
+                               static_cast<size_t>(per_line);
+                h = static_cast<float>(lines) * fs * 1.2f;
+            } else {
+                h = estimate_content_width(k, em);
+            }
         }
         int ih = static_cast<int>(h);
         return ih > 0 ? ih : 1;

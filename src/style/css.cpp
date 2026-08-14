@@ -294,13 +294,29 @@ void collect_rules(lxb_css_rule_t* rules, const char* css,
         if (r->type == LXB_CSS_RULE_LIST) {
             collect_rules(((lxb_css_rule_list_t*)r)->first, css, arr, count,
                           cap, kfs, kf_count, media);
-        } else if (r->type == LXB_CSS_RULE_STYLE) {
-            lxb_css_rule_style_t* st = (lxb_css_rule_style_t*)r;
+        } else if (r->type == LXB_CSS_RULE_STYLE ||
+                   r->type == LXB_CSS_RULE_BAD_STYLE) {
+            /* some valid-for-us rules parse as BAD_STYLE (e.g. ::after
+             * pseudo-element selectors); both carry prelude offsets +
+             * declarations */
+            size_t pb = 0, pe = 0;
+            lxb_css_rule_declaration_list_t* dl = nullptr;
+            if (r->type == LXB_CSS_RULE_STYLE) {
+                lxb_css_rule_style_t* st = (lxb_css_rule_style_t*)r;
+                pb = st->prelude_begin;
+                pe = st->prelude_end;
+                dl = st->declarations;
+            } else {
+                lxb_css_rule_bad_style_t* bd =
+                    (lxb_css_rule_bad_style_t*)r;
+                pb = bd->prelude_begin;
+                pe = bd->prelude_end;
+                dl = bd->declarations;
+            }
             whaleui_css_rule_t tmp;
             std::memset(&tmp, 0, sizeof(tmp));
-            collect_decls(st->declarations, css, &tmp);
-            std::string sel = css_slice(css, st->prelude_begin,
-                                        st->prelude_end);
+            collect_decls(dl, css, &tmp);
+            std::string sel = css_slice(css, pb, pe);
             emit_style_rule(&tmp, sel, media, arr, count, cap);
             rule_destroy(&tmp);
         } else if (r->type == LXB_CSS_RULE_AT_RULE) {

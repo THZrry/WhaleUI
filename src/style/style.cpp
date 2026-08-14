@@ -549,6 +549,39 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
     return 1;
 }
 
+extern "C" int whaleui_style_match_pseudo(const char* selector,
+                                          lxb_dom_element* el,
+                                          const whaleui_style_state* st,
+                                          int* pseudo)
+{
+    if (!selector || !el || !pseudo) {
+        return 0;
+    }
+    *pseudo = 0;
+    size_t len = std::strlen(selector);
+    const char* pe = nullptr;
+    int pv = 0;
+    if (len >= 7 && std::strcmp(selector + len - 7, "::after") == 0) {
+        pe = selector + len - 7;
+        pv = 2;
+    } else if (len >= 8 && std::strcmp(selector + len - 8, "::before") == 0) {
+        pe = selector + len - 8;
+        pv = 1;
+    }
+    if (!pe) {
+        return whaleui_style_match(selector, el, st);
+    }
+    if (pe == selector) {
+        return 0; /* "::after" alone */
+    }
+    std::string base(selector, static_cast<size_t>(pe - selector));
+    if (!whaleui_style_match(base.c_str(), el, st)) {
+        return 0;
+    }
+    *pseudo = pv;
+    return 1;
+}
+
 extern "C" int whaleui_style_media_ok(const char* media, int theme, int viewport_w)
 {
     if (!media || !*media) {

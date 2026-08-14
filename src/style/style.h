@@ -38,6 +38,12 @@ struct whaleui_style_state
 int whaleui_style_match(const char* selector, lxb_dom_element* el,
                         const whaleui_style_state* st);
 
+/* Like whaleui_style_match but recognizes a trailing "::before"/"::after"
+ * pseudo-element: the base selector must match el, and *pseudo is set to
+ * 1 (before) / 2 (after). Plain selectors return 1 with *pseudo = 0. */
+int whaleui_style_match_pseudo(const char* selector, lxb_dom_element* el,
+                               const whaleui_style_state* st, int* pseudo);
+
 /* Evaluate an @media condition against the current theme + viewport width.
  * Unsupported conditions evaluate to false (safe default). */
 int whaleui_style_media_ok(const char* media, int theme, int viewport_w);

@@ -458,6 +458,67 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* margin: 0 auto centers a fixed-width block in the viewport */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div style=\"width:200px;margin:0 auto;\"></div></body>",
+            57);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.x == 300); /* (800 - 200) / 2 */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* grid auto-height estimates wrapped text, not the text width */
+    {
+        std::string txt(200, 'a'); /* long paragraph */
+        std::string html = "<body><div style=\"display:grid;"
+                           "grid-template-columns:100px 1fr;width:400px;\">"
+                           "<p>" + txt + "</p></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html.c_str(), html.size());
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* p = find_tag(t->root, "p");
+        assert(p != nullptr);
+        /* 200 chars @ ~8px avg in a ~300px column -> ~6 lines, ~110px;
+         * using the text WIDTH as height would give 200*8 = 1600px */
+        assert(p->border.h < 400);
+        assert(p->border.h >= 60);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* ::after content is appended to the element's text run */
+    {
+        const char* css = "a::after { content: ' X'; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><a>click</a></body>", 24);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, &vars, 800, 600, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* a = find_tag(t->root, "a");
+        assert(a != nullptr);
+        whaleui_layout_node_t* run = a->first_child;
+        assert(run != nullptr && run->is_text);
+        assert(run->text == "click X");
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* position:fixed is viewport-relative and immune to ancestor scroll */
     {
         const char* html = "<body><div id=\"sc\" style=\"overflow:auto;"
