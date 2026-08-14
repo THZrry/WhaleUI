@@ -308,16 +308,16 @@ int main(void)
         /* scrolling must NOT rebuild the layout tree (perf: relayout is the
          * expensive part on big pages) */
         whaleui_layout_tree_t* tree_before = w->render->tree;
-        /* one notch (dy=+1) -> 40px, 40px per notch */
-        whaleui_render_handle_wheel(w->render, 150, 100, 1.0f);
+        /* wheel-down (dy=-1) reveals content below: scroll_y += 40 */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[w->render->tree->root->el] == 40);
         /* large pixel delta (touchpad) clamps at the max */
-        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
+        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] ==
                w->render->tree->root->scroll_max);
-        /* scrolling the other way clamps at 0 */
-        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
+        /* scrolling the other way (wheel-up) clamps at 0 */
+        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }
@@ -367,7 +367,7 @@ int main(void)
         /* wheel over the container scrolls it, without rebuilding the tree */
         whaleui_layout_tree_t* tree_before = w->render->tree;
         whaleui_render_handle_wheel(w->render, sc->border.x + 5,
-                                    sc->border.y + 5, 1.0f);
+                                    sc->border.y + 5, -1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[sc->el] > 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
@@ -375,8 +375,42 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
-    /* cross-element selection: dragging up (anchor below focus) selects
-     * between the endpoints only; a click in the middle selects nothing */
+    /* a non-overflowing overflow:auto box must NOT block page scrolling */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "noscroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div id=\"tiny\" style=\"overflow:auto;height:30px;\">"
+            "x</div><div style=\"height:800px;\"></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree->root->scroll_max > 0);
+        /* the tiny box cannot scroll itself (scroll_max==0): the wheel must
+         * fall through to the page */
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* tiny = nullptr;
+        for (auto& n : t->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 && std::memcmp(name, "div", 3) == 0) {
+                    tiny = &n;
+                    break;
+                }
+            }
+        }
+        assert(tiny != nullptr);
+        assert(tiny->scroll_max == 0);
+        whaleui_render_handle_wheel(w->render, tiny->border.x + 5,
+                                    tiny->border.y + 5, -1.0f);
+        assert(w->render->scrolls[w->render->tree->root->el] > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
     {
         whaleui_window_t* w = whaleui_window_create(app, "xsel", 300, 200);
         assert(w != nullptr);

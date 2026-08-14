@@ -3134,12 +3134,11 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             return;
         }
         int& cur = r->scrolls[sc->el];
-        /* Scroll direction verified on Windows with a real mouse: content
-         * follows dy (positive dy reveals content further down). SDL
-         * normalizes wheel signs across Windows/macOS/Linux, so the same
-         * logic applies on all three - revisit only if a platform reports
-         * the opposite sign in practice. */
-        int nv = cur + static_cast<int>(dpx);
+        /* Verified by simulating a real mouse wheel: SDL reports wheel-up
+         * as positive y, so wheel-down (dy<0) must INCREASE scroll_y to
+         * reveal content below (standard semantics, content opposite the
+         * wheel). */
+        int nv = cur - static_cast<int>(dpx);
         if (nv > sc->scroll_max) {
             nv = sc->scroll_max;
         }
@@ -3164,7 +3163,10 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             continue;
         }
         std::string ov = sget(n->style, "overflow");
-        if (ov == "auto" || ov == "scroll") {
+        /* only a box that can actually scroll consumes the wheel; a
+         * non-overflowing overflow:auto container must NOT block the page
+         * from scrolling */
+        if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
             do_scroll(n);
             return;
         }
