@@ -2052,6 +2052,11 @@ void expand_hl_rects(std::vector<TRect>& rects, int lh)
 }
 
 /* highlight the selected part of a text run (drawn before the glyphs) */
+/* text-selection highlight color: ::selection background if set, else the
+ * theme accent */
+unsigned int sel_hl_color(whaleui_render_t* r, whaleui_layout_node_t* n,
+                          unsigned int alpha);
+
 void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
                           int fs, const std::string& family, bool bold,
                           int off_x, int off_y, int seq, int sel_lo,
@@ -2069,12 +2074,27 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
     ty += off_y;
     std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b);
     expand_hl_rects(rects, text_line_h(r, fs, family, bold));
-    unsigned int hl = accent_hl(r, 0x3C);
+    unsigned int hl = sel_hl_color(r, n, 0x3C);
     for (size_t i = 0; i < rects.size(); ++i) {
         fill_rect(r->pixels, r->fb_w, r->fb_h,
                   tx + rects[i].x, ty + rects[i].y,
                   rects[i].w, rects[i].h, hl, clip);
     }
+}
+
+/* text-selection highlight color: ::selection background if set, else the
+ * theme accent */
+unsigned int sel_hl_color(whaleui_render_t* r, whaleui_layout_node_t* n,
+                          unsigned int alpha)
+{
+    std::string v = sget(n->style, "selection-bg");
+    if (!v.empty()) {
+        unsigned int c = 0;
+        if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+            return (alpha << 24) | (c & 0x00FFFFFF);
+        }
+    }
+    return accent_hl(r, alpha);
 }
 
 /* blinking caret at byte offset `off` (text-relative coordinates tx,ty) */
@@ -2158,7 +2178,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (sel_range_for(r, el, val.size(), &a, &b, -1, -1, -1)) {
             std::vector<TRect> rects = sel_rects(r, val, fs, family, bold, a, b);
             expand_hl_rects(rects, text_line_h(r, fs, family, bold));
-            unsigned int hl = accent_hl(r, 0x3C);
+            unsigned int hl = sel_hl_color(r, n, 0x3C);
             for (size_t i = 0; i < rects.size(); ++i) {
                 fill_rect(r->pixels, r->fb_w, r->fb_h,
                           tx + rects[i].x, ty + rects[i].y,

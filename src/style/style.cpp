@@ -783,6 +783,21 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     }
     /* expand shorthands the layout/render consume as longhands */
     expand_shorthands(out);
+    /* ::selection background (text-selection highlight color) */
+    if (out.find("selection-bg") == out.end()) {
+        for (size_t i = 0; i < count; ++i) {
+            const char* sel = rules[i].selector;
+            size_t n2 = sel ? std::strlen(sel) : 0;
+            if (n2 >= 11 &&
+                std::strcmp(sel + n2 - 11, "::selection") == 0) {
+                const char* bg = whaleui_css_get_property(&rules[i], "background");
+                if (bg && *bg) {
+                    out["selection-bg"] = bg;
+                }
+                break;
+            }
+        }
+    }
     return out;
 }
 

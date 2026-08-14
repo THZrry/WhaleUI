@@ -59,7 +59,7 @@ static const char* kHtml =
     "<option value=\"macos\">macOS</option>"
     "</select>"
     "</div>"
-    "<p class=\"muted\">下拉选择主题 · T 深浅色 · +/- 文字缩放 · ESC 退出</p>"
+    "<p class=\"muted\">下拉选择主题 · T 深浅�?· +/- 文字缩放 · ESC 退�?/p>"
 
     "<div class=\"row\">"
     "<div class=\"card anim-card\">"
@@ -75,8 +75,8 @@ static const char* kHtml =
     "<div class=\"anim-bar\" style=\"height:100%;border-radius:5px;"
     "background:var(--accent)\"></div>"
     "</div>"
-    "<p class=\"muted\" style=\"font-size:12px\">bar · width 往返(alternate);"
-    "hover 本卡片上浮(transition transform)</p>"
+    "<p class=\"muted\" style=\"font-size:12px\">bar · width 往�?alternate);"
+    "hover 本卡片上�?transition transform)</p>"
     "</div>"
     "</div>"
 
@@ -104,7 +104,7 @@ static const char* kHtml =
     "box-sizing:border-box\">多行文本&#10;支持 Enter 换行</textarea></p>"
     "<p style=\"margin:2px 0 6px\"><span contenteditable=\"true\" "
     "style=\"border:1px solid var(--border);border-radius:4px;padding:5px 10px;\">"
-    "contenteditable 可编辑</span></p>"
+    "contenteditable 可编�?/span></p>"
     "</div>"
     "<div class=\"card\" style=\"flex:1\">"
     "<h2>Scroll</h2>"
@@ -121,9 +121,9 @@ static const char* kHtml =
     "<div class=\"row\">"
     "<div class=\"card\">"
     "<h2>Theme vars</h2>"
-    "<p>--card / --border / --muted / --accent 随主题与深浅色切换,"
-    "对未自定义样式的标签同样生效。</p>"
-    "<p class=\"theme-note\">深色主题下此文字变亮蓝(@media prefers-color-scheme)。</p>"
+    "<p>--card / --border / --muted / --accent 随主题与深浅色切�?"
+    "对未自定义样式的标签同样生效�?/p>"
+    "<p class=\"theme-note\">深色主题下此文字变亮�?@media prefers-color-scheme)�?/p>"
     "</div>"
     "<div class=\"card\">"
     "<h2>Overflow</h2>"
@@ -166,6 +166,12 @@ static void on_key(whaleui_app_t* app, int keycode, int pressed, void* userdata)
             g_text_scale = 1.0f;
         }
         whaleui_app_set_text_scale(app, g_text_scale);
+    } else if (keycode == 'r') {
+        /* reduced-motion: pages without JS show their static content
+         * (reveal-on-scroll elements become visible) */
+        static int g_reduced = 0;
+        g_reduced = !g_reduced;
+        whaleui_app_set_reduced_motion(app, g_reduced);
     }
 }
 

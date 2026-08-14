@@ -260,6 +260,26 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* ::selection background surfaces in the computed style */
+    {
+        const char* css = "::selection { background: #ff0000; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p>hi</p></body>", 24);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* p = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "p"));
+        assert(p != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(p, rules, count, vars, nullptr);
+        assert(cs["selection-bg"] == "#ff0000");
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }
 
