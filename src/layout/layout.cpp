@@ -233,6 +233,9 @@ int display_kind(const std::string& d)
     if (d == "inline" || d == "inline-block") {
         return 2;
     }
+    if (d == "grid" || d == "inline-grid") {
+        return 4;
+    }
     return 3; /* block (default) */
 }
 
@@ -620,6 +623,8 @@ struct Builder
          * simplified: any positioned ancestor. */
         if (dk == 1) {
             layout_flex(n, inner_w, inner_h, font_px, kid_cursor);
+        } else if (dk == 4) {
+            layout_grid(n, inner_w, inner_h, font_px, kid_cursor);
         } else {
             layout_block(n, inner_w, inner_h, font_px, kid_cursor);
         }
@@ -851,6 +856,226 @@ struct Builder
                 }
             }
             kid_cursor = maxh;
+        }
+    }
+
+    /* --- CSS Grid subset ---
+     * grid-template-columns: px / fr / auto / repeat(N, ...) tracks;
+     * auto-placement fills rows; "grid-column: 1/-1" spans a full row.
+     * No explicit row tracks / named areas / dense packing (ponytail:
+     * add when a page needs them). */
+
+    struct GridTrack
+    {
+        float len; /* px or fr number */
+        int type;  /* 0=px, 1=fr, 2=auto */
+    };
+
+    void parse_grid_tracks(const std::string& v, std::vector<GridTrack>& out)
+    {
+        size_t rp = v.find("repeat(");
+        if (rp != std::string::npos) {
+            size_t close = v.find(')', rp);
+            if (close != std::string::npos) {
+                std::string pre = v.substr(0, rp);
+                std::string inner = v.substr(rp + 7, close - rp - 7);
+                std::string post = v.substr(close + 1);
+                parse_grid_tracks(pre, out);
+                size_t comma = inner.find(',');
+                if (comma != std::string::npos) {
+                    int count = std::atoi(inner.substr(0, comma).c_str());
+                    std::string tl = inner.substr(comma + 1);
+                    std::vector<GridTrack> sub;
+                    parse_grid_tracks(tl, sub);
+                    if (count < 0) {
+                        count = 0;
+                    }
+                    if (count > 64) {
+                        count = 64;
+                    }
+                    for (int i = 0; i < count; ++i) {
+                        for (size_t j = 0; j < sub.size(); ++j) {
+                            out.push_back(sub[j]);
+                        }
+                    }
+                }
+                parse_grid_tracks(post, out);
+                return;
+            }
+        }
+        const char* p = v.c_str();
+        while (*p) {
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (!*p) {
+                break;
+            }
+            const char* s = p;
+            while (*p && *p != ' ' && *p != '\t') {
+                ++p;
+            }
+            std::string tok(s, static_cast<size_t>(p - s));
+            char* end = nullptr;
+            float num = std::strtof(tok.c_str(), &end);
+            if (end != tok.c_str() && end[0] == 'f' && end[1] == 'r') {
+                out.push_back(GridTrack{num, 1});
+            } else if (end != tok.c_str()) {
+                out.push_back(GridTrack{len_px(tok, 0, 16), 0});
+            } else {
+                out.push_back(GridTrack{0, 2}); /* auto / unknown */
+            }
+        }
+    }
+
+    /* does the item span the whole row? (grid-column: 1/-1 or equivalents) */
+    static bool grid_span_row(const whaleui_layout_node_t* k)
+    {
+        std::string g = get(k->style, "grid-column");
+        return g == "1/-1" || g == "1 / -1" || g == "span all";
+    }
+
+    int est_node_height(whaleui_layout_node_t* k, int inner_w, float em)
+    {
+        bool is_auto = true;
+        float h = len_or_auto(get(k->style, "height"),
+                              static_cast<float>(inner_w), em, &is_auto);
+        if (is_auto) {
+            h = estimate_content_width(k, em);
+        }
+        int ih = static_cast<int>(h);
+        return ih > 0 ? ih : 1;
+    }
+
+    void layout_grid(whaleui_layout_node_t* n, int inner_w, int inner_h,
+                     int font_px, int& kid_cursor)
+    {
+        std::vector<whaleui_layout_node_t*> kids;
+        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+            if (c->visible) {
+                kids.push_back(c);
+            }
+        }
+        if (kids.empty()) {
+            return;
+        }
+        float em = font_px > 0 ? static_cast<float>(font_px) : 16;
+        std::vector<GridTrack> tracks;
+        parse_grid_tracks(get(n->style, "grid-template-columns"), tracks);
+        if (tracks.empty()) {
+            layout_block(n, inner_w, inner_h, font_px, kid_cursor);
+            return;
+        }
+        const size_t ncols = tracks.size();
+        std::string gapv = get(n->style, "gap");
+        if (gapv.empty()) {
+            gapv = get(n->style, "column-gap");
+        }
+        float col_gap = len_px(gapv, static_cast<float>(inner_w), em);
+        std::string rgv = get(n->style, "row-gap");
+        float row_gap = rgv.empty() ? col_gap
+                                    : len_px(rgv, static_cast<float>(inner_w), em);
+
+        /* column widths: fixed px / auto = content / fr = share of free */
+        std::vector<int> col_w(ncols, 0);
+        float fr_sum = 0;
+        for (size_t i = 0; i < ncols; ++i) {
+            if (tracks[i].type == 0) {
+                col_w[i] = static_cast<int>(tracks[i].len);
+            } else if (tracks[i].type == 1) {
+                fr_sum += tracks[i].len;
+            }
+        }
+        for (size_t i = 0; i < ncols; ++i) {
+            if (tracks[i].type == 2) {
+                int mx = 0;
+                for (size_t j = 0; j < kids.size(); ++j) {
+                    if (!grid_span_row(kids[j]) && j % ncols == i) {
+                        int w = static_cast<int>(estimate_content_width(kids[j], em));
+                        if (w > mx) {
+                            mx = w;
+                        }
+                    }
+                }
+                col_w[i] = mx;
+            }
+        }
+        float gap_sum = col_gap * (ncols > 1 ? static_cast<float>(ncols - 1) : 0);
+        float fixed_sum = 0;
+        for (size_t i = 0; i < ncols; ++i) {
+            fixed_sum += static_cast<float>(col_w[i]);
+        }
+        float free = static_cast<float>(inner_w) - fixed_sum - gap_sum;
+        if (free < 0) {
+            free = 0;
+        }
+        float fr_unit = fr_sum > 0 ? free / fr_sum : 0;
+        for (size_t i = 0; i < ncols; ++i) {
+            if (tracks[i].type == 1) {
+                col_w[i] = static_cast<int>(tracks[i].len * fr_unit);
+            }
+        }
+
+        /* auto-placement: fill rows left to right; whole-row items start a
+         * new row and occupy it alone */
+        std::vector<std::vector<whaleui_layout_node_t*> > rows;
+        rows.push_back(std::vector<whaleui_layout_node_t*>());
+        size_t col = 0;
+        for (size_t i = 0; i < kids.size(); ++i) {
+            if (grid_span_row(kids[i])) {
+                if (!rows.back().empty()) {
+                    rows.push_back(std::vector<whaleui_layout_node_t*>());
+                    col = 0;
+                }
+                rows.back().push_back(kids[i]);
+                rows.push_back(std::vector<whaleui_layout_node_t*>());
+                col = 0;
+                continue;
+            }
+            if (col >= ncols) {
+                rows.push_back(std::vector<whaleui_layout_node_t*>());
+                col = 0;
+            }
+            rows.back().push_back(kids[i]);
+            ++col;
+        }
+        if (rows.back().empty()) {
+            rows.pop_back();
+        }
+
+        /* row height = tallest item (estimated) */
+        std::vector<int> row_h(rows.size(), 0);
+        for (size_t r = 0; r < rows.size(); ++r) {
+            for (size_t i = 0; i < rows[r].size(); ++i) {
+                int h = est_node_height(rows[r][i], inner_w, em);
+                if (h > row_h[r]) {
+                    row_h[r] = h;
+                }
+            }
+            if (row_h[r] <= 0) {
+                row_h[r] = 1;
+            }
+        }
+
+        int y = n->content.y;
+        for (size_t r = 0; r < rows.size(); ++r) {
+            int x = n->content.x;
+            bool whole = rows[r].size() == 1 && grid_span_row(rows[r][0]);
+            for (size_t i = 0; i < rows[r].size(); ++i) {
+                whaleui_layout_node_t* k = rows[r][i];
+                int w = whole ? inner_w : col_w[i];
+                if (w < 0) {
+                    w = 0;
+                }
+                int cy = y;
+                layout(k, x, y, w, row_h[r], font_px, &cy);
+                x += w + static_cast<int>(col_gap);
+            }
+            y += row_h[r] + static_cast<int>(row_gap);
+        }
+        kid_cursor = y - n->content.y - static_cast<int>(row_gap);
+        if (kid_cursor < 0) {
+            kid_cursor = 0;
         }
     }
 };

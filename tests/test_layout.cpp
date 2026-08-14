@@ -249,6 +249,71 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* grid: fixed + fr tracks, gap, repeat(), whole-row span */
+    {
+        /* 300px container, columns "100px 1fr", gap 10 -> 100 + 190 */
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div style=\"display:grid;grid-template-columns:100px 1fr;"
+            "gap:10px;width:300px;\">"
+            "<div id=\"a\"></div><div id=\"b\"></div></div></body>",
+            119);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        assert(g->border.w == 300);
+        /* children of the grid: a at column 0, b at column 1 */
+        whaleui_layout_node_t* a2 = g->first_child;
+        assert(a2 != nullptr);
+        whaleui_layout_node_t* b2 = a2->next;
+        assert(b2 != nullptr);
+        assert(a2->border.w == 100);
+        assert(b2->border.x == g->content.x + 100 + 10);
+        assert(b2->border.w == 190); /* 300 - 100 - 10 gap */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+
+        /* repeat(3, 1fr) splits the space evenly, no gap */
+        doc = whaleui_dom_parse_html(
+            "<body><div style=\"display:grid;grid-template-columns:"
+            "repeat(3,1fr);width:300px;\">"
+            "<div></div><div></div><div></div></div></body>",
+            108);
+        assert(doc != nullptr);
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
+                                   nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        whaleui_layout_node_t* c0 = g->first_child;
+        assert(c0 != nullptr && c0->border.w == 100);
+        whaleui_layout_node_t* c1 = c0->next;
+        assert(c1 != nullptr && c1->border.x == g->content.x + 100);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+
+        /* grid-column: 1/-1 spans the whole row */
+        doc = whaleui_dom_parse_html(
+            "<body><div style=\"display:grid;grid-template-columns:1fr 1fr;"
+            "width:200px;\">"
+            "<div style=\"grid-column:1/-1\"></div>"
+            "<div></div><div></div></div></body>",
+            133);
+        assert(doc != nullptr);
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
+                                   nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        whaleui_layout_node_t* span = g->first_child;
+        assert(span != nullptr);
+        assert(span->border.w == 200); /* spans both columns */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* overflow:auto with a fixed height scrolls: children shift up by
      * scroll_y, scroll_max = content height - visible height */
     {
