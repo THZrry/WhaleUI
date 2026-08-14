@@ -536,15 +536,18 @@ struct Builder
             if (column) {
                 int c = n->content.y + static_cast<int>(pos);
                 layout(k, n->content.x, n->content.y, inner_w, sz, font_px, &c);
+                /* advance by the item's ACTUAL box (auto-height content grows
+                 * beyond the measured main size) */
+                pos = (k->border.y + k->border.h) - n->content.y + gap;
             } else {
                 int c = 0;
                 layout(k, n->content.x + static_cast<int>(pos), n->content.y,
                        sz, inner_h, font_px, &c);
+                pos = (k->border.x + k->border.w) - n->content.x + gap;
             }
             (void)align;
-            pos += sz + gap;
         }
-        kid_cursor = static_cast<int>(pos);
+        kid_cursor = static_cast<int>(pos - gap);
     }
 };
 

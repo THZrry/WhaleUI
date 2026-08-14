@@ -155,6 +155,28 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* flex column with auto-height items must not overlap (regression:
+     * items were placed by their measured 1px height, stacking on top) */
+    {
+        whaleui_layout_tree_t* t = do_layout(
+            "<div id=\"fc2\" style=\"display:flex;flex-direction:column;"
+            "gap:10px;width:200px;\">"
+            "<div class=\"a\"><p>one</p></div>"
+            "<div class=\"b\"><p>two</p></div></div>", 400, 300);
+        assert(t != nullptr);
+        whaleui_layout_node_t* fc = find_tag(t->root, "div");
+        /* first div = the flex container (find_tag returns it) */
+        assert(fc != nullptr);
+        whaleui_layout_node_t* a = fc->first_child;
+        assert(a != nullptr);
+        assert(a->border.h > 10); /* auto height from the <p> content */
+        whaleui_layout_node_t* b = a->next;
+        assert(b != nullptr);
+        /* b starts below a's bottom + gap */
+        assert(b->border.y >= a->border.y + a->border.h + 10);
+        whaleui_layout_destroy(t);
+    }
+
     /* opacity + z-index recorded */
     {
         whaleui_layout_tree_t* t = do_layout(
