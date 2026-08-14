@@ -646,5 +646,49 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* flex-wrap: overflowing items wrap to a new row */
+    {
+        const char* html = "<body><div style=\"display:flex;flex-wrap:wrap;"
+            "gap:8px;width:120px;\">"
+            "<div style=\"width:60px;height:20px;\"></div>"
+            "<div style=\"width:60px;height:20px;\"></div>"
+            "<div style=\"width:60px;height:20px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        /* three 60px items in a 120px container with 8px gap: 2 per row,
+         * the third wraps -> total height ~= 2 rows */
+        assert(g->border.h >= 44); /* 20 + 8 + 20 */
+        whaleui_layout_node_t* c2 = g->first_child->next->next;
+        assert(c2 != nullptr);
+        assert(c2->border.y > g->first_child->border.y + 10);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* line-height: 2.0 makes a single text line taller than 1.2 default */
+    {
+        const char* html = "<body><div style=\"line-height:2.0;\">"
+            "<span>text</span></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.h >= 30); /* 16px font × 2.0 = 32 */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }

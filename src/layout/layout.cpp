@@ -345,6 +345,27 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail)
     return lines;
 }
 
+/* line height in px from the style: number (× fs), px, em (× fs) or % */
+float line_height_px(const WhaleUIComputedStyle& s, float fs)
+{
+    float lh = fs * 1.2f;
+    std::string v = get(s, "line-height");
+    if (v.empty()) {
+        return lh;
+    }
+    if (v.find("px") != std::string::npos) {
+        return static_cast<float>(std::atof(v.c_str()));
+    }
+    if (v.find("em") != std::string::npos) {
+        return static_cast<float>(std::atof(v.c_str())) * fs;
+    }
+    if (v.find('%') != std::string::npos) {
+        return fs * static_cast<float>(std::atof(v.c_str())) / 100.0f;
+    }
+    float n = static_cast<float>(std::atof(v.c_str()));
+    return n > 0 ? fs * n : lh;
+}
+
 /* rough content width of a node: summed direct text runs + padding,
  * recursively including element children (nested flex rows, grid tracks)
  * so auto-width containers don't collapse to 1px. */
@@ -539,6 +560,14 @@ struct Builder
                 parent->style.find("font-family") != parent->style.end()) {
                 n->style["font-family"] = parent->style["font-family"];
             }
+            if (n->style.find("line-height") == n->style.end() &&
+                parent->style.find("line-height") != parent->style.end()) {
+                n->style["line-height"] = parent->style["line-height"];
+            }
+            if (n->style.find("letter-spacing") == n->style.end() &&
+                parent->style.find("letter-spacing") != parent->style.end()) {
+                n->style["letter-spacing"] = parent->style["letter-spacing"];
+            }
         }
 
         std::string disp = get(n->style, "display");
@@ -682,7 +711,9 @@ struct Builder
             }
             int bw2 = static_cast<int>(max_w);
             n->border.w = bw2 > avail ? avail : bw2;
-            n->border.h = static_cast<int>(fs * 1.2f) * static_cast<int>(lines);
+            /* line-height: number/px/em/% replaces the fixed 1.2 factor */
+            float lh = line_height_px(n->style, fs);
+            n->border.h = static_cast<int>(lh) * static_cast<int>(lines);
             n->content = n->border;
             *cursor_y += n->border.h;
             return;
@@ -1012,6 +1043,9 @@ struct Builder
         }
 
         float pos = lead;
+        bool flex_wrap = get(n->style, "flex-wrap") == "wrap";
+        float row_cursor = 0;
+        int row_h = 0;
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
             float grow = flex_grow(k->style);
@@ -1023,17 +1057,29 @@ struct Builder
                  * beyond the measured main size) */
                 pos = (k->border.y + k->border.h) - n->content.y + between;
             } else {
-                int c = n->content.y;
-                layout(k, n->content.x + static_cast<int>(pos), n->content.y,
+                /* flex-wrap: overflow moves to a new row below */
+                float row_y = n->content.y + static_cast<float>(row_cursor);
+                if (flex_wrap && pos > 0 && pos + sz > inner_w) {
+                    row_cursor += row_h + gap;
+                    pos = 0;
+                    row_h = 0;
+                    row_y = n->content.y + static_cast<float>(row_cursor);
+                }
+                int c = static_cast<int>(row_y);
+                layout(k, n->content.x + static_cast<int>(pos),
+                       static_cast<int>(row_y),
                        sz, inner_h, font_px, &c);
                 pos = (k->border.x + k->border.w) - n->content.x + between;
+                if (k->border.h > row_h) {
+                    row_h = k->border.h;
+                }
                 /* align-items: stretch (default) / center / flex-end */
                 if (align == "center") {
-                    int dy = (inner_h - k->border.h) / 2;
+                    int dy = (row_h - k->border.h) / 2;
                     k->border.y += dy;
                     k->content.y += dy; /* keep content box glued to border */
                 } else if (align == "flex-end" || align == "end") {
-                    int dy = inner_h - k->border.h;
+                    int dy = row_h - k->border.h;
                     k->border.y += dy;
                     k->content.y += dy; /* keep content box glued to border */
                 } else if (inner_h > 0) {
@@ -1044,6 +1090,9 @@ struct Builder
         }
         if (column) {
             kid_cursor = static_cast<int>(pos - between);
+        } else if (flex_wrap) {
+            /* wrap: total height = last row bottom */
+            kid_cursor = static_cast<int>(row_cursor + row_h);
         } else {
             /* row: the container height is the tallest item */
             int maxh = 0;
@@ -1155,7 +1204,7 @@ struct Builder
             }
             if (chars > 0) {
                 size_t lines = est_wrap_lines(all, fs, inner_w);
-                h = static_cast<float>(lines) * fs * 1.2f;
+                h = static_cast<float>(lines) * line_height_px(k->style, fs);
             } else {
                 /* no direct text: the height is the sum of the block-flow
                  * children (grid cells holding <b> + <span> rows etc.) */
