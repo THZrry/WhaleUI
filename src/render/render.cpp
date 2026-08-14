@@ -23,6 +23,7 @@
 #include <lexbor/dom/dom.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -127,6 +128,311 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
             unsigned int ng = (g * a + dg * (255 - a)) / 255;
             unsigned int nb = (b * a + db * (255 - a)) / 255;
             d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+        }
+    }
+}
+
+/* --- CSS gradients (linear/radial) --- */
+
+struct GradStop
+{
+    unsigned int c;
+    float pos; /* 0..1 */
+};
+
+struct Gradient
+{
+    int type;                  /* 0=linear, 1=radial */
+    float angle_deg;           /* linear direction */
+    float rx, ry;              /* radial radii (px) */
+    float cx, cy;              /* radial center (fraction of the box) */
+    std::vector<GradStop> stops;
+};
+
+/* split on top-level commas (function calls keep their own) */
+void split_grad_parts(const std::string& s, std::vector<std::string>& out)
+{
+    size_t depth = 0, start = 0;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        char c = i < s.size() ? s[i] : ',';
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            if (depth > 0) {
+                --depth;
+            }
+        } else if (c == ',' && depth == 0) {
+            std::string part = s.substr(start, i - start);
+            size_t b = part.find_first_not_of(" \t");
+            size_t e = part.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                out.push_back(part.substr(b, e - b + 1));
+            }
+            start = i + 1;
+        }
+    }
+}
+
+/* parse one gradient from a background value; returns 1 when found */
+int parse_gradient(const std::string& v, Gradient& out)
+{
+    size_t li = v.find("linear-gradient(");
+    size_t ri = v.find("radial-gradient(");
+    if (li == std::string::npos && ri == std::string::npos) {
+        return 0;
+    }
+    bool lin = li != std::string::npos &&
+               (ri == std::string::npos || li < ri);
+    size_t start = lin ? li : ri;
+    size_t open = start + (lin ? 16 : 17);
+    size_t depth = 1;
+    size_t end = std::string::npos;
+    for (size_t i = open; i < v.size(); ++i) {
+        if (v[i] == '(') {
+            ++depth;
+        } else if (v[i] == ')') {
+            if (--depth == 0) {
+                end = i;
+                break;
+            }
+        }
+    }
+    if (end == std::string::npos) {
+        return 0;
+    }
+    out = Gradient();
+    out.type = lin ? 0 : 1;
+    out.angle_deg = 180.0f; /* default: to bottom */
+    out.rx = 0;
+    out.ry = 0;
+    out.cx = 0.5f;
+    out.cy = 0.5f;
+    std::vector<std::string> parts;
+    split_grad_parts(v.substr(open, end - open), parts);
+    if (parts.empty()) {
+        return 0;
+    }
+    size_t first = 0;
+    if (!lin) {
+        /* radial first part: "1100px 560px at 72% -12%" / "circle 200px" */
+        const std::string& head = parts[0];
+        size_t at = head.find(" at ");
+        std::string size_s = at == std::string::npos ? head : head.substr(0, at);
+        std::string pos_s = at == std::string::npos ? std::string() : head.substr(at + 4);
+        if (!pos_s.empty()) {
+            float px = 0, py = 0;
+            if (std::sscanf(pos_s.c_str(), "%f%% %f%%", &px, &py) == 2) {
+                out.cx = px / 100.0f;
+                out.cy = py / 100.0f;
+            } else if (std::sscanf(pos_s.c_str(), "%fpx %fpx", &px, &py) == 2) {
+                out.cx = px;
+                out.cy = py;
+                out.cx += 100.0f; /* marker: absolute px center */
+            }
+        }
+        float rx = 0, ry = 0;
+        if (std::sscanf(size_s.c_str(), "%fpx %fpx", &rx, &ry) == 2) {
+            out.rx = rx;
+            out.ry = ry;
+        } else if (size_s.find("circle") != std::string::npos) {
+            const char* c = std::strchr(size_s.c_str(), ' ');
+            if (c) {
+                out.rx = out.ry = static_cast<float>(std::atof(c));
+            }
+        }
+        first = 1;
+    } else {
+        /* linear first part: "90deg" / "to right" */
+        const std::string& head = parts[0];
+        if (head.find("deg") != std::string::npos) {
+            out.angle_deg = static_cast<float>(std::atof(head.c_str()));
+        } else if (head == "to right") {
+            out.angle_deg = 90.0f;
+        } else if (head == "to left") {
+            out.angle_deg = 270.0f;
+        } else if (head == "to top") {
+            out.angle_deg = 0.0f;
+        } /* "to bottom" = default 180 */
+        first = 1;
+    }
+    /* stops: "color pos" / "color" */
+    std::vector<size_t> auto_pos;
+    for (size_t i = first; i < parts.size(); ++i) {
+        const std::string& p = parts[i];
+        size_t sp = std::string::npos;
+        for (size_t j = 1; j < p.size(); ++j) {
+            if (p[j] == ' ' && p[j - 1] != ' ') {
+                sp = j;
+                break;
+            }
+        }
+        std::string col_s = sp == std::string::npos ? p : p.substr(0, sp);
+        unsigned int c = 0;
+        if (whaleui_render_parse_color(col_s.c_str(), &c) != 0) {
+            continue;
+        }
+        GradStop st;
+        st.c = c;
+        st.pos = -1.0f;
+        if (sp != std::string::npos) {
+            std::string pos_s = p.substr(sp);
+            const char* pc = pos_s.c_str();
+            while (*pc == ' ' || *pc == '\t') {
+                ++pc;
+            }
+            if (std::strchr(pc, '%')) {
+                st.pos = static_cast<float>(std::atof(pc)) / 100.0f;
+            } else {
+                st.pos = static_cast<float>(std::atof(pc));
+            }
+        }
+        out.stops.push_back(st);
+        if (st.pos < 0) {
+            auto_pos.push_back(out.stops.size() - 1);
+        }
+    }
+    /* fill unspecified positions evenly */
+    size_t n = out.stops.size();
+    if (n == 0) {
+        return 0;
+    }
+    if (auto_pos.empty()) {
+        for (size_t i = 0; i < n; ++i) {
+            out.stops[i].pos = n > 1 ? static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
+        }
+    } else {
+        for (size_t i = 0; i < auto_pos.size(); ++i) {
+            size_t idx = auto_pos[i];
+            float lo = idx == 0 ? 0.0f : out.stops[idx - 1].pos;
+            float hi = (idx == 0 && n > 1) ? 1.0f
+                                           : (idx + 1 < n ? out.stops[idx + 1].pos : 1.0f);
+            if (idx > 0 && idx + 1 < n && out.stops[idx + 1].pos >= 0 &&
+                out.stops[idx - 1].pos >= 0) {
+                lo = out.stops[idx - 1].pos;
+                hi = out.stops[idx + 1].pos;
+            } else if (idx == 0) {
+                lo = 0.0f;
+            } else {
+                hi = 1.0f;
+            }
+            out.stops[idx].pos = hi >= lo ? (lo + hi) / 2.0f : lo;
+        }
+    }
+    return 1;
+}
+
+unsigned int grad_color(const Gradient& g, float t)
+{
+    size_t n = g.stops.size();
+    if (n == 0) {
+        return 0;
+    }
+    if (t <= 0.0f || t <= g.stops[0].pos) {
+        return g.stops[0].c;
+    }
+    if (t >= g.stops[n - 1].pos) {
+        return g.stops[n - 1].c;
+    }
+    for (size_t i = 0; i + 1 < n; ++i) {
+        if (t <= g.stops[i + 1].pos) {
+            float span = g.stops[i + 1].pos - g.stops[i].pos;
+            float p = span > 0 ? (t - g.stops[i].pos) / span : 0.0f;
+            unsigned int f = g.stops[i].c, g2 = g.stops[i + 1].c;
+            auto ch = [p](unsigned int a, unsigned int b) -> unsigned int {
+                return static_cast<unsigned int>(a + (static_cast<float>(b) - a) * p + 0.5f);
+            };
+            return (ch((f >> 24) & 0xFF, (g2 >> 24) & 0xFF) << 24) |
+                   (ch((f >> 16) & 0xFF, (g2 >> 16) & 0xFF) << 16) |
+                   (ch((f >> 8) & 0xFF, (g2 >> 8) & 0xFF) << 8) |
+                   ch(f & 0xFF, g2 & 0xFF);
+        }
+    }
+    return g.stops[n - 1].c;
+}
+
+/* paint a gradient over (x,y,w,h); alpha-blends over existing pixels */
+void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
+                   int x, int y, int w, int h, const Gradient& g,
+                   const Clip* clip)
+{
+    if (w <= 0 || h <= 0 || g.stops.empty()) {
+        return;
+    }
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > fbw ? fbw : x + w;
+    int y1 = y + h > fbh ? fbh : y + h;
+    clip_rect(x0, y0, x1, y1, clip);
+    if (x1 <= x0 || y1 <= y0) {
+        return;
+    }
+    auto blend = [&](int px, int py, unsigned int c) {
+        unsigned int a = (c >> 24) & 0xFF;
+        if (a == 0) {
+            return;
+        }
+        unsigned int& d = fb[static_cast<size_t>(py) * fbw + px];
+        if (a == 255) {
+            d = 0xFF000000 | (c & 0x00FFFFFF);
+            return;
+        }
+        unsigned int cr = (c >> 16) & 0xFF, cg = (c >> 8) & 0xFF, cb = c & 0xFF;
+        unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+        d = 0xFF000000 |
+            (((cr * a + dr * (255 - a)) / 255) << 16) |
+            (((cg * a + dg * (255 - a)) / 255) << 8) |
+            ((cb * a + db * (255 - a)) / 255);
+    };
+    if (g.type == 0) {
+        /* linear: project pixels onto the direction axis */
+        float rad = g.angle_deg * 3.14159265f / 180.0f;
+        float dx = std::sin(rad), dy = -std::cos(rad);
+        float cx = x + w * 0.5f, cy = y + h * 0.5f;
+        float t0 = 1e30f, t1 = -1e30f;
+        const float corners[4][2] = {
+            {static_cast<float>(x), static_cast<float>(y)},
+            {static_cast<float>(x + w), static_cast<float>(y)},
+            {static_cast<float>(x), static_cast<float>(y + h)},
+            {static_cast<float>(x + w), static_cast<float>(y + h)}};
+        for (int i = 0; i < 4; ++i) {
+            float t = (corners[i][0] - cx) * dx + (corners[i][1] - cy) * dy;
+            if (t < t0) {
+                t0 = t;
+            }
+            if (t > t1) {
+                t1 = t;
+            }
+        }
+        float span = t1 - t0;
+        if (span <= 0.0f) {
+            span = 1.0f;
+        }
+        for (int py = y0; py < y1; ++py) {
+            float t = ((static_cast<float>(x0) - cx) * dx +
+                       (static_cast<float>(py) - cy) * dy - t0) /
+                      span;
+            float step = dx / span;
+            for (int px = x0; px < x1; ++px) {
+                blend(px, py, grad_color(g, t));
+                t += step;
+            }
+        }
+    } else {
+        /* radial: ellipse distance from the center */
+        float rx = g.rx > 0 ? g.rx : w * 0.5f;
+        float ry = g.ry > 0 ? g.ry : h * 0.5f;
+        float rcx = g.cx > 1.0f ? g.cx - 100.0f : x + g.cx * w;
+        float rcy = g.cy * h + y;
+        if (rx <= 0 || ry <= 0) {
+            return;
+        }
+        for (int py = y0; py < y1; ++py) {
+            float ny = (static_cast<float>(py) - rcy) / ry;
+            for (int px = x0; px < x1; ++px) {
+                float nx = (static_cast<float>(px) - rcx) / rx;
+                float t = std::sqrt(nx * nx + ny * ny);
+                blend(px, py, grad_color(g, t));
+            }
         }
     }
 }
@@ -2302,6 +2608,12 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         paint_text(r, n, off_x, off_y, my_seq, sel_lo, sel_hi, clip);
         return;
     }
+    /* position:fixed elements are laid out against the viewport and must
+     * not move with ancestor scroll offsets */
+    if (sget(n->style, "position") == "fixed") {
+        off_x = 0;
+        off_y = 0;
+    }
     /* transform: translate (px/%) + uniform scale around the element's
      * center (default transform-origin). The shifted box is drawn here and
      * off_x/off_y carry the translation into the subtree. Child coordinates
@@ -2347,21 +2659,23 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* soft shadow first, so the element body covers the inner layers */
     paint_shadow(r, n, nox, noy, eff);
-    /* background (border-radius supported) */
+    /* background (border-radius supported). A gradient in `background`/
+     * `background-image` paints over the plain color (which shows through
+     * the gradient's transparent stops). */
     unsigned int bg = color_of(n->style, "background-color", 0);
     unsigned int bg2 = color_of(n->style, "background", 0);
     if (bg == 0) {
         bg = bg2;
     }
+    int radius = 0;
+    std::string br = sget(n->style, "border-radius");
+    if (!br.empty()) {
+        radius = std::atoi(br.c_str());
+    }
     if (bg != 0) {
         unsigned int a = (bg >> 24) & 0xFF;
         unsigned int a8 = static_cast<unsigned>(a * n->opacity);
         unsigned int c = (a8 << 24) | (bg & 0x00FFFFFF);
-        int radius = 0;
-        std::string br = sget(n->style, "border-radius");
-        if (!br.empty()) {
-            radius = std::atoi(br.c_str());
-        }
         if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
@@ -2371,6 +2685,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                       n->border.y + noy,
                       bw, bh, c, eff);
         }
+    }
+    Gradient grad;
+    std::string bgv = sget(n->style, "background-image");
+    if (bgv.empty()) {
+        bgv = sget(n->style, "background");
+    }
+    if (parse_gradient(bgv, grad)) {
+        if (radius > 0) {
+            /* gradients ignore the corner arcs (ponytail: fill the full
+             * rect; clipped inside rounded containers already) */
+        }
+        fill_gradient(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                      n->border.y + noy, bw, bh, grad, eff);
     }
     /* border (follows the corner arcs when border-radius is set) */
     int bw2[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
@@ -3489,11 +3816,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (!r || !doc) {
         return -1;
     }
+    /* advance all running animations and collect the current values (the
+     * paint-only fast path below applies them without relaying out) */
+    const uint64_t now = SDL_GetTicks();
+    const bool animating = r->anim && whaleui_anim_tick(r->anim, now) != 0;
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
      * animation/transition is running, or an editable caret is blinking. */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
-        !whaleui_anim_active(r->anim) && !r->edit_el) {
+        !animating && !r->edit_el) {
         return 0;
     }
     r->scroll_dirty = 0;
@@ -3514,7 +3845,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->has_dirty = 1;
         }
     }
-    if (r->has_dirty || !r->tree) {
+    /* layout rebuild needed when the document is dirty OR an animation
+     * touches a layout-affecting property (width/margin/font-size/...).
+     * Paint-only animations (opacity/transform/colors) skip the rebuild:
+     * the tick's values are applied straight onto the tree and only the
+     * opacity chain is recomputed - the bulk of the per-frame cost
+     * (style cascade + box layout) is gone. */
+    const bool need_layout = r->has_dirty || !r->tree ||
+                             (animating && whaleui_anim_needs_layout(r->anim));
+    if (need_layout) {
         whaleui_layout_destroy(r->tree);
         whaleui_style_state st;
         st.hover = r->hover_el;
@@ -3524,15 +3863,47 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                          &r->theme_vars, r->fb_w, r->fb_h,
                                          &st, &r->scrolls, r->anim);
         r->has_dirty = 0;
+    } else if (animating) {
+        /* paint-only animation: apply the tick's values to the tree styles
+         * and refresh the cascaded opacity (children inherit it) */
+        std::function<void(whaleui_layout_node_t*)> apply_ov =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    apply_ov(c);
+                }
+            };
+        apply_ov(r->tree->root);
+        std::function<void(whaleui_layout_node_t*, float)> re_op =
+            [&](whaleui_layout_node_t* nd, float po) {
+                if (nd->is_text) {
+                    nd->opacity = po;
+                    return;
+                }
+                float o = 1.0f;
+                std::string ov2 = sget(nd->style, "opacity");
+                if (!ov2.empty()) {
+                    o = std::strtof(ov2.c_str(), nullptr);
+                    if (o < 0.0f) {
+                        o = 0.0f;
+                    }
+                    if (o > 1.0f) {
+                        o = 1.0f;
+                    }
+                }
+                nd->opacity = o * po;
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    re_op(c, nd->opacity);
+                }
+            };
+        re_op(r->tree->root, 1.0f);
     }
     if (!r->tree) {
         return -2;
-    }
-    /* an animation started or is still running: keep repainting (the layout
-     * pass above advanced it; active is only true while it has somewhere
-     * left to go) */
-    if (whaleui_anim_active(r->anim)) {
-        r->has_dirty = 1;
     }
 
     /* paint */

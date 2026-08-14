@@ -458,5 +458,60 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* position:fixed is viewport-relative and immune to ancestor scroll */
+    {
+        const char* html = "<body><div id=\"sc\" style=\"overflow:auto;"
+            "height:100px;\">"
+            "<div id=\"fx\" style=\"position:fixed;top:10px;left:20px;"
+            "width:50px;\"></div>"
+            "<div style=\"height:300px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        std::map<lxb_dom_element*, int> scrolls;
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr);
+        assert(t != nullptr);
+        whaleui_layout_node_t* fx = find_tag(t->root, "div");
+        /* find the fixed div (deepest, id fx) */
+        whaleui_layout_node_t* sc = nullptr;
+        for (auto& nd : t->arena) {
+            if (nd.el) {
+                size_t len = 0;
+                const lxb_char_t* id = lxb_dom_element_get_attribute(
+                    nd.el, (const lxb_char_t*)"id", 2, &len);
+                if (id && len == 2 && std::memcmp(id, "fx", 2) == 0) {
+                    fx = &nd;
+                }
+                if (id && len == 2 && std::memcmp(id, "sc", 2) == 0) {
+                    sc = &nd;
+                }
+            }
+        }
+        assert(fx != nullptr && sc != nullptr);
+        assert(fx->border.x == 20 && fx->border.y == 10);
+        /* scroll the container: fixed element keeps its viewport position */
+        scrolls[sc->el] = 50;
+        whaleui_layout_tree_t* t2 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls, nullptr);
+        assert(t2 != nullptr);
+        whaleui_layout_node_t* fx2 = nullptr;
+        for (auto& nd : t2->arena) {
+            if (nd.el) {
+                size_t len = 0;
+                const lxb_char_t* id = lxb_dom_element_get_attribute(
+                    nd.el, (const lxb_char_t*)"id", 2, &len);
+                if (id && len == 2 && std::memcmp(id, "fx", 2) == 0) {
+                    fx2 = &nd;
+                }
+            }
+        }
+        assert(fx2 != nullptr);
+        assert(fx2->border.x == 20 && fx2->border.y == 10);
+        whaleui_layout_destroy(t2);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }

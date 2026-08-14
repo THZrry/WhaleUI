@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <vector>
 
 namespace {
@@ -862,6 +863,7 @@ struct whaleui_anim
 {
     const whaleui_css_keyframes_t* kfs; /* borrowed */
     int active;
+    int needs_layout; /* active animations touch a layout property */
 
     /* running keyframe animation: "name@el" */
     struct KfState
@@ -869,8 +871,13 @@ struct whaleui_anim
         std::string name;
         uint64_t start;
         uint32_t dur;
+        uint32_t delay;
         int iter;
         int dir;
+        bool forwards;
+        bool backwards;
+        std::string timing;
+        std::vector<std::string> props; /* animated properties */
     };
     std::map<std::string, KfState> kf;
 
@@ -881,11 +888,18 @@ struct whaleui_anim
         uint64_t start; /* absolute ms when interpolation begins (= now+delay) */
         uint32_t dur;
         uint32_t delay;
+        std::string timing;
     };
     std::map<std::string, Trans> trans;
 
     /* last settled computed value per "prop@el" (transition baseline) */
     std::map<std::string, std::string> prev;
+
+    /* current animated values per element (paint-only fast path) */
+    std::map<lxb_dom_element*, std::map<std::string, std::string> > ov;
+
+    /* elements with running animations -> animated properties */
+    std::map<lxb_dom_element*, std::set<std::string> > act;
 };
 
 extern "C" whaleui_anim_t* whaleui_anim_create(void)
@@ -893,6 +907,7 @@ extern "C" whaleui_anim_t* whaleui_anim_create(void)
     whaleui_anim_t* a = new whaleui_anim_t;
     a->kfs = nullptr;
     a->active = 0;
+    a->needs_layout = 0;
     return a;
 }
 
@@ -917,11 +932,6 @@ extern "C" void whaleui_anim_reset(whaleui_anim_t* a)
         a->prev.clear();
         a->active = 0;
     }
-}
-
-extern "C" int whaleui_anim_active(const whaleui_anim_t* a)
-{
-    return a && a->active;
 }
 
 extern "C" uint64_t whaleui_anim_now(void)
@@ -1038,8 +1048,41 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
         st.name = spec.name;
         st.start = now;
         st.dur = spec.dur;
+        st.delay = spec.delay;
         st.iter = spec.iter;
         st.dir = spec.dir;
+        st.forwards = spec.forwards;
+        st.backwards = spec.backwards;
+        st.timing = spec.timing;
+        /* remember the animated properties (from the frames) so the tick
+         * can decide paint-only vs layout */
+        std::set<std::string> props;
+        if (kf->frame_count) {
+            for (size_t i = 0; i < kf->frame_count; ++i) {
+                const char* enc = kf->frames[i];
+                const char* eq = std::strchr(enc, '=');
+                if (!eq) {
+                    continue;
+                }
+                const char* p = eq + 1;
+                while (*p) {
+                    const char* s = p;
+                    while (*p && *p != ';') {
+                        ++p;
+                    }
+                    std::string decl(s, static_cast<size_t>(p - s));
+                    if (*p == ';') {
+                        ++p;
+                    }
+                    const char* dq = std::strchr(decl.c_str(), '=');
+                    if (dq) {
+                        props.insert(std::string(decl.c_str(),
+                                                 static_cast<size_t>(dq - decl.c_str())));
+                    }
+                }
+            }
+        }
+        st.props.assign(props.begin(), props.end());
         a->kf[kkey] = st;
         it = a->kf.find(kkey);
     }
@@ -1136,6 +1179,7 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
             st.start = now + ts.delay;
             st.dur = ts.dur;
             st.delay = ts.delay;
+            st.timing = ts.timing;
             a->trans[key] = st;
             kv->second = pv->second; /* start from the previous value */
             a->active = 1;
@@ -1170,4 +1214,183 @@ extern "C" int whaleui_anim_apply(whaleui_anim_t* a, struct lxb_dom_element* el,
     }
     apply_transition(a, elkey, style, now);
     return a->active;
+}
+
+namespace {
+
+/* properties whose animation requires a layout rebuild (box geometry) */
+bool is_layout_prop(const std::string& p)
+{
+    static const char* kLayoutProps[] = {
+        "width", "height", "min-width", "max-width", "min-height", "max-height",
+        "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+        "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+        "border-width", "border-top-width", "border-right-width",
+        "border-bottom-width", "border-left-width",
+        "top", "right", "bottom", "left", "font-size", "line-height",
+        "display", "position", "flex", "flex-grow", "flex-shrink", "flex-basis",
+        "gap", "row-gap", "column-gap", "grid-template-columns",
+        "grid-template-rows", "grid-column", "grid-row",
+        "overflow", "overflow-x", "overflow-y", "z-index",
+    };
+    for (size_t i = 0; i < sizeof(kLayoutProps) / sizeof(kLayoutProps[0]); ++i) {
+        if (p == kLayoutProps[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* "name@12345" / "opacity@12345" key helpers */
+lxb_dom_element* el_from_key(const std::string& key)
+{
+    size_t at = key.find_last_of('@');
+    if (at == std::string::npos) {
+        return nullptr;
+    }
+    return reinterpret_cast<lxb_dom_element*>(
+        std::strtoull(key.c_str() + at + 1, nullptr, 10));
+}
+
+std::string prop_from_key(const std::string& key)
+{
+    size_t at = key.find_last_of('@');
+    return at == std::string::npos ? std::string() : key.substr(0, at);
+}
+
+void act_prop(whaleui_anim_t* a, lxb_dom_element* el, const std::string& prop)
+{
+    a->act[el].insert(prop);
+    if (!a->needs_layout && is_layout_prop(prop)) {
+        a->needs_layout = 1;
+    }
+}
+
+} // namespace
+
+extern "C" int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now)
+{
+    if (!a) {
+        return 0;
+    }
+    a->active = 0;
+    a->needs_layout = 0;
+    a->act.clear();
+    a->ov.clear();
+
+    /* keyframe animations */
+    for (std::map<std::string, whaleui_anim::KfState>::iterator it = a->kf.begin();
+         it != a->kf.end(); ++it) {
+        whaleui_anim::KfState& st = it->second;
+        lxb_dom_element* el = el_from_key(it->first);
+        const whaleui_keyframes_t* kf = find_keyframes(a->kfs, st.name.c_str());
+        if (!kf) {
+            continue;
+        }
+        uint64_t t = now - st.start;
+        bool running = false;
+        float p = -1.0f; /* -1: nothing to inject (finished) */
+        if (t < st.delay) {
+            if (st.backwards) {
+                p = start_progress(st.dir);
+            }
+            running = true;
+        } else {
+            t -= st.delay;
+            if (st.iter < 0) {
+                p = dir_progress(st.dir, t / st.dur,
+                                 static_cast<float>(t % st.dur) /
+                                     static_cast<float>(st.dur));
+                running = true;
+            } else if (t >= static_cast<uint64_t>(st.dur) *
+                                 static_cast<uint64_t>(st.iter)) {
+                if (st.forwards) {
+                    p = end_progress(st.dir, st.iter);
+                }
+            } else {
+                p = dir_progress(st.dir, t / st.dur,
+                                 static_cast<float>(t % st.dur) /
+                                     static_cast<float>(st.dur));
+                running = true;
+            }
+        }
+        if (p >= 0.0f) {
+            WhaleUIComputedStyle tmp;
+            interp_frames(kf, ease_value(st.timing, p), tmp);
+            std::map<std::string, std::string>& target = a->ov[el];
+            for (WhaleUIComputedStyle::iterator kv = tmp.begin();
+                 kv != tmp.end(); ++kv) {
+                target[kv->first] = kv->second;
+                act_prop(a, el, kv->first);
+            }
+        }
+        if (running) {
+            a->active = 1;
+        }
+    }
+
+    /* transitions */
+    for (std::map<std::string, whaleui_anim::Trans>::iterator it = a->trans.begin();
+         it != a->trans.end();) {
+        std::string prop = prop_from_key(it->first);
+        lxb_dom_element* el = el_from_key(it->first);
+        whaleui_anim::Trans& tr = it->second;
+        float p = static_cast<float>(static_cast<int64_t>(now) -
+                                     static_cast<int64_t>(tr.start)) /
+                  static_cast<float>(tr.dur);
+        if (p >= 1.0f) {
+            if (el) {
+                a->ov[el][prop] = tr.to;
+            }
+            a->prev[it->first] = tr.to;
+            it = a->trans.erase(it);
+            continue;
+        }
+        if (p < 0.0f) {
+            p = 0.0f; /* delay period */
+        }
+        if (el) {
+            std::string v;
+            any_lerp(prop, tr.from, tr.to, ease_value(tr.timing, p), v);
+            a->ov[el][prop] = v;
+            act_prop(a, el, prop);
+        }
+        a->active = 1;
+        ++it;
+    }
+    return a->active;
+}
+
+extern "C" int whaleui_anim_active(const whaleui_anim_t* a)
+{
+    return a && a->active;
+}
+
+extern "C" int whaleui_anim_needs_layout(const whaleui_anim_t* a)
+{
+    return a && a->needs_layout;
+}
+
+extern "C" int whaleui_anim_has_el(const whaleui_anim_t* a,
+                                   lxb_dom_element* el)
+{
+    return a && el && a->act.count(el) != 0;
+}
+
+extern "C" void whaleui_anim_apply_ov(const whaleui_anim_t* a,
+                                      lxb_dom_element* el,
+                                      WhaleUIComputedStyle& style)
+{
+    if (!a || !el) {
+        return;
+    }
+    std::map<lxb_dom_element*, std::map<std::string, std::string> >::const_iterator
+        it = a->ov.find(el);
+    if (it == a->ov.end()) {
+        return;
+    }
+    for (std::map<std::string, std::string>::const_iterator kv = it->second.begin();
+         kv != it->second.end(); ++kv) {
+        style[kv->first] = kv->second;
+    }
 }

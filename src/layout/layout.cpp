@@ -563,8 +563,13 @@ struct Builder
 
         int x = cx, y = *cursor_y;
         int avail_w = cw;
-        if (pkind == 1 || pkind == 2) {
-            /* absolute/fixed: relative to viewport (parent content ignored) */
+        if (pkind == 2) {
+            /* fixed: relative to the viewport, immune to ancestor scroll */
+            x = static_cast<int>(off_left);
+            y = static_cast<int>(off_top);
+            avail_w = tree->viewport_w;
+        } else if (pkind == 1) {
+            /* absolute: relative to the (positioned) ancestor */
             x = cx + static_cast<int>(off_left);
             y = cy + static_cast<int>(off_top);
             avail_w = cw;

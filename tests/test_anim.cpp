@@ -374,6 +374,37 @@ int main(void)
         assert(t.ty > -0.6f && t.ty < -0.4f);
         assert(whaleui_transform_eval("rotate(45deg)", 100, 50, &t) != 0);
     }
+    /* paint-only vs layout animation classification (tick fast path) */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } "
+                     "100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 1000ms linear infinite";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(whaleui_anim_tick(a, 500) == 1);
+        assert(whaleui_anim_needs_layout(a) == 0); /* opacity is paint-only */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+
+        /* width animation must force layout rebuilds */
+        kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes w { from { width: 10px; } "
+                     "to { width: 100px; } }");
+        a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        s.clear();
+        s["animation"] = "w 1000ms linear infinite";
+        s["width"] = "50px";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(whaleui_anim_tick(a, 500) == 1);
+        assert(whaleui_anim_needs_layout(a) == 1); /* width is layout */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
 
     return 0;
 }

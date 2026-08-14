@@ -52,13 +52,32 @@ void whaleui_anim_set_keyframes(whaleui_anim_t* a,
 void whaleui_anim_reset(whaleui_anim_t* a);
 
 /* Evaluate keyframes + transition for one element's computed style, writing
- * animated values back into `style`. Returns 1 while any animation is active
- * (the caller keeps repainting/re-laying-out). */
+ * animated values back into `style`. Called by the layout pass; advances the
+ * animation state. Returns 1 while any animation is active. */
 int whaleui_anim_apply(whaleui_anim_t* a, struct lxb_dom_element* el,
                        WhaleUIComputedStyle& style, uint64_t now_ms);
 
-/* 1 if the last whaleui_anim_apply left an animation running. */
+/* Advance all running animations without touching any layout styles and
+ * record the current interpolated values (whaleui_anim_apply_ov reads them
+ * back). The frame loop calls this every frame; a paint-only animation (no
+ * layout-affecting property active) can then repaint without relaying out. */
+int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now_ms);
+
+/* 1 if the last tick/apply left an animation running. */
 int whaleui_anim_active(const whaleui_anim_t* a);
+
+/* 1 if the running animations touch any layout-affecting property (width,
+ * margin, font-size, ...) and the layout tree must be rebuilt every frame;
+ * 0 means paint-only (opacity/transform/colors) - repaint is enough. */
+int whaleui_anim_needs_layout(const whaleui_anim_t* a);
+
+/* 1 if `el` has any running animation (for the paint fast path). */
+int whaleui_anim_has_el(const whaleui_anim_t* a, struct lxb_dom_element* el);
+
+/* Overwrite `style` with the current animated values for `el` (recorded by
+ * whaleui_anim_tick). Used by the repaint-only fast path. */
+void whaleui_anim_apply_ov(const whaleui_anim_t* a, struct lxb_dom_element* el,
+                           WhaleUIComputedStyle& style);
 
 /* Milliseconds clock (SDL_GetTicks). */
 uint64_t whaleui_anim_now(void);
