@@ -4134,6 +4134,28 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->drag_scroll_node = nullptr; /* layout nodes were recreated */
         r->scroll_max_el = nullptr;    /* scroll_max may have changed */
         r->wheel_node = nullptr;       /* hit cache is stale */
+        /* the viewport may have changed size (resize/fullscreen): clamp
+         * every live scroll position to its new range so scrollbars and
+         * content don't sit past the end */
+        std::function<void(whaleui_layout_node_t*)> clamp_sc =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el) {
+                    auto it = r->scrolls.find(nd->el);
+                    if (it != r->scrolls.end()) {
+                        if (it->second > nd->scroll_max) {
+                            it->second = nd->scroll_max;
+                        }
+                        if (it->second < 0) {
+                            it->second = 0;
+                        }
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    clamp_sc(c);
+                }
+            };
+        clamp_sc(r->tree->root);
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles
          * and refresh the cascaded opacity (children inherit it) */

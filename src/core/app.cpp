@@ -52,7 +52,14 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     std::strcpy(app->theme_style, "fluent");
     std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
     app->max_fps = 0;
-    app->battery_saver = 1; /* default 60fps in battery saver */
+    /* battery saver is a *default*, gated on the actual system power state:
+     * 60fps (and FSR, see fsr_want_active) while on battery, uncapped while
+     * plugged in. The state is re-polled in the event loop, so unplugging
+     * throttles the app without user intervention. */
+    app->battery_saver = 1;
+    app->on_battery =
+        (SDL_GetPowerInfo(nullptr, nullptr) == SDL_POWERSTATE_ON_BATTERY) ? 1 : 0;
+    app->power_check_ticks = 0;
     app->vsync = 1;
     app->running = 0;
     app->reduced_motion = 0;
@@ -246,9 +253,21 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
             }
         }
 
-        /* frame cap: max_fps, else battery saver default 60 */
-        int fps = app->max_fps > 0 ? app->max_fps : (app->battery_saver ? 60 : 0);
+        /* power-state poll (~2s): unplugging throttles the loop to the
+         * battery-saver cap, plugging back in uncaps it. SDL3 3.4 has no
+         * power-change event to listen for, so poll cheaply (one system
+         * call; 2s is plenty - battery transitions are not time-critical). */
         Uint64 now = SDL_GetTicks();
+        if (now - app->power_check_ticks > 2000) {
+            app->power_check_ticks = now;
+            app->on_battery =
+                (SDL_GetPowerInfo(nullptr, nullptr) == SDL_POWERSTATE_ON_BATTERY) ? 1 : 0;
+        }
+        /* frame cap: max_fps wins; otherwise battery saver caps at 60 while
+         * on battery, AC power stays uncapped */
+        int fps = app->max_fps > 0
+                      ? app->max_fps
+                      : (app->battery_saver && app->on_battery ? 60 : 0);
         if (fps > 0) {
             Uint64 target = last + 1000 / fps;
             if (now < target) {

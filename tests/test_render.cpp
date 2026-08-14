@@ -522,6 +522,31 @@ int main(void)
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_window_destroy(w);
     }
+
+    /* resize clamps live scroll positions to the new content range (the
+     * fullscreen / window-resize path: a taller viewport shrinks scroll_max,
+     * the scrollbar and content must not sit past the end) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "resize-scroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"height:800px;\"></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int max0 = w->render->tree->root->scroll_max;
+        assert(max0 > 0);
+        /* scroll to the bottom */
+        whaleui_render_handle_wheel(w->render, 150, 100, -10000.0f);
+        assert(w->render->scrolls[w->render->tree->root->el] == max0);
+        /* grow the window: scroll_max shrinks, the position must clamp */
+        assert(whaleui_render_resize(w->render, 400, 300) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int max1 = w->render->tree->root->scroll_max;
+        assert(max1 < max0);
+        assert(w->render->scrolls[w->render->tree->root->el] == max1);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
     {
         whaleui_window_t* w = whaleui_window_create(app, "xsel", 300, 200);
         assert(w != nullptr);

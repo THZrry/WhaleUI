@@ -28,6 +28,11 @@ struct whaleui_app
     int vsync;
     int running;
     int reduced_motion; /* prefers-reduced-motion: reduce */
+    /* system power state (refreshed from SDL_GetPowerInfo in the event
+     * loop): drives the battery-saver default - 60fps + FSR on battery,
+     * uncapped on AC power */
+    int on_battery;
+    unsigned long long power_check_ticks; /* last power-state poll */
 
     /* SDL3 GPU device shared by all windows (created lazily on the first
      * window show, owned by the app, destroyed in whaleui_app_destroy). */

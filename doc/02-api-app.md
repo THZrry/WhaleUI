@@ -32,7 +32,7 @@ int  whaleui_app_set_accent_color(whaleui_app_t* app, const char* hex);
 ```c
 typedef enum whaleui_render_option {
     WHALEUI_RENDER_MAX_FPS = 0,      /* int: 帧率上限,0=不限 */
-    WHALEUI_RENDER_BATTERY_SAVER,    /* int: 1=省电模式(默认 60fps),0=关闭 */
+    WHALEUI_RENDER_BATTERY_SAVER,    /* int: 1=省电(默认;仅系统处于电池供电时生效,60fps+FSR),0=关闭 */
     WHALEUI_RENDER_VSYNC              /* int: 1=垂直同步,0=关闭 */
 } whaleui_render_option_t;
 
