@@ -121,6 +121,33 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     }
 }
 
+/* is (px,py) inside a rounded rect (x,y,w,h,radius)? */
+bool inside_rounded(int px, int py, int x, int y, int w, int h, int radius)
+{
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+    if (radius <= 0) {
+        return px >= x && px < x + w && py >= y && py < y + h;
+    }
+    long dx = 0, dy = 0;
+    if (px < x + radius) {
+        dx = static_cast<long>(x + radius - px);
+    } else if (px >= x + w - radius) {
+        dx = static_cast<long>(px - (x + w - radius)) + 1;
+    }
+    if (py < y + radius) {
+        dy = static_cast<long>(y + radius - py);
+    } else if (py >= y + h - radius) {
+        dy = static_cast<long>(py - (y + h - radius)) + 1;
+    }
+    if (dx != 0 || dy != 0) {
+        long r2 = static_cast<long>(radius) * radius;
+        return dx * dx + dy * dy <= r2;
+    }
+    return true; /* in the middle band */
+}
+
 /* rounded rect: radius clipped to half the smaller side */
 void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                      int x, int y, int w, int h, int radius,
@@ -144,23 +171,67 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
         return;
     }
     unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
-    long r2 = static_cast<long>(radius) * radius;
     for (int yy = y0; yy < y1; ++yy) {
         for (int xx = x0; xx < x1; ++xx) {
-            /* corner test */
-            long dx = 0, dy = 0;
-            if (xx < x + radius) {
-                dx = static_cast<long>(x + radius - 1 - xx) + 1;
-            } else if (xx >= x + w - radius) {
-                dx = static_cast<long>(xx - (x + w - radius)) + 1;
-            }
-            if (yy < y + radius) {
-                dy = static_cast<long>(y + radius - 1 - yy) + 1;
-            } else if (yy >= y + h - radius) {
-                dy = static_cast<long>(yy - (y + h - radius)) + 1;
-            }
-            if ((dx != 0 || dy != 0) && dx * dx + dy * dy > r2) {
+            if (!inside_rounded(xx, yy, x, y, w, h, radius)) {
                 continue; /* outside the rounded corner */
+            }
+            unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
+            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            if (a == 255) {
+                d = color;
+            } else {
+                unsigned int nr = (r * a + dr * (255 - a)) / 255;
+                unsigned int ng = (g * a + dg * (255 - a)) / 255;
+                unsigned int nb = (b * a + db * (255 - a)) / 255;
+                d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+            }
+        }
+    }
+}
+
+/* rounded border ring: area between the outer rounded rect and the same rect
+ * inset by `bw`, so borders follow the corner arcs instead of going square */
+void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
+                       int x, int y, int w, int h, int radius, int bw,
+                       unsigned int color, const Clip* clip)
+{
+    if (bw <= 0) {
+        return;
+    }
+    if (radius <= 0) {
+        fill_rect(fb, fbw, fbh, x, y, w, bw, color, clip);               /* top */
+        fill_rect(fb, fbw, fbh, x, y + h - bw, w, bw, color, clip);      /* bottom */
+        fill_rect(fb, fbw, fbh, x + w - bw, y, bw, h, color, clip);      /* right */
+        fill_rect(fb, fbw, fbh, x, y, bw, h, color, clip);               /* left */
+        return;
+    }
+    int half = w < h ? w / 2 : h / 2;
+    if (radius > half) {
+        radius = half;
+    }
+    int ix = x + bw, iy = y + bw, iw = w - 2 * bw, ih = h - 2 * bw;
+    int irad = radius - bw;
+    if (irad < 0) {
+        irad = 0;
+    }
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > fbw ? fbw : x + w;
+    int y1 = y + h > fbh ? fbh : y + h;
+    clip_rect(x0, y0, x1, y1, clip);
+    unsigned int a = (color >> 24) & 0xFF;
+    if (a == 0 || x1 <= x0 || y1 <= y0) {
+        return;
+    }
+    unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+    for (int yy = y0; yy < y1; ++yy) {
+        for (int xx = x0; xx < x1; ++xx) {
+            if (!inside_rounded(xx, yy, x, y, w, h, radius)) {
+                continue; /* outside the outer rounded rect */
+            }
+            if (inside_rounded(xx, yy, ix, iy, iw, ih, irad)) {
+                continue; /* inside the inner rect: that is the fill area */
             }
             unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
             unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
@@ -359,6 +430,36 @@ unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop, unsigned 
     return def;
 }
 
+/* border shorthand "1px solid #rrggbb" / "2px dashed red": scan tokens for a
+ * parseable color instead of requiring a plain color value */
+unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def)
+{
+    std::string v = sget(s, "border");
+    if (v.empty()) {
+        return def;
+    }
+    unsigned int c = 0;
+    if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+        return c;
+    }
+    const char* p = v.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        const char* s = p;
+        while (*s && *s != ' ' && *s != '\t' && *s != ';') {
+            ++s;
+        }
+        std::string tok(p, static_cast<size_t>(s - p));
+        if (whaleui_render_parse_color(tok.c_str(), &c) == 0) {
+            return c;
+        }
+        p = s;
+    }
+    return def;
+}
+
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
 #ifdef WHALEUI_BUILD_FULL
@@ -455,29 +556,41 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
                       n->border.w, n->border.h, c, eff);
         }
     }
-    /* border */
+    /* border (follows the corner arcs when border-radius is set) */
     int bw[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
     bool any = bw[0] || bw[1] || bw[2] || bw[3];
     if (any) {
         unsigned int bc = color_of(n->style, "border-color",
-                                   color_of(n->style, "border", 0xFF000000));
+                                   border_color_of(n->style, 0xFF000000));
         if (bc != 0) {
             unsigned int a = (bc >> 24) & 0xFF;
             unsigned int a8 = static_cast<unsigned>(a * n->opacity);
             unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
-            if (bw[0]) { /* top */
-                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c, eff);
+            int radius = 0;
+            std::string br2 = sget(n->style, "border-radius");
+            if (!br2.empty()) {
+                radius = std::atoi(br2.c_str());
             }
-            if (bw[2]) { /* bottom */
-                fill_rect(r->pixels, r->width, r->height, n->border.x,
-                          n->border.y + n->border.h - bw[2], n->border.w, bw[2], c, eff);
-            }
-            if (bw[1]) { /* right */
-                fill_rect(r->pixels, r->width, r->height,
-                          n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c, eff);
-            }
-            if (bw[3]) { /* left */
-                fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c, eff);
+            /* uniform border width for the ring */
+            int brw = bw[1] > 0 ? bw[1] : (bw[3] > 0 ? bw[3] : (bw[0] > 0 ? bw[0] : bw[2]));
+            if (radius > 0 && brw > 0) {
+                fill_round_border(r->pixels, r->width, r->height, n->border.x, n->border.y,
+                                  n->border.w, n->border.h, radius, brw, c, eff);
+            } else {
+                if (bw[0]) { /* top */
+                    fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, n->border.w, bw[0], c, eff);
+                }
+                if (bw[2]) { /* bottom */
+                    fill_rect(r->pixels, r->width, r->height, n->border.x,
+                              n->border.y + n->border.h - bw[2], n->border.w, bw[2], c, eff);
+                }
+                if (bw[1]) { /* right */
+                    fill_rect(r->pixels, r->width, r->height,
+                              n->border.x + n->border.w - bw[1], n->border.y, bw[1], n->border.h, c, eff);
+                }
+                if (bw[3]) { /* left */
+                    fill_rect(r->pixels, r->width, r->height, n->border.x, n->border.y, bw[3], n->border.h, c, eff);
+                }
             }
         }
     }

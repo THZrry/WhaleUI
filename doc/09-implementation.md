@@ -27,12 +27,12 @@
 ### 已实现(渲染/布局生效)
 
 ```
-display, width, height, min/max-width, margin/padding/border(简写+四边),
-box-sizing, position, top/left, z-index, opacity, flex 布局(flex-direction,
-justify-content, gap, flex-grow), background-color/background(纯色,
-支持 border-radius 圆角), color, font-size, font-family(按注册字体),
-font-weight(bold/≥600 合成粗体), text-align(left/center/right),
-border-width/style/color, line-height(近似), overflow:hidden(裁剪),
+display, width, height, min/max-width, margin/padding/border(简写+四边,
+border 简写含颜色提取), box-sizing, position, top/left, z-index, opacity,
+flex 布局(flex-direction, justify-content, gap, flex-grow),
+background-color/background(纯色), border-radius 圆角(背景与边框均沿弧线),
+color, font-size, font-family(按注册字体), font-weight(bold/≥600 合成粗体),
+text-align(left/center/right), line-height(近似), overflow:hidden(裁剪),
 cursor(记录)
 ```
 

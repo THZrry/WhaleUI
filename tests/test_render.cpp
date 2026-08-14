@@ -1,4 +1,4 @@
-// test_render: paint pipeline verification on the SDL_GPU path.
+﻿// test_render: paint pipeline verification on the SDL_GPU path.
 // Color parsing always runs; window-level assertions run only when a GPU
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
@@ -54,12 +54,12 @@ int main(void)
     assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* (50,50) */
     assert(win->render->pixels[99 * 200 + 99] == 0xFFFF0000); /* (99,99) */
     /* right of the box, still inside body: body background (light gray) */
-    assert(win->render->pixels[50 * 200 + 150] == 0xFFF3F3F3);
+    assert(win->render->pixels[50 * 200 + 150] == 0xFFF4F5F7);
 
     /* theme switch via app_set_theme (the T-key path) repaints dark */
     assert(whaleui_app_set_theme(app, WHALEUI_THEME_DARK) == 0);
     assert(whaleui_render_frame(win->render, win->document) == 0);
-    assert(win->render->pixels[50 * 200 + 150] == 0xFF1E1E1E);
+    assert(win->render->pixels[50 * 200 + 150] == 0xFF15171C);
     assert(win->render->pixels[50 * 200 + 50] == 0xFFFF0000);
 
     whaleui_window_destroy(win);
@@ -73,10 +73,27 @@ int main(void)
     assert(whaleui_window_show(win2) == 0);
     assert(whaleui_render_frame(win2->render, win2->document) == 0);
     assert(win2->render->pixels[50 * 200 + 50] == 0xFFFF0000); /* center inside */
-    assert(win2->render->pixels[0] == 0xFF1E1E1E);             /* corner outside arc */
-    assert(win2->render->pixels[2 * 200 + 2] == 0xFF1E1E1E);   /* just outside the arc */
+    assert(win2->render->pixels[0] == 0xFF15171C);             /* corner outside arc */
+    assert(win2->render->pixels[2 * 200 + 2] == 0xFF15171C);   /* just outside the arc */
     assert(win2->render->pixels[5 * 200 + 5] == 0xFFFF0000);   /* just inside the arc */
     whaleui_window_destroy(win2);
+
+    /* rounded border: the 2px border follows the corner arcs */
+    whaleui_window_t* win3 = whaleui_window_create(app, "round-border", 200, 150);
+    assert(win3 != nullptr);
+    assert(whaleui_window_load_html(win3,
+        "<html><body><div id=\"b\" style=\"width:100px;height:100px;"
+        "background-color:#ff0000;border-radius:10px;"
+        "border:2px solid #0000ff;\"></div></body></html>") == 0);
+    assert(whaleui_window_show(win3) == 0);
+    assert(whaleui_render_frame(win3->render, win3->document) == 0);
+    /* corner (1,1) sits outside the arc -> body background */
+    assert(win3->render->pixels[1 * 200 + 1] == 0xFF15171C);
+    /* top border mid (50,1): inside the 2px ring -> blue */
+    assert(win3->render->pixels[1 * 200 + 50] == 0xFF0000FF);
+    /* inner area (50,20) -> red */
+    assert(win3->render->pixels[20 * 200 + 50] == 0xFFFF0000);
+    whaleui_window_destroy(win3);
 
     whaleui_app_destroy(app);
     return 0;
