@@ -229,11 +229,16 @@ int main(void)
         }
         assert(p != nullptr && tr != nullptr);
         int y = tr->border.y + tr->border.h / 2;
-        /* plain click (press+release, no drag): no selection is created */
+        /* plain click (press+release, no drag): nothing is selected */
         whaleui_render_set_pressed(w->render, tr->border.x + 1, y, 1);
         whaleui_render_set_pressed(w->render, 0, 0, 0);
-        assert(w->render->sel_anchor_el == p->el);
+        assert(w->render->sel_anchor_el == nullptr);
         assert(w->render->sel_anchor == w->render->sel_focus);
+        /* click with sub-threshold micro-motion still selects nothing */
+        whaleui_render_set_pressed(w->render, tr->border.x + 1, y, 1);
+        whaleui_render_set_hover(w->render, tr->border.x + 4, y); /* < 6px */
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el == nullptr);
         /* drag past the threshold selects */
         whaleui_render_set_pressed(w->render, tr->border.x + 1, y, 1);
         whaleui_render_set_hover(w->render, tr->border.x + 60, y);
@@ -303,16 +308,16 @@ int main(void)
         /* scrolling must NOT rebuild the layout tree (perf: relayout is the
          * expensive part on big pages) */
         whaleui_layout_tree_t* tree_before = w->render->tree;
-        /* one notch down (dy=-1) -> 40px, 40px per notch */
-        whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        /* one notch (dy=+1) -> 40px, 40px per notch */
+        whaleui_render_handle_wheel(w->render, 150, 100, 1.0f);
         assert(w->render->tree == tree_before);
         assert(w->render->scrolls[w->render->tree->root->el] == 40);
         /* large pixel delta (touchpad) clamps at the max */
-        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
+        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] ==
                w->render->tree->root->scroll_max);
-        /* scrolling up clamps at 0 */
-        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
+        /* scrolling the other way clamps at 0 */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
         assert(w->render->scrolls[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }

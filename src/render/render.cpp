@@ -293,15 +293,17 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
             unsigned int sg = tint ? tg : s[1];
             unsigned int sb = tint ? tb : s[2];
             unsigned int& d = fb[static_cast<size_t>(ty) * fbw + tx];
-            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
             if (a == 255) {
+                /* opaque: no blending math (hot path for anti-aliased
+                 * glyph cores; text is the biggest per-frame cost) */
                 d = 0xFF000000 | (sr << 16) | (sg << 8) | sb;
-            } else {
-                unsigned int nr = (sr * a + dr * (255 - a)) / 255;
-                unsigned int ng = (sg * a + dg * (255 - a)) / 255;
-                unsigned int nb = (sb * a + db * (255 - a)) / 255;
-                d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+                continue;
             }
+            unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            unsigned int nr = (sr * a + dr * (255 - a)) / 255;
+            unsigned int ng = (sg * a + dg * (255 - a)) / 255;
+            unsigned int nb = (sb * a + db * (255 - a)) / 255;
+            d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
         }
     }
 }
@@ -1101,6 +1103,8 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
 void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
                  const std::string& text, int fs, const std::string& family,
                  bool bold, int* tx, int* ty);
+struct whaleui_layout_node;
+whaleui_layout_node_t* editable_geo(whaleui_layout_node_t* n);
 
 /* render one text string inside the box (bx,by,bw,bh). align: 0=left,
  * 1=center, 2=right. Shared by text runs and <select> controls. */
@@ -1506,18 +1510,19 @@ int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n)
 }
 
 /* grow glyph-level highlight rects up to the line box so the selection wash
- * covers ascenders/descenders (TTF substring rects only bound the glyphs) */
+ * covers ascenders/descenders with a bit of padding (TTF substring rects
+ * only bound the glyphs) */
 void expand_hl_rects(std::vector<TRect>& rects, int lh)
 {
     for (size_t i = 0; i < rects.size(); ++i) {
         TRect& rc = rects[i];
         if (rc.h < lh) {
             int d = lh - rc.h;
-            rc.y -= d / 2 + 1;
+            rc.y -= d / 2 + 2;
             rc.h = lh;
         } else {
-            rc.y -= 1;
-            rc.h += 2;
+            rc.y -= 2;
+            rc.h += 4;
         }
     }
 }
@@ -1585,14 +1590,14 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                 (!fw.empty() && std::atoi(fw.c_str()) >= 600);
     std::string val = edit_value(el);
     bool focused = (el == r->edit_el);
-    int tw = 0, th = 0;
-    text_size(r, val, fs, family, bold, &tw, &th);
-    /* glyphs sit vertically centered in the content box (matches paint_text) */
-    int tx = n->content.x;
-    int ty = n->content.y + off_y + (n->content.h - th) / 2;
-    if (th <= 0) {
-        th = text_line_h(r, fs, family, bold);
-    }
+    /* caret/highlight geometry: input centers in its content box; textarea/
+     * contenteditable follow the layout text run so they line up with the
+     * painted glyphs (which sit at the run's top, not the box center) */
+    whaleui_layout_node_t* geo = editable_geo(n);
+    int tx = 0, ty = 0;
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    ty += off_y;
+    int th = text_line_h(r, fs, family, bold);
 
     if (tag_eq(el, "input")) {
         /* input has no text children: paint the value here, always */
@@ -1677,6 +1682,12 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
                 const Clip* clip)
 {
+    /* cull runs fully outside the framebuffer: creating a TTF_Text per run
+     * per frame is the dominant paint cost on scroll-heavy pages */
+    int ty = n->border.y + off_y;
+    if (ty + n->border.h <= 0 || ty >= r->fb_h) {
+        return;
+    }
     unsigned int color = color_of(n->style, "color", 0xFF000000);
     float alpha = (color >> 24) & 0xFF;
     unsigned int a8 = static_cast<unsigned>(alpha * n->opacity);
@@ -1705,12 +1716,9 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
         box = n->parent;
     }
     paint_text_selection(r, n, fs, family, bold, off_y, clip);
-    /* vertical position comes from the run's own box (scroll-shifted);
-     * horizontal alignment spans the parent content box */
-    int tx = 0, ty = 0;
-    text_origin(r, n, n->text, fs, family, bold, &tx, &ty);
-    ty += off_y;
-    draw_text_at(r, n->text, box->content.x, ty,
+    /* the run's own box carries the scroll shift; draw_text_at centers the
+     * glyphs in it, matching text_origin's hit/highlight geometry */
+    draw_text_at(r, n->text, box->content.x, n->border.y + off_y,
                  box->content.w, n->border.h,
                  fs, family, color, bold, align, clip);
 }
@@ -2155,6 +2163,12 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_y,
         self.w = n->border.w;
         self.h = n->border.h;
         eff = &self;
+        /* cull clipped containers fully outside the framebuffer: on a
+         * scrolled page most of the document is off-screen, so skip their
+         * whole subtree (the biggest scroll-paint win) */
+        if (self.y + self.h <= 0 || self.y >= r->fb_h) {
+            return;
+        }
     }
     /* soft shadow first, so the element body covers the inner layers */
     paint_shadow(r, n, eff);
@@ -2264,6 +2278,17 @@ void node_font(whaleui_layout_node_t* n, int* fs, std::string* family, bool* bol
             (!fw.empty() && std::atoi(fw.c_str()) >= 600);
 }
 
+/* geometry node of an editable box: the layout text run (if present), so
+ * the caret/highlight line up with the text the run paints; otherwise the
+ * box itself (empty control) */
+whaleui_layout_node_t* editable_geo(whaleui_layout_node_t* n)
+{
+    if (n->first_child && n->first_child->is_text) {
+        return n->first_child;
+    }
+    return n;
+}
+
 /* text top-left for hit-testing/highlighting (matches paint_text).
  * Text runs: x from the parent content box, y from the run's own box
  * (already scroll-shifted at layout), vertically centered in the run's
@@ -2298,7 +2323,8 @@ size_t byte_at_node(whaleui_render_t* r, whaleui_layout_node_t* hit, int x, int 
 }
 
 /* caret byte offset in an editable element at (x,y); hit is the layout node
- * under the mouse (the text run or the editable box itself) */
+ * under the mouse (the text run or the editable box itself). The geometry
+ * follows the layout text run so the caret matches where the glyphs paint. */
 size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
                         whaleui_layout_node_t* hit, int x, int y)
 {
@@ -2308,12 +2334,14 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     }
     whaleui_layout_node_t* box =
         (hit && hit->is_text && hit->parent) ? hit->parent : hit;
+    whaleui_layout_node_t* geo =
+        (hit && hit->is_text) ? hit : editable_geo(box);
     int fs;
     std::string family;
     bool bold;
     node_font(box, &fs, &family, &bold);
     int tx = 0, ty = 0;
-    text_origin(r, box, val, fs, family, bold, &tx, &ty);
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
     return byte_at_text(r, val, fs, family, bold, x - tx, y - ty);
 }
 
@@ -2914,13 +2942,14 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         r->hover_el = el;
         r->has_dirty = 1;
     }
-    /* drag to extend a selection: gated by a 3px threshold so a plain
-     * click (with incidental mouse micro-motion) never selects */
+    /* drag to extend a selection: gated by a 6px threshold so a plain
+     * click - including the incidental hand micro-motion of pressing a
+     * mouse button - never selects */
     if (r->pressed_el && r->sel_anchor_el && hit) {
         if (!r->selecting) {
             int dx = x - r->press_x;
             int dy2 = y - r->press_y;
-            if (dx * dx + dy2 * dy2 < 9) {
+            if (dx * dx + dy2 * dy2 < 36) {
                 return;
             }
             r->selecting = 1;
@@ -2972,7 +3001,15 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
         r->pressed_el = el;
         r->focus_el = el;
     } else {
-        r->pressed_el = nullptr; /* mouse up: keep the selection */
+        /* mouse up: a selection survives only when it was actually dragged.
+         * A plain click (press+release without crossing the threshold, even
+         * with incidental micro-motion) leaves nothing selected. The caret
+         * of a focused editable control is kept as-is. */
+        r->pressed_el = nullptr;
+        if (!r->selecting && !(r->edit_el && r->sel_anchor_el == r->edit_el)) {
+            r->sel_anchor_el = r->sel_focus_el = nullptr;
+            r->sel_anchor = r->sel_focus = 0;
+        }
         r->selecting = 0;
     }
     r->has_dirty = 1;
@@ -2996,9 +3033,10 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             return;
         }
         int& cur = r->scrolls[sc->el];
-        /* SDL: positive y scrolls away from the user. Content moves the
-         * opposite way, so scroll_y -= dy. */
-        int nv = cur - static_cast<int>(dpx);
+        /* SDL reports positive y as "away from the user" on Windows, but
+         * the observed scroll direction is inverted (verified on Windows
+         * with a real mouse), so content follows dy directly. */
+        int nv = cur + static_cast<int>(dpx);
         if (nv > sc->scroll_max) {
             nv = sc->scroll_max;
         }
