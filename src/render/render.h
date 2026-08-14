@@ -95,6 +95,8 @@ struct whaleui_render
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);
     void* scroll_ud;
+    /* scrollbar being dragged (element owning the scrollable box) */
+    struct lxb_dom_element* drag_scroll_el;
 
     /* text selection: anchor + focus (element, UTF-8 byte offset). The
      * focus end is the "active" end while dragging. In an editable element

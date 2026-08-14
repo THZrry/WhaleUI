@@ -2597,6 +2597,12 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
 
 } // namespace
 
+/* scrollbar drag helpers (defined with the wheel/click handling below) */
+whaleui_layout_node_t* scrollbar_under(whaleui_render_t* r,
+                                       whaleui_layout_node_t* hit, int x,
+                                       int y);
+void update_drag_scroll(whaleui_render_t* r, int y);
+
 /* --- FSR 1.0 (GPU compute) resources --- */
 
 /* build compute pipelines + textures for the current window size. Returns 1
@@ -3054,6 +3060,11 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         r->hover_el = el;
         r->has_dirty = 1;
     }
+    /* drag a scrollbar: the thumb follows the mouse y */
+    if (r->drag_scroll_el) {
+        update_drag_scroll(r, y);
+        return;
+    }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a
      * mouse button - never selects */
@@ -3070,6 +3081,81 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     }
 }
 
+/* --- scrollbar dragging --- */
+
+/* nearest scrollable box whose scrollbar track contains (x, y); walks up
+ * from the hit node. NULL when the click is not on a scrollbar. */
+whaleui_layout_node_t* scrollbar_under(whaleui_render_t* r,
+                                       whaleui_layout_node_t* hit, int x,
+                                       int y)
+{
+    for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
+        if (!n->el || n->is_text || n->scroll_max <= 0) {
+            continue;
+        }
+        int off = 0;
+        for (whaleui_layout_node_t* p = n->parent; p; p = p->parent) {
+            off += scroll_delta(r, p);
+        }
+        const int bw = 8;
+        if (x >= n->border.x + n->border.w - bw &&
+            x < n->border.x + n->border.w &&
+            y >= n->border.y + off &&
+            y < n->border.y + off + n->border.h) {
+            return n;
+        }
+    }
+    return nullptr;
+}
+
+/* move the dragged scrollbar so the thumb center follows the mouse y */
+void update_drag_scroll(whaleui_render_t* r, int y)
+{
+    if (!r->drag_scroll_el || !r->tree) {
+        return;
+    }
+    whaleui_layout_node_t* sc =
+        find_node_by_el(r->tree->root, r->drag_scroll_el);
+    if (!sc || sc->scroll_max <= 0) {
+        r->drag_scroll_el = nullptr;
+        return;
+    }
+    int off = 0;
+    for (whaleui_layout_node_t* p = sc->parent; p; p = p->parent) {
+        off += scroll_delta(r, p);
+    }
+    const int bw = 8;
+    int track_x = sc->border.x + sc->border.w - bw;
+    int track_y = sc->border.y + off;
+    int track_h = sc->border.h;
+    int content_h = sc->scroll_max + sc->content.h;
+    if (content_h <= 0 || track_h <= 0) {
+        return;
+    }
+    int thumb_h = track_h * sc->content.h / content_h;
+    if (thumb_h < 10) {
+        thumb_h = 10;
+    }
+    if (thumb_h > track_h) {
+        thumb_h = track_h;
+    }
+    int range = track_h - thumb_h;
+    if (range <= 0) {
+        return;
+    }
+    int nv = (y - track_y - thumb_h / 2) * sc->scroll_max / range;
+    if (nv > sc->scroll_max) {
+        nv = sc->scroll_max;
+    }
+    if (nv < 0) {
+        nv = 0;
+    }
+    if (nv != r->scrolls[sc->el]) {
+        r->scrolls[sc->el] = nv;
+        r->scroll_dirty = 1;
+    }
+}
+
 extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
                                            int down)
 {
@@ -3083,6 +3169,16 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
         r->press_x = x;
         r->press_y = y;
         r->selecting = 0;
+        /* scrollbar drag takes priority over selection/caret */
+        whaleui_layout_node_t* sc = scrollbar_under(r, hit, x, y);
+        if (sc) {
+            r->drag_scroll_el = sc->el;
+            update_drag_scroll(r, y);
+            r->pressed_el = el;
+            r->focus_el = el;
+            r->has_dirty = 1;
+            return;
+        }
         if (el && is_editable(el)) {
             /* focus the editable control and place the caret */
             r->edit_el = el;
@@ -3118,6 +3214,7 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
          * with incidental micro-motion) leaves nothing selected. The caret
          * of a focused editable control is kept as-is. */
         r->pressed_el = nullptr;
+        r->drag_scroll_el = nullptr;
         if (!r->selecting && !(r->edit_el && r->sel_anchor_el == r->edit_el)) {
             r->sel_anchor_el = r->sel_focus_el = nullptr;
             r->sel_anchor = r->sel_focus = 0;

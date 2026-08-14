@@ -435,6 +435,30 @@ int main(void)
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }
+
+    /* scrollbar drag: pressing the track and dragging moves the scroll */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "drag", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"height:800px;\"></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree->root->scroll_max > 0);
+        int track_x = w->render->tree->root->border.x +
+                      w->render->tree->root->border.w - 4;
+        /* press on the track starts a drag */
+        whaleui_render_set_pressed(w->render, track_x, 60, 1);
+        assert(w->render->drag_scroll_el == w->render->tree->root->el);
+        /* drag to the bottom of the track -> scrolled to the end */
+        whaleui_render_set_hover(w->render, track_x, 198);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->drag_scroll_el == nullptr);
+        assert(w->render->scrolls[w->render->tree->root->el] ==
+               w->render->tree->root->scroll_max);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
     {
         whaleui_window_t* w = whaleui_window_create(app, "xsel", 300, 200);
         assert(w != nullptr);
