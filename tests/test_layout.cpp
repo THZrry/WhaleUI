@@ -599,5 +599,52 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* source indentation whitespace must not inflate block heights */
+    {
+        const char* html =
+            "<body>\n  <div style=\"height:30px;\"></div>\n</body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        assert(d->border.h == 30);
+        /* the blank newline text nodes produced no tall text run */
+        assert(d->border.y < 40);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* grid row sizing a stacked cell (b + span) fits both lines */
+    {
+        const char* html = "<body><div style=\"display:grid;"
+            "grid-template-columns:50px 1fr;\">"
+            "<i>01</i><div><b>title</b><span>note text</span></div></div>"
+            "</body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        /* the right cell holds two stacked text lines: taller than one */
+        whaleui_layout_node_t* cell = g->first_child;
+        while (cell && cell->next) {
+            cell = cell->next;
+        }
+        assert(cell != nullptr && !cell->is_text);
+        assert(cell->border.h >= 30);
+        assert(g->border.h >= cell->border.h);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }

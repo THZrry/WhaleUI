@@ -331,7 +331,20 @@ int position_kind(const std::string& p)
 }
 
 /* collect a text run (concatenated text children) for the renderer.
- * <br> elements produce a line break, matching browser behavior. */
+ * <br> elements produce a line break, matching browser behavior. Text nodes
+ * that are pure whitespace (source indentation/newlines) are skipped - they
+ * would otherwise become tall blank text runs that inflate block heights. */
+static bool text_is_blank(const lxb_char_t* d, size_t n)
+{
+    for (size_t i = 0; i < n; ++i) {
+        char c = static_cast<char>(d[i]);
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f') {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string collect_text(lxb_dom_element* el)
 {
     std::string out;
@@ -339,7 +352,7 @@ std::string collect_text(lxb_dom_element* el)
     while (n) {
         if (n->type == LXB_DOM_NODE_TYPE_TEXT || n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
             const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
-            if (s->data) {
+            if (s->data && !text_is_blank(s->data, s->length)) {
                 out.append(reinterpret_cast<const char*>(s->data), s->length);
             }
         } else if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
@@ -1089,7 +1102,17 @@ struct Builder
                                static_cast<size_t>(per_line);
                 h = static_cast<float>(lines) * fs * 1.2f;
             } else {
-                h = estimate_content_width(k, em);
+                /* no direct text: the height is the sum of the block-flow
+                 * children (grid cells holding <b> + <span> rows etc.) */
+                float sum = 0;
+                for (whaleui_layout_node_t* c = k->first_child; c;
+                     c = c->next) {
+                    if (!c->is_text) {
+                        sum += static_cast<float>(
+                            est_node_height(c, inner_w, em));
+                    }
+                }
+                h = sum;
             }
         }
         int ih = static_cast<int>(h);
