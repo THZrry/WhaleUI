@@ -1024,8 +1024,8 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
             rc.w = subs[i]->rect.w;
             rc.h = subs[i]->rect.h;
             out.push_back(rc);
-            SDL_free(subs[i]);
         }
+        /* single allocation; the whole array is freed once (see SDL_ttf) */
         SDL_free(subs);
     }
     TTF_DestroyText(t);
@@ -1591,6 +1591,49 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
 }
 
+/* vertical scrollbar for scrollable containers and the page (html root).
+ * Painted over the content on the container's right edge; thumb height
+ * tracks the visible fraction, position tracks scroll_y/scroll_max. */
+void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
+                     const Clip* clip)
+{
+    if (n->scroll_max <= 0 || n->border.h < 24) {
+        return;
+    }
+    const int bw = 8;
+    int track_x = n->border.x + n->border.w - bw;
+    int track_y = n->border.y;
+    int track_h = n->border.h;
+    int content_h = n->scroll_max + n->content.h;
+    if (content_h <= 0) {
+        return;
+    }
+    int thumb_h = track_h * n->content.h / content_h;
+    if (thumb_h < 10) {
+        thumb_h = 10;
+    }
+    if (thumb_h > track_h) {
+        thumb_h = track_h;
+    }
+    int thumb_y = track_y +
+                  (track_h - thumb_h) * n->scroll_y /
+                      (n->scroll_max > 0 ? n->scroll_max : 1);
+    unsigned int track = 0x10000000;
+    unsigned int thumb = 0x50000000;
+    auto it = r->theme_vars.find("--border");
+    if (it != r->theme_vars.end()) {
+        unsigned int c = 0;
+        if (whaleui_render_parse_color(it->second.c_str(), &c) == 0) {
+            track = (0x18 << 24) | (c & 0x00FFFFFF);
+            thumb = (0x55 << 24) | (c & 0x00FFFFFF);
+        }
+    }
+    fill_rect(r->pixels, r->fb_w, r->fb_h, track_x, track_y, bw, track_h,
+              track, clip);
+    fill_rect(r->pixels, r->fb_w, r->fb_h, track_x, thumb_y, bw, thumb_h,
+              thumb, clip);
+}
+
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
 {
     unsigned int color = color_of(n->style, "color", 0xFF000000);
@@ -2130,6 +2173,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     }
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, eff);
+    }
+    /* scrollbar sits on top of the content */
+    if (n->scroll_max > 0) {
+        paint_scrollbar(r, n, eff);
     }
     /* editable control: value text (input) + selection/caret overlay */
     if (n->el && is_editable(n->el)) {
@@ -2848,33 +2895,46 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
         return;
     }
     fb_coords(r, x, y);
+    /* wheel units: discrete notches come as small integers (1-3), touchpad
+     * precision scrolling as larger pixel deltas. Scale only the notches so
+     * both input types move a similar distance per event. */
+    const float notch = 40.0f;
+    float dpx = (dy >= -4.0f && dy <= 4.0f) ? dy * notch : dy;
+
+    auto do_scroll = [r, dpx](whaleui_layout_node_t* sc) {
+        if (!sc->el || sc->scroll_max <= 0) {
+            return;
+        }
+        int& cur = r->scrolls[sc->el];
+        /* SDL: positive y scrolls away from the user. Content moves the
+         * opposite way, so scroll_y -= dy. */
+        int nv = cur - static_cast<int>(dpx);
+        if (nv > sc->scroll_max) {
+            nv = sc->scroll_max;
+        }
+        if (nv < 0) {
+            nv = 0;
+        }
+        if (nv != cur) {
+            cur = nv;
+            r->has_dirty = 1;
+        }
+    };
+
     whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
-    if (!hit) {
-        return;
-    }
     /* nearest scrollable ancestor (the hit element itself included) */
     for (whaleui_layout_node_t* n = hit; n; n = n->parent) {
         if (!n->el) {
             continue;
         }
         std::string ov = sget(n->style, "overflow");
-        if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
-            int& cur = r->scrolls[n->el];
-            /* SDL: positive y scrolls away from the user (content moves up) */
-            int nv = cur + static_cast<int>(dy * 40.0f);
-            if (nv > n->scroll_max) {
-                nv = n->scroll_max;
-            }
-            if (nv < 0) {
-                nv = 0;
-            }
-            if (nv != cur) {
-                cur = nv;
-                r->has_dirty = 1;
-            }
+        if (ov == "auto" || ov == "scroll") {
+            do_scroll(n);
             return;
         }
     }
+    /* nothing explicitly scrollable: scroll the page (html root) */
+    do_scroll(r->tree->root);
 }
 
 extern "C" void whaleui_render_handle_key(whaleui_render_t* r, int keycode,

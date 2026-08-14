@@ -170,22 +170,29 @@ int main(void)
             }
         }
         assert(inp != nullptr);
-        /* click the far-left edge of the input -> caret at offset 0 */
-        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+        /* click the middle of the input -> caret > 0, so painting the caret
+         * exercises TTF_GetTextSubStringsForRange (single-allocation free
+         * regression: per-item SDL_free used to corrupt the heap) */
+        whaleui_render_set_pressed(w->render, inp->content.x + 20,
                                    inp->content.y + 2, 1);
         whaleui_render_set_pressed(w->render, 0, 0, 0);
         assert(w->render->edit_el == inp->el);
-        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
-        /* typing inserts at the caret -> "Xabc" */
+        assert(w->render->sel_focus > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* typing inserts at the caret */
         whaleui_render_handle_text(w->render, "X");
         const char* v = whaleui_dom_get_attribute(
             reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
-        assert(v != nullptr && std::strcmp(v, "Xabc") == 0);
+        assert(v != nullptr && std::strlen(v) == 4 &&
+               std::strchr(v, 'X') != nullptr);
+        /* painting the new value + caret again */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
         /* backspace removes the inserted char */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_BACKSPACE, 1, 0);
         v = whaleui_dom_get_attribute(
             reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
-        assert(v != nullptr && std::strcmp(v, "abc") == 0);
+        assert(v != nullptr && std::strlen(v) == 3 &&
+               std::strchr(v, 'X') == nullptr);
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }
@@ -228,6 +235,8 @@ int main(void)
         assert(w->render->sel_anchor_el == p->el);
         assert(w->render->sel_anchor == 0);
         assert(w->render->sel_focus > w->render->sel_anchor);
+        /* painting with an active selection (highlight path) */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
         /* clicking elsewhere clears the selection */
         whaleui_render_set_pressed(w->render, 250, 150, 1);
         whaleui_render_set_pressed(w->render, 0, 0, 0);
@@ -272,6 +281,29 @@ int main(void)
             reinterpret_cast<whaleui_dom_element_t*>(ta->el));
         assert(txt != nullptr && std::strcmp(txt, "\nab") == 0);
         whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* page scroll via wheel: no scrollable ancestor -> the html root
+     * scrolls; notch vs touchpad pixel deltas both clamp correctly */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "page-scroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"height:800px;\"></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree->root->scroll_max > 0);
+        /* one notch down (dy=-1) -> 40px, 40px per notch */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        assert(w->render->scrolls[w->render->tree->root->el] == 40);
+        /* large pixel delta (touchpad) clamps at the max */
+        whaleui_render_handle_wheel(w->render, 150, 100, -1000.0f);
+        assert(w->render->scrolls[w->render->tree->root->el] ==
+               w->render->tree->root->scroll_max);
+        /* scrolling up clamps at 0 */
+        whaleui_render_handle_wheel(w->render, 150, 100, 1000.0f);
+        assert(w->render->scrolls[w->render->tree->root->el] == 0);
         whaleui_window_destroy(w);
     }
 

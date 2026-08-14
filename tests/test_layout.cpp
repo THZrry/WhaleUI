@@ -260,5 +260,52 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* text runs: <br> becomes a line break; height scales with lines */
+    {
+        whaleui_layout_tree_t* t = do_layout(
+            "<div style=\"width:100px;\">a<br>b<br>c</div>", 400, 300);
+        assert(t != nullptr);
+        whaleui_layout_node_t* d = find_tag(t->root, "div");
+        assert(d != nullptr);
+        whaleui_layout_node_t* tr = d->first_child;
+        assert(tr != nullptr && tr->is_text);
+        assert(tr->text == "a\nb\nc");
+        /* 3 lines at the default 16px font (16 * 1.2 per line) */
+        assert(tr->border.h == static_cast<int>(16 * 1.2f) * 3);
+        whaleui_layout_destroy(t);
+    }
+
+    /* page scroll: the html root scrolls when content exceeds the viewport */
+    {
+        const char* html = "<body><div style=\"height:800px;\"></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        std::map<lxb_dom_element*, int> scrolls;
+
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+        assert(t != nullptr);
+        assert(t->root->scroll_max == 500); /* 800 content - 300 viewport */
+        whaleui_layout_destroy(t);
+
+        /* scrolling the page shifts the root's children up */
+        whaleui_layout_tree_t* t0 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr);
+        assert(t0 != nullptr);
+        scrolls.clear();
+        scrolls[t0->root->el] = 200;
+        whaleui_layout_tree_t* t1 = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, &scrolls);
+        assert(t1 != nullptr);
+        assert(t1->root->scroll_max == 500);
+        whaleui_layout_node_t* d = find_tag(t1->root, "div");
+        assert(d != nullptr);
+        assert(d->border.y == t1->root->content.y - 200);
+        whaleui_layout_destroy(t1);
+        whaleui_layout_destroy(t0);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }

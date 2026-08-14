@@ -181,7 +181,8 @@ int position_kind(const std::string& p)
     return 0; /* static */
 }
 
-/* collect a text run (concatenated text children) for the renderer */
+/* collect a text run (concatenated text children) for the renderer.
+ * <br> elements produce a line break, matching browser behavior. */
 std::string collect_text(lxb_dom_element* el)
 {
     std::string out;
@@ -191,6 +192,13 @@ std::string collect_text(lxb_dom_element* el)
             const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
             if (s->data) {
                 out.append(reinterpret_cast<const char*>(s->data), s->length);
+            }
+        } else if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* e = lxb_dom_interface_element(n);
+            size_t elen = 0;
+            const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+            if (ename && elen == 2 && std::memcmp(ename, "br", 2) == 0) {
+                out += '\n';
             }
         }
         n = n->next;
@@ -341,10 +349,27 @@ struct Builder
             if (fs <= 0) {
                 fs = font_px > 0 ? font_px : 16;
             }
+            /* multi-line text (\n from <br> or textarea content): height
+             * scales with the line count, width with the longest line */
+            size_t max_line = 0, cur = 0, lines = 1;
+            for (size_t i = 0; i < n->text.size(); ++i) {
+                if (n->text[i] == '\n') {
+                    ++lines;
+                    if (cur > max_line) {
+                        max_line = cur;
+                    }
+                    cur = 0;
+                } else {
+                    ++cur;
+                }
+            }
+            if (cur > max_line) {
+                max_line = cur;
+            }
             n->border.x = cx;
             n->border.y = *cursor_y;
-            n->border.w = static_cast<int>(n->text.size() * fs * 0.5f);
-            n->border.h = static_cast<int>(fs * 1.2f);
+            n->border.w = static_cast<int>(max_line * fs * 0.5f);
+            n->border.h = static_cast<int>(fs * 1.2f) * static_cast<int>(lines);
             n->content = n->border;
             *cursor_y += n->border.h;
             return;
@@ -442,9 +467,12 @@ struct Builder
 
         /* scrollable container: lay children out shifted up by scroll_y.
          * The absolute child coords then match what the renderer paints
-         * (clipped to the container), and hit-testing needs no offset math. */
+         * (clipped to the container), and hit-testing needs no offset math.
+         * The root element (html) always scrolls: content taller than the
+         * viewport scrolls the page (browser default). */
         std::string ov = get(n->style, "overflow");
-        bool scrollable = ov == "auto" || ov == "scroll";
+        bool scrollable = ov == "auto" || ov == "scroll" ||
+                          (n == tree->root && tree->root->scroll_y > 0);
         int saved_cy = n->content.y;
         if (scrollable && n->scroll_y > 0) {
             n->content.y -= n->scroll_y;
@@ -730,9 +758,14 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     int cursor = 0;
     b.layout(n, 0, 0, viewport_w, viewport_h, 16, &cursor);
     /* the root element spans the whole viewport so its background covers the
-     * window even when the content is shorter than the viewport */
+     * window even when the content is shorter than the viewport; content
+     * taller than the viewport makes the page scrollable (html root) */
     n->border.h = viewport_h;
     n->content.h = viewport_h;
+    {
+        int cmax = cursor - viewport_h;
+        n->scroll_max = cmax > 0 ? cmax : 0;
+    }
     return tree;
 }
 
