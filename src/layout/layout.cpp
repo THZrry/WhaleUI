@@ -143,6 +143,30 @@ float flex_grow(const WhaleUIComputedStyle& s)
     return 0;
 }
 
+/* rough content width of a node: summed direct text runs + padding.
+ * Used to size auto-width flex row items so they don't collapse to 1px. */
+float estimate_content_width(whaleui_layout_node_t* k, float em)
+{
+    float fs = len_px(get(k->style, "font-size"), 0, em);
+    if (fs <= 0) {
+        fs = em;
+    }
+    float w = 0;
+    for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
+        if (c->is_text) {
+            w += static_cast<float>(c->text.size()) * fs * 0.5f;
+        }
+    }
+    /* padding left/right */
+    std::string p = get(k->style, "padding");
+    if (!p.empty()) {
+        float base = 0;
+        float l = len_px(p, base, em);
+        w += l * 2;
+    }
+    return w;
+}
+
 int position_kind(const std::string& p)
 {
     if (p == "absolute") {
@@ -378,7 +402,12 @@ struct Builder
         /* box width */
         int bw;
         if (w_auto) {
-            bw = avail_w - mx;
+            if (display_kind(get(n->style, "display")) == 2) {
+                /* inline / inline-block shrink to content */
+                bw = static_cast<int>(estimate_content_width(n, em)) + mx;
+            } else {
+                bw = avail_w - mx;
+            }
         } else {
             bw = static_cast<int>(wpx);
             if (!border_box) {
@@ -515,10 +544,16 @@ struct Builder
             bool is_auto = true;
             if (column) {
                 float h = len_or_auto(get(k->style, "height"), static_cast<float>(inner_h), em, &is_auto);
+                if (is_auto) {
+                    h = estimate_content_width(k, em); /* rough height proxy */
+                }
                 main_size[i] = k->is_text ? static_cast<int>(k->text.size() * fs * 0.5f)
                                           : static_cast<int>(h);
             } else {
                 float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
+                if (is_auto) {
+                    w = estimate_content_width(k, em);
+                }
                 main_size[i] = k->is_text ? static_cast<int>(k->text.size() * fs * 0.5f)
                                           : static_cast<int>(w);
             }
@@ -552,12 +587,14 @@ struct Builder
 
         /* leading space from justify-content */
         float lead = 0;
+        float between = gap; /* spacing between items (space-between) */
         if (justify == "center") {
             lead = free / 2;
         } else if (justify == "flex-end" || justify == "end") {
             lead = free;
         } else if (justify == "space-between") {
             lead = 0;
+            between = kids.size() > 1 ? free / (kids.size() - 1) : 0;
         } else if (justify == "space-around") {
             lead = kids.size() ? free / (kids.size() * 2) : 0;
         }
@@ -572,14 +609,13 @@ struct Builder
                 layout(k, n->content.x, n->content.y, inner_w, sz, font_px, &c);
                 /* advance by the item's ACTUAL box (auto-height content grows
                  * beyond the measured main size) */
-                pos = (k->border.y + k->border.h) - n->content.y + gap;
+                pos = (k->border.y + k->border.h) - n->content.y + between;
             } else {
                 int c = n->content.y;
                 layout(k, n->content.x + static_cast<int>(pos), n->content.y,
                        sz, inner_h, font_px, &c);
-                pos = (k->border.x + k->border.w) - n->content.x + gap;
+                pos = (k->border.x + k->border.w) - n->content.x + between;
                 /* align-items: stretch (default) / center / flex-end */
-                std::string align = get(n->style, "align-items");
                 if (align == "center") {
                     k->border.y += (inner_h - k->border.h) / 2;
                 } else if (align == "flex-end" || align == "end") {
@@ -589,9 +625,19 @@ struct Builder
                     k->border.h = inner_h;
                 }
             }
-            (void)align;
         }
-        kid_cursor = static_cast<int>(pos - gap);
+        if (column) {
+            kid_cursor = static_cast<int>(pos - between);
+        } else {
+            /* row: the container height is the tallest item */
+            int maxh = 0;
+            for (size_t i = 0; i < kids.size(); ++i) {
+                if (kids[i]->border.h > maxh) {
+                    maxh = kids[i]->border.h;
+                }
+            }
+            kid_cursor = maxh;
+        }
     }
 };
 

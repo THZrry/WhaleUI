@@ -569,11 +569,12 @@ unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def)
     return def;
 }
 
-/* render one text string at (x,y) with the given style attributes.
- * Shared by text runs and <select> controls. */
-void draw_text_at(whaleui_render_t* r, const std::string& text, int x, int y,
+/* render one text string inside the box (bx,by,bw,bh). align: 0=left,
+ * 1=center, 2=right. Shared by text runs and <select> controls. */
+void draw_text_at(whaleui_render_t* r, const std::string& text,
+                  int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
-                  bool bold, const Clip* clip)
+                  bool bold, int align, const Clip* clip)
 {
 #ifdef WHALEUI_BUILD_FULL
     if (fs <= 0) {
@@ -602,11 +603,18 @@ void draw_text_at(whaleui_render_t* r, const std::string& text, int x, int y,
     int tw = 0, th = 0;
     TTF_GetTextSize(t, &tw, &th);
     if (tw > 0 && th > 0) {
+        int tx = bx;
+        if (align == 1) {
+            tx = bx + (bw - tw) / 2;
+        } else if (align == 2) {
+            tx = bx + bw - tw;
+        }
+        int ty = by + (bh - th) / 2;
         SDL_Surface* surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
         if (surf) {
             SDL_FillSurfaceRect(surf, nullptr, 0);
             TTF_DrawSurfaceText(t, 0, 0, surf);
-            blend_surface(r->pixels, r->width, r->height, surf, x, y, clip, &color);
+            blend_surface(r->pixels, r->width, r->height, surf, tx, ty, clip, &color);
             SDL_DestroySurface(surf);
         }
     }
@@ -631,16 +639,21 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* clip)
     std::string fw = sget(n->style, "font-weight");
     bool bold = fw == "bold" || fw == "bolder" ||
                 (!fw.empty() && std::atoi(fw.c_str()) >= 600);
-    /* text-align within the box */
+    /* text-align aligns within the parent element's content box */
     std::string ta = sget(n->style, "text-align");
-    int tx = n->border.x;
+    int align = 0;
     if (ta == "center") {
-        tx = n->border.x + (n->border.w - static_cast<int>(n->text.size() * fs * 0.5f)) / 2;
+        align = 1;
     } else if (ta == "right") {
-        tx = n->border.x + n->border.w - static_cast<int>(n->text.size() * fs * 0.5f);
+        align = 2;
     }
-    int ty = n->border.y + (n->border.h - static_cast<int>(fs * 1.2f)) / 2;
-    draw_text_at(r, n->text, tx, ty, fs, family, color, bold, clip);
+    whaleui_layout_node_t* box = n;
+    if (n->parent && !n->parent->is_text) {
+        box = n->parent;
+    }
+    draw_text_at(r, n->text, box->content.x, box->content.y,
+                 box->content.w, box->content.h,
+                 fs, family, color, bold, align, clip);
 }
 
 /* --- <select> support --- */
@@ -705,11 +718,11 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
     }
     int fs = 13;
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-    int ty = n->content.y + (n->content.h - static_cast<int>(fs * 1.2f)) / 2;
-    draw_text_at(r, texts[sel], n->content.x + 2, ty, fs, "", fg, false, clip);
+    draw_text_at(r, texts[sel], n->content.x + 2, n->content.y,
+                 n->content.w - 20, n->content.h, fs, "", fg, false, 0, clip);
     /* arrow (▾) at the right edge */
-    draw_text_at(r, "\xe2\x96\xbe", n->content.x + n->content.w - 18, ty,
-                 fs, "", fg, false, clip);
+    draw_text_at(r, "\xe2\x96\xbe", n->content.x + n->content.w - 18, n->content.y,
+                 18, n->content.h, fs, "", fg, false, 0, clip);
 
     if (r->open_select == n) {
         int list_x = n->border.x;
@@ -740,13 +753,11 @@ void paint_select(whaleui_render_t* r, whaleui_layout_node_t* n, const Clip* cli
                 if (ita != r->theme_vars.end()) {
                     whaleui_render_parse_color(ita->second.c_str(), &acc);
                 }
-                draw_text_at(r, texts[i], list_x + 8,
-                             iy + (kSelectItemH - static_cast<int>(fs * 1.2f)) / 2,
-                             fs, "", acc, true, clip);
+                draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
+                             kSelectItemH, fs, "", acc, true, 0, clip);
             } else {
-                draw_text_at(r, texts[i], list_x + 8,
-                             iy + (kSelectItemH - static_cast<int>(fs * 1.2f)) / 2,
-                             fs, "", fg, false, clip);
+                draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
+                             kSelectItemH, fs, "", fg, false, 0, clip);
             }
         }
         /* bottom border of the list */
