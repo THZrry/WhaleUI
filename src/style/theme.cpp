@@ -1,4 +1,4 @@
-/* Theme styles: Fluent / Metro / Material / Classic / Aero / GTK / macOS.
+﻿/* Theme styles: Fluent / Metro / Material / Classic / Aero / GTK / macOS.
  * Each style is a default stylesheet (shared structure, per-style control
  * radius + colors) plus a light/dark variable table. */
 
@@ -41,7 +41,7 @@ const ThemeDef* find_def(const char* name)
 
 void base_css(const ThemeDef& d, std::string& css)
 {
-    char rad[64];
+    char rad[512];
     css =
         "html, body { margin: 0; padding: 0; }\n"
         "html { background-color: var(--bg); }\n"
@@ -64,6 +64,8 @@ void base_css(const ThemeDef& d, std::string& css)
         "button { background: var(--btn-bg); color: var(--btn-fg);\n"
         "         border: none; padding: 6px 16px; border-radius: %dpx;\n"
         "         font-size: 13px; font-weight: 600; cursor: pointer; }\n"
+        "button:hover { background: var(--btn-bg-hover); }\n"
+        "a:hover { text-decoration: underline; }\n"
         "input, select, textarea { background: var(--field); color: var(--fg);\n"
         "         border: 1px solid var(--border); padding: 5px 10px;\n"
         "         border-radius: %dpx; font-size: 13px; }\n",
@@ -84,11 +86,31 @@ void base_css(const ThemeDef& d, std::string& css)
 }
 
 /* per-style light/dark variable tables */
+namespace {
+/* lighten a #RRGGBB color by mixing 25% white */
+void brighten_accent(const std::string& accent, std::string& out)
+{
+    unsigned int c = 0;
+    if (accent[0] != '#' || std::sscanf(accent.c_str() + 1, "%x", &c) != 1) {
+        out = accent;
+        return;
+    }
+    unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    r = static_cast<unsigned>((r * 3 + 255) / 4);
+    g = static_cast<unsigned>((g * 3 + 255) / 4);
+    b = static_cast<unsigned>((b * 3 + 255) / 4);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
+    out = buf;
+}
+} // namespace
+
 void fill_vars(const ThemeDef& d, bool dark, const char* accent,
                std::map<std::string, std::string>& out)
 {
     out["--accent"] = accent && *accent ? accent : "#0067c0";
     out["--accent-fg"] = "#ffffff";
+    brighten_accent(out["--accent"], out["--accent-hover"]);
     /* default surface tokens, overridden per style below */
     out["--bg"] = dark ? "#202020" : "#f3f3f3";
     out["--fg"] = dark ? "#f5f5f5" : "#1a1a1a";
@@ -98,6 +120,7 @@ void fill_vars(const ThemeDef& d, bool dark, const char* accent,
     out["--muted"] = dark ? "#9f9f9f" : "#767676";
     out["--btn-bg"] = out["--accent"];
     out["--btn-fg"] = "#ffffff";
+    out["--btn-bg-hover"] = out["--accent-hover"];
 
     const char* style = d.name;
     if (std::strcmp(style, "metro") == 0) {
@@ -129,6 +152,7 @@ void fill_vars(const ThemeDef& d, bool dark, const char* accent,
         out["--muted"] = dark ? "#b0b0b0" : "#404040";
         out["--btn-bg"] = dark ? "#5a5a5a" : "#d4d0c8";
         out["--btn-fg"] = dark ? "#e0e0e0" : "#000000";
+        out["--btn-bg-hover"] = dark ? "#6a6a6a" : "#e8e4dc";
     } else if (std::strcmp(style, "aero") == 0) {
         out["--bg"] = dark ? "#1b1b1b" : "#eef4fb";
         out["--fg"] = dark ? "#e0e8f0" : "#1a1a1a";

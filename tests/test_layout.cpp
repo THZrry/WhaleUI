@@ -1,4 +1,4 @@
-// test_layout: box model + block flow + basic flex.
+﻿// test_layout: box model + block flow + basic flex.
 #include "whaleui.h"
 #include "layout/layout.h"
 
@@ -13,7 +13,7 @@ whaleui_layout_tree_t* do_layout(const char* html, int w, int h)
 {
     whaleui_dom_document_t* doc = whaleui_dom_parse_html(html, std::strlen(html));
     assert(doc != nullptr);
-    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h);
+    return whaleui_layout_compute(doc, nullptr, 0, nullptr, w, h, nullptr);
 }
 
 /* find first element node with the given tag, depth-first */

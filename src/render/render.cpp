@@ -1139,14 +1139,29 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     return 0;
 }
 
+extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
+{
+    if (!r || !r->tree) {
+        return;
+    }
+    whaleui_layout_node_t* hit = hit_test(r->tree->root, x, y);
+    lxb_dom_element* el = hit ? hit->el : nullptr;
+    if (el != r->hover_el) {
+        r->hover_el = el;
+        r->has_dirty = 1;
+    }
+}
+
 extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
-{    if (!r || !doc) {
+{
+    if (!r || !doc) {
         return -1;
     }
     if (r->has_dirty || !r->tree) {
         whaleui_layout_destroy(r->tree);
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
-                                         &r->theme_vars, r->width, r->height);
+                                         &r->theme_vars, r->width, r->height,
+                                         r->hover_el);
         r->has_dirty = 0;
     }
     if (!r->tree) {

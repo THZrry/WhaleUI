@@ -1,4 +1,4 @@
-// test_style: CSS API contract tests.
+﻿// test_style: CSS API contract tests.
 #include "whaleui.h"
 #include "style/css.h"  /* rule struct for element access in this white-box test */
 #include "style/style.h" /* selector matching + cascade + var resolution */
@@ -120,20 +120,21 @@ int main(void)
         lxb_dom_element* body_el = reinterpret_cast<lxb_dom_element*>(body);
 
         /* matching */
-        assert(whaleui_style_match(".card", card_el));
-        assert(whaleui_style_match("#card", card_el));
-        assert(whaleui_style_match("div.card", card_el));
-        assert(whaleui_style_match("body #card", card_el));
-        assert(whaleui_style_match("div .note", p_el));
-        assert(whaleui_style_match("body > div", card_el));
-        assert(!whaleui_style_match(".nope", card_el));
-        assert(!whaleui_style_match("span", card_el));
-        assert(whaleui_style_match(".note:hover", p_el)); /* pseudo stripped */
+        assert(whaleui_style_match(".card", card_el, nullptr));
+        assert(whaleui_style_match("#card", card_el, nullptr));
+        assert(whaleui_style_match("div.card", card_el, nullptr));
+        assert(whaleui_style_match("body #card", card_el, nullptr));
+        assert(whaleui_style_match("div .note", p_el, nullptr));
+        assert(whaleui_style_match("body > div", card_el, nullptr));
+        assert(!whaleui_style_match(".nope", card_el, nullptr));
+        assert(!whaleui_style_match("span", card_el, nullptr));
+        assert(whaleui_style_match(".note:hover", p_el, p_el));    /* hover active */
+        assert(!whaleui_style_match(".note:hover", p_el, nullptr)); /* no hover */
         /* regression: a bare tag selector must NOT match descendants */
-        assert(!whaleui_style_match("body", card_el));
-        assert(!whaleui_style_match("html", card_el));
-        assert(!whaleui_style_match("div", p_el));
-        assert(!whaleui_style_match("div", body_el));
+        assert(!whaleui_style_match("body", card_el, nullptr));
+        assert(!whaleui_style_match("html", card_el, nullptr));
+        assert(!whaleui_style_match("div", p_el, nullptr));
+        assert(!whaleui_style_match("div", body_el, nullptr));
 
         /* media */
         assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800));
@@ -159,7 +160,7 @@ int main(void)
                                         rules, count, vars);
         assert(vars["--bg"] == "#ffffff");
 
-        WhaleUIComputedStyle cs = whaleui_style_compute(card_el, rules, count, vars);
+        WhaleUIComputedStyle cs = whaleui_style_compute(card_el, rules, count, vars, nullptr);
         assert(cs["color"] == "purple");      /* !important wins */
         assert(cs["font-size"] == "12px");    /* inherited default from div */
         assert(cs["background"] == "#ffffff");/* var() resolved */
@@ -167,10 +168,10 @@ int main(void)
 
         /* inline style overrides non-important rules */
         assert(whaleui_dom_set_style(card, "color", "yellow") == 0);
-        cs = whaleui_style_compute(card_el, rules, count, vars);
+        cs = whaleui_style_compute(card_el, rules, count, vars, nullptr);
         assert(cs["color"] == "purple"); /* !important still wins */
         assert(whaleui_dom_set_style(card, "font-size", "20px") == 0);
-        cs = whaleui_style_compute(card_el, rules, count, vars);
+        cs = whaleui_style_compute(card_el, rules, count, vars, nullptr);
         assert(cs["font-size"] == "20px");
 
         whaleui_css_rules_destroy(rules, count);

@@ -62,6 +62,9 @@ struct whaleui_render
     int open_select_hover;
     std::map<struct lxb_dom_element*, int> select_index; /* select -> option */
 
+    /* element under the mouse (for :hover rules) */
+    struct lxb_dom_element* hover_el;
+
     /* painted-background color (body background, cached) */
     unsigned int bg_color;
 };
@@ -73,6 +76,9 @@ typedef struct whaleui_render whaleui_render_t;
  * library), 0 otherwise (the click may still have toggled a select open). */
 int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                                 const char** out_value);
+
+/* Update the hovered element from a mouse position; repaints when changed. */
+void whaleui_render_set_hover(whaleui_render_t* r, int x, int y);
 
 /* Create/destroy a per-window render context (device/window borrowed).
  * The window must already be claimed for the GPU device. */

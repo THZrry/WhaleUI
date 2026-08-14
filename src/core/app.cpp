@@ -126,6 +126,16 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 }
                 break;
             }
+            case SDL_EVENT_MOUSE_MOTION:
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->render && SDL_GetWindowID(win->sdl) == e.motion.windowID) {
+                        whaleui_render_set_hover(win->render,
+                                                 static_cast<int>(e.motion.x),
+                                                 static_cast<int>(e.motion.y));
+                        break;
+                    }
+                }
+                break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button == SDL_BUTTON_LEFT) {
                     for (whaleui_window_t* win : app->windows) {

@@ -112,7 +112,7 @@ int main(void)
         /* locate the select box via a fresh layout pass */
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             w->document, w->render->rules, w->render->rule_count,
-            &w->render->theme_vars, 300, 200);
+            &w->render->theme_vars, 300, 200, nullptr);
         whaleui_layout_node_t* sel = nullptr;
         for (auto& n : t->arena) {
             if (n.visible && n.el) {

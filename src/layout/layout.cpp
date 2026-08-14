@@ -204,6 +204,7 @@ struct Builder
     const whaleui_css_rule_t* rules;
     size_t rule_count;
     std::map<std::string, std::string> vars;
+    lxb_dom_element* hover_el;
 
     whaleui_layout_node_t* new_node()
     {
@@ -229,7 +230,7 @@ struct Builder
         std::memset(n->padding, 0, sizeof(n->padding));
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
-        n->style = whaleui_style_compute(el, rules, rule_count, vars);
+        n->style = whaleui_style_compute(el, rules, rule_count, vars, hover_el);
 
         /* inherit font-size / color / font-family from parent */
         if (parent) {
@@ -656,7 +657,8 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     whaleui_dom_document_t* doc,
     const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>* theme_vars,
-    int viewport_w, int viewport_h)
+    int viewport_w, int viewport_h,
+    lxb_dom_element* hover_el)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -675,6 +677,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.tree = tree;
     b.rules = rules;
     b.rule_count = count;
+    b.hover_el = hover_el;
     if (theme_vars) {
         b.vars = *theme_vars;
     }
