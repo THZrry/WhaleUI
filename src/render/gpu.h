@@ -152,6 +152,14 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g);
 void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
                       float radius, unsigned int color, const int* clip);
 
+/* push a quad whose four corners carry distinct colors (c0=TL, c1=TR,
+ * c2=BL, c3=BR); the solid pipeline interpolates them across the quad, so
+ * linear CSS gradients fall out of the rasterizer for free. */
+void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
+                               float h, unsigned int c0, unsigned int c1,
+                               unsigned int c2, unsigned int c3,
+                               const int* clip);
+
 /* push a soft box-shadow: a rounded-rect shape (radius, px, framebuffer
  * coords) blurred by `blur` px and drawn with `color` (0xAARRGGBB) under
  * the element. The blur is the mipmap approximation: the shape is painted

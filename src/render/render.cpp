@@ -42,6 +42,11 @@ namespace {
  * call appends a batched command instead of writing CPU pixels. */
 whaleui_gpu_t* g_gpu = nullptr;
 
+/* backdrop-filter pass C runs only on full repaints (flush skips it on
+ * scroll/partial frames); paint_node must then paint the backdrop element's
+ * own background normally instead of leaving the region transparent. */
+int g_backdrop_active = 0;
+
 /* shadow parsing (defined below; forward-declared for paint_text) */
 int parse_shadow_any(const std::string& v, int& ox, int& oy, int& blur,
                      unsigned int& col);
@@ -240,7 +245,8 @@ int parse_gradient(const std::string& v, Gradient& out)
     bool lin = li != std::string::npos &&
                (ri == std::string::npos || li < ri);
     size_t start = lin ? li : ri;
-    size_t open = start + (lin ? 16 : 17);
+    /* "linear-gradient(" / "radial-gradient(" are both 16 chars */
+    size_t open = start + 16;
     size_t depth = 1;
     size_t end = std::string::npos;
     for (size_t i = open; i < v.size(); ++i) {
@@ -412,22 +418,89 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    const Clip* clip)
 {
     if (g_gpu) {
-        /* GPU path: linear two-color gradients come free via vertex-color
-         * interpolation; multi-stop/radial fall back to the first stop.
-         * ponytail: a dedicated gradient shader would cover all cases. */
-        unsigned int c = g.stops.empty() ? 0 : g.stops[0].c;
-        int c2[4];
-        const int* cp = nullptr;
-        if (clip) {
-            c2[0] = clip->x;
-            c2[1] = clip->y;
-            c2[2] = clip->w;
-            c2[3] = clip->h;
-            cp = c2;
+        /* linear gradients: corner colors (projected onto the gradient
+         * axis) interpolated by the solid pipeline - free from the
+         * rasterizer. Stops beyond the first two approximate with the
+         * first/last color (ponytail: per-stop segments when a page needs
+         * them). Radial needs per-pixel work the graphics pipeline cannot
+         * do (SDL 3.4 D3D12 graphics SRV is broken), so it is skipped -
+         * the flat element background underneath stays correct. */
+        if (g.type == 0 && g.stops.size() >= 2) {
+            float rad = g.angle_deg * 3.14159265f / 180.0f;
+            float ddx = std::sin(rad), ddy = -std::cos(rad);
+            float ccx = x + w * 0.5f, ccy = y + h * 0.5f;
+            float t0 = 1e30f, t1 = -1e30f;
+            const float corners[4][2] = {
+                {static_cast<float>(x), static_cast<float>(y)},
+                {static_cast<float>(x + w), static_cast<float>(y)},
+                {static_cast<float>(x), static_cast<float>(y + h)},
+                {static_cast<float>(x + w), static_cast<float>(y + h)}};
+            for (int i = 0; i < 4; ++i) {
+                float t = (corners[i][0] - ccx) * ddx +
+                          (corners[i][1] - ccy) * ddy;
+                if (t < t0) {
+                    t0 = t;
+                }
+                if (t > t1) {
+                    t1 = t;
+                }
+            }
+            float span = t1 - t0;
+            if (span <= 0.0f) {
+                span = 1.0f;
+            }
+            auto tcol = [&](float px, float py) {
+                float t = ((px - ccx) * ddx + (py - ccy) * ddy - t0) / span;
+                return grad_color(g, t);
+            };
+            unsigned int c_tl = tcol(static_cast<float>(x), static_cast<float>(y));
+            unsigned int c_tr = tcol(static_cast<float>(x + w), static_cast<float>(y));
+            unsigned int c_bl = tcol(static_cast<float>(x), static_cast<float>(y + h));
+            unsigned int c_br = tcol(static_cast<float>(x + w), static_cast<float>(y + h));
+            int c2[4];
+            const int* cp = nullptr;
+            if (clip) {
+                c2[0] = clip->x;
+                c2[1] = clip->y;
+                c2[2] = clip->w;
+                c2[3] = clip->h;
+                cp = c2;
+            }
+            whaleui_gpu_gradient_rect(g_gpu, static_cast<float>(x),
+                                      static_cast<float>(y),
+                                      static_cast<float>(w),
+                                      static_cast<float>(h), c_tl, c_tr, c_bl,
+                                      c_br, cp);
+        } else if (g.type == 1 && g.stops.size() >= 2) {
+            /* radial: concentric rounded-rect ellipses, alpha fading
+             * outwards - a coarse approximation of the per-pixel ellipse
+             * distance (10 layers, GPU-trivial) */
+            float rx = g.rx > 0 ? g.rx : w * 0.5f;
+            float ry = g.ry > 0 ? g.ry : h * 0.5f;
+            float rcx = g.cx > 1.0f ? g.cx - 100.0f : x + g.cx * w;
+            float rcy = g.cy * h + y;
+            int c2[4];
+            const int* cp = nullptr;
+            if (clip) {
+                c2[0] = clip->x;
+                c2[1] = clip->y;
+                c2[2] = clip->w;
+                c2[3] = clip->h;
+                cp = c2;
+            }
+            const int kLayers = 10;
+            for (int i = kLayers; i >= 1; --i) {
+                float t = static_cast<float>(i) / kLayers;
+                unsigned int c = grad_color(g, t);
+                if (((c >> 24) & 0xFF) == 0) {
+                    continue;
+                }
+                float sx = rcx - rx * t;
+                float sy = rcy - ry * t;
+                whaleui_gpu_rect(g_gpu, sx, sy, rx * 2.0f * t,
+                                 ry * 2.0f * t, rx * t, c, cp);
+            }
         }
-        whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
-                         static_cast<float>(w), static_cast<float>(h),
-                         0.0f, c, cp);
         return;
     }
     if (w <= 0 || h <= 0 || g.stops.empty()) {
@@ -3102,6 +3175,11 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             tc = true;
         } else if (!tc && sget(n->style, "position") == "fixed") {
             tc = true;
+        } else if (!tc && sget(n->style, "position") == "sticky") {
+            /* sticky pins the box at top:N while scrolling, so its painted
+             * box leaves the layout bounds - culling on the laid-out
+             * position would drop it (and its subtree) mid-scroll */
+            tc = true;
         }
     }
     /* a selection endpoint outside the repaint region must still receive
@@ -3206,12 +3284,13 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     /* backdrop-filter: blur the already-painted background under this box.
      * GPU path: pass C (in gpu_flush) overwrites the region with the
      * blurred geometry and blends the body color on top, so the plain body
-     * paint below is skipped. CPU path has no access to the GPU geometry:
-     * the body background still paints (ponytail: real CPU backdrop blur
-     * when a CPU framebuffer path needs it). */
+     * paint below is skipped - but only on full repaints (scroll/partial
+     * frames skip pass C, so the body background paints normally). CPU
+     * path has no access to the GPU geometry: the body background still
+     * paints (ponytail: real CPU backdrop blur when needed). */
     std::string bdf = sget(n->style, "backdrop-filter");
     bool backdrop = !bdf.empty() && bdf != "none";
-    if (backdrop && g_gpu) {
+    if (backdrop && g_gpu && g_backdrop_active) {
         float bblur = 8.0f;
         size_t bp = bdf.find("blur(");
         if (bp != std::string::npos) {
@@ -4642,6 +4721,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::fill(r->text_layer.begin(), r->text_layer.end(), 0);
     }
     g_gpu = r->gpu;
+    g_backdrop_active = (scroll_dy == 0 && !partial) ? 1 : 0;
     int sel_lo = 0, sel_hi = 0;
     if (!r->bounds_valid) {
         compute_paint_bounds(r->tree->root);

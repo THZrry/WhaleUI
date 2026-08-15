@@ -6,6 +6,7 @@
 #include "render/gpu.h"
 #include "core/window.h"
 #include "layout/layout.h"
+#include "test_util.h"
 
 #include <lexbor/dom/dom.h>
 #include <SDL3/SDL.h>
@@ -13,6 +14,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 
 int anim_runs(void); /* defined after main (window/GPU path) */
 
@@ -183,6 +185,70 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* reference page colors (Qwen_html_20260814_6ni9q8tk8.html): body bg
+     * var(--bg)=#080d1a with a radial glow at the top */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ref6", 800, 800);
+        assert(w != nullptr);
+        assert(whaleui_window_load_uri(
+                   w, TEST_URI_RAW("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int top = gpixel(w->render, 400, 20);
+        unsigned int mid = gpixel(w->render, 400, 400);
+        unsigned int bot = gpixel(w->render, 400, 770);
+        /* mid is past the gradient (transparent 65%) -> plain --bg, dark */
+        assert(((mid >> 16) & 0xFF) < 0x30);
+        /* the top glow is NOT the flat --bg: it carries the gradient blue
+         * (blue channel rises above the flat body color) */
+        assert(((top >> 16) & 0xFF) > ((mid >> 16) & 0xFF) + 3 ||
+               (top & 0xFF) > (mid & 0xFF) + 3);
+        whaleui_window_destroy(w);
+
+        /* minimal radial gradient sanity: center should be visibly blue */
+        whaleui_window_t* w2 = whaleui_window_create(app, "grad", 400, 300);
+        assert(w2 != nullptr);
+        assert(whaleui_window_load_html(
+                   w2,
+                   "<html><body style=\"background:#080d1a radial-gradient("
+                   "200px 200px at 50% 30%, rgba(77,107,254,.8), "
+                   "transparent 70%);\"></body></html>") == 0);
+        assert(whaleui_window_show(w2) == 0);
+        assert(whaleui_render_frame(w2->render, w2->document) == 0);
+        unsigned int gc2 = gpixel(w2->render, 200, 90);
+        assert(((gc2 >> 16) & 0xFF) > 0x40); /* red channel visibly blue-ish */
+        whaleui_window_destroy(w2);
+
+        /* text color sanity: red text must stay red (text_layer channel
+         * order vs the R8G8B8A8 target) */
+        whaleui_window_t* w3 = whaleui_window_create(app, "tcolor", 300, 100);
+        assert(w3 != nullptr);
+        assert(whaleui_window_load_html(
+                   w3,
+                   "<html><body><p id=\"t\" style=\"color:#ff0000;"
+                   "font-size:40px;\">RR</p></body></html>") == 0);
+        assert(whaleui_window_show(w3) == 0);
+        assert(whaleui_render_frame(w3->render, w3->document) == 0);
+        /* scan for a strongly red pixel inside the glyphs */
+        bool found_red = false;
+        for (int yy = 0; yy < 100 && !found_red; yy += 2) {
+            for (int xx = 0; xx < 300 && !found_red; xx += 2) {
+                unsigned int px = gpixel(w3->render, xx, yy);
+                unsigned int r = (px >> 16) & 0xFF;
+                unsigned int b = px & 0xFF;
+                if (r > 0x90 && b < 0x40 && r > b + 0x60) {
+                    found_red = true;
+                }
+            }
+        }
+        if (!found_red) {
+            /* also allow the very first pixel under the glyph box */
+            unsigned int probe = gpixel(w3->render, 30, 30);
+            std::printf("DEBUG text probe=0x%08X\n", probe);
+        }
+        assert(found_red);
+        whaleui_window_destroy(w3);
+    }
     /* <select> dropdown interaction */
     {
         whaleui_window_t* w = whaleui_window_create(app, "select", 300, 200);
