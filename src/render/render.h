@@ -97,6 +97,9 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
+    /* horizontal scroll for single-line inputs (content wider than the
+     * box): the caret scrolls the text sideways, never the box */
+    std::map<struct lxb_dom_element*, int> hscrolls;
     /* last-frame scroll snapshot: used to detect pure scroll deltas so the
      * frame can shift the previous image instead of repainting everything */
     std::map<struct lxb_dom_element*, int> last_scrolls;

@@ -164,6 +164,12 @@ after_build(function (target)
         if os.isfile(dxildll) then
             os.cp(dxildll, target:targetdir())
         end
+        -- runtime CJK dictionary (word segmentation), same search as the
+        -- loader: exe dir first, then ./res relative to the cwd
+        local dict = os.projectdir() .. "/res/whaleui_dict.bin"
+        if os.isfile(dict) then
+            os.cp(dict, target:targetdir() .. "/whaleui_dict.bin")
+        end
     end
 end)
 

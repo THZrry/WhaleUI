@@ -861,12 +861,35 @@ struct Builder
                            n->style.find("height") == n->style.end()) {
                     /* textarea: fixed default height (browser-like); the
                      * content scrolls inside (overflow:auto) instead of
-                     * growing the control as lines are added */
+                     * growing the control as lines are added. Set even when
+                     * a width is present (the width block below is gated on
+                     * an absent width, so this must be its own check). */
                     n->style["width"] = "12em";
                     n->style["height"] = "60px";
                 } else {
                     n->style["width"] = "12em";
                 }
+            }
+        }
+        /* textarea default height must apply regardless of the width check
+         * above (an explicit width skips that block entirely) */
+        if (tname0 && tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
+            n->style.find("height") == n->style.end() && input_kind(n->el) == 0) {
+            n->style["height"] = "60px";
+        }
+        /* contenteditable elements default to inline, whose width follows
+         * the text: the box would stretch with every typed character (the
+         * demo's editable span grew sideways while typing). Give them the
+         * form-control treatment - inline-block + a fixed default width -
+         * so typing wraps instead. */
+        if (tname0 && n->style.find("width") == n->style.end()) {
+            size_t alen = 0;
+            const lxb_char_t* ce = lxb_dom_element_get_attribute(
+                n->el, (const lxb_char_t*)"contenteditable", 15, &alen);
+            if (ce && alen > 0 && !(alen == 5 &&
+                                    std::memcmp(ce, "false", 5) == 0)) {
+                n->style["width"] = "12em";
+                n->style["display"] = "inline-block";
             }
         }
 

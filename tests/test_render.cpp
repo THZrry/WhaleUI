@@ -1657,6 +1657,225 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* editable boxes keep their width when the value grows: input/textarea
+     * have fixed widths, and a contenteditable span gets a default width
+     * instead of stretching with every typed character */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "no-grow", 400, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body>"
+            "<input id=\"a\" value=\"x\">"
+            "<textarea id=\"t\">x</textarea>"
+            "<span id=\"s\" contenteditable=\"true\">x</span>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_el = [](whaleui_layout_tree_t* t, const char* tag) {
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == std::strlen(tag) &&
+                    std::memcmp(name, tag, len) == 0) {
+                    return &n;
+                }
+            }
+            return (whaleui_layout_node_t*)nullptr;
+        };
+        whaleui_layout_node_t* inp = find_el(w->render->tree, "input");
+        whaleui_layout_node_t* ta = find_el(w->render->tree, "textarea");
+        whaleui_layout_node_t* sp = find_el(w->render->tree, "span");
+        assert(inp != nullptr && ta != nullptr && sp != nullptr);
+        int w0[3] = {inp->border.w, ta->border.w, sp->border.w};
+        /* grow every value */
+        const char* long_v =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        lxb_dom_element_set_attribute(inp->el, (const lxb_char_t*)"value", 5,
+                                      (const lxb_char_t*)long_v,
+                                      std::strlen(long_v));
+        lxb_dom_element_set_attribute(ta->el, (const lxb_char_t*)"value", 5,
+                                      (const lxb_char_t*)long_v,
+                                      std::strlen(long_v));
+        lxb_dom_node* cn = sp->el->node.first_child;
+        while (cn) {
+            lxb_dom_node* nx = cn->next;
+            lxb_dom_node_remove(cn);
+            lxb_dom_node_destroy(cn);
+            cn = nx;
+        }
+        lxb_dom_text* tn = lxb_dom_document_create_text_node(
+            sp->el->node.owner_document, (const lxb_char_t*)long_v,
+            std::strlen(long_v));
+        lxb_dom_node_insert_child(&sp->el->node, lxb_dom_interface_node(tn));
+        w->render->has_dirty = 1;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        inp = find_el(w->render->tree, "input");
+        ta = find_el(w->render->tree, "textarea");
+        sp = find_el(w->render->tree, "span");
+        assert(inp != nullptr && ta != nullptr && sp != nullptr);
+        /* widths unchanged: no stretching while typing */
+        assert(inp->border.w == w0[0]);
+        assert(ta->border.w == w0[1]);
+        assert(sp->border.w == w0[2]);
+        whaleui_window_destroy(w);
+    }
+
+    /* real double-click sequence (press-1, release, press-2, drag left):
+     * the selected word must not shrink away on the anchor side */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dbl-real", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">hello world foo</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello ", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int xw = run->border.x + tw + 4; /* inside "world" */
+        /* click 1 (caret only) then click 2 (word select) */
+        whaleui_render_set_pressed_ex(w->render, xw, y, 1, 1, 0);
+        whaleui_render_set_pressed_ex(w->render, xw, y, 0, 1, 0);
+        whaleui_render_set_pressed_ex(w->render, xw, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
+        /* drag left: the right edge (world) stays selected */
+        int tw1 = 0;
+        text_size(w->render, "hel", fs, family, bold, &tw1, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw1 + 2, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 11);
+        /* drag back right: the left edge stays at 0 */
+        int tw2 = 0;
+        text_size(w->render, "hello world ", fs, family, bold, &tw2, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw2 + 4, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 15);
+        whaleui_window_destroy(w);
+    }
+
+    /* textarea double-click + drag left behaves the same (editable path) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dbl-ta", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "hello world foo</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello ", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int xw = run->border.x + tw + 4;
+        whaleui_render_set_pressed_ex(w->render, xw, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
+        int tw1 = 0;
+        text_size(w->render, "hel", fs, family, bold, &tw1, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw1 + 2, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 11);
+        whaleui_window_destroy(w);
+    }
+
+    /* a narrow single-line input scrolls its content horizontally so the
+     * caret stays visible (the box never grows) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "inp-hscroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:80px\" "
+            "value=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\">"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        /* caret at the start: no scroll needed */
+        assert(w->render->sel_anchor == 0);
+        assert(w->render->hscrolls[inp->el] == 0);
+        /* jumping to the end scrolls the content to reveal the caret */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_END, 1, 0);
+        assert(w->render->sel_anchor > 0);
+        assert(w->render->hscrolls[inp->el] > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* wheel + scrollbar drag scroll a tall textarea (fixed height) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-scroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "line1&#10;line2&#10;line3&#10;line4&#10;line5&#10;line6</textarea>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 && std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr && ta->scroll_max > 0);
+        /* wheel over the textarea scrolls it */
+        whaleui_render_handle_wheel(w->render, ta->border.x + 10,
+                                    ta->border.y + 10, -1.0f);
+        assert(w->render->scrolls[ta->el] > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* scrollbar drag scrolls it too */
+        int track_x = ta->border.x + ta->border.w - 4;
+        int before = w->render->scrolls[ta->el];
+        whaleui_render_set_pressed(w->render, track_x, ta->border.y + 5, 1);
+        assert(w->render->drag_scroll_el == ta->el);
+        whaleui_render_set_hover(w->render, track_x, ta->border.y + ta->border.h - 2);
+        whaleui_render_set_pressed_ex(w->render, track_x,
+                                      ta->border.y + ta->border.h - 2, 0, 1, 0);
+        assert(w->render->scrolls[ta->el] > before);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     anim_runs();
     return 0;

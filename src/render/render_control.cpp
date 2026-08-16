@@ -168,12 +168,46 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     ty += off_y;
     int th = text_line_h(r, fs, family, bold);
 
+    /* single-line input: content scrolls horizontally with the caret and is
+     * clipped to the content box (long values never stretch or spill) */
+    int hx = 0;
+    Clip iclip;
+    bool clip_input = false;
+    if (tag_eq(el, "input")) {
+        auto hi = r->hscrolls.find(el);
+        hx = hi == r->hscrolls.end() ? 0 : hi->second;
+        tx -= hx;
+        if (clip && n->content.w > 0) {
+            iclip = *clip;
+            int x0 = n->content.x + off_x;
+            int y0 = n->content.y + off_y;
+            int x1 = x0 + n->content.w;
+            int y1 = y0 + n->content.h;
+            if (iclip.x < x0) {
+                iclip.w -= x0 - iclip.x;
+                iclip.x = x0;
+            }
+            if (iclip.x + iclip.w > x1) {
+                iclip.w = x1 - iclip.x;
+            }
+            if (iclip.y < y0) {
+                iclip.h -= y0 - iclip.y;
+                iclip.y = y0;
+            }
+            if (iclip.y + iclip.h > y1) {
+                iclip.h = y1 - iclip.y;
+            }
+            clip_input = iclip.w > 0 && iclip.h > 0;
+        }
+    }
+    const Clip* ic = clip_input ? &iclip : clip;
+
     if (tag_eq(el, "input")) {
         /* input has no text children: paint the value here, always */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-        draw_text_at(r, val, n->content.x + off_x, n->content.y,
+        draw_text_at(r, val, n->content.x - hx + off_x, n->content.y,
                      n->content.w, n->content.h,
-                     fs, family, fg, style, 0, el, clip);
+                     fs, family, fg, style, 0, el, ic);
     }
     if (focused) {
         size_t a = 0, b = 0;
@@ -196,7 +230,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             for (size_t i = 0; i < rects.size(); ++i) {
                 fill_rect(r->pixels, r->fb_w, r->fb_h,
                           tx + rects[i].x, ty + rects[i].y,
-                          rects[i].w, rects[i].h, hl, clip);
+                          rects[i].w, rects[i].h, hl, ic);
             }
         }
         size_t caret = static_cast<size_t>(r->sel_focus);
@@ -205,14 +239,14 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         }
         /* keep the IME candidate window anchored at the caret */
         update_ime_area(r, val, fs, family, bold, caret, tx, ty);
-        paint_caret(r, tx, ty, val, fs, family, bold, caret, clip);
+        paint_caret(r, tx, ty, val, fs, family, bold, caret, ic);
         if (!r->compose.empty()) {
             unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
             unsigned int comp = (0xC8 << 24) | (fg & 0x00FFFFFF);
             int cxx = 0, cyy = 0, chh = 16;
             caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
             draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
-                         fs, family, comp, style, 0, el, clip);
+                         fs, family, comp, style, 0, el, ic);
         }
     }
 }

@@ -18,11 +18,11 @@
 /* Unicode categories for accurate word/separator classification in every
  * script (full build only; lite/minimal keep the dependency-free table) */
 #include <utf8proc.h>
-/* compact CJK dictionaries for word navigation: full ~20k words, lite ~1k.
- * minimal builds skip segmentation (per-hanzi stepping, no dictionary). */
-#include "render/cjk_dict_full.h"
-#elif defined(WHALEUI_BUILD_LITE)
-#include "render/cjk_dict_lite.h"
+#endif
+/* runtime CJK dictionary (res/whaleui_dict.bin): full + lite builds use it
+ * for word segmentation; minimal builds skip segmentation entirely */
+#if defined(WHALEUI_BUILD_FULL) || defined(WHALEUI_BUILD_LITE)
+#include "render/cjk_dict.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -570,7 +570,13 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty);
     int off = node_scroll_off(r, hit);
-    return byte_at_text(r, val, fs, family, bold, x - tx, y - ty - off);
+    /* single-line input content scrolls horizontally with the caret */
+    int hx = 0;
+    if (tag_eq(el, "input")) {
+        auto hi = r->hscrolls.find(el);
+        hx = hi == r->hscrolls.end() ? 0 : hi->second;
+    }
+    return byte_at_text(r, val, fs, family, bold, x - tx + hx, y - ty - off);
 }
 
 /* word/line helpers are defined below (editing section) */
@@ -680,16 +686,17 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     edit_ensure_visible(r);
 }
 
-/* after an edit, scroll the editable's scrollable box so the caret line
- * stays inside the visible area (typing past the bottom scrolls down,
- * jumping back up scrolls up - the control never grows) */
+/* after an edit (or caret move), scroll the editable's box so the caret
+ * stays visible: textarea/contenteditable scroll vertically, single-line
+ * inputs scroll their content horizontally - the control never grows */
 static void edit_ensure_visible(whaleui_render_t* r)
 {
     if (!r->edit_el || !r->tree) {
         return;
     }
-    whaleui_layout_node_t* n = find_node_by_el(r->tree, r->edit_el);    if (!n || n->scroll_max <= 0) {
-        return; /* single-line input: no vertical scroll */
+    whaleui_layout_node_t* n = find_node_by_el(r->tree, r->edit_el);
+    if (!n) {
+        return;
     }
     std::string val = edit_value(r->edit_el);
     int fs;
@@ -703,9 +710,31 @@ static void edit_ensure_visible(whaleui_render_t* r)
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty);
     int off = node_scroll_off(r, n);
-    /* caret window y = laid-out y + caret offset + ancestor scrolls
-     * + (baked scroll - current scroll); the text run's laid-out y already
-     * includes the baked shift */
+    if (tag_eq(r->edit_el, "input")) {
+        /* horizontal: keep the caret inside the content box. The text
+         * paints at tx - hscroll, so the caret sits at tx - hscroll + cx. */
+        int& hcur = r->hscrolls[r->edit_el];
+        int hw = n->content.w > 0 ? n->content.w : 0;
+        int nv = hcur;
+        if (nv < cx + ch - hw) {
+            nv = cx + ch - hw; /* caret right edge past the box */
+        }
+        if (nv > cx) {
+            nv = cx; /* caret left of the box */
+        }
+        if (nv < 0) {
+            nv = 0;
+        }
+        if (nv != hcur) {
+            hcur = nv;
+            r->scroll_dirty = 1;
+        }
+        return;
+    }
+    if (n->scroll_max <= 0) {
+        return;
+    }
+    /* vertical: keep the caret line inside the visible area */
     long base = static_cast<long>(ty) + cy + off + n->scroll_y;
     long top = static_cast<long>(n->content.y) + off;
     long bot = top + n->content.h;
@@ -892,40 +921,11 @@ static bool cjk_chars_split(void) { return false; }
 #if defined(WHALEUI_BUILD_FULL) || defined(WHALEUI_BUILD_LITE)
 /* --- dictionary segmentation (full/lite builds) --- */
 
-/* longest-match lookup over the compact per-head grouped dictionary:
- * the word's first char indexes the group (binary search over the
- * codepoint-sorted groups; UTF-8 byte order == codepoint order), the rest
- * is compared against the group's tails (each head char stored once). */
+/* longest-match lookup over the loaded dictionary (res/whaleui_dict.bin
+ * with a built-in fallback when the file is missing) */
 static bool cjk_dict_has(const std::string& w)
 {
-    if (w.empty()) {
-        return false;
-    }
-    size_t hl = utf8_char_len(static_cast<unsigned char>(w[0]));
-    if (hl >= w.size()) {
-        return false; /* single char: never a dictionary word */
-    }
-    std::string head = w.substr(0, hl);
-    std::string tail = w.substr(hl);
-    int lo = 0, hi = kCjkGroupCount - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        int cmp = head.compare(kCjkDict[mid].head);
-        if (cmp == 0) {
-            for (int i = 0; i < kCjkDict[mid].count; ++i) {
-                if (tail == kCjkDict[mid].tails[i]) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (cmp < 0) {
-            hi = mid - 1;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    return false;
+    return whaleui_cjk_dict_has(w.c_str(), static_cast<int>(w.size())) != 0;
 }
 
 /* collect up to 4 consecutive CJK chars starting at byte b */
@@ -1281,6 +1281,7 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
             r->sel_anchor = r->sel_focus = static_cast<int>(nf);
         }
         r->has_dirty = 1;
+        edit_ensure_visible(r); /* keep the caret in view while navigating */
     };
     size_t cur = static_cast<size_t>(focus);
     switch (keycode) {
@@ -1589,6 +1590,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->open_select_hover = 0;
     r->select_index.clear();
     r->scrolls.clear();
+    r->hscrolls.clear();
     r->last_scrolls.clear();
     r->hover_el = nullptr;
     r->focus_el = nullptr;
