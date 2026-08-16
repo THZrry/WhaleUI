@@ -18,8 +18,11 @@
 /* Unicode categories for accurate word/separator classification in every
  * script (full build only; lite/minimal keep the dependency-free table) */
 #include <utf8proc.h>
-/* compact CJK dictionary for word navigation (full builds only) */
-#include "render/cjk_dict.h"
+/* compact CJK dictionaries for word navigation: full ~20k words, lite ~1k.
+ * minimal builds skip segmentation (per-hanzi stepping, no dictionary). */
+#include "render/cjk_dict_full.h"
+#elif defined(WHALEUI_BUILD_LITE)
+#include "render/cjk_dict_lite.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -711,13 +714,13 @@ static bool is_sep_cp(unsigned int cp)
     if (cp == 0x3000 || cp == 0x00A0) {
         return true;
     }
-    if (cp >= 0x3001 && cp <= 0x303F) {   /* 、。〈〉《》「」... */
+    if (cp >= 0x3001 && cp <= 0x303F) {   /* CJK punctuation */
         return true;
     }
     if (cp >= 0xFF01 && cp <= 0xFF65 &&   /* full-width punct (excl. kana) */
-        !(cp >= 0xFF10 && cp <= 0xFF19) &&   /* ０-９ */
-        !(cp >= 0xFF21 && cp <= 0xFF3A) &&   /* Ａ-Ｚ */
-        !(cp >= 0xFF41 && cp <= 0xFF5A)) {   /* ａ-ｚ */
+        !(cp >= 0xFF10 && cp <= 0xFF19) &&   /* full-width digits */
+        !(cp >= 0xFF21 && cp <= 0xFF3A) &&   /* full-width A-Z */
+        !(cp >= 0xFF41 && cp <= 0xFF5A)) {   /* full-width a-z */
         return true;
     }
     if (cp >= 0x2000 && cp <= 0x206F) {   /* general punctuation */
@@ -771,23 +774,40 @@ static int word_class(unsigned int cp)
 }
 #endif
 
-/* lite/minimal builds: each hanzi is its own word (simplest, no storage
- * cost). Full uses the compact dictionary for real word segmentation. */
-#if defined(WHALEUI_BUILD_LITE) || defined(WHALEUI_BUILD_MINIMAL)
+/* minimal builds: each hanzi is its own word (no segmentation, no
+ * dictionary). Full (~20k words) and lite (~1k words) use the compact
+ * dictionary for real word segmentation. */
+#ifdef WHALEUI_BUILD_MINIMAL
 static bool cjk_chars_split(void) { return true; }
 #else
 static bool cjk_chars_split(void) { return false; }
 #endif
 
-#ifdef WHALEUI_BUILD_FULL
-/* --- dictionary segmentation (full builds) --- */
+#if defined(WHALEUI_BUILD_FULL) || defined(WHALEUI_BUILD_LITE)
+/* --- dictionary segmentation (full/lite builds) --- */
 
-/* longest-match lookup over the compact dictionary */
+/* longest-match lookup over the compact per-head grouped dictionary:
+ * the word's first char indexes the group, the rest is compared against
+ * the group's tails (each head char stored once). */
 static bool cjk_dict_has(const std::string& w)
 {
-    for (int i = 0; i < kCjkWordCount; ++i) {
-        if (w == kCjkWords[i]) {
-            return true;
+    if (w.empty()) {
+        return false;
+    }
+    size_t hl = utf8_char_len(static_cast<unsigned char>(w[0]));
+    if (hl >= w.size()) {
+        return false; /* single char: never a dictionary word */
+    }
+    std::string head = w.substr(0, hl);
+    std::string tail = w.substr(hl);
+    for (int g = 0; g < kCjkGroupCount; ++g) {
+        if (head == kCjkDict[g].head) {
+            for (int i = 0; i < kCjkDict[g].count; ++i) {
+                if (tail == kCjkDict[g].tails[i]) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
     return false;
@@ -935,11 +955,11 @@ static size_t word_next(const std::string& s, size_t b)
     }
     cp_at(s, b, &l);
     if (cls == 2 && cjk_chars_split()) {
-        return b + l; /* lite/minimal: single hanzi */
+        return b + l; /* minimal: single hanzi */
     }
-#ifdef WHALEUI_BUILD_FULL
+#if defined(WHALEUI_BUILD_FULL) || defined(WHALEUI_BUILD_LITE)
     if (cls == 2) {
-        return cjk_word_end(s, b); /* full: dictionary word end */
+        return cjk_word_end(s, b); /* dict: word end */
     }
 #endif
     /* walk to the end of the same-class run */
@@ -978,11 +998,11 @@ static size_t word_prev(const std::string& s, size_t b)
         cls = word_class(cp_at(s, p, &l));
     }
     if (cls == 2 && cjk_chars_split()) {
-        return p; /* lite/minimal: single hanzi */
+        return p; /* minimal: single hanzi */
     }
-#ifdef WHALEUI_BUILD_FULL
+#if defined(WHALEUI_BUILD_FULL) || defined(WHALEUI_BUILD_LITE)
     if (cls == 2) {
-        return cjk_word_start(s, p); /* full: dictionary word start */
+        return cjk_word_start(s, p); /* dict: word start */
     }
 #endif
     while (p > 0) {
@@ -1048,7 +1068,7 @@ static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
     size_t w0 = p;
 #ifdef WHALEUI_BUILD_FULL
     if (cls == 2) {
-        /* full: the dictionary word containing the click point */
+        /* dict: the dictionary word containing the click point */
         cjk_word_range(s, p, &w0, we);
         *ws = w0;
         return;

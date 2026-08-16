@@ -1363,12 +1363,18 @@ struct Builder
 
         /* a <select> always reserves enough height for its value text;
          * keep it at 28 so the control does not grow and squeeze neighbors
-         * (the popup text fits: 16px content box + the value-text nudge) */
+         * (the popup text fits: 16px content box + the value-text nudge).
+         * Text <input>s have no child text runs either (the value lives in
+         * an attribute), so their height would collapse to padding+border
+         * (~12px) and the painted value text would overflow the border:
+         * give them the same floor. */
         if (n->el) {
             size_t tlen = 0;
             const lxb_char_t* tname = lxb_dom_element_local_name(n->el, &tlen);
-            if (tname && tlen == 6 && std::memcmp(tname, "select", 6) == 0 &&
-                n->border.h < 28) {
+            bool is_sel = tname && tlen == 6 && std::memcmp(tname, "select", 6) == 0;
+            bool is_inp = tname && tlen == 5 && std::memcmp(tname, "input", 5) == 0 &&
+                          input_kind(n->el) == 0;
+            if ((is_sel || is_inp) && n->border.h < 28) {
                 n->border.h = 28;
                 n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
             }

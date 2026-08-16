@@ -1091,6 +1091,10 @@ int main(void)
             }
         }
         assert(inp != nullptr);
+        /* the control reserves height for its value text: the border box
+         * must be taller than the padding+border collapse (was ~12px, the
+         * painted text overflowed the border) */
+        assert(inp->border.h >= 28 && inp->content.h > 0);
         /* caret at the very start */
         whaleui_render_set_pressed(w->render, inp->content.x + 1,
                                    inp->content.y + 2, 1);
