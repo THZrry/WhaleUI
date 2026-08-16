@@ -6,6 +6,7 @@ build/
 
 # agent tooling metadata
 .reasonix/
+reasonix.toml
 
 # IDE / OS
 .vscode/
@@ -30,3 +31,5 @@ fsr-min/
 # reference FSR demos (SPIR-V bytes already vendored in src/render/)
 fsr-demo-gpu/
 fsr-min/
+
+temp
