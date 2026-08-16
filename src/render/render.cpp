@@ -18,6 +18,8 @@
 /* Unicode categories for accurate word/separator classification in every
  * script (full build only; lite/minimal keep the dependency-free table) */
 #include <utf8proc.h>
+/* compact CJK dictionary for word navigation (full builds only) */
+#include "render/cjk_dict.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -769,13 +771,144 @@ static int word_class(unsigned int cp)
 }
 #endif
 
-/* lite build: each hanzi is its own word (no CJK segmentation); full/
- * minimal builds treat a run of hanzi as one word (simple segmentation). */
-#ifdef WHALEUI_BUILD_LITE
+/* lite/minimal builds: each hanzi is its own word (simplest, no storage
+ * cost). Full uses the compact dictionary for real word segmentation. */
+#if defined(WHALEUI_BUILD_LITE) || defined(WHALEUI_BUILD_MINIMAL)
 static bool cjk_chars_split(void) { return true; }
 #else
 static bool cjk_chars_split(void) { return false; }
 #endif
+
+#ifdef WHALEUI_BUILD_FULL
+/* --- dictionary segmentation (full builds) --- */
+
+/* longest-match lookup over the compact dictionary */
+static bool cjk_dict_has(const std::string& w)
+{
+    for (int i = 0; i < kCjkWordCount; ++i) {
+        if (w == kCjkWords[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* collect up to 4 consecutive CJK chars starting at byte b */
+static int cjk_chars_at(const std::string& s, size_t b, std::string* chars,
+                        size_t* pos)
+{
+    int n = 0;
+    pos[0] = b;
+    size_t p = b;
+    while (n < 4 && p < s.size()) {
+        size_t l = 0;
+        unsigned int cp = cp_at(s, p, &l);
+        if (!is_cjk_cp(cp)) {
+            break;
+        }
+        chars[n] = s.substr(p, l);
+        p += l;
+        pos[n + 1] = p;
+        ++n;
+    }
+    return n;
+}
+
+/* dict word end: the longest dict word starting at b (else single char) */
+static size_t cjk_word_end(const std::string& s, size_t b)
+{
+    std::string ch[4];
+    size_t pos[5];
+    int n = cjk_chars_at(s, b, ch, pos);
+    if (n == 0) {
+        return utf8_next(s, b);
+    }
+    for (int k = n >= 4 ? 4 : n; k >= 2; --k) {
+        std::string w;
+        for (int i = 0; i < k; ++i) {
+            w += ch[i];
+        }
+        if (cjk_dict_has(w)) {
+            return pos[k];
+        }
+    }
+    return pos[1];
+}
+
+/* dict word start: the longest dict word ending at p (else single char) */
+static size_t cjk_word_start(const std::string& s, size_t p)
+{
+    std::vector<std::string> ch;
+    std::vector<size_t> st;
+    size_t q = p;
+    while (ch.size() < 4) {
+        size_t l = 0;
+        unsigned int cp = cp_at(s, q, &l);
+        if (!is_cjk_cp(cp)) {
+            break;
+        }
+        ch.insert(ch.begin(), s.substr(q, l));
+        st.insert(st.begin(), q);
+        if (q == 0) {
+            break;
+        }
+        q = utf8_prev(s, q);
+    }
+    if (ch.empty()) {
+        return p;
+    }
+    for (int k = static_cast<int>(ch.size()); k >= 2; --k) {
+        std::string w;
+        for (int i = static_cast<int>(ch.size()) - k;
+             i < static_cast<int>(ch.size()); ++i) {
+            w += ch[i];
+        }
+        if (cjk_dict_has(w)) {
+            return st[static_cast<int>(ch.size()) - k];
+        }
+    }
+    return p;
+}
+
+/* dict word [ws,we) containing byte off (off on a CJK char) */
+static void cjk_word_range(const std::string& s, size_t off, size_t* ws,
+                           size_t* we)
+{
+    size_t starts[4];
+    int nstart = 0;
+    starts[nstart++] = off;
+    size_t q = off;
+    for (int i = 0; i < 3 && q > 0; ++i) {
+        q = utf8_prev(s, q);
+        size_t l = 0;
+        if (!is_cjk_cp(cp_at(s, q, &l))) {
+            break;
+        }
+        starts[nstart++] = q;
+    }
+    size_t best_s = off, best_e = utf8_next(s, off);
+    int best_len = 0;
+    for (int si = 0; si < nstart; ++si) {
+        std::string ch[4];
+        size_t pos[5];
+        int n = cjk_chars_at(s, starts[si], ch, pos);
+        for (int k = 2; k <= (n >= 4 ? 4 : n); ++k) {
+            std::string w;
+            for (int i = 0; i < k; ++i) {
+                w += ch[i];
+            }
+            if (starts[si] <= off && pos[k] > off && cjk_dict_has(w) &&
+                k > best_len) {
+                best_len = k;
+                best_s = starts[si];
+                best_e = pos[k];
+            }
+        }
+    }
+    *ws = best_s;
+    *we = best_e;
+}
+#endif /* WHALEUI_BUILD_FULL */
 
 /* byte offset of the end of the word at/after b (ctrl+right) */
 static size_t word_next(const std::string& s, size_t b)
@@ -802,8 +935,13 @@ static size_t word_next(const std::string& s, size_t b)
     }
     cp_at(s, b, &l);
     if (cls == 2 && cjk_chars_split()) {
-        return b + l; /* lite: single hanzi */
+        return b + l; /* lite/minimal: single hanzi */
     }
+#ifdef WHALEUI_BUILD_FULL
+    if (cls == 2) {
+        return cjk_word_end(s, b); /* full: dictionary word end */
+    }
+#endif
     /* walk to the end of the same-class run */
     while (b < n) {
         int c2 = word_class(cp_at(s, b, &l));
@@ -840,8 +978,13 @@ static size_t word_prev(const std::string& s, size_t b)
         cls = word_class(cp_at(s, p, &l));
     }
     if (cls == 2 && cjk_chars_split()) {
-        return p; /* lite: single hanzi */
+        return p; /* lite/minimal: single hanzi */
     }
+#ifdef WHALEUI_BUILD_FULL
+    if (cls == 2) {
+        return cjk_word_start(s, p); /* full: dictionary word start */
+    }
+#endif
     while (p > 0) {
         size_t q = utf8_prev(s, p);
         if (word_class(cp_at(s, q, nullptr)) != cls) {
@@ -903,6 +1046,14 @@ static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
         }
     }
     size_t w0 = p;
+#ifdef WHALEUI_BUILD_FULL
+    if (cls == 2) {
+        /* full: the dictionary word containing the click point */
+        cjk_word_range(s, p, &w0, we);
+        *ws = w0;
+        return;
+    }
+#endif
     while (w0 > 0) {
         size_t q = utf8_prev(s, w0);
         if (word_class(cp_at(s, q, nullptr)) != cls) {
@@ -940,12 +1091,38 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
     int b = anchor < focus ? focus : anchor;
     bool ctrl = (mods & SDL_KMOD_CTRL) != 0;
     bool shift = (mods & SDL_KMOD_SHIFT) != 0;
-    if (ctrl && keycode == 'a') { /* select all */
-        r->sel_anchor = 0;
-        r->sel_focus = static_cast<int>(val.size());
-        r->has_dirty = 1;
-        /* other ctrl shortcuts (clipboard etc.) not handled yet */
-        return;
+    if (ctrl) {
+        switch (keycode) {
+        case 'a': /* select all */
+            r->sel_anchor = 0;
+            r->sel_focus = static_cast<int>(val.size());
+            r->has_dirty = 1;
+            return;
+        case 'c': /* copy the selection to the system clipboard */
+            if (a != b) {
+                SDL_SetClipboardText(val.substr(static_cast<size_t>(a),
+                                                static_cast<size_t>(b - a)).c_str());
+            }
+            return;
+        case 'x': /* cut: copy + delete */
+            if (a != b) {
+                SDL_SetClipboardText(val.substr(static_cast<size_t>(a),
+                                                static_cast<size_t>(b - a)).c_str());
+                edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "");
+            }
+            return;
+        case 'v': { /* paste from the system clipboard */
+            char* cl = SDL_GetClipboardText();
+            if (cl) {
+                edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b),
+                             cl);
+                SDL_free(cl);
+            }
+            return;
+        }
+        default:
+            break; /* ctrl+arrows/others fall through to movement */
+        }
     }
     /* movement keys (arrows/home/end): collapse the selection to its
      * leading end first when shift is not held */
@@ -1744,14 +1921,19 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             return;
         }
         /* pressing inside an existing editable selection readies a
-         * drag-to-move/copy: the selection stays put while dragging */
-        if (hit && is_editable(hit->el) && r->sel_anchor_el == hit->el &&
+         * drag-to-move/copy: the selection stays put while dragging.
+         * Only single clicks (clicks == 1): a double/triple click re-selects
+         * the word/line under the pointer instead. A click without a drag
+         * collapses the selection to the press point on mouse-up. */
+        if (hit && is_editable(hit->el) && r->press_clicks == 1 &&
+            r->sel_anchor_el == hit->el &&
             r->sel_anchor_el == r->sel_focus_el && r->sel_anchor != r->sel_focus) {
             size_t off = caret_from_point(r, hit->el, hit, x, y);
             int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
             int b = r->sel_anchor < r->sel_focus ? r->sel_focus : r->sel_anchor;
             if (off > static_cast<size_t>(a) && off < static_cast<size_t>(b)) {
                 r->drag_sel = 1;
+                r->press_caret = static_cast<int>(off);
                 r->pressed_el = el;
                 r->focus_el = el;
                 r->has_dirty = 1;
@@ -1820,7 +2002,12 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         r->pressed_el = nullptr;
         r->drag_scroll_el = nullptr;
         r->drag_scroll_node = nullptr;
-        if (r->drag_sel_active) {
+        if (r->drag_sel && !r->drag_sel_active) {
+            /* plain click inside the selection: collapse it and move the
+             * caret to the press point (drag-to-move needs an actual drag) */
+            r->sel_anchor = r->sel_focus = r->press_caret;
+            r->sel_mode = 0;
+        } else if (r->drag_sel_active) {
             r->drag_copy = (mods & SDL_KMOD_CTRL) != 0;
             drag_drop_selection(r, x, y, r->drag_copy);
         }

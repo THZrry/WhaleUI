@@ -1230,6 +1230,162 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* triple-click on an input selects the whole line (NOT a drag-readied
+     * press: the multi-click path must win over drag-to-move) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "triple-input", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:200px\" "
+            "value=\"hello world\"></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        whaleui_render_set_pressed_ex(w->render, inp->content.x + 20,
+                                      inp->content.y + 2, 1, 3, 0);
+        /* the whole value is selected, and no drag was readied */
+        assert(w->render->sel_anchor == 0);
+        assert(w->render->sel_focus == 11); /* "hello world" */
+        assert(w->render->drag_sel == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* a plain click inside an editable selection collapses it and moves the
+     * caret (drag-to-move needs an actual drag past the threshold) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "click-collapse", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "hello world</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello wo", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int x = run->border.x + tw + 2; /* inside "world" (offset ~8) */
+        /* double-click selects "world" (6..11) */
+        whaleui_render_set_pressed_ex(w->render, x, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
+        /* plain click inside the selection: drag readied but not activated */
+        whaleui_render_set_pressed(w->render, x, y, 1);
+        assert(w->render->drag_sel == 1);
+        /* release without dragging: the selection collapses to the caret */
+        whaleui_render_set_pressed_ex(w->render, 0, 0, 0, 1, 0);
+        assert(w->render->drag_sel == 0);
+        assert(w->render->sel_anchor == w->render->sel_focus);
+        assert(w->render->sel_anchor > 6 && w->render->sel_anchor < 11);
+        whaleui_window_destroy(w);
+    }
+
+    /* dictionary word segmentation (full build): ctrl+right jumps 你好 ->
+     * 世界 as two words; a word absent from the dictionary falls back to a
+     * single hanzi */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dictword", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:200px\" "
+            "value=\"\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c\">"
+            "</body></html>") == 0); /* "你好世界" */
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        assert(w->render->sel_anchor == 0);
+        /* 你好 (6 bytes), then 世界 (12) */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 12 && w->render->sel_focus == 12);
+        /* back: 世界 -> 你好 */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* clipboard: ctrl+a / ctrl+c copy, ctrl+v pastes into the editable */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "clipboard", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:200px\" "
+            "value=\"hello world\"></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        /* select all + copy */
+        whaleui_render_handle_key(w->render, 'a', 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 11);
+        whaleui_render_handle_key(w->render, 'c', 1, SDL_KMOD_CTRL);
+        char* cl = SDL_GetClipboardText();
+        assert(cl != nullptr && std::strcmp(cl, "hello world") == 0);
+        SDL_free(cl);
+        /* paste at the start doubles the value */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_HOME, 1, 0);
+        whaleui_render_handle_key(w->render, 'v', 1, SDL_KMOD_CTRL);
+        const char* v = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
+        assert(v != nullptr && std::strcmp(v, "hello worldhello world") == 0);
+        /* cut removes the selection */
+        whaleui_render_handle_key(w->render, 'a', 1, SDL_KMOD_CTRL);
+        whaleui_render_handle_key(w->render, 'x', 1, SDL_KMOD_CTRL);
+        v = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inp->el), "value");
+        assert(v != nullptr && std::strcmp(v, "") == 0);
+        whaleui_window_destroy(w);
+    }
+
     /* drag-and-drop: press inside an editable selection, drag to another
      * input -> the selection moves (ctrl: copies) */
     {

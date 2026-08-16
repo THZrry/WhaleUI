@@ -181,6 +181,18 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             std::vector<TRect> rects = sel_rects(r, val, fs, family, bold, a, b);
             expand_hl_rects(rects, text_line_h(r, fs, family, bold));
             unsigned int hl = sel_hl_color(r, n, 0x3C);
+            if (tag_eq(el, "input") && geo->content.h > 0) {
+                /* single-line input: the wash fills the whole content box
+                 * (native control look); the text sits vertically centered,
+                 * so the top edge is (content.h - text height)/2 above the
+                 * text origin ty. */
+                int top = -(geo->content.h -
+                            text_line_h(r, fs, family, bold)) / 2;
+                for (size_t i = 0; i < rects.size(); ++i) {
+                    rects[i].y = top;
+                    rects[i].h = geo->content.h;
+                }
+            }
             for (size_t i = 0; i < rects.size(); ++i) {
                 fill_rect(r->pixels, r->fb_w, r->fb_h,
                           tx + rects[i].x, ty + rects[i].y,

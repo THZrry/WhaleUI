@@ -144,10 +144,13 @@ struct whaleui_render
     int press_clicks;
     /* drag-and-drop of an existing selection: press went down inside the
      * selection (drag_sel), the drag passed the threshold (drag_sel_active),
-     * and ctrl was held on release (drag_copy: copy instead of move). */
+     * and ctrl was held on release (drag_copy: copy instead of move).
+     * press_caret remembers where the press landed so a click (no drag)
+     * collapses the selection and moves the caret there. */
     int drag_sel;
     int drag_sel_active;
     int drag_copy;
+    int press_caret;
 
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
