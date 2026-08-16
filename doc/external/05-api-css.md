@@ -1,6 +1,6 @@
 # CSS API (whaleui_css_*)
 
-样式解析与规则管理。布局相关属性全部交由 lexbor 计算位置。
+样式解析与规则管理。解析器自研(`src/style/css.cpp`),布局位置计算由自研布局引擎完成(见 `../internal/09-implementation.md`)。
 
 ## 解析
 
@@ -41,13 +41,13 @@ whaleui_css_apply(doc, rules, count);
 
 ## 支持范围
 
-按 `README-css.md` 三档实现:
+按 `../internal/css-priority.md` 三档实现:
 
 | 档位 | 内容 |
 |------|------|
 | 最常用 | color, background, margin, padding, border, display, width, height, font-size, font-weight, text-align, line-height, position, top/left/right/bottom, z-index, flex, justify-content, align-items, gap, opacity, cursor, overflow, box-sizing |
-| 必须 | font-family, text-decoration, border-radius, box-shadow, transform, transition, animation, flex-direction, grid-template-columns, var, media, keyframes 等(详见 README-css.md) |
+| 必须 | font-family, text-decoration, border-radius, box-shadow, transform, transition, animation, flex-direction, grid-template-columns, var, media, keyframes 等(详见 css-priority.md) |
 | 最好 | font-style, text-shadow, filter, aspect-ratio 等 |
 
-- 不兼容属性在 doc 单独列清单(第四步补)。
+- 各属性(含不兼容项)的实际支持状态与用例见 [html-css-support.md](html-css-support.md)。
 - 主题热切换 = 换一组已解析规则重新 apply。

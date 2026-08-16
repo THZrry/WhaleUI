@@ -70,4 +70,4 @@ typedef struct whaleui_platform_api {
 ## 主题与样式
 
 - 内置默认样式表 + 浅/深色两套 `--*` 变量,可热切换。
-- 系统风格(Windows Classic / Aero / Metro / Fluent、GTK、macOS、Material)以 `--*` 变量表的形式逐步扩展(见 `doc/09-implementation.md`)。
+- 系统风格(Windows Classic / Aero / Metro / Fluent、GTK、macOS、Material)以 `--*` 变量表的形式逐步扩展(见 `09-implementation.md`)。

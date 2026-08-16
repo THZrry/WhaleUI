@@ -2,7 +2,7 @@
 
 窗口是应用内的显示单元,承载一个文档。原生窗口在首次 `show()` 时惰性创建;在此之前 title/size 等由库缓存,创建时应用。
 
-> 本文档与 `include/whaleui.h` 一致。未实现部分见 `doc/more-dom-api.md` 交接清单。
+> 本文档与 `include/whaleui.h` 一致。未实现部分见 `../internal/more-dom-api.md` 交接清单。
 
 ## 创建与销毁
 

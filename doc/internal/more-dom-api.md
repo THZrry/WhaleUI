@@ -1,7 +1,7 @@
 # more-dom-api — 待实现 API 交接清单
 
 > 读者:下一个实现 Agent(第三步续作)。本文档列出 `include/whaleui.h` 中**已文档化但尚未实现**的公开 API。
-> **签名已在 whaleui.h 冻结,不要改签名**——实现前先通读 `doc/09-implementation.md`(架构修正、事件循环、已知限制)与对应模块源码。
+> **签名已在 whaleui.h 冻结,不要改签名**——实现前先通读 `09-implementation.md`(架构修正、事件循环、已知限制)与对应模块源码。
 > 已完成部分直接照旧;每实现一个 API,把下方清单的 `[ ]` 勾掉并跑对应测试。
 
 ## 通用约定(与 whaleui.h 顶部一致)
@@ -47,7 +47,7 @@ int whaleui_dom_matches(whaleui_dom_element_t* el, const char* selector);
 
 - 元素级查询**以 el 为根**,不含 el 自身(querySelector 语义);closest 含自身。
 - lexbor:`lxb_dom_element_query_selector(el, sel, &entry)`、`lxb_dom_element_query_selector_all(el, sel, collection)`;文档级先取 `documentElement` 再查,或 `lxb_dom_document_elements_by_class_name/tag_name`。closest:逐级祖先调用 query_selector;matches:`lxb_dom_element_matches(el, sel)`(无则用 selector 匹配)。
-- 注意:**选择器语义要跑通项目已支持的子集**(见 `doc/09-implementation.md` CSS 支持矩阵:`#id/.class/tag/组合/后代/子代/相邻兄弟/伪类`)。lexbor 的选择器能力大于渲染能力,这里只需 lexbor 原生行为。
+- 注意:**选择器语义要跑通项目已支持的子集**(见 `09-implementation.md` CSS 支持矩阵:`#id/.class/tag/组合/后代/子代/相邻兄弟/伪类`)。lexbor 的选择器能力大于渲染能力,这里只需 lexbor 原生行为。
 - 测试:`<div class="a"><p class="a"></p></div>` 断言 count/顺序;元素级查询不越出子树;closest 沿祖先链。
 
 ## 3. 树遍历
@@ -104,7 +104,7 @@ whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_document_t* doc);
 
 - body/head:lexbor 的 `lxb_html_document` 自带 `body`/`head` 成员(见 `src/core/window.cpp` 里 `hd->head` 用法)。body 为空文档时为 NULL 是合理的(现有测试里空文档 `query_selector(doc,"body")` 非 NULL,与实现核对后再定)。
 - title:lexbor 有 `lxb_html_document_title / lxb_html_document_title_set`(以头文件为准;set 时 head 缺 `<title>` 需创建,lexbor 通常自动处理)。
-- activeElement:`focus_el` 状态现在由 render/app 维护(`doc/10-theme-gaps.md` 的 `focus_el`);本 API 需要引擎暴露"当前聚焦元素"查询——在 render 层加内部 getter,或把聚焦元素记录上移到 document 结构。**先读 `src/render/render.h` 的 focus 相关字段再定**。
+- activeElement:`focus_el` 状态现在由 render/app 维护(`10-theme-gaps.md` 的 `focus_el`);本 API 需要引擎暴露"当前聚焦元素"查询——在 render 层加内部 getter,或把聚焦元素记录上移到 document 结构。**先读 `src/render/render.h` 的 focus 相关字段再定**。
 - 测试:parse 带 `<title>` 的文档读回;空文档 set_title 后读回;activeElement 在无焦点时 NULL。
 
 ## 6. 属性与 classList
@@ -268,7 +268,7 @@ int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_even
 
 - 每完成一个 P0 分组(查询 / 遍历 / 节点操作 / 窗口扩展)提交一次 git,消息按仓库惯例。
 - 事件系统单独一个大提交(改动 app.cpp 事件循环,风险最高)。
-- 全部完成后更新 `doc/09-implementation.md` 的进度表,并把本文档 `[ ]` 全部勾掉。
+- 全部完成后更新 `09-implementation.md` 的进度表,并把本文档 `[ ]` 全部勾掉。
 
 ## 边界与已知取舍
 

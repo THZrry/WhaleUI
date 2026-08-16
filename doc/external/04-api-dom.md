@@ -2,7 +2,7 @@
 
 与 JavaScript DOM 对应,覆盖 HTML 解析、节点查询、修改、属性、样式、事件与几何。元素句柄即 lexbor 节点,随所属文档存活;文档销毁后全部句柄失效。
 
-> 本文档与 `include/whaleui.h` 一致。未实现部分见 `doc/more-dom-api.md` 交接清单。
+> 本文档与 `include/whaleui.h` 一致。未实现部分见 `../internal/more-dom-api.md` 交接清单。
 
 ## 解析
 
@@ -230,8 +230,8 @@ if (whaleui_dom_get_bounding_client_rect(box, &r) == 0) {
 }
 ```
 
-## 内部表示说明
+## 实现说明
 
 - 元素句柄直接包装 lexbor 节点;所有 tag 统一视为 div 的内部表示在第三步实现。
 - 文档销毁时释放其下所有元素;元素句柄在文档销毁后失效。
-- 选择器能力与渲染层一致的部分见 `doc/09-implementation.md` 的 CSS 支持矩阵。
+- 选择器能力与渲染层一致的部分见 `../internal/09-implementation.md` 的 CSS 支持矩阵。

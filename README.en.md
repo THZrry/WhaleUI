@@ -1,5 +1,7 @@
 # WhaleUI
 
+> **English** | [中文](README.md)
+
 A lightweight HTML/CSS rendering engine and GUI toolkit. Written in C++14,
 exposed through a plain C API for reuse across languages and platforms.
 Built for small, fast desktop tool UIs.
@@ -8,20 +10,28 @@ Built for small, fast desktop tool UIs.
 
 - **HTML + CSS**: DOM parsing via [lexbor](https://github.com/lexbor/lexbor);
   a self-contained CSS parser and style engine with selector matching
-  (tag / `#id` / `.class` / descendant / child), cascade (specificity +
-  `!important`), `var()` custom properties, `@media` and `@keyframes`.
-- **Layout**: own box-model + basic flex engine - margin / padding / border /
-  content, `content-box` / `border-box`, `px` / `%` / `em` / `auto` lengths,
-  block flow, flex (`direction` / `justify-content` / `gap` / `flex-grow`),
-  `position` (static / relative / absolute / fixed), `z-index`, `opacity`,
-  `display: none`.
+  (tag / `#id` / `.class` / descendant / child / adjacent sibling,
+  `:hover`/`:active`/`:focus`, `:nth-child`, `::before`/`::after`), cascade
+  (specificity + `!important`), `var()` custom properties, `@media` and
+  `@keyframes`.
+- **Layout**: own box-model + flex + basic grid engine - margin / padding /
+  border / content, `content-box` / `border-box`, `px` / `%` / `em` / `vw/vh` /
+  `auto` lengths, `clamp()`/`min()`/`max()`, block flow with inline mixing,
+  flex (`direction` / `wrap` / `justify-content` / `align-items` / `gap` /
+  `flex-grow`), grid (`repeat()` / `fr` / full-row span), `position`
+  (static / relative / absolute / fixed / sticky), `z-index`, `opacity`,
+  scrollable `overflow`.
 - **Rendering**: SDL3 GPU (offscreen texture + blit to the swapchain;
-  D3D11 / Vulkan / OpenGL backends chosen automatically by SDL). Text is
-  rasterized by SDL3_ttf from fonts registered through the virtual file
-  system.
-- **Themes**: built-in default stylesheet (presets for every tag, shared
-  utility classes), light / dark variable sets, system-following or manual,
-  hot-switchable.
+  D3D12 / Vulkan backends chosen automatically by SDL, intermediate shaders).
+  Text rasterized by SDL3_ttf (CJK/emoji fallback) from fonts registered
+  through the virtual file system. Scroll-shift blits, dirty rects with
+  subtree culling, text bitmap caching.
+- **Interaction**: `<select>` dropdown, `<details>/<summary>` collapse,
+  checkbox/radio, `progress/meter`, list markers, text editing & selection,
+  IME input, wheel scrolling, `:hover/:active/:focus` states.
+- **Themes**: 7 built-in system style sets (Fluent / Metro / Material /
+  Classic / Aero / GTK / macOS), each with light/dark variables,
+  system-following or manual, hot-switchable.
 - **Virtual file system**: all resource loading (HTML / CSS / fonts) goes
   through one VFS; the default disk loader can be replaced entirely
   (e.g. HTTP CDN).
@@ -56,7 +66,7 @@ are copied next to each binary automatically.
 
 ```bash
 xmake build
-xmake run test_api test_fs test_font test_dom test_style test_layout test_render test_window
+xmake run test_api test_fs test_font test_dom test_style test_anim test_layout test_render test_window test_qwen
 ```
 
 All tests are framework-free `assert` style unit tests; exit code 0 means pass.
@@ -98,19 +108,24 @@ src/
   fs/                   # virtual file system
   font/                 # font registry
   platform/             # platform backends (Windows done; Linux/macOS TODO)
-doc/                    # design docs
+doc/
+  external/             # user-facing docs (API manuals + standard support + examples)
+  internal/             # internal docs (architecture / status / handoff)
 tests/                  # unit tests
 examples/demo.cpp       # demo
 ```
 
 ## Docs
 
-- [README-css.md](README-css.md) - CSS property support list and priority
-- [doc/00-structure.md](doc/00-structure.md) - project structure
-- [doc/01-architecture.md](doc/01-architecture.md) - architecture
-- [doc/09-implementation.md](doc/09-implementation.md) - implementation
-  status and known limitations (in Chinese)
-- Per-module API manuals: `doc/02-*.md` .. `doc/07-*.md`
+- [doc/external/00-index.md](doc/external/00-index.md) - user-facing docs
+  overview (API manuals / standard support / examples)
+- [doc/external/html-css-support.md](doc/external/html-css-support.md) -
+  HTML/CSS standard support matrix and examples
+- [doc/internal/css-priority.md](doc/internal/css-priority.md) - CSS
+  property support list and priority
+- [doc/internal/09-implementation.md](doc/internal/09-implementation.md) -
+  implementation status and known limitations (in Chinese)
+- Per-module API manuals: `doc/external/02-*.md` .. `doc/external/07-*.md`
 
 ## Platform support
 
@@ -124,3 +139,7 @@ examples/demo.cpp       # demo
 ## License
 
 MIT (third-party deps under their own licenses, see `3rdparty/*/share/licenses`).
+
+## Credits
+
+This project's code is written by DeepSeek V4Flash.

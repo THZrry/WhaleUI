@@ -18,7 +18,9 @@ whaleui/
 │       ├── windows/           # Windows 后端(私有头文件随目录)
 │       ├── linux/             # Linux 后端(Wayland 优先,X11 兼容)
 │       └── macos/             # macOS 后端
-├── doc/                       # 设计文档(本目录)
+├── doc/
+│   ├── external/             # 外部调用文档(API 手册、标准支持、用例)
+│   └── internal/             # 内部文档(结构、架构、实现状态、交接清单)
 ├── tests/                     # 单元测试(零依赖,assert 风格)
 ├── examples/                  # demo 示例
 ├── tools/

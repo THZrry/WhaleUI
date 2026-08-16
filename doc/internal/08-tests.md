@@ -13,8 +13,10 @@
 | `test_dom` | DOM | 解析、getElementById/querySelector、创建/挂载、属性、文本、样式 |
 | `test_style` | 样式 | CSS 解析(注释/逗号/!important/media/keyframes)、选择器匹配、级联、var() |
 | `test_layout` | 布局 | 盒模型、block 流、flex row/column、border-box、position、opacity/z-index |
+| `test_anim` | 动画 | @keyframes 插值/iteration/fill-mode、transition 属性与颜色插值、非插值属性 snap |
 | `test_render` | 渲染 | 像素级绘制验证(背景/盒子/主题切换,软件渲染路径) |
 | `test_window` | 窗口 | 创建/标题/尺寸、load_html/load_uri、document 获取 |
+| `test_qwen` | 参考页 CSS 特性 | fixed/sticky/absolute+right、inset、border-block、nth-child、min()/clamp()/vw/vh、grid fr、white-space:nowrap、::before content、@media 过滤、img 盒子 |
 
 ## 运行方式
 
