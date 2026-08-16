@@ -106,8 +106,8 @@ struct whaleui_render
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);
     void* scroll_ud;
-    /* cached scroll_max for the last wheel-scrolled element (find_node_by_el
-     * is a full-tree walk; wheel events arrive in bursts) */
+    /* cached scroll_max for the last wheel-scrolled element (wheel events
+     * arrive in bursts) */
     struct lxb_dom_element* scroll_max_el;
     int scroll_max_cache;
     /* last wheel-hit layout node + pointer position: wheel bursts without

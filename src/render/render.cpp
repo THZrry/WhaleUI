@@ -11,6 +11,7 @@
 #include "render/gpu.h"
 #include "render/gpu_shaders.h"
 #include "animate/animate.h"
+#include "dom/dom.h"
 #include "font/font.h"
 #include "style/style.h"
 
@@ -4350,22 +4351,16 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     return 0;
 }
 
-/* find the layout node for a DOM element in the current tree */
-whaleui_layout_node_t* find_node_by_el(whaleui_layout_node_t* n, lxb_dom_element* el)
+/* find the layout node for a DOM element in the current tree (O(1): the
+ * tree keeps an element -> node map built during the layout pass) */
+whaleui_layout_node_t* find_node_by_el(whaleui_layout_tree_t* tree,
+                                       lxb_dom_element* el)
 {
-    if (!n || !el) {
+    if (!tree || !el) {
         return nullptr;
     }
-    if (n->el == el) {
-        return n;
-    }
-    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-        whaleui_layout_node_t* hit = find_node_by_el(c, el);
-        if (hit) {
-            return hit;
-        }
-    }
-    return nullptr;
+    auto it = tree->by_el.find(el);
+    return it == tree->by_el.end() ? nullptr : it->second;
 }
 
 /* window -> framebuffer coordinates (identity when FSR is off) */
@@ -4391,7 +4386,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     fb_coords(r, x, y);
     /* 1. clicking inside the expanded list chooses an option */
     if (r->open_select) {
-        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (!s) {
             r->open_select = nullptr;
             return 0;
@@ -4537,7 +4532,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     }
     /* hover inside the expanded list highlights the option under the mouse */
     if (r->open_select) {
-        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {
             std::vector<std::string> texts, values;
             select_options(s->el, texts, values);
@@ -4662,7 +4657,7 @@ void update_drag_scroll(whaleui_render_t* r, int y)
      * the node is cached and only re-resolved after a rebuild */
     whaleui_layout_node_t* sc = r->drag_scroll_node;
     if (!sc || sc->el != r->drag_scroll_el) {
-        sc = find_node_by_el(r->tree->root, r->drag_scroll_el);
+        sc = find_node_by_el(r->tree, r->drag_scroll_el);
         r->drag_scroll_node = sc;
     }
     if (!sc || sc->scroll_max <= 0) {
@@ -4846,7 +4841,7 @@ static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
     if (r->scroll_max_el == el) {
         max = r->scroll_max_cache; /* wheel bursts hit the same element */
     } else {
-        whaleui_layout_node_t* n = find_node_by_el(r->tree->root, el);
+        whaleui_layout_node_t* n = find_node_by_el(r->tree, el);
         max = n ? n->scroll_max : 0;
         r->scroll_max_el = el;
         r->scroll_max_cache = max;
@@ -4931,11 +4926,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * paint-only fast path below applies them without relaying out) */
     const uint64_t now = SDL_GetTicks();
     const bool animating = r->anim && whaleui_anim_tick(r->anim, now) != 0;
+    /* consume this document's pending DOM mutations up front: a non-empty
+     * set must keep the frame alive so the incremental relayout below runs */
+    std::vector<lxb_dom_element*> dom_dirty;
+    whaleui_dom_take_dirty(doc, dom_dirty);
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
-     * animation/transition is running, or an editable caret is blinking. */
+     * animation/transition is running, an editable caret is blinking, or
+     * the DOM was mutated. */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
-        !animating && !r->edit_el) {
+        !animating && !r->edit_el && dom_dirty.empty()) {
         return 0;
     }
     r->scroll_dirty = 0;
@@ -5051,6 +5051,57 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             };
         re_op(r->tree->root, 1.0f);
+    }
+    /* DOM mutations: incremental relayout. Only the affected subtrees get
+     * a fresh style cascade + build; the box pass re-positions the tree
+     * while untouched branches keep their computed styles. Falls back to a
+     * full rebuild (has_dirty) when the tree is inconsistent. */
+    if (!need_layout && !dom_dirty.empty()) {
+        bool ok = true;
+        whaleui_style_state st;
+        st.hover = r->hover_el;
+        st.focus = r->focus_el;
+        st.pressed = r->pressed_el;
+        for (lxb_dom_element* el : dom_dirty) {
+            if (whaleui_layout_relayout(r->tree, el, r->rules,
+                                        r->rule_count, &r->theme_vars,
+                                        &st, &r->scrolls, r->anim,
+                                        r->text_scale) < 0) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            g_last_tree = r->tree;
+            r->bounds_valid = 0; /* subtree paint bounds are stale */
+            r->drag_scroll_node = nullptr; /* nodes were recreated */
+            r->scroll_max_el = nullptr;    /* scroll_max may have changed */
+            r->wheel_node = nullptr;       /* hit cache is stale */
+            std::function<void(whaleui_layout_node_t*)> clamp_sc =
+                [&](whaleui_layout_node_t* nd) {
+                    if (nd->el) {
+                        auto it = r->scrolls.find(nd->el);
+                        if (it != r->scrolls.end()) {
+                            if (it->second > nd->scroll_max) {
+                                it->second = nd->scroll_max;
+                            }
+                            if (it->second < 0) {
+                                it->second = 0;
+                            }
+                        }
+                    }
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        clamp_sc(c);
+                    }
+                };
+            clamp_sc(r->tree->root);
+#ifdef WHALEUI_BUILD_FULL
+            g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
+#endif
+        } else {
+            r->has_dirty = 1; /* tree inconsistent: full rebuild */
+        }
     }
     if (!r->tree) {
         return -2;
@@ -5193,7 +5244,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * other content cannot cover it; its position follows the select's
      * scroll-offset ancestors */
     if (r->open_select) {
-        whaleui_layout_node_t* s = find_node_by_el(r->tree->root, r->open_select);
+        whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {
             int soff = 0;
             for (whaleui_layout_node_t* p = s->parent; p; p = p->parent) {

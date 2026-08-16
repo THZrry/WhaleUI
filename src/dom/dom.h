@@ -12,12 +12,25 @@
 
 #include "whaleui.h"
 
+#include <vector>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct whaleui_dom_element { char _opaque; };
 struct whaleui_dom_document { char _opaque; };
+struct lxb_dom_element; /* lexbor element (opaque here) */
+
+/* Record a DOM mutation for the next frame's incremental relayout: the
+ * renderer consumes the per-document dirty set and rebuilds only the
+ * affected layout subtrees instead of the whole tree. */
+void whaleui_dom_mark_dirty(struct lxb_dom_element* el);
+
+/* Move the dirty elements belonging to `doc` into `out` (and clear them
+ * from the set). Call once per frame per render context. */
+void whaleui_dom_take_dirty(struct whaleui_dom_document* doc,
+                            std::vector<struct lxb_dom_element*>& out);
 
 #ifdef __cplusplus
 }

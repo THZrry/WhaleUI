@@ -18,8 +18,23 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace {
+
+/* pending DOM mutations, per document. The renderer drains the set for its
+ * own document each frame (whaleui_dom_take_dirty) and incrementally
+ * relayouts the affected subtrees. */
+struct DirtyEntry
+{
+    lxb_dom_element* el;
+    lxb_dom_document* doc;
+};
+std::vector<DirtyEntry>& g_dirty()
+{
+    static std::vector<DirtyEntry> d;
+    return d;
+}
 
 lxb_dom_element* as_el(whaleui_dom_element_t* el)
 {
@@ -218,6 +233,41 @@ int style_set(lxb_dom_element* e, const char* prop, const char* value)
 
 } // namespace
 
+/* --- DOM mutation tracking (incremental relayout) --- */
+
+extern "C" void whaleui_dom_mark_dirty(lxb_dom_element* el)
+{
+    if (!el) {
+        return;
+    }
+    lxb_dom_document* doc = el->node.owner_document;
+    for (auto& d : g_dirty()) {
+        if (d.el == el && d.doc == doc) {
+            return; /* already pending */
+        }
+    }
+    g_dirty().push_back({el, doc});
+}
+
+extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
+                                       std::vector<lxb_dom_element*>& out)
+{
+    out.clear();
+    lxb_dom_document* want =
+        as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
+    std::vector<DirtyEntry>& d = g_dirty();
+    std::vector<DirtyEntry> keep;
+    keep.reserve(d.size());
+    for (auto& e : d) {
+        if (e.doc == want) {
+            out.push_back(e.el);
+        } else {
+            keep.push_back(e);
+        }
+    }
+    d.swap(keep);
+}
+
 extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size_t len)
 {
     lxb_html_document* doc = lxb_html_document_create();
@@ -346,9 +396,13 @@ extern "C" int whaleui_dom_append_child(whaleui_dom_element_t* parent, whaleui_d
         return -1;
     }
     if (c->node.parent) {
+        /* moving: the old parent loses this subtree too */
+        whaleui_dom_mark_dirty(
+            lxb_dom_interface_element(c->node.parent));
         lxb_dom_node_remove(&c->node);
     }
     lxb_dom_node_insert_child(&p->node, &c->node);
+    whaleui_dom_mark_dirty(p);
     return 0;
 }
 
@@ -362,7 +416,11 @@ extern "C" int whaleui_dom_remove_child(whaleui_dom_element_t* parent, whaleui_d
     if (!c->node.parent) {
         return -2;
     }
+    lxb_dom_element* old_parent =
+        lxb_dom_interface_element(c->node.parent);
     lxb_dom_node_remove(&c->node);
+    /* the old parent's subtree loses this branch on its next rebuild */
+    whaleui_dom_mark_dirty(old_parent);
     return 0;
 }
 
@@ -376,6 +434,9 @@ extern "C" int whaleui_dom_element_destroy(whaleui_dom_element_t* el)
     if (!e->node.parent) {
         /* detached: owned by nobody, free the node */
         lxb_dom_node_destroy(&e->node);
+    } else {
+        /* attached: the parent's subtree changes when this node goes away */
+        whaleui_dom_mark_dirty(lxb_dom_interface_element(e->node.parent));
     }
     return 0;
 }
@@ -386,12 +447,18 @@ extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* 
     if (!e || !name || !value) {
         return -1;
     }
-    return lxb_dom_element_set_attribute(e, reinterpret_cast<const lxb_char_t*>(name),
-                                         std::strlen(name),
-                                         reinterpret_cast<const lxb_char_t*>(value),
-                                         std::strlen(value)) ? 0 : -2;
+    int rc = lxb_dom_element_set_attribute(
+                 e, reinterpret_cast<const lxb_char_t*>(name),
+                 std::strlen(name),
+                 reinterpret_cast<const lxb_char_t*>(value),
+                 std::strlen(value))
+                 ? 0
+                 : -2;
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
-
 extern "C" const char* whaleui_dom_get_attribute(whaleui_dom_element_t* el, const char* name)
 {
     lxb_dom_element* e = as_el(el);
@@ -423,10 +490,14 @@ extern "C" int whaleui_dom_remove_attribute(whaleui_dom_element_t* el, const cha
         return -1;
     }
     /* lexbor returns a status: 0 (LXB_STATUS_OK) means removed */
-    return lxb_dom_element_remove_attribute(
-               e, reinterpret_cast<const lxb_char_t*>(name), std::strlen(name)) == 0
-               ? 0
-               : -2;
+    int rc = lxb_dom_element_remove_attribute(
+                 e, reinterpret_cast<const lxb_char_t*>(name), std::strlen(name)) == 0
+                 ? 0
+                 : -2;
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
 
 extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const char* name,
@@ -450,6 +521,7 @@ extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const cha
         lxb_dom_element_remove_attribute(e, reinterpret_cast<const lxb_char_t*>(name),
                                          std::strlen(name));
     }
+    whaleui_dom_mark_dirty(e);
     return want ? 1 : 0;
 }
 
@@ -474,6 +546,7 @@ extern "C" int whaleui_dom_set_text(whaleui_dom_element_t* el, const char* text)
         return -2;
     }
     lxb_dom_node_insert_child(&e->node, lxb_dom_interface_node(tn));
+    whaleui_dom_mark_dirty(e);
     return 0;
 }
 
@@ -513,7 +586,11 @@ extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* prop
     if (!el || !property || !value) {
         return -1;
     }
-    return style_set(as_el(el), property, value);
+    int rc = style_set(as_el(el), property, value);
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(as_el(el));
+    }
+    return rc;
 }
 
 extern "C" const char* whaleui_dom_get_style(whaleui_dom_element_t* el, const char* property)
@@ -1003,6 +1080,8 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
         return -1;
     }
     if (nc->parent) {
+        /* moving: the old parent loses this subtree too */
+        whaleui_dom_mark_dirty(lxb_dom_interface_element(nc->parent));
         lxb_dom_node_remove(nc);
     }
     if (!rc) {
@@ -1010,6 +1089,7 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
     } else {
         lxb_dom_node_insert(&p->node, nc, rc, false);
     }
+    whaleui_dom_mark_dirty(p);
     return 0;
 }
 
@@ -1024,11 +1104,14 @@ extern "C" int whaleui_dom_replace_child(whaleui_dom_element_t* parent,
         return -1;
     }
     if (nc->parent) {
+        /* moving: the old parent loses this subtree too */
+        whaleui_dom_mark_dirty(lxb_dom_interface_element(nc->parent));
         lxb_dom_node_remove(nc);
     }
     /* insert before old, then drop old (lexbor has no node_replace) */
     lxb_dom_node_insert(&p->node, nc, oc, false);
     lxb_dom_node_remove(oc);
+    whaleui_dom_mark_dirty(p);
     return 0;
 }
 
@@ -1164,7 +1247,11 @@ extern "C" int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls)
     if (!e || !cls) {
         return -1;
     }
-    return class_set(e, cls, 1);
+    int rc = class_set(e, cls, 1);
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
 
 extern "C" int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* cls)
@@ -1173,7 +1260,11 @@ extern "C" int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* c
     if (!e || !cls) {
         return -1;
     }
-    return class_set(e, cls, 0);
+    int rc = class_set(e, cls, 0);
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
 
 extern "C" int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* cls)
@@ -1183,7 +1274,10 @@ extern "C" int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* c
         return -1;
     }
     int has = class_has(e, cls);
-    class_set(e, cls, !has);
+    int rc = class_set(e, cls, !has);
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
     return has ? 0 : 1;
 }
 
@@ -1337,10 +1431,15 @@ extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
         lxb_dom_node_destroy(n);
         n = nx;
     }
+    whaleui_dom_mark_dirty(e);
     if (!*html) {
         return 0;
     }
-    return parse_into(e, html, std::strlen(html));
+    int rc = parse_into(e, html, std::strlen(html));
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
 
 extern "C" const char* whaleui_dom_get_inner_html(whaleui_dom_element_t* el)
@@ -1383,6 +1482,8 @@ extern "C" int whaleui_dom_set_outer_html(whaleui_dom_element_t* el,
     }
     lxb_dom_node_remove(&e->node);
     lxb_dom_node_destroy(&e->node);
+    /* the element is gone: the parent's subtree must rebuild */
+    whaleui_dom_mark_dirty(lxb_dom_interface_element(parent));
     return 0;
 }
 

@@ -14,6 +14,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <unordered_map>
 
 /* lexbor element type */
 struct lxb_dom_element;
@@ -98,6 +99,12 @@ struct whaleui_layout_tree
     whaleui_layout_node_t* root;
     int viewport_w, viewport_h;
 
+    /* element -> layout node (the element node itself, not its text runs).
+     * Built during the layout pass; find_node_by_el is an O(1) lookup
+     * instead of a full-tree walk. Nodes rebuilt by whaleui_layout_relayout
+     * replace their entries. */
+    std::unordered_map<lxb_dom_element*, whaleui_layout_node_t*> by_el;
+
     std::deque<whaleui_layout_node_t> arena; /* stable node storage */
     std::deque<std::string> text_arena;      /* text-run storage */
 };
@@ -118,6 +125,25 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               struct whaleui_anim* anim,
                                               float text_scale);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
+
+/* Incremental relayout: rebuild the layout subtree of `el` (computed style
+ * + children, re-read from the live DOM) inside an existing tree, splice it
+ * into the parent's child chain, then re-run the box pass over the tree.
+ * Subtrees outside the affected path keep their computed styles - only the
+ * changed branch and the layout pass (no style cascade for untouched
+ * branches) re-run. Returns 0 on success; 1 when `el` has no node in this
+ * tree (different document / already removed - caller just skips it); -1
+ * on failure (caller should fall back to a full rebuild). The replaced
+ * nodes stay in the arena (orphaned, pointer-safe) until the next full
+ * rebuild. */
+int whaleui_layout_relayout(whaleui_layout_tree_t* tree,
+                            struct lxb_dom_element* el,
+                            const whaleui_css_rule_t* rules, size_t count,
+                            const std::map<std::string, std::string>* theme_vars,
+                            const whaleui_style_state* st,
+                            const std::map<struct lxb_dom_element*, int>* scrolls,
+                            struct whaleui_anim* anim,
+                            float text_scale);
 
 /* Text-width metric hook: the renderer installs this so layout measures
  * REAL glyph widths (inline-line x positions, wrap points, flex sizing)

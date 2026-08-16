@@ -1,5 +1,6 @@
 // test_layout: box model + block flow + basic flex.
 #include "whaleui.h"
+#include "dom/dom.h"
 #include "layout/layout.h"
 #include "style/theme.h"
 
@@ -7,6 +8,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -837,6 +839,69 @@ int main(void)
         assert(rr->border.x > rdiv->content.x + 200);
         whaleui_layout_destroy(t);
         whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* incremental relayout: a DOM change rebuilds only the affected
+     * subtree; the untouched sibling keeps its node (stable pointer) and
+     * the box pass re-positions it below the resized block */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"a\" style=\"width:100px;height:50px;\"></div>"
+            "<div id=\"b\" style=\"width:80px;height:30px;\"></div></body>",
+            std::strlen(
+                "<body><div id=\"a\" style=\"width:100px;height:50px;\"></div>"
+                "<div id=\"b\" style=\"width:80px;height:30px;\"></div></body>"));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* a = find_tag(t->root, "div");
+        assert(a != nullptr);
+        whaleui_layout_node_t* b = a->next;
+        assert(b != nullptr && b->el != a->el);
+        assert(b->border.y == 50); /* below a's original 50px height */
+
+        /* grow a via the DOM API: it lands in the per-document dirty set */
+        whaleui_dom_set_style(reinterpret_cast<whaleui_dom_element_t*>(a->el),
+                              "height", "100px");
+        std::vector<lxb_dom_element*> dirty;
+        whaleui_dom_take_dirty(doc, dirty);
+        assert(dirty.size() == 1 && dirty[0] == a->el);
+
+        /* relayout: a's subtree is rebuilt, b keeps its node */
+        assert(whaleui_layout_relayout(t, a->el, nullptr, 0, nullptr, nullptr,
+                                       nullptr, nullptr, 1.0f) == 0);
+        whaleui_layout_node_t* a2 = t->by_el[a->el];
+        assert(a2 != nullptr && a2 != a);          /* fresh subtree */
+        assert(a2->border.h == 100);               /* new height applied */
+        assert(a2->next == b);                     /* sibling chain kept */
+        assert(t->by_el[b->el] == b);              /* b untouched */
+        assert(b->border.y == 100);                /* re-positioned below a */
+        assert(whaleui_layout_relayout(t, b->el, nullptr, 0, nullptr, nullptr,
+                                       nullptr, nullptr, 1.0f) == 0);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* relayout of an element outside the tree is a no-op (rc == 1) */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div style=\"width:10px;height:10px;\"></div></body>",
+            std::strlen("<body><div style=\"width:10px;height:10px;\"></div></body>"));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        lxb_dom_element* alien = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_create_element(doc, "div"));
+        assert(alien != nullptr);
+        assert(whaleui_layout_relayout(t, alien, nullptr, 0, nullptr, nullptr,
+                                       nullptr, nullptr, 1.0f) == 1);
+        whaleui_dom_element_destroy(reinterpret_cast<whaleui_dom_element_t*>(alien));
+        whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }
 

@@ -782,6 +782,7 @@ struct Builder
     whaleui_layout_node_t* build(lxb_dom_element* el, whaleui_layout_node_t* parent)
     {
         whaleui_layout_node_t* n = new_node();
+        tree->by_el.emplace(el, n); /* first entry wins: text runs share el */
         /* scalars reset here; style/text are STL containers (default-
          * constructed by new_node) and must NOT be memset */
         n->el = el;
@@ -2032,6 +2033,91 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
 extern "C" void whaleui_layout_destroy(whaleui_layout_tree_t* tree)
 {
     delete tree;
+}
+
+extern "C" int whaleui_layout_relayout(
+    whaleui_layout_tree_t* tree,
+    lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale)
+{
+    if (!tree || !el) {
+        return 1; /* nothing to do for this element */
+    }
+    auto found = tree->by_el.find(el);
+    if (found == tree->by_el.end()) {
+        return 1; /* el has no node here (other document / already gone) */
+    }
+    whaleui_layout_node_t* old = found->second;
+    whaleui_layout_node_t* parent = old->parent;
+
+    /* drop the old subtree from the element map (text runs share el but
+     * never own the entry, so the value check keeps them in place) */
+    std::function<void(whaleui_layout_node_t*)> unmap =
+        [&](whaleui_layout_node_t* nd) {
+            if (nd->el) {
+                auto m = tree->by_el.find(nd->el);
+                if (m != tree->by_el.end() && m->second == nd) {
+                    tree->by_el.erase(m);
+                }
+            }
+            for (whaleui_layout_node_t* c = nd->first_child; c;
+                 c = c->next) {
+                unmap(c);
+            }
+        };
+    unmap(old);
+
+    /* rebuild the subtree from the live DOM (same inputs as the full pass) */
+    Builder b;
+    b.tree = tree;
+    b.rules = rules;
+    b.rule_count = count;
+    b.st = st ? *st : whaleui_style_state();
+    b.scrolls = scrolls;
+    b.anim = anim;
+    b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    if (theme_vars) {
+        b.vars = *theme_vars;
+    }
+    if (tree->root && tree->root->el) {
+        whaleui_style_collect_vars_full(tree->root->el, rules, count, b.vars);
+    }
+    whaleui_layout_node_t* fresh = b.build(el, parent);
+    if (!fresh) {
+        return -1;
+    }
+
+    /* splice: replace `old` with `fresh` in the parent's child chain */
+    fresh->next = old->next;
+    if (parent) {
+        whaleui_layout_node_t** link = &parent->first_child;
+        while (*link && *link != old) {
+            link = &(*link)->next;
+        }
+        if (*link != old) {
+            return -1; /* tree inconsistent: caller falls back to a rebuild */
+        }
+        *link = fresh;
+    } else {
+        tree->root = fresh;
+    }
+
+    /* re-run the box pass; untouched branches keep their computed styles
+     * and are only re-positioned. Same tail as whaleui_layout_compute. */
+    int cursor = 0;
+    b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
+             &cursor);
+    tree->root->border.h = tree->viewport_h;
+    tree->root->content.h = tree->viewport_h;
+    {
+        int cmax = cursor - tree->viewport_h;
+        tree->root->scroll_max = cmax > 0 ? cmax : 0;
+    }
+    return 0;
 }
 
 extern "C" void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn)
