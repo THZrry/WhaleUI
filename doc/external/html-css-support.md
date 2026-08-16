@@ -129,7 +129,7 @@ flex: flex-direction, flex-wrap, justify-content, align-items, gap, flex-grow, f
 grid: grid-template-columns(px/fr/auto/repeat()), grid-column 整行跨越, column-gap/row-gap
 background-color/background(纯色+渐变), background-image(渐变)
 border-radius(背景与边框沿弧线)
-box-shadow(GPU: mipmap 模糊近似;CPU: 同心环), backdrop-filter: blur()(GPU mipmap 近似)
+box-shadow(外阴影 GPU: mipmap 模糊近似 / CPU: 同心环;inset 阴影 GPU: 对角线渐变三角形 + mipmap 模糊 / CPU: 同心内缩环), backdrop-filter: blur()(GPU mipmap 近似)
 text-shadow, -webkit-text-stroke
 text-decoration(underline/line-through), color
 font-size, font-family(按注册字体+fallback 链), font-weight(bold/≥600 合成粗体), font 简写
@@ -208,7 +208,7 @@ position:sticky 容器底部钳制
 - 表格无 table 布局;inline 混排顶部对齐、无基线对齐
 - 无事件冒泡/捕获;部分事件类型仅可手动派发
 - 单线程渲染;脏矩形/子树包围盒/滚动截取已做,规则级联缓存未做(大页面重布局约 30ms)
-- `box-shadow` 多阴影列表只取第一个;`backdrop-filter` 无 CPU 回退(lite/minimal 不生效)
+- `box-shadow` 多阴影列表只取第一个;`backdrop-filter` 无 CPU 回退(lite/minimal 不生效);`box-shadow: inset` 的偏移量(ox/oy)按盒子本体渲染(近似忽略)
 - 媒体查询仅支持 4 种条件;`@import`/`@supports` 未处理
 - 剪贴板、`pointer-events`、`user-select` 等交互属性未实现
 

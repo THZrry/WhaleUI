@@ -80,6 +80,8 @@ struct whaleui_gpu
     SDL_GPUComputePipeline* pipe_text_composite; /* text layer -> target */
     SDL_GPUComputePipeline* pipe_shadow_cs;  /* blur_tex -> target (shadows) */
     SDL_GPUComputePipeline* pipe_backdrop_cs; /* blur_tex -> target (backdrop) */
+    SDL_GPUComputePipeline* pipe_inset_cs;  /* blur_tex -> target (inset) */
+    SDL_GPUGraphicsPipeline* pipe_solid_flat; /* vertex color only (no SDF) */
 
     /* 1x1 white texture for the solid pipeline */
     SDL_GPUTexture* white_tex;
@@ -115,6 +117,7 @@ struct whaleui_gpu
     SDL_GPUBuffer* vb_shapes;
     SDL_GPUBuffer* shadow_params_buf;
     SDL_GPUBuffer* backdrop_params_buf;
+    SDL_GPUBuffer* inset_params_buf;
     SDL_GPUTransferBuffer* shadow_transfer;
 
     /* per-frame command lists */
@@ -125,8 +128,12 @@ struct whaleui_gpu
     /* box-shadow / backdrop-filter records (fed to the compute passes) */
     std::vector<gpu_blur_param> shadows;
     std::vector<gpu_blur_param> backdrops;
+    /* inset box-shadow records (blended over the geometry after paint) */
+    std::vector<gpu_blur_param> insets;
     /* shadow shapes (white rounded rects) painted into blur_tex (pass A) */
     std::vector<gpu_vert_solid> shapes;
+    /* inset gradient triangles painted into blur_tex (pass A2) */
+    std::vector<gpu_vert_solid> inset_shapes;
 
     /* glyph atlas CPU-side occupancy (R8) */
     std::vector<unsigned char> atlas;
@@ -167,6 +174,16 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
  * several levels back into the target. */
 void whaleui_gpu_shadow(whaleui_gpu_t* g, float x, float y, float w, float h,
                         float radius, float blur, unsigned int color);
+
+/* push an inset box-shadow: the box interior is split along the two
+ * diagonals into four triangles whose vertex alpha ramps from 1 (edges)
+ * to 0 (center); the linear gradient is rasterized into blur_tex, mipmap
+ * blurred (same pyramid as the outer shadow) and a compute pass blends it
+ * over the painted geometry AFTER the geometry pass (inset shadows sit on
+ * top of the element background). radius is ignored (angular approximation:
+ * the diagonal split covers the corners). */
+void whaleui_gpu_inset(whaleui_gpu_t* g, float x, float y, float w, float h,
+                       float radius, float blur, unsigned int color);
 
 /* push a backdrop-filter region: after the geometry pass, the target is
  * copied into blur_tex, mipmapped, and a compute pass replaces the region

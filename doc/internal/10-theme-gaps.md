@@ -26,9 +26,13 @@ Note: focus is set on mouse-down only (no Tab traversal yet); `:focus` and
 ## Box shadow
 
 - [x] `box-shadow` - single shadow `ox oy blur color` (`parse_shadow` in
-  `render.cpp`). Soft shadow via concentric rounded rects with fading alpha.
-  Used by `.card` (`--shadow` per theme) and the select popup.
-  Not yet: multiple shadows, spread, inset.
+  `render.cpp`), plus the `inset` variant. GPU: soft shadow = white rounded
+  rect mipmap-blurred; inset = the box interior split along the diagonals
+  into four alpha-gradient triangles (edges 1 -> center 0) mipmap-blurred
+  and blended over the painted background. CPU fallback: concentric
+  (inward) rounded rects with fading alpha. Used by `.card` (`--shadow` per
+  theme) and the select popup.
+  Not yet: multiple shadows, spread.
 
 ## Transition
 

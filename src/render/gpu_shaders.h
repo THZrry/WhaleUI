@@ -107,6 +107,23 @@ float4 main(VSOut i) : SV_Target {
  * blend/format path); the pixel shader uses vertex color only. */
 static const unsigned char kSolidPixel[4] = {255, 255, 255, 255};
 
+/* flat pixel shader: interpolated vertex color only (no rounded-rect SDF).
+ * Used for the inset-shadow gradient triangles drawn into blur_tex - the
+ * alpha ramp falls out of the rasterizer for free. VSOut must match
+ * kSolidVS's outputs exactly (D3D12 rejects mismatched signatures). */
+static const char* kFlatPS = R"(
+struct VSOut {
+    float4 pos : SV_Position;
+    float2 uv  : TEXCOORD0;
+    float4 col : TEXCOORD1;
+    float2 size : TEXCOORD2;
+    float radius : TEXCOORD3;
+};
+float4 main(VSOut i) : SV_Target {
+    return i.col;
+}
+)";
+
 /* blur sampling compute passes (box-shadow / backdrop-filter), the
  * mipmap-approximation of a gaussian: the source is mipmapped into
  * blur_tex, then each pixel re-samples 3 levels (gaussian weights) with
@@ -191,6 +208,47 @@ void main(uint3 id : SV_DispatchThreadID) {
             float3 outcol = lerp(blurred, body, ba);
             float outa = m.a * (1.0 - ba) + ba;
             acc = float4(outcol, outa);
+            break;
+        }
+    }
+    out_tex[id.xy] = acc;
+}
+)";
+
+/* inset box-shadow compute pass: blend the blurred gradient (the four
+ * diagonal triangles in blur_tex) over the already-painted geometry.
+ * Runs AFTER the geometry + backdrop passes, so `acc` starts from the
+ * painted pixel (read+write) and the shadow color is blended on top.
+ * Record layout mirrors kShadowCS: {x,y,w,h} {blur,r,g,b} {a,0,0,0}. */
+static const char* kInsetCS = R"(
+[[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
+[[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+SamplerState samp : register(s0);
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float2 px = float2(id.xy) + 0.5;
+    float4 hdr = params[0];
+    int n = int(hdr.x);
+    float4 acc = out_tex[id.xy]; /* keep the painted background */
+    for (int i = 0; i < n; ++i) {
+        float4 r = params[1 + i * 3];
+        float4 c = params[2 + i * 3];
+        float4 d = params[3 + i * 3];
+        if (px.x >= r.x && px.x < r.x + r.z &&
+            px.y >= r.y && px.y < r.y + r.w) {
+            float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
+            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
+            float4 m = 0;
+            float ws = 0;
+            for (int k = -1; k <= 1; ++k) {
+                float w = exp(-0.5 * float(k * k));
+                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
+                ws += w;
+            }
+            m /= ws;
+            float sa = d.x * m.a; /* shadow alpha = color alpha * mask */
+            acc = lerp(acc, float4(c.yzw, 1.0), sa);
             break;
         }
     }

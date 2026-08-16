@@ -3213,6 +3213,13 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (v.empty() || v == "none") {
         return;
     }
+    /* "inset" prefix: the shadow projects inward from the box edges */
+    bool inset = false;
+    if (v.compare(0, 5, "inset") == 0 &&
+        (v.size() == 5 || v[5] == ' ' || v[5] == '\t')) {
+        inset = true;
+        v = v.substr(5);
+    }
     int ox = 0, oy = 0, blur = 0;
     unsigned int col = 0;
     if (parse_shadow(v, ox, oy, blur, col) != 0) {
@@ -3236,29 +3243,53 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     /* GPU path: the mipmap blur approximation (blur_tex + multi-level
      * resampling) - one shape + one sampling quad instead of blur/2
-     * concentric fills */
+     * concentric fills. Inset shadows blend the blurred gradient over the
+     * painted geometry (after the geometry pass). */
     if (g_gpu) {
-        whaleui_gpu_shadow(g_gpu, static_cast<float>(n->border.x + off_x + ox),
-                           static_cast<float>(n->border.y + off_y + oy),
-                           static_cast<float>(n->border.w),
-                           static_cast<float>(n->border.h),
-                           static_cast<float>(radius),
-                           static_cast<float>(blur), col);
+        if (inset) {
+            whaleui_gpu_inset(g_gpu,
+                              static_cast<float>(n->border.x + off_x),
+                              static_cast<float>(n->border.y + off_y),
+                              static_cast<float>(n->border.w),
+                              static_cast<float>(n->border.h),
+                              static_cast<float>(radius),
+                              static_cast<float>(blur), col);
+        } else {
+            whaleui_gpu_shadow(g_gpu,
+                               static_cast<float>(n->border.x + off_x + ox),
+                               static_cast<float>(n->border.y + off_y + oy),
+                               static_cast<float>(n->border.w),
+                               static_cast<float>(n->border.h),
+                               static_cast<float>(radius),
+                               static_cast<float>(blur), col);
+        }
         return;
     }
-    /* concentric layers, alpha fading outwards; skip the near-invisible
-     * outermost ring and step by 2px (half the fill cost, gradient still
-     * smooth) */
+    /* concentric layers, alpha fading outwards (inset: inwards); skip the
+     * near-invisible outermost ring and step by 2px (half the fill cost,
+     * gradient still smooth) */
     for (int k = (blur > 0 ? blur - 1 : 0); k >= 1; k -= 2) {
         unsigned int ka = static_cast<unsigned>(a * (blur - k + 1) / (blur + 1));
         if (ka < 4) {
             continue;
         }
         unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
-        int sx = n->border.x + off_x + ox - k;
-        int sy = n->border.y + off_y + oy - k;
-        int sw = n->border.w + 2 * k;
-        int sh = n->border.h + 2 * k;
+        int sx, sy, sw, sh;
+        if (inset) {
+            /* inward: each layer is the box shrunk by k */
+            sx = n->border.x + off_x + k;
+            sy = n->border.y + off_y + k;
+            sw = n->border.w - 2 * k;
+            sh = n->border.h - 2 * k;
+            if (sw <= 0 || sh <= 0) {
+                continue;
+            }
+        } else {
+            sx = n->border.x + off_x + ox - k;
+            sy = n->border.y + off_y + oy - k;
+            sw = n->border.w + 2 * k;
+            sh = n->border.h + 2 * k;
+        }
         if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh,
                             radius, c, clip);
