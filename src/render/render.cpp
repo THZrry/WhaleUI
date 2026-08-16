@@ -2249,8 +2249,10 @@ void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip)
             }
             /* a selection endpoint outside the repaint region must still
              * receive its sequence number (paint_node does the same), so
-             * the in-viewport middle of the selection keeps highlighting */
-            if (!tc && !(n->el && (n->el == sa || n->el == sf)) &&
+             * the in-viewport middle of the selection keeps highlighting.
+             * Text runs skip the cull exactly like paint_node. */
+            if (!tc && !n->is_text &&
+                !(n->el && (n->el == sa || n->el == sf)) &&
                 paint_cull(r, n, off_x, off_y, clip)) {
                 return;
             }
@@ -2685,13 +2687,18 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     std::string fst = sget(n->style, "font-style");
     int style = (bold ? kFontBold : 0) |
                 ((fst == "italic" || fst == "oblique") ? kFontItalic : 0);
-    /* text-align aligns within the parent element's content box */
+    /* text-align aligns within the parent element's content box; inline
+     * line members (mixed with siblings) stay left-aligned at their laid
+     * out x so the line flows as one run sequence */
     std::string ta = sget(n->style, "text-align");
     int align = 0;
     if (ta == "center") {
         align = 1;
     } else if (ta == "right") {
         align = 2;
+    }
+    if (n->in_inline) {
+        align = 0;
     }
     /* text-transform + letter-spacing apply to the painted text (ASCII
      * transforms keep the byte length, so selection offsets stay valid) */
@@ -2715,8 +2722,15 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     paint_text_selection(r, n, fs, family, bold, off_x, off_y, seq, sel_lo,
                          sel_hi, clip);
     bool wrap = sget(n->style, "white-space") != "nowrap";
-    int tx0 = box->content.x + off_x;
+    /* paint at the run's laid-out position: block runs sit at the parent
+     * content origin, inline-line runs at their accumulated x. The wrap
+     * width is the line remainder (parent right edge - run x). */
+    int tx0 = n->border.x + off_x;
     int ty0 = n->border.y + off_y;
+    int avail_w = box->content.x + box->content.w - n->border.x;
+    if (avail_w < 1) {
+        avail_w = 1;
+    }
 
     /* text-shadow: offset copy (plus 2 spread layers approximating the
      * blur) painted under the glyphs. The glyph raster is cached per
@@ -2734,11 +2748,11 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                                               (sblur + 1));
                     unsigned int sc = (ka << 24) | (scol & 0x00FFFFFF);
                     draw_text_at(r, shown, tx0 + sox - k, ty0 + soy - k,
-                                 box->content.w, n->border.h, fs, family, sc,
+                                 avail_w, n->border.h, fs, family, sc,
                                  style, align, n->el, clip, lsp, wrap);
                 }
             }
-            draw_text_at(r, shown, tx0 + sox, ty0 + soy, box->content.w,
+            draw_text_at(r, shown, tx0 + sox, ty0 + soy, avail_w,
                          n->border.h, fs, family, scol, style, align, n->el,
                          clip, lsp, wrap);
         }
@@ -2776,7 +2790,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                     continue;
                 }
                 draw_text_at(r, shown, tx0 + dx * sw, ty0 + dy * sw,
-                             box->content.w, n->border.h, fs, family, scc,
+                             avail_w, n->border.h, fs, family, scc,
                              style, align, n->el, clip, lsp, wrap);
             }
         }
@@ -2784,13 +2798,31 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
-    draw_text_at(r, shown, tx0, ty0, box->content.w, n->border.h,
+    draw_text_at(r, shown, tx0, ty0, avail_w, n->border.h,
                  fs, family, color, style, align, n->el, clip, lsp, wrap);
 
-    /* text-decoration: underline / line-through lines over the box */
+    /* text-decoration: underline / line-through lines over the box (width
+     * = the run's own text extent, clamped to the line remainder) */
     std::string td = sget(n->style, "text-decoration");
     if (!td.empty() && td != "none") {
-        int lw = box->content.w > 0 ? box->content.w : 1;
+        int lw = 0;
+        for (size_t i = 0; i < shown.size();) {
+            unsigned char c2 = static_cast<unsigned char>(shown[i]);
+            if (c2 < 0x80) {
+                lw += fs / 2;
+                ++i;
+            } else {
+                size_t n2 = (c2 & 0xE0) == 0xC0 ? 2 : (c2 & 0xF0) == 0xE0 ? 3 : 4;
+                lw += fs;
+                i += n2;
+            }
+        }
+        if (lw > avail_w) {
+            lw = avail_w;
+        }
+        if (lw < 1) {
+            lw = 1;
+        }
         if (td.find("underline") != std::string::npos) {
             fill_rect(r->pixels, r->fb_w, r->fb_h, tx0,
                       ty0 + n->border.h - 2, lw, 1, color, clip);
@@ -3383,9 +3415,15 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* a selection endpoint outside the repaint region must still receive
      * its sequence number (sel_seq does the same), so the in-viewport
-     * middle of the selection keeps highlighting */
-    if (!tc && !(n->el && (n->el == r->sel_anchor_el ||
-                           n->el == r->sel_focus_el)) &&
+     * middle of the selection keeps highlighting. Text runs skip the
+     * subtree cull entirely: their laid-out bounds carry the estimated
+     * text width, which can fall short of the real glyph extent (inline
+     * lines, letter-spacing) - culling on it drops glyphs that actually
+     * reach the repaint strip. paint_text has its own framebuffer check
+     * and the clip clips the horizontal overflow. */
+    if (!tc && !n->is_text &&
+        !(n->el && (n->el == r->sel_anchor_el ||
+                    n->el == r->sel_focus_el)) &&
         paint_cull(r, n, off_x, off_y, clip)) {
         return; /* whole subtree outside the repaint region */
     }
@@ -3622,9 +3660,10 @@ whaleui_layout_node_t* editable_geo(whaleui_layout_node_t* n)
 }
 
 /* text top-left for hit-testing/highlighting (matches paint_text).
- * Text runs: x from the parent content box, y from the run's own box
- * (already scroll-shifted at layout), vertically centered in the run's
- * estimated height. Containers (editable overlays): content box, centered. */
+ * Text runs: x from the run's laid-out position (parent content origin for
+ * block runs, accumulated inline x on inline lines), y from the run's own
+ * box, vertically centered in its height. Containers (editable overlays):
+ * content box, centered. */
 void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
                  const std::string& text, int fs, const std::string& family,
                  bool bold, int* tx, int* ty)
@@ -3632,9 +3671,7 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
     int tw = 0, th = 0;
     text_size(r, text, fs, family, bold, &tw, &th);
     if (n->is_text) {
-        whaleui_layout_node_t* box =
-            (n->parent && !n->parent->is_text) ? n->parent : n;
-        *tx = box->content.x;
+        *tx = n->border.x;
         *ty = n->border.y + (n->border.h - th) / 2;
     } else {
         *tx = n->content.x;

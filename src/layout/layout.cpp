@@ -670,6 +670,7 @@ struct Builder
         t->parent = n;
         t->is_text = 1;
         t->visible = 1;
+        t->in_inline = 0;
         t->opacity = n->opacity;
         t->text = tree->text_arena.back();
         t->style = style;
@@ -698,6 +699,7 @@ struct Builder
         n->opacity = 1.0f;
         n->visible = 1;
         n->is_text = 0;
+        n->in_inline = 0;
         n->scroll_y = 0;
         n->scroll_max = 0;
         if (scrolls && el) {
@@ -1316,6 +1318,16 @@ struct Builder
         return static_cast<int>(estimate_content_width(c, em));
     }
 
+    /* is this node part of an inline line (text run or inline/inline-block
+     * element in static position)? */
+    bool inline_member(whaleui_layout_node_t* c)
+    {
+        return c->visible &&
+               (c->is_text ||
+                (position_kind(get(c->style, "position")) == 0 &&
+                 display_kind(get(c->style, "display")) == 2));
+    }
+
     void layout_block(whaleui_layout_node_t* n, int inner_w, int inner_h,
                       int font_px, int& kid_cursor)
     {
@@ -1327,6 +1339,9 @@ struct Builder
          * <p>a <em>e</em> b</p> paints as one line, not three boxes. */
         int cursor = n->content.y;
         int right_edge = n->content.x + inner_w;
+        /* the container's text-align shifts the whole line (center/right),
+         * like browsers justify the line box, not each run */
+        std::string talign = get(n->style, "text-align");
         whaleui_layout_node_t* c = n->first_child;
         while (c) {
             if (!c->visible) {
@@ -1344,29 +1359,68 @@ struct Builder
                 continue;
             }
             /* one inline line (line_top fixed, x advances; wrap restarts
-             * at the container's left edge) */
+             * at the container's left edge). Members are marked in_inline
+             * (paint wraps them to the line remainder and skips centering)
+             * and their heights are unified to the line height so the
+             * glyphs sit on one visual line. */
             int line_top = cursor;
             int x = n->content.x;
             int max_h = 0;
-            while (c && c->visible &&
-                   (c->is_text ||
-                    (position_kind(get(c->style, "position")) == 0 &&
-                     display_kind(get(c->style, "display")) == 2))) {
+            std::vector<whaleui_layout_node_t*> line_members;
+            while (c && inline_member(c)) {
+                /* a fresh line honors text-align: measure the whole run of
+                 * members and shift the line start accordingly */
+                if (x == n->content.x && (talign == "center" || talign == "right")) {
+                    int lw = 0;
+                    for (whaleui_layout_node_t* m = c; m && inline_member(m);
+                         m = m->next) {
+                        lw += inline_est_w(m, font_px);
+                    }
+                    int avail = inner_w;
+                    if (lw < avail) {
+                        x = talign == "center"
+                                ? n->content.x + (avail - lw) / 2
+                                : n->content.x + avail - lw;
+                    }
+                }
                 int est = inline_est_w(c, font_px);
                 if (x > n->content.x && x + est > right_edge) {
                     cursor = line_top + max_h;
                     line_top = cursor;
                     x = n->content.x;
                     max_h = 0;
+                    for (size_t mi = 0; mi < line_members.size(); ++mi) {
+                        line_members[mi]->border.h = max_h;
+                    }
+                    line_members.clear();
+                    /* wrapped line: also honor text-align */
+                    if (talign == "center" || talign == "right") {
+                        int lw = 0;
+                        for (whaleui_layout_node_t* m = c;
+                             m && inline_member(m); m = m->next) {
+                            lw += inline_est_w(m, font_px);
+                        }
+                        int avail = inner_w;
+                        if (lw < avail) {
+                            x = talign == "center"
+                                    ? n->content.x + (avail - lw) / 2
+                                    : n->content.x + avail - lw;
+                        }
+                    }
                 }
                 int c2 = line_top;
                 layout(c, x, line_top, right_edge - x, inner_h, font_px,
                        &c2);
+                c->in_inline = 1;
                 x += c->border.w;
                 if (c->border.h > max_h) {
                     max_h = c->border.h;
                 }
+                line_members.push_back(c);
                 c = c->next;
+            }
+            for (size_t mi = 0; mi < line_members.size(); ++mi) {
+                line_members[mi]->border.h = max_h;
             }
             cursor = line_top + max_h;
         }

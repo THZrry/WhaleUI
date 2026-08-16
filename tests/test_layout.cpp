@@ -799,5 +799,46 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* text-align: center/right shifts the whole inline line (mixed runs
+     * center as one line box, not per run) */
+    {
+        std::string css = whaleui_theme_default_css("fluent");
+        css += ".c { text-align: center; }\n.r { text-align: right; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div class=\"c\" style=\"width:400px;\">aa <em>e</em>"
+            " bb</div><div class=\"r\" style=\"width:400px;\">x "
+            "<strong>y</strong></div></body>", 0);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* cdiv = find_tag(t->root, "div");
+        assert(cdiv != nullptr);
+        whaleui_layout_node_t* r1 = cdiv->first_child;
+        assert(r1 && r1->is_text);
+        /* centered: first run starts right of the content origin */
+        assert(r1->border.x > cdiv->content.x + 50);
+        /* all three members share one line */
+        whaleui_layout_node_t* em = r1->next;
+        assert(em && !em->is_text);
+        assert(em->border.y == r1->border.y);
+        assert(em->border.x == r1->border.x + r1->border.w);
+        /* right-aligned container: the line hugs the right edge */
+        whaleui_layout_node_t* rdiv = cdiv->next;
+        assert(rdiv != nullptr);
+        whaleui_layout_node_t* rr = rdiv->first_child;
+        assert(rr && rr->is_text);
+        assert(rr->border.x > rdiv->content.x + 200);
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }

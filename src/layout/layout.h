@@ -66,6 +66,9 @@ struct whaleui_layout_node
 
     unsigned visible : 1;    /* display != none */
     unsigned is_text : 1;    /* text run inside a parent box */
+    unsigned in_inline : 1;  /* laid out on an inline line (mixed with
+                                siblings): wraps to the line remainder,
+                                never centers, top-aligned with the line */
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 

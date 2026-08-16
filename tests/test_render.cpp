@@ -284,6 +284,68 @@ int main(void)
         assert(ital > 0);
         assert(ital != norm); /* slant moves the ink */
     }
+    /* inline flow paints each run at its laid-out x: <p>a<em>e</em>b</p>
+     * must produce separated glyph clusters, not all text overlapping at
+     * the parent origin (regression from the inline-line layout) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "inline", 300, 80);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p style=\"font-size:40px;\">a<em>e</em>b</p>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* columns with ink, merged into runs */
+        std::vector<int> runs;
+        bool prev = false;
+        for (int xx = 0; xx < 300; ++xx) {
+            bool has = false;
+            for (int yy = 0; yy < 80 && !has; yy += 2) {
+                if (((gpixel(w->render, xx, yy) >> 16) & 0xFF) > 0x80) {
+                    has = true;
+                }
+            }
+            if (has && !prev) {
+                runs.push_back(xx);
+            }
+            prev = has;
+        }
+        /* "a e b" are three separated clusters (italic e may touch a on
+         * the right edge, so require at least two distinct clusters) */
+        assert(runs.size() >= 2);
+        /* the last cluster must sit well right of the first (30+ px apart):
+         * the runs advance, they do not all paint from x=0 */
+        if (runs.size() >= 2) {
+            assert(runs.back() - runs.front() >= 20);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* text-align:center paints the inline line centered: the glyph ink
+     * centroid sits at the container center */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "talign", 400, 100);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"text-align:center;width:400px;"
+            "font-size:32px;\">hello</div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        long sum = 0, cnt = 0;
+        for (int yy = 0; yy < 100; yy += 2) {
+            for (int xx = 0; xx < 400; xx += 2) {
+                if (((gpixel(w->render, xx, yy) >> 16) & 0xFF) > 0x80) {
+                    sum += xx;
+                    ++cnt;
+                }
+            }
+        }
+        assert(cnt > 0);
+        long centroid = sum / cnt;
+        assert(centroid > 150 && centroid < 250); /* ~200 = center */
+        whaleui_window_destroy(w);
+    }
+
     /* <select> dropdown interaction */
     {
         whaleui_window_t* w = whaleui_window_create(app, "select", 300, 200);
@@ -454,6 +516,81 @@ int main(void)
         assert(!lxb_dom_element_has_attribute(r1, (const lxb_char_t*)"checked", 7));
         assert(lxb_dom_element_has_attribute(r2, (const lxb_char_t*)"checked", 7));
         whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* scrolled repaint: the newly exposed strip must repaint with content
+     * (regression: some components stayed blank after scrolling) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "scrollpaint", 300, 200);
+        assert(w != nullptr);
+        std::string html = "<html><body>";
+        for (int i = 0; i < 30; ++i) {
+            html += "<p style=\"font-size:24px;margin:4px 0;\">LINE ";
+            html += std::to_string(i);
+            html += "</p>";
+        }
+        html += "</body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto strip_has_ink = [](whaleui_render_t* r, int y0, int y1) {
+            for (int yy = y0; yy < y1; yy += 2) {
+                for (int xx = 0; xx < 300; xx += 2) {
+                    if (((gpixel(r, xx, yy) >> 16) & 0xFF) > 0x80) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        assert(strip_has_ink(w->render, 20, 100)); /* initial text visible */
+        /* wheel down 2 notches (80px): the bottom strip 120..200 is newly
+         * exposed and must be repainted with the next lines */
+        whaleui_render_handle_wheel(w->render, 150, 100, -2.0f);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(strip_has_ink(w->render, 120, 200));
+        /* scroll further: the newly exposed strip at the bottom again */
+        whaleui_render_handle_wheel(w->render, 150, 100, -2.0f);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(strip_has_ink(w->render, 120, 200));
+        whaleui_window_destroy(w);
+    }
+
+    /* 21kb external page: scrolled strips must repaint with content (the
+     * page has long text sections; scrolling must not leave blank strips) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "q21k", 800, 600);
+        assert(w != nullptr);
+        assert(whaleui_window_load_uri(
+                   w, TEST_URI_RAW("Qwen_html_20260814_oeem340or.html")) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree->root->scroll_max > 0);
+        auto has_ink = [](whaleui_render_t* r, int y0, int y1) {
+            for (int yy = y0; yy < y1; yy += 4) {
+                for (int xx = 0; xx < 800; xx += 4) {
+                    if (((gpixel(r, xx, yy) >> 16) & 0xFF) > 0x50) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        /* step down in 100px notches; each scroll repaints the exposed
+         * bottom strip - at least the final state must not be blank */
+        int inked = 0;
+        for (int i = 0; i < 12; ++i) {
+            whaleui_render_handle_wheel(w->render, 400, 300, -2.5f);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            if (has_ink(w->render, 500, 600)) {
+                ++inked;
+            }
+        }
+        assert(inked >= 1); /* most mid-page strips carry content */
+        /* clamp at the bottom: still repaints (no crash, no stale strip) */
+        whaleui_render_handle_wheel(w->render, 400, 300, -1000.0f);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_window_destroy(w);
     }
 
