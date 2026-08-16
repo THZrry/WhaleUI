@@ -5090,20 +5090,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * (moved on scroll), uploaded + composited by a compute pass. */
     Clip full = {0, 0, r->fb_w, r->fb_h};
     Clip strip = full;
-    if (scroll_dy > 0) { /* content moved up: bottom strip is new */
-        strip.y = r->fb_h - scroll_dy;
-        strip.h = scroll_dy < r->fb_h ? scroll_dy : r->fb_h;
-        std::fill(r->text_layer.begin() + static_cast<size_t>(strip.y) * r->fb_w,
-                  r->text_layer.end(), 0);
-    } else if (scroll_dy < 0) { /* content moved down: top strip is new */
-        strip.y = 0;
-        strip.h = -scroll_dy;
-        std::fill(r->text_layer.begin(),
-                  r->text_layer.begin() + static_cast<size_t>(strip.h) * r->fb_w,
-                  0);
-    }
     if (scroll_dy != 0) {
-        /* shift the existing text layer rows (opposite of the scroll) */
+        /* shift the existing text layer rows FIRST (opposite of the
+         * scroll): the shift copies from [dy, fb_h) into [0, fb_h-dy), so
+         * the old bottom-strip content lands above the strip. Clearing the
+         * strip before shifting would wipe exactly those rows. */
         int rows = r->fb_h - (scroll_dy < 0 ? -scroll_dy : scroll_dy);
         if (scroll_dy > 0) { /* content up: row y takes row y+dy */
             for (int y = 0; y < rows; ++y) {
@@ -5118,6 +5109,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             static_cast<size_t>(r->fb_w) * 4);
             }
         }
+    }
+    if (scroll_dy > 0) { /* content moved up: bottom strip is new */
+        strip.y = r->fb_h - scroll_dy;
+        strip.h = scroll_dy < r->fb_h ? scroll_dy : r->fb_h;
+        std::fill(r->text_layer.begin() + static_cast<size_t>(strip.y) * r->fb_w,
+                  r->text_layer.end(), 0);
+    } else if (scroll_dy < 0) { /* content moved down: top strip is new */
+        strip.y = 0;
+        strip.h = -scroll_dy;
+        std::fill(r->text_layer.begin(),
+                  r->text_layer.begin() + static_cast<size_t>(strip.h) * r->fb_w,
+                  0);
     }
     bool partial = false; /* load-only repaint of a dirty region */
     if (scroll_dy != 0) {

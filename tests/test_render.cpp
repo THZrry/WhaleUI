@@ -618,11 +618,42 @@ int main(void)
         /* step down: EVERY scroll repaints its exposed strip; the page is
          * text-heavy so each strip must carry ink (blank strips = the
          * regression) */
+        /* count ink in the CPU text layer (the composite is affected by
+         * the page's rise animation opacity; the layer holds the shifted
+         * text either way) */
+        auto count_ink = [](whaleui_render_t* r) {
+            int n = 0;
+            for (int yy = 0; yy < 600; yy += 8) {
+                const unsigned int* row =
+                    &r->text_layer[static_cast<size_t>(yy) * r->fb_w];
+                bool has = false;
+                for (int xx = 0; xx < 720 && !has; xx += 8) {
+                    if (row[xx] != 0) {
+                        has = true;
+                    }
+                }
+                if (has) {
+                    ++n;
+                }
+            }
+            return n;
+        };
+        int ink_before = count_ink(w->render);
         for (int i = 0; i < 10; ++i) {
             whaleui_render_handle_wheel(w->render, 360, 300, -2.0f);
             assert(whaleui_render_frame(w->render, w->document) == 0);
             assert(has_ink(w->render, 520, 600));
         }
+        /* scrolled-away content must SURVIVE the shift (regression: the
+         * text layer cleared its strip before shifting, so rows that
+         * scrolled off the strip turned blank until the next scroll
+         * repainted them). The total in-viewport ink after 10 scrolls must
+         * not have collapsed - shifting preserves the content mass (new
+         * strip content only adds to it). */
+        int ink_after = count_ink(w->render);
+        std::printf("6kb scroll ink %d -> %d\n", ink_before, ink_after);
+        assert(ink_before >= 5);
+        assert(ink_after >= ink_before * 3 / 5);
         whaleui_window_destroy(w);
     }
 

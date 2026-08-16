@@ -15,6 +15,7 @@
 #include <lexbor/dom/dom.h>
 
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -349,6 +350,18 @@ float text_measure(const std::string& s, float fs, const std::string& family,
     }
     return w;
 }
+
+/* estimate-only width (no real-metric hook): block-level runs use this -
+ * their laid-out width is a layout hint, the painted glyphs come from the
+ * renderer. Keeps the hot layout path free of per-run TTF measures. */
+float text_measure_est(const std::string& s, float fs, float lsp_px)
+{
+    float w = text_est_width(s, fs);
+    if (lsp_px > 0 && s.size() > 1) {
+        w += lsp_px * static_cast<float>(utf8_count(s) - 1);
+    }
+    return w;
+}
 /* font-weight: bold/bolder/600-900 render bold */
 bool font_weight_bold(const WhaleUIComputedStyle& s)
 {
@@ -369,11 +382,13 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
 }
 
 /* estimated line count when `text` wraps at `avail` px: avg glyph width
- * from the real metric when available, else the character-class estimate
- * (both including letter-spacing) */
+ * (estimate + letter-spacing; the real-metric hook is reserved for the
+ * inline-line x positions, block runs keep this fast path) */
 size_t est_wrap_lines(const std::string& s, float fs, int avail,
                       const std::string& family, bool bold, float lsp_px)
 {
+    (void)family;
+    (void)bold;
     if (avail <= 0) {
         return 1;
     }
@@ -381,7 +396,7 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
     if (chars == 0) {
         return 1;
     }
-    float total = text_measure(s, fs, family, bold, lsp_px);
+    float total = text_measure_est(s, fs, lsp_px);
     float avg = total / static_cast<float>(chars);
     if (avg <= 0) {
         avg = fs * 0.5f;
@@ -427,9 +442,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
-            w += text_measure(c->text, fs, get(c->style, "font-family"),
-                              font_weight_bold(c->style),
-                              letter_spacing_px(c->style, fs));
+            w += text_measure_est(c->text, fs, letter_spacing_px(c->style, fs));
         } else {
             w += estimate_content_width(c, em);
         }
@@ -602,9 +615,14 @@ struct Builder
             return;
         }
         for (size_t i = 0; i < rule_count; ++i) {
+            const char* sel = rules[i].selector;
+            /* fast filter: only pseudo rules can produce content */
+            if (!sel || (std::strstr(sel, "::before") == nullptr &&
+                         std::strstr(sel, "::after") == nullptr)) {
+                continue;
+            }
             int pseudo = 0;
-            if (!whaleui_style_match_pseudo(rules[i].selector, el, &st,
-                                            &pseudo)) {
+            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo)) {
                 continue;
             }
             if (pseudo != which) {
@@ -634,9 +652,14 @@ struct Builder
             return s;
         }
         for (size_t i = 0; i < rule_count; ++i) {
+            const char* sel = rules[i].selector;
+            /* fast filter: only pseudo rules carry paint for this merge */
+            if (!sel || (std::strstr(sel, "::before") == nullptr &&
+                         std::strstr(sel, "::after") == nullptr)) {
+                continue;
+            }
             int pseudo = 0;
-            if (!whaleui_style_match_pseudo(rules[i].selector, el, &st,
-                                            &pseudo) ||
+            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
                 pseudo != which) {
                 continue;
             }
@@ -918,8 +941,8 @@ struct Builder
         bool summary_seen = false;
         /* inline markers injected into the first text run (C++ work: the
          * engine has no ::marker or [attr] selector):
-         *   <summary> in <details>  -> â–¸/â–¾ collapse indicator
-         *   <li> in <ul>/<ol>       -> bullet "â€¢ " / ordinal "N. " */
+         *   <summary> in <details>  -> â–?â–?collapse indicator
+         *   <li> in <ul>/<ol>       -> bullet "â€?" / ordinal "N. " */
         std::string run_marker;
         bool run_marker_done = false;
         if (n->el && parent && parent->el) {
@@ -1087,8 +1110,8 @@ struct Builder
             std::string fam2 = get(n->style, "font-family");
             bool bold2 = font_weight_bold(n->style);
             float lsp2 = letter_spacing_px(n->style, static_cast<float>(fs));
-            /* wrap estimate (real glyph widths via the metric hook when
-             * installed); longest run (a single \n-free line) sets width */
+            /* wrap estimate (estimate-only for block runs: fast path);
+             * longest run (a single \n-free line) sets width */
             size_t wrap_lines = est_wrap_lines(n->text, fs, avail, fam2,
                                                bold2, lsp2);
             if (wrap_lines > lines) {
@@ -1102,8 +1125,8 @@ struct Builder
                 if (j == std::string::npos) {
                     j = n->text.size();
                 }
-                float lw = text_measure(n->text.substr(i, j - i), fs, fam2,
-                                        bold2, lsp2);
+                float lw = text_measure_est(n->text.substr(i, j - i), fs,
+                                            lsp2);
                 if (lw > max_w) {
                     max_w = lw;
                 }
@@ -1359,24 +1382,6 @@ struct Builder
         }
     }
 
-    /* estimated inline width of a line-flow node (text run or inline
-     * element): real glyph widths via the metric hook when installed */
-    int inline_est_w(whaleui_layout_node_t* c, int font_px)
-    {
-        float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
-        if (c->is_text) {
-            float fs = len_px(get(c->style, "font-size"), 0, em);
-            if (fs <= 0) {
-                fs = em;
-            }
-            return static_cast<int>(text_measure(
-                c->text, fs, get(c->style, "font-family"),
-                font_weight_bold(c->style),
-                letter_spacing_px(c->style, fs)));
-        }
-        return static_cast<int>(estimate_content_width(c, em));
-    }
-
     /* is this node part of an inline line (text run or inline/inline-block
      * element in static position)? */
     bool inline_member(whaleui_layout_node_t* c)
@@ -1385,6 +1390,32 @@ struct Builder
                (c->is_text ||
                 (position_kind(get(c->style, "position")) == 0 &&
                  display_kind(get(c->style, "display")) == 2));
+    }
+
+    /* estimated inline width of a line-flow node (text run or inline
+     * element). Real glyph widths (metric hook) only for runs that join an
+     * inline line next to another member - their x advances against the
+     * painted glyphs. An isolated run (nothing inline after it) uses the
+     * fast estimate: its own width is a layout hint only. */
+    int inline_est_w(whaleui_layout_node_t* c, int font_px)
+    {
+        float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
+        if (c->is_text) {
+            float fs = len_px(get(c->style, "font-size"), 0, em);
+            if (fs <= 0) {
+                fs = em;
+            }
+            bool joins = c->next && inline_member(c->next);
+            if (joins) {
+                return static_cast<int>(text_measure(
+                    c->text, fs, get(c->style, "font-family"),
+                    font_weight_bold(c->style),
+                    letter_spacing_px(c->style, fs)));
+            }
+            return static_cast<int>(text_measure_est(
+                c->text, fs, letter_spacing_px(c->style, fs)));
+        }
+        return static_cast<int>(estimate_content_width(c, em));
     }
 
     void layout_block(whaleui_layout_node_t* n, int inner_w, int inner_h,
@@ -1471,6 +1502,14 @@ struct Builder
                 layout(c, x, line_top, right_edge - x, inner_h, font_px,
                        &c2);
                 c->in_inline = 1;
+                /* inline members advance by the REAL width (the block-pass
+                 * estimate would leave gaps/overlap against painted glyphs);
+                 * text runs' laid-out width is overwritten to match so the
+                 * sequence stays consistent for hit-testing */
+                const int real_w = c->is_text ? est : 0;
+                if (real_w > 0) {
+                    c->border.w = real_w;
+                }
                 x += c->border.w;
                 if (c->border.h > max_h) {
                     max_h = c->border.h;
@@ -1523,11 +1562,7 @@ struct Builder
                     h = estimate_content_width(k, em); /* rough height proxy */
                 }
                 main_size[i] = k->is_text
-                                   ? static_cast<int>(text_measure(
-                                         k->text, fs,
-                                         get(k->style, "font-family"),
-                                         font_weight_bold(k->style),
-                                         letter_spacing_px(k->style, fs)))
+                                   ? static_cast<int>(text_measure_est(k->text, fs, letter_spacing_px(k->style, fs)))
                                    : static_cast<int>(h);
             } else {
                 float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
@@ -1544,11 +1579,7 @@ struct Builder
                     }
                 }
                 main_size[i] = k->is_text
-                                   ? static_cast<int>(text_measure(
-                                         k->text, fs,
-                                         get(k->style, "font-family"),
-                                         font_weight_bold(k->style),
-                                         letter_spacing_px(k->style, fs)))
+                                   ? static_cast<int>(text_measure_est(k->text, fs, letter_spacing_px(k->style, fs)))
                                    : static_cast<int>(w);
             }
             if (is_auto && main_size[i] == 0) {

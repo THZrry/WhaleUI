@@ -532,6 +532,12 @@ void expand_shorthands(WhaleUIComputedStyle& s)
 
 } // namespace
 
+/* cached selector chain (parse once per selector, reused across the
+ * per-element cascade scans - the chain split + paren scan was a hot cost
+ * on rule-heavy pages) */
+struct SelChain { std::string sel; int comb; };
+static std::map<std::string, std::vector<SelChain>> g_chain_cache;
+
 extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
                                    const whaleui_style_state* st)
 {
@@ -541,56 +547,55 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
     /* split on '>'/'+' and whitespace into a chain of simple selectors.
      * comb: 0 = descendant, 1 = child (prev part's relation), 2 = adjacent
      * sibling (this part must match the previous sibling of the target). */
-    struct Chain { std::string sel; int comb; };
-    Chain chain[32];
-    int n = 0;
-    int comb = 0;
-    const char* p = selector;
-    while (*p && n < 32) {
-        while (*p == ' ' || *p == '\t') {
-            ++p;
-        }
-        if (*p == '>') {
-            comb = 1;
-            ++p;
-            continue;
-        }
-        if (*p == '+') {
-            comb = 2;
-            ++p;
-            continue;
-        }
-        if (!*p) {
-            break;
-        }
-        const char* s = p;
-        /* scan one simple selector; '('..')' is a function argument (e.g.
-         * nth-child(n+4)) whose commas/pluses must not split the chain */
-        while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '+') {
-            if (*p == '(') {
-                int depth = 1;
-                ++p;
-                while (*p && depth) {
-                    if (*p == '(') {
-                        ++depth;
-                    } else if (*p == ')') {
-                        --depth;
-                    }
-                    ++p;
-                }
-            } else {
+    std::vector<SelChain>& chain = g_chain_cache[selector];
+    if (chain.empty() && *selector) {
+        int comb = 0;
+        const char* p = selector;
+        while (*p && chain.size() < 32) {
+            while (*p == ' ' || *p == '\t') {
                 ++p;
             }
-        }
-        /* keep pseudo-classes: parse_simple handles ":hover" */
-        std::string raw(s, static_cast<size_t>(p - s));
-        if (!raw.empty()) {
-            chain[n].sel = raw;
-            chain[n].comb = comb;
-            comb = 0;
-            ++n;
+            if (*p == '>') {
+                comb = 1;
+                ++p;
+                continue;
+            }
+            if (*p == '+') {
+                comb = 2;
+                ++p;
+                continue;
+            }
+            if (!*p) {
+                break;
+            }
+            const char* s = p;
+            while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '+') {
+                if (*p == '(') {
+                    int depth = 1;
+                    ++p;
+                    while (*p && depth) {
+                        if (*p == '(') {
+                            ++depth;
+                        } else if (*p == ')') {
+                            --depth;
+                        }
+                        ++p;
+                    }
+                } else {
+                    ++p;
+                }
+            }
+            std::string raw(s, static_cast<size_t>(p - s));
+            if (!raw.empty()) {
+                SelChain sc;
+                sc.sel = raw;
+                sc.comb = comb;
+                chain.push_back(sc);
+                comb = 0;
+            }
         }
     }
+    const int n = static_cast<int>(chain.size());
     if (n == 0) {
         return 0;
     }
@@ -837,10 +842,90 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     struct Best { int important; Specificity sp; size_t order; std::string value; };
     std::map<std::string, Best> best;
 
+    /* tag-index the rules by the LAST simple selector's tag (the one that
+     * must match el itself): only those rules plus the tag-less ones can
+     * possibly match, so the cascade scan skips the rest. Built once per
+     * compute call (the rules array is reused across elements, but the
+     * index is cheap to build and caching across calls needs a rule-array
+     * identity check). */
+    std::string el_tag;
+    {
+        size_t nl = 0;
+        const lxb_char_t* nm = lxb_dom_element_local_name(el, &nl);
+        if (nm) {
+            el_tag.assign(reinterpret_cast<const char*>(nm), nl);
+        }
+    }
+    std::map<std::string, std::vector<size_t>> tag_idx;
+    std::vector<size_t> generic_idx;
     for (size_t i = 0; i < count; ++i) {
+        const char* sel = rules[i].selector;
+        if (!sel) {
+            generic_idx.push_back(i);
+            continue;
+        }
+        /* last simple selector: walk back from the end past whitespace and
+         * combinators, then read the last segment's leading tag */
+        size_t len = std::strlen(sel);
+        const char* seg_end = sel + len;
+        while (seg_end > sel) {
+            char c = seg_end[-1];
+            if (c == ' ' || c == '\t' || c == '>' || c == '+') {
+                --seg_end;
+            } else {
+                break;
+            }
+        }
+        const char* seg_start = seg_end;
+        while (seg_start > sel) {
+            char c = seg_start[-1];
+            if (c == ' ' || c == '\t' || c == '>' || c == '+') {
+                break;
+            }
+            if (c == ')') {
+                /* walk back past the matching '(' - function args like
+                 * nth-child(n+4) contain '+'/spaces that are NOT
+                 * combinators */
+                int depth = 1;
+                --seg_start;
+                while (seg_start > sel && depth) {
+                    if (seg_start[-1] == ')') {
+                        ++depth;
+                    } else if (seg_start[-1] == '(') {
+                        --depth;
+                    }
+                    --seg_start;
+                }
+                continue;
+            }
+            --seg_start;
+        }
+        const char* t = seg_start;
+        while (t < seg_end && *t != '#' && *t != '.' && *t != ':' &&
+               *t != ' ' && *t != '\t' && *t != '>' && *t != '+') {
+            ++t;
+        }
+        if (t > seg_start && !(t - seg_start == 1 && *seg_start == '*')) {
+            tag_idx[std::string(seg_start,
+                                static_cast<size_t>(t - seg_start))]
+                .push_back(i);
+        } else {
+            generic_idx.push_back(i);
+        }
+    }
+    /* candidate rule indices: this element's tag + tag-less rules */
+    const std::vector<size_t>* tagged = nullptr;
+    {
+        std::map<std::string, std::vector<size_t>>::iterator it =
+            tag_idx.find(el_tag);
+        if (it != tag_idx.end()) {
+            tagged = &it->second;
+        }
+    }
+    auto cascade_rule = [&](size_t i) {
         const whaleui_css_rule_t* r = &rules[i];
         if (!r->selector || !whaleui_style_match(r->selector, el, st)) {
-            continue;
+            return;
         }
         Specificity sp = sel_specificity(r->selector);
         for (size_t d = 0; d < r->decl_count; ++d) {
@@ -871,6 +956,14 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
                 best[name] = b;
             }
         }
+    };
+    if (tagged) {
+        for (size_t ci = 0; ci < tagged->size(); ++ci) {
+            cascade_rule((*tagged)[ci]);
+        }
+    }
+    for (size_t ci = 0; ci < generic_idx.size(); ++ci) {
+        cascade_rule(generic_idx[ci]);
     }
     for (auto& kv : best) {
         out[kv.first] = kv.second.value;

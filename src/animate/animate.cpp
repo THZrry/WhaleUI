@@ -1198,6 +1198,15 @@ extern "C" int whaleui_anim_apply(whaleui_anim_t* a, struct lxb_dom_element* el,
         return 0;
     }
     a->active = 0;
+    /* fast path: only elements that carry animation/transition styles can
+     * animate - skip the key-string build + map lookups for the rest
+     * (the bulk of nodes on rule-heavy pages) */
+    if (style.find("animation") == style.end() &&
+        style.find("animation-name") == style.end() &&
+        style.find("transition") == style.end() &&
+        style.find("transition-property") == style.end()) {
+        return 0;
+    }
     std::string elkey = std::to_string(reinterpret_cast<size_t>(el));
     /* keyframes first: while a keyframe animation runs, its values win and
      * transitions are skipped for the element */
