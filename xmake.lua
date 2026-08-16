@@ -19,6 +19,13 @@ set_languages("c++14")
 -- Priority is A > B. On windows/mingw, SDL3_ttf has no working source build
 -- (its pkgconf->meson dep chain hard-requires MSVC), so A is mandatory there
 -- and the script errors out with a clear message if the prebuilt is missing.
+--
+-- Build variants:
+--   Full    - everything on (SDL_image/SDL3_ttf), NO stb.
+--   Lite    - feature-complete trimmed build, stb resource management.
+--   Minimal - no SDL_image, no filter (backdrop/box-shadow blur) rendering,
+--             stb resources; keeps layout/text/color/animation.
+--   Tests   - off by default (also in release); enable with: xmake f --tests=y
 -- ============================================================
 
 -- --- SDL3_ttf (font rendering, Full target only) ---
@@ -52,6 +59,14 @@ add_requires("libsdl3_image", {configs = {shared = false}})
 
 set_policy("build.across_targets_in_parallel", true)
 
+-- Unit tests are opt-in: off by default (also in release), so a plain
+-- `xmake` builds only the three libraries + demo. Enable with:
+--   xmake f --tests=y
+option("tests")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build and run unit tests (default: off, also in release)")
+
 -- attach SDL3 to a target: prebuilt or xrepo
 local function use_sdl3(t)
     t:add("defines", "SDL_DISABLE_OLD_NAMES")
@@ -65,11 +80,11 @@ local function use_sdl3(t)
     end
 end
 
--- Full: everything on, SDL image/font etc.
+-- Full: everything on, SDL image/font etc. (no stb)
 target("whaleui-full")
     set_kind("static")
     add_defines("WHALEUI_BUILD_FULL")
-    add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+    add_packages("libsdl3_image", "lexbor", "utf8proc")
     add_files("src/**.cpp")
     add_includedirs("include", "src")
     on_load(function (target)
@@ -94,8 +109,9 @@ target("whaleui-lite")
         use_sdl3(target)
     end)
 
--- Minimal: layout only, no SDL image/font, stb resources. lexbor stays:
--- the layout engine walks a lexbor DOM tree.
+-- Minimal: layout/text/color/animation only. No SDL image/font, no filter
+-- rendering (backdrop-filter / box-shadow blur, see WHALEUI_BUILD_MINIMAL),
+-- stb resources. lexbor stays: the layout engine walks a lexbor DOM tree.
 target("whaleui-minimal")
     set_kind("static")
     add_defines("WHALEUI_BUILD_MINIMAL")
@@ -121,7 +137,8 @@ for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_sty
         add_defines("WHALEUI_BUILD_FULL")
         -- absolute repo root so file:// URIs work regardless of cwd
         add_defines('WHALEUI_TEST_ROOT="' .. os.projectdir():gsub("\\", "/") .. '"')
-        set_default(true)
+        -- tests are opt-in: off by default (and in release), on with --tests=y
+        set_default(has_config("tests"))
         on_load(function (target)
             use_sdl3(target)
         end)
@@ -161,3 +178,4 @@ target("demo")
     on_load(function (target)
         use_sdl3(target)
     end)
+

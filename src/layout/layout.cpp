@@ -384,7 +384,7 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
 /* estimated line count when `text` wraps at `avail` px. Short text that
  * clearly fits one line uses the fast estimate; anything that may wrap is
  * measured with the real glyph width so the laid-out line count matches
- * the painted wrap (an under-estimate left "ÍÆÀíÄÜÁ¦Ç¿" splitting its last
+ * the painted wrap (an under-estimate left "æŽ¨ç†èƒ½åŠ›å¼º" splitting its last
  * character). */
 size_t est_wrap_lines(const std::string& s, float fs, int avail,
                       const std::string& family, bool bold, float lsp_px)
@@ -443,7 +443,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     }
     /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
      * painted wrap width follows the box, so an under-sized estimate
-     * splits short text mid-word ("01", "V3", "ÍÆÀíÄÜÁ¦Ç¿") */
+     * splits short text mid-word ("01", "V3", "æŽ¨ç†èƒ½åŠ›å¼º") */
     bool inline_box = display_kind(get(k->style, "display")) == 2;
     std::string fam = get(k->style, "font-family");
     bool bold = font_weight_bold(k->style);
@@ -960,8 +960,8 @@ struct Builder
         bool summary_seen = false;
         /* inline markers injected into the first text run (C++ work: the
          * engine has no ::marker or [attr] selector):
-         *   <summary> in <details>  -> â–?â–?collapse indicator
-         *   <li> in <ul>/<ol>       -> bullet "â€?" / ordinal "N. " */
+         *   <summary> in <details>  -> â–¸â–¸collapse indicator
+         *   <li> in <ul>/<ol>       -> bullet "â€¢" / ordinal "N. " */
         std::string run_marker;
         bool run_marker_done = false;
         if (n->el && parent && parent->el) {
