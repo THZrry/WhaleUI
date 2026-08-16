@@ -136,6 +136,18 @@ struct whaleui_render
     int sel_focus;
     int selecting;
     int press_x, press_y; /* where the left button went down (drag gate) */
+    /* selection extension mode: 0 = character drag, 1 = word (double-click),
+     * 2 = line (triple-click). Set on button-down, drives drag continuation
+     * and mouse-up retention. */
+    int sel_mode;
+    /* click count of the current press (1/2/3 from the platform) */
+    int press_clicks;
+    /* drag-and-drop of an existing selection: press went down inside the
+     * selection (drag_sel), the drag passed the threshold (drag_sel_active),
+     * and ctrl was held on release (drag_copy: copy instead of move). */
+    int drag_sel;
+    int drag_sel_active;
+    int drag_copy;
 
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
@@ -205,6 +217,13 @@ void whaleui_render_set_hover(whaleui_render_t* r, int x, int y);
  * (:active) and the focused element (:focus, set on press). Also starts a
  * text selection / caret placement on editable elements. */
 void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y, int down);
+
+/* Press/release with the platform click count (1/2/3; 2 = double-click
+ * selects a word, 3 = triple-click selects a line) and key modifiers.
+ * Mouse-up passes the release position (x/y) so a dropped selection can be
+ * placed; mods on release carries the ctrl flag for copy-drag. */
+void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x, int y, int down,
+                                   int clicks, int mods);
 
 /* Mouse wheel: scrolls the nearest scrollable ancestor of the element under
  * (x, y) by dy wheel ticks (x/y may be -1 to reuse the last hover pos). */

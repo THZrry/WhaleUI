@@ -133,7 +133,7 @@ whaleui_css_rule_t* rules_copy(const whaleui_css_rule_t* src, size_t count)
 int main(void)
 {
     std::string html = read_file(WHALEUI_TEST_ROOT
-                                 "/Qwen_html_20260814_oeem340or.html");
+                                 "/temp/Qwen_html_20260814_oeem340or.html");
     std::string css = extract_style(html);
 
     whaleui_css_rule_t* rules = nullptr;

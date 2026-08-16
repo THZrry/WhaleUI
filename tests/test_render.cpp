@@ -3,6 +3,7 @@
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
 #include "render/render.h"
+#include "render/render_internal.h"
 #include "render/gpu.h"
 #include "core/window.h"
 #include "layout/layout.h"
@@ -191,7 +192,7 @@ int main(void)
         whaleui_window_t* w = whaleui_window_create(app, "ref6", 800, 800);
         assert(w != nullptr);
         assert(whaleui_window_load_uri(
-                   w, TEST_URI_RAW("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
+                   w, TEST_URI_TEMP("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         unsigned int top = gpixel(w->render, 400, 20);
@@ -563,7 +564,7 @@ int main(void)
         whaleui_window_t* w = whaleui_window_create(app, "q21k", 800, 600);
         assert(w != nullptr);
         assert(whaleui_window_load_uri(
-                   w, TEST_URI_RAW("Qwen_html_20260814_oeem340or.html")) == 0);
+                   w, TEST_URI_TEMP("Qwen_html_20260814_oeem340or.html")) == 0);
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         assert(w->render->tree->root->scroll_max > 0);
@@ -601,7 +602,7 @@ int main(void)
         whaleui_window_t* w = whaleui_window_create(app, "q6k", 720, 600);
         assert(w != nullptr);
         assert(whaleui_window_load_uri(
-                   w, TEST_URI_RAW("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
+                   w, TEST_URI_TEMP("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         assert(w->render->tree->root->scroll_max > 0);
@@ -1065,6 +1066,300 @@ int main(void)
         whaleui_render_set_pressed(w->render, 0, 0, 0);
         assert(w->render->sel_anchor_el == nullptr);
         whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* keyboard selection: shift extends, ctrl jumps words, ctrl+shift
+     * selects words, plain arrows collapse the selection */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "keysel", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" value=\"hello world foo\">"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        /* caret at the very start */
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        assert(w->render->edit_el == inp->el);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
+        /* shift+right selects one character at a time */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_SHIFT);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 1);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_SHIFT);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 2);
+        /* plain right collapses to the focus end (standard behavior:
+         * the caret lands at the selection edge, no extra step) */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, 0);
+        assert(w->render->sel_anchor == 2 && w->render->sel_focus == 2);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, 0);
+        assert(w->render->sel_anchor == 3 && w->render->sel_focus == 3);
+        /* ctrl+right: inside a word -> word end, then next word end */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 5 && w->render->sel_focus == 5);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 11 && w->render->sel_focus == 11);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 15 && w->render->sel_focus == 15);
+        /* ctrl+left back to the previous word start */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 12 && w->render->sel_focus == 12);
+        /* ctrl+shift+left selects the whole previous word */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1,
+                                  SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
+        assert(w->render->sel_anchor == 12 && w->render->sel_focus == 6);
+        /* end collapses to the selection end, then to the line end */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_END, 1, 0);
+        assert(w->render->sel_anchor == 12 && w->render->sel_focus == 12);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_END, 1, 0);
+        assert(w->render->sel_anchor == 15 && w->render->sel_focus == 15);
+        whaleui_window_destroy(w);
+    }
+
+    /* CJK word jumping: a run of hanzi is one word, punctuation separates */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "cjkword", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" value=\"\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c"
+            "\xe4\xb8\x96\xe7\x95\x8c\"></body></html>") == 0); /* "你好，世�? */
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        whaleui_render_set_pressed(w->render, inp->content.x + 1,
+                                   inp->content.y + 2, 1);
+        assert(w->render->sel_anchor == 0);
+        /* ctrl+right: "你好" (6 bytes), then "世界" (12 bytes) */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 15 && w->render->sel_focus == 15);
+        /* ctrl+left skips the comma and lands at "你好" start */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 9 && w->render->sel_focus == 9);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* double-click selects a word; dragging continues by word; the
+     * selection survives mouse-up */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dblclick", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">hello world foo</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello ", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int xw = run->border.x + tw + 4; /* inside "world" */
+        /* double-click: the word "world" (bytes 6..11) is selected */
+        whaleui_render_set_pressed_ex(w->render, xw, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
+        /* drag right past the word: focus extends to the next word end */
+        int tw2 = 0;
+        text_size(w->render, "hello world ", fs, family, bold, &tw2, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw2 + 4, y);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 15);
+        /* mouse-up keeps the double-click selection */
+        whaleui_render_set_pressed_ex(w->render, 0, 0, 0, 1, 0);
+        assert(w->render->sel_anchor_el == run->el);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 15);
+        whaleui_window_destroy(w);
+    }
+
+    /* triple-click selects the whole line; a plain click after it clears */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "triple", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">line one</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int y = run->border.y + run->border.h / 2;
+        whaleui_render_set_pressed_ex(w->render, run->border.x + 4, y, 1, 3, 0);
+        assert(w->render->sel_anchor == 0);
+        assert(w->render->sel_focus == 8); /* "line one" */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* drag-and-drop: press inside an editable selection, drag to another
+     * input -> the selection moves (ctrl: copies) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dragdrop", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"a\" value=\"hello world\">"
+            "<input id=\"b\" value=\"\"></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ina = nullptr;
+        whaleui_layout_node_t* inb = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    size_t idlen = 0;
+                    const lxb_char_t* id = lxb_dom_element_get_attribute(
+                        n.el, (const lxb_char_t*)"id", 2, &idlen);
+                    if (id && idlen == 1 && id[0] == 'a') {
+                        ina = &n;
+                    } else if (id && idlen == 1 && id[0] == 'b') {
+                        inb = &n;
+                    }
+                }
+            }
+        }
+        assert(ina != nullptr && inb != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(ina, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello", fs, family, bold, &tw, &th);
+        /* click at the start, ctrl+shift+right selects "hello" (0..5) */
+        whaleui_render_set_pressed(w->render, ina->content.x + 1,
+                                   ina->content.y + 2, 1);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1,
+                                  SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 5);
+        /* press inside the selection readies a drag */
+        whaleui_render_set_pressed(w->render, ina->content.x + 1 + tw / 2,
+                                   ina->content.y + 2, 1);
+        assert(w->render->drag_sel == 1);
+        /* drag to the second input (click its right side -> insert at end) */
+        whaleui_render_set_hover(w->render, inb->content.x + 100,
+                                 inb->content.y + 2);
+        assert(w->render->drag_sel_active == 1);
+        /* release: the selection moves */
+        whaleui_render_set_pressed_ex(w->render, inb->content.x + 100,
+                                      inb->content.y + 2, 0, 1, 0);
+        const char* va = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(ina->el), "value");
+        const char* vb = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inb->el), "value");
+        assert(va != nullptr && std::strcmp(va, " world") == 0);
+        assert(vb != nullptr && std::strcmp(vb, "hello") == 0);
+        /* ctrl-drag copies: select again (" world" now, so "world" = 1..6),
+         * drag with ctrl held */
+        whaleui_render_set_pressed(w->render, ina->content.x + 1,
+                                   ina->content.y + 2, 1);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1,
+                                  SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 6);
+        whaleui_render_set_pressed(w->render, ina->content.x + 1 + tw / 2,
+                                   ina->content.y + 2, 1);
+        whaleui_render_set_hover(w->render, inb->content.x + 100,
+                                 inb->content.y + 2);
+        whaleui_render_set_pressed_ex(w->render, inb->content.x + 100,
+                                      inb->content.y + 2, 0, 1, SDL_KMOD_CTRL);
+        va = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(ina->el), "value");
+        vb = whaleui_dom_get_attribute(
+            reinterpret_cast<whaleui_dom_element_t*>(inb->el), "value");
+        assert(va != nullptr && std::strcmp(va, " world") == 0);
+        assert(vb != nullptr && std::strcmp(vb, "hello world") == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* selection inside a scrolled container: after the wheel scrolls the
+     * box, clicking a visible text run still resolves to a valid offset
+     * (the scroll correction must be applied or the click lands at 0) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "scrolled-sel", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div id=\"sc\" style=\"overflow:auto;height:40px;\">"
+            "<p>line one</p><p>line two</p></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* sc = nullptr;
+        whaleui_layout_node_t* run1 = nullptr;
+        whaleui_layout_node_t* run2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (!n.visible) {
+                continue;
+            }
+            if (!sc && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 && std::memcmp(name, "div", 3) == 0) {
+                    sc = &n;
+                }
+            }
+            if (n.is_text && std::strstr(n.text.c_str(), "line one")) {
+                run1 = &n;
+            }
+            if (n.is_text && std::strstr(n.text.c_str(), "line two")) {
+                run2 = &n;
+            }
+        }
+        assert(sc != nullptr && run1 != nullptr && run2 != nullptr);
+        assert(sc->scroll_max > 0);
+        /* scroll by one line: "line two" now paints where "line one" was */
+        int sy = run2->border.y - run1->border.y;
+        if (sy > sc->scroll_max) {
+            sy = sc->scroll_max;
+        }
+        assert(sy > 0);
+        w->render->scrolls[sc->el] = sy;
+        /* click mid-"line two" at line-one's window position: the caret
+         * lands inside the word (offset > 0); without the scroll fix the
+         * offset math goes negative and resolves to 0 */
+        int y = run1->border.y + run1->border.h / 2;
+        whaleui_render_set_pressed(w->render, run2->border.x + 40, y, 1);
+        assert(w->render->sel_anchor_el != nullptr);
+        assert(w->render->sel_anchor > 0);
+        assert(w->render->sel_anchor == w->render->sel_focus);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_window_destroy(w);
     }
 

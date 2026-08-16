@@ -228,9 +228,11 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                     for (whaleui_window_t* win : app->windows) {
                         if (win->render && win->document &&
                             SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                            whaleui_render_set_pressed(win->render,
-                                                       static_cast<int>(e.button.x),
-                                                       static_cast<int>(e.button.y), 1);
+                            whaleui_render_set_pressed_ex(win->render,
+                                                          static_cast<int>(e.button.x),
+                                                          static_cast<int>(e.button.y),
+                                                          1, static_cast<int>(e.button.clicks),
+                                                          static_cast<int>(SDL_GetModState()));
                             const char* val = nullptr;
                             if (whaleui_render_handle_click(win->render,
                                                             e.button.x, e.button.y,
@@ -259,7 +261,11 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                     for (whaleui_window_t* win : app->windows) {
                         if (win->render &&
                             SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                            whaleui_render_set_pressed(win->render, 0, 0, 0);
+                            whaleui_render_set_pressed_ex(win->render,
+                                                          static_cast<int>(e.button.x),
+                                                          static_cast<int>(e.button.y),
+                                                          0, 1,
+                                                          static_cast<int>(SDL_GetModState()));
                             dom_dispatch(
                                 whaleui_render_hit_element(
                                     win->render, static_cast<int>(e.button.x),

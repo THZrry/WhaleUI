@@ -14,6 +14,12 @@
 #include "font/font.h"
 #include "style/style.h"
 
+#ifdef WHALEUI_BUILD_FULL
+/* Unicode categories for accurate word/separator classification in every
+ * script (full build only; lite/minimal keep the dependency-free table) */
+#include <utf8proc.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #ifdef WHALEUI_BUILD_FULL
@@ -374,6 +380,19 @@ int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n)
     return 0;
 }
 
+/* paint-time vertical offset applied to a node: the sum of every ancestor's
+ * scroll delta. Hit-testing and painting add this to laid-out (scrolled)
+ * coordinates to reach window space; caret/selection math must do the same
+ * or clicks land at the wrong character after a scroll. */
+int node_scroll_off(whaleui_render_t* r, whaleui_layout_node_t* n)
+{
+    int off = 0;
+    for (whaleui_layout_node_t* p = n->parent; p; p = p->parent) {
+        off += scroll_delta(r, p);
+    }
+    return off;
+}
+
 /* grow glyph-level highlight rects up to the line box so the selection wash
  * covers ascenders/descenders with a bit of padding (TTF substring rects
  * only bound the glyphs) */
@@ -521,7 +540,8 @@ size_t byte_at_node(whaleui_render_t* r, whaleui_layout_node_t* hit, int x, int 
     node_font(hit, &fs, &family, &bold);
     int tx = 0, ty = 0;
     text_origin(r, hit, hit->text, fs, family, bold, &tx, &ty);
-    return byte_at_text(r, hit->text, fs, family, bold, x - tx, y - ty);
+    int off = node_scroll_off(r, hit);
+    return byte_at_text(r, hit->text, fs, family, bold, x - tx, y - ty - off);
 }
 
 /* caret byte offset in an editable element at (x,y); hit is the layout node
@@ -544,10 +564,18 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     node_font(box, &fs, &family, &bold);
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty);
-    return byte_at_text(r, val, fs, family, bold, x - tx, y - ty);
+    int off = node_scroll_off(r, hit);
+    return byte_at_text(r, val, fs, family, bold, x - tx, y - ty - off);
 }
 
-/* drag: move the selection focus end to the element under the mouse */
+/* word/line helpers are defined below (editing section) */
+size_t line_start(const std::string& s, size_t b);
+size_t line_end(const std::string& s, size_t b);
+static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we);
+
+/* drag: move the selection focus end to the element under the mouse.
+ * sel_mode extends by word (double-click) or line (triple-click) so the
+ * drag continues in the same unit the click started. */
 void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
                             int x, int y)
 {
@@ -556,13 +584,38 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
     }
     if (hit->is_text) {
         r->sel_focus_el = hit->el;
-        r->sel_focus = static_cast<int>(byte_at_node(r, hit, x, y));
+        size_t off = static_cast<size_t>(byte_at_node(r, hit, x, y));
+        if (r->sel_mode == 1) {
+            size_t ws = 0, we = 0;
+            word_range(hit->text, off, &ws, &we);
+            r->sel_focus = static_cast<int>(off <= static_cast<size_t>(r->sel_anchor)
+                                                ? ws : we);
+        } else if (r->sel_mode == 2) {
+            r->sel_focus = static_cast<int>(
+                off <= static_cast<size_t>(r->sel_anchor)
+                    ? line_start(hit->text, off) : line_end(hit->text, off));
+        } else {
+            r->sel_focus = static_cast<int>(off);
+        }
         /* repaint only: the highlight reads r->sel_*, the layout tree is
          * unchanged, so dragging must not relayout every mouse move */
         r->scroll_dirty = 1;
     } else if (is_editable(hit->el)) {
         r->sel_focus_el = hit->el;
-        r->sel_focus = static_cast<int>(caret_from_point(r, hit->el, hit, x, y));
+        std::string val = edit_value(hit->el);
+        size_t off = static_cast<size_t>(caret_from_point(r, hit->el, hit, x, y));
+        if (r->sel_mode == 1) {
+            size_t ws = 0, we = 0;
+            word_range(val, off, &ws, &we);
+            r->sel_focus = static_cast<int>(off <= static_cast<size_t>(r->sel_anchor)
+                                                ? ws : we);
+        } else if (r->sel_mode == 2) {
+            r->sel_focus = static_cast<int>(
+                off <= static_cast<size_t>(r->sel_anchor)
+                    ? line_start(val, off) : line_end(val, off));
+        } else {
+            r->sel_focus = static_cast<int>(off);
+        }
         r->scroll_dirty = 1;
     }
 }
@@ -610,6 +663,271 @@ size_t line_end(const std::string& s, size_t b)
     return p == std::string::npos ? s.size() : p;
 }
 
+/* --- word navigation (ctrl+arrows, double-click, drag continuation) --- */
+
+/* decode one UTF-8 codepoint at byte b (b must be a char boundary) */
+static unsigned int cp_at(const std::string& s, size_t b, size_t* len)
+{
+    const unsigned char* u = reinterpret_cast<const unsigned char*>(s.c_str());
+    unsigned char c = u[b];
+    if (c < 0x80) {
+        if (len) { *len = 1; }
+        return c;
+    }
+    if ((c & 0xE0) == 0xC0 && b + 1 < s.size()) {
+        if (len) { *len = 2; }
+        return ((c & 0x1F) << 6) | (u[b + 1] & 0x3F);
+    }
+    if ((c & 0xF0) == 0xE0 && b + 2 < s.size()) {
+        if (len) { *len = 3; }
+        return ((c & 0x0F) << 12) | ((u[b + 1] & 0x3F) << 6) |
+               (u[b + 2] & 0x3F);
+    }
+    if (len) { *len = 4; }
+    return ((c & 0x07) << 18) | ((u[b + 1] & 0x3F) << 12) |
+           ((u[b + 2] & 0x3F) << 6) | (u[b + 3] & 0x3F);
+}
+
+/* CJK unified ideographs (incl. ext A + compatibility) */
+static bool is_cjk_cp(unsigned int cp)
+{
+    return (cp >= 0x4E00 && cp <= 0x9FFF) ||
+           (cp >= 0x3400 && cp <= 0x4DBF) ||
+           (cp >= 0xF900 && cp <= 0xFAFF) ||
+           (cp >= 0x20000 && cp <= 0x2FA1F);
+}
+
+/* whitespace + punctuation (ASCII and CJK); word separators.
+ * lite/minimal only - the full build classifies via utf8proc. */
+#ifndef WHALEUI_BUILD_FULL
+static bool is_sep_cp(unsigned int cp)
+{
+    if (cp <= 0x7F) {
+        return !((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                 (cp >= '0' && cp <= '9') || cp == '_');
+    }
+    if (cp == 0x3000 || cp == 0x00A0) {
+        return true;
+    }
+    if (cp >= 0x3001 && cp <= 0x303F) {   /* 、。〈〉《》「」... */
+        return true;
+    }
+    if (cp >= 0xFF01 && cp <= 0xFF65 &&   /* full-width punct (excl. kana) */
+        !(cp >= 0xFF10 && cp <= 0xFF19) &&   /* ０-９ */
+        !(cp >= 0xFF21 && cp <= 0xFF3A) &&   /* Ａ-Ｚ */
+        !(cp >= 0xFF41 && cp <= 0xFF5A)) {   /* ａ-ｚ */
+        return true;
+    }
+    if (cp >= 0x2000 && cp <= 0x206F) {   /* general punctuation */
+        return true;
+    }
+    if (cp >= 0x2010 && cp <= 0x2027 || cp >= 0x2030 && cp <= 0x205E) {
+        return true;
+    }
+    if (cp >= 0xFE30 && cp <= 0xFE4F) {   /* CJK compat forms */
+        return true;
+    }
+    return false;
+}
+#endif /* !WHALEUI_BUILD_FULL */
+
+/* word class: 0 = separator, 1 = word char, 2 = CJK ideograph.
+ * Full build classifies via utf8proc's Unicode categories (correct for
+ * every script: Greek/Cyrillic/Arabic punctuation, full-width forms, ...);
+ * lite/minimal use the compact hand-rolled table below (no storage cost). */
+#ifdef WHALEUI_BUILD_FULL
+static int word_class(unsigned int cp)
+{
+    if (is_cjk_cp(cp)) {
+        return 2;
+    }
+    switch (utf8proc_category(cp)) {
+    case UTF8PROC_CATEGORY_PC:
+    case UTF8PROC_CATEGORY_PD:
+    case UTF8PROC_CATEGORY_PS:
+    case UTF8PROC_CATEGORY_PE:
+    case UTF8PROC_CATEGORY_PI:
+    case UTF8PROC_CATEGORY_PF:
+    case UTF8PROC_CATEGORY_PO:
+    case UTF8PROC_CATEGORY_ZS:
+    case UTF8PROC_CATEGORY_ZL:
+    case UTF8PROC_CATEGORY_ZP:
+    case UTF8PROC_CATEGORY_CC:
+    case UTF8PROC_CATEGORY_CF:
+        return 0;
+    default:
+        return 1;
+    }
+}
+#else
+static int word_class(unsigned int cp)
+{
+    if (is_sep_cp(cp)) {
+        return 0;
+    }
+    return is_cjk_cp(cp) ? 2 : 1;
+}
+#endif
+
+/* lite build: each hanzi is its own word (no CJK segmentation); full/
+ * minimal builds treat a run of hanzi as one word (simple segmentation). */
+#ifdef WHALEUI_BUILD_LITE
+static bool cjk_chars_split(void) { return true; }
+#else
+static bool cjk_chars_split(void) { return false; }
+#endif
+
+/* byte offset of the end of the word at/after b (ctrl+right) */
+static size_t word_next(const std::string& s, size_t b)
+{
+    const size_t n = s.size();
+    if (b >= n) {
+        return n;
+    }
+    size_t l = 0;
+    int cls = word_class(cp_at(s, b, &l));
+    if (cls == 0) {
+        /* skip separators to the next word */
+        while (b < n) {
+            int c2 = word_class(cp_at(s, b, &l));
+            if (c2 != 0) {
+                cls = c2;
+                break;
+            }
+            b += l;
+        }
+        if (b >= n) {
+            return n;
+        }
+    }
+    cp_at(s, b, &l);
+    if (cls == 2 && cjk_chars_split()) {
+        return b + l; /* lite: single hanzi */
+    }
+    /* walk to the end of the same-class run */
+    while (b < n) {
+        int c2 = word_class(cp_at(s, b, &l));
+        if (c2 != cls) {
+            break;
+        }
+        b += l;
+    }
+    return b;
+}
+
+/* byte offset of the start of the word before/at b (ctrl+left) */
+static size_t word_prev(const std::string& s, size_t b)
+{
+    const size_t n = s.size();
+    if (b == 0) {
+        return 0;
+    }
+    if (b > n) {
+        b = n;
+    }
+    size_t p = utf8_prev(s, b);
+    size_t l = 0;
+    int cls = word_class(cp_at(s, p, &l));
+    if (cls == 0) {
+        /* skip the separator run leftwards */
+        while (p > 0 && word_class(cp_at(s, utf8_prev(s, p), nullptr)) == 0) {
+            p = utf8_prev(s, p);
+        }
+        if (p == 0) {
+            return 0;
+        }
+        p = utf8_prev(s, p); /* last char of the previous word */
+        cls = word_class(cp_at(s, p, &l));
+    }
+    if (cls == 2 && cjk_chars_split()) {
+        return p; /* lite: single hanzi */
+    }
+    while (p > 0) {
+        size_t q = utf8_prev(s, p);
+        if (word_class(cp_at(s, q, nullptr)) != cls) {
+            break;
+        }
+        p = q;
+    }
+    return p;
+}
+
+/* [ws,we) = the word containing byte off (double-click) */
+static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
+{
+    const size_t n = s.size();
+    *ws = *we = 0;
+    if (n == 0) {
+        return;
+    }
+    if (off > n) {
+        off = n;
+    }
+    size_t p = off < n ? off : utf8_prev(s, n);
+    size_t l = 0;
+    int cls = word_class(cp_at(s, p, &l));
+    if (cls == 0) {
+        /* on a separator: use the word before it (or the first word) */
+        if (p == 0) {
+            size_t q = 0;
+            while (q < n) {
+                if (word_class(cp_at(s, q, &l)) != 0) {
+                    p = q;
+                    cls = word_class(cp_at(s, p, &l));
+                    break;
+                }
+                q += l;
+            }
+            if (cls == 0) {
+                return; /* all separators: empty word */
+            }
+        } else {
+            p = utf8_prev(s, p);
+            cls = word_class(cp_at(s, p, &l));
+            if (cls == 0) {
+                /* separator run: select the word after it */
+                size_t q = off;
+                while (q < n) {
+                    if (word_class(cp_at(s, q, &l)) != 0) {
+                        p = q;
+                        cls = word_class(cp_at(s, p, &l));
+                        break;
+                    }
+                    q += l;
+                }
+                if (cls == 0) {
+                    *ws = *we = n;
+                    return;
+                }
+            }
+        }
+    }
+    size_t w0 = p;
+    while (w0 > 0) {
+        size_t q = utf8_prev(s, w0);
+        if (word_class(cp_at(s, q, nullptr)) != cls) {
+            break;
+        }
+        if (cls == 2 && cjk_chars_split()) {
+            break;
+        }
+        w0 = q;
+    }
+    size_t w1 = p;
+    while (w1 < n) {
+        size_t q = utf8_next(s, w1);
+        if (q >= n || word_class(cp_at(s, q, nullptr)) != cls) {
+            break;
+        }
+        if (cls == 2 && cjk_chars_split()) {
+            break;
+        }
+        w1 = q;
+    }
+    *ws = w0;
+    *we = utf8_next(s, w1);
+}
+
 void edit_key(whaleui_render_t* r, int keycode, int mods)
 {
     lxb_dom_element* el = r->edit_el;
@@ -617,57 +935,66 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
         return;
     }
     std::string val = edit_value(el);
-    int a = r->sel_anchor, b = r->sel_focus;
-    if (a > b) {
-        std::swap(a, b);
-    }
+    int anchor = r->sel_anchor, focus = r->sel_focus;
+    int a = anchor < focus ? anchor : focus;
+    int b = anchor < focus ? focus : anchor;
     bool ctrl = (mods & SDL_KMOD_CTRL) != 0;
-    if (ctrl) {
-        if (keycode == 'a') { /* select all */
-            r->sel_anchor = 0;
-            r->sel_focus = static_cast<int>(val.size());
-            r->has_dirty = 1;
-        }
+    bool shift = (mods & SDL_KMOD_SHIFT) != 0;
+    if (ctrl && keycode == 'a') { /* select all */
+        r->sel_anchor = 0;
+        r->sel_focus = static_cast<int>(val.size());
+        r->has_dirty = 1;
         /* other ctrl shortcuts (clipboard etc.) not handled yet */
         return;
     }
+    /* movement keys (arrows/home/end): collapse the selection to its
+     * leading end first when shift is not held */
+    bool moving = keycode == WHALEUI_KEY_LEFT || keycode == WHALEUI_KEY_RIGHT ||
+                  keycode == WHALEUI_KEY_UP || keycode == WHALEUI_KEY_DOWN ||
+                  keycode == WHALEUI_KEY_HOME || keycode == WHALEUI_KEY_END;
+    if (moving && !shift && anchor != focus) {
+        bool left_ward = keycode == WHALEUI_KEY_LEFT ||
+                         keycode == WHALEUI_KEY_HOME ||
+                         keycode == WHALEUI_KEY_UP;
+        r->sel_anchor = r->sel_focus = left_ward ? a : b;
+        r->has_dirty = 1;
+        return;
+    }
+    /* apply a new focus position: shift keeps the anchor (extend the
+     * selection), otherwise the caret moves alone */
+    auto set = [&](size_t nf) {
+        if (shift) {
+            r->sel_focus = static_cast<int>(nf);
+        } else {
+            r->sel_anchor = r->sel_focus = static_cast<int>(nf);
+        }
+        r->has_dirty = 1;
+    };
+    size_t cur = static_cast<size_t>(focus);
     switch (keycode) {
     case WHALEUI_KEY_LEFT:
-        r->sel_anchor = r->sel_focus =
-            static_cast<int>(utf8_prev(val, static_cast<size_t>(
-                r->sel_anchor != r->sel_focus ? a : r->sel_focus)));
-        r->has_dirty = 1;
+        set(ctrl ? word_prev(val, cur) : utf8_prev(val, cur));
         break;
     case WHALEUI_KEY_RIGHT:
-        r->sel_anchor = r->sel_focus =
-            static_cast<int>(utf8_next(val, static_cast<size_t>(
-                r->sel_anchor != r->sel_focus ? b : r->sel_focus)));
-        r->has_dirty = 1;
+        set(ctrl ? word_next(val, cur) : utf8_next(val, cur));
         break;
     case WHALEUI_KEY_HOME:
-        r->sel_anchor = r->sel_focus =
-            static_cast<int>(line_start(val, static_cast<size_t>(r->sel_focus)));
-        r->has_dirty = 1;
+        set(ctrl ? 0 : line_start(val, cur));
         break;
     case WHALEUI_KEY_END:
-        r->sel_anchor = r->sel_focus =
-            static_cast<int>(line_end(val, static_cast<size_t>(r->sel_focus)));
-        r->has_dirty = 1;
+        set(ctrl ? val.size() : line_end(val, cur));
         break;
     case WHALEUI_KEY_UP: { /* simplified: jump to the previous line start */
-        size_t ls = line_start(val, static_cast<size_t>(r->sel_focus));
+        size_t ls = line_start(val, cur);
         if (ls > 0) {
-            r->sel_anchor = r->sel_focus =
-                static_cast<int>(line_start(val, ls - 1));
-            r->has_dirty = 1;
+            set(line_start(val, ls - 1));
         }
         break;
     }
     case WHALEUI_KEY_DOWN: { /* simplified: jump to the next line start */
-        size_t le = line_end(val, static_cast<size_t>(r->sel_focus));
+        size_t le = line_end(val, cur);
         if (le < val.size()) {
-            r->sel_anchor = r->sel_focus = static_cast<int>(le + 1);
-            r->has_dirty = 1;
+            set(le + 1);
         }
         break;
     }
@@ -1258,8 +1585,18 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a
-     * mouse button - never selects */
+     * mouse button - never selects. A press inside an existing selection
+     * instead readies a drag-to-move/copy: the selection stays put and the
+     * drop (move/copy) happens on mouse-up. */
     if (r->pressed_el && r->sel_anchor_el && hit) {
+        if (r->drag_sel) {
+            int dx = x - r->press_x;
+            int dy2 = y - r->press_y;
+            if (dx * dx + dy2 * dy2 >= 36) {
+                r->drag_sel_active = 1;
+            }
+            return;
+        }
         if (!r->selecting) {
             int dx = x - r->press_x;
             int dy2 = y - r->press_y;
@@ -1368,8 +1705,18 @@ void update_drag_scroll(whaleui_render_t* r, int y)
     }
 }
 
+/* drop the dragged selection at (x, y); defined after set_pressed_ex */
+static void drag_drop_selection(whaleui_render_t* r, int x, int y, int copy);
+
 extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
                                            int down)
+{
+    whaleui_render_set_pressed_ex(r, x, y, down, 1, 0);
+}
+
+extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
+                                              int y, int down, int clicks,
+                                              int mods)
 {
     if (!r || !r->tree) {
         return;
@@ -1381,6 +1728,10 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
         r->press_x = x;
         r->press_y = y;
         r->selecting = 0;
+        r->drag_sel = 0;
+        r->drag_sel_active = 0;
+        r->drag_copy = 0;
+        r->press_clicks = clicks < 1 ? 1 : (clicks > 3 ? 3 : clicks);
         /* scrollbar drag takes priority over selection/caret */
         whaleui_layout_node_t* sc = scrollbar_under(r, hit, x, y);
         if (sc) {
@@ -1392,12 +1743,39 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
             r->has_dirty = 1;
             return;
         }
+        /* pressing inside an existing editable selection readies a
+         * drag-to-move/copy: the selection stays put while dragging */
+        if (hit && is_editable(hit->el) && r->sel_anchor_el == hit->el &&
+            r->sel_anchor_el == r->sel_focus_el && r->sel_anchor != r->sel_focus) {
+            size_t off = caret_from_point(r, hit->el, hit, x, y);
+            int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
+            int b = r->sel_anchor < r->sel_focus ? r->sel_focus : r->sel_anchor;
+            if (off > static_cast<size_t>(a) && off < static_cast<size_t>(b)) {
+                r->drag_sel = 1;
+                r->pressed_el = el;
+                r->focus_el = el;
+                r->has_dirty = 1;
+                return;
+            }
+        }
         if (el && is_editable(el)) {
-            /* focus the editable control and place the caret */
+            /* focus the editable control and place the caret / word / line */
             r->edit_el = el;
             r->sel_anchor_el = r->sel_focus_el = el;
-            r->sel_anchor = r->sel_focus =
-                static_cast<int>(caret_from_point(r, el, hit, x, y));
+            std::string val = edit_value(el);
+            size_t off = caret_from_point(r, el, hit, x, y);
+            if (r->press_clicks >= 3) {
+                r->sel_anchor = static_cast<int>(line_start(val, off));
+                r->sel_focus = static_cast<int>(line_end(val, off));
+            } else if (r->press_clicks == 2) {
+                size_t ws = 0, we = 0;
+                word_range(val, off, &ws, &we);
+                r->sel_anchor = static_cast<int>(ws);
+                r->sel_focus = static_cast<int>(we);
+            } else {
+                r->sel_anchor = r->sel_focus = static_cast<int>(off);
+            }
+            r->sel_mode = r->press_clicks >= 3 ? 2 : (r->press_clicks == 2 ? 1 : 0);
             SDL_StartTextInput(r->window);
         } else if (hit && hit->is_text) {
             /* anchor a potential selection (only drags extend it) */
@@ -1407,8 +1785,19 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
             }
             r->compose.clear();
             r->sel_anchor_el = r->sel_focus_el = hit->el;
-            r->sel_anchor = r->sel_focus =
-                static_cast<int>(byte_at_node(r, hit, x, y));
+            size_t off = byte_at_node(r, hit, x, y);
+            if (r->press_clicks >= 3) {
+                r->sel_anchor = static_cast<int>(line_start(hit->text, off));
+                r->sel_focus = static_cast<int>(line_end(hit->text, off));
+            } else if (r->press_clicks == 2) {
+                size_t ws = 0, we = 0;
+                word_range(hit->text, off, &ws, &we);
+                r->sel_anchor = static_cast<int>(ws);
+                r->sel_focus = static_cast<int>(we);
+            } else {
+                r->sel_anchor = r->sel_focus = static_cast<int>(off);
+            }
+            r->sel_mode = r->press_clicks >= 3 ? 2 : (r->press_clicks == 2 ? 1 : 0);
         } else {
             /* click elsewhere: drop the selection + editing focus */
             if (r->edit_el) {
@@ -1418,24 +1807,81 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
             r->compose.clear();
             r->sel_anchor_el = r->sel_focus_el = nullptr;
             r->sel_anchor = r->sel_focus = 0;
+            r->sel_mode = 0;
         }
         r->pressed_el = el;
         r->focus_el = el;
     } else {
-        /* mouse up: a selection survives only when it was actually dragged.
-         * A plain click (press+release without crossing the threshold, even
-         * with incidental micro-motion) leaves nothing selected. The caret
-         * of a focused editable control is kept as-is. */
+        /* mouse up: a selection survives only when it was actually dragged
+         * (or started as a double/triple click). A plain click (press+
+         * release without crossing the threshold, even with incidental
+         * micro-motion) leaves nothing selected. The caret of a focused
+         * editable control is kept as-is. */
         r->pressed_el = nullptr;
         r->drag_scroll_el = nullptr;
         r->drag_scroll_node = nullptr;
-        if (!r->selecting && !(r->edit_el && r->sel_anchor_el == r->edit_el)) {
+        if (r->drag_sel_active) {
+            r->drag_copy = (mods & SDL_KMOD_CTRL) != 0;
+            drag_drop_selection(r, x, y, r->drag_copy);
+        }
+        r->drag_sel = 0;
+        r->drag_sel_active = 0;
+        if (!r->selecting && r->sel_mode == 0 &&
+            !(r->edit_el && r->sel_anchor_el == r->edit_el)) {
             r->sel_anchor_el = r->sel_focus_el = nullptr;
             r->sel_anchor = r->sel_focus = 0;
         }
         r->selecting = 0;
     }
     r->has_dirty = 1;
+}
+
+/* drop the dragged selection at (x, y): move it (ctrl: copy) into the
+ * editable element under the pointer. Only same-element selections inside
+ * an editable control are supported as sources. */
+static void drag_drop_selection(whaleui_render_t* r, int x, int y, int copy)
+{
+    lxb_dom_element* src = r->sel_anchor_el;
+    if (!src || r->sel_anchor_el != r->sel_focus_el || !is_editable(src) ||
+        r->sel_anchor == r->sel_focus || !r->tree) {
+        return;
+    }
+    int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
+    int b = r->sel_anchor < r->sel_focus ? r->sel_focus : r->sel_anchor;
+    whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
+    lxb_dom_element* dst = hit ? hit->el : nullptr;
+    if (!dst || !is_editable(dst)) {
+        return; /* only editable targets accept drops */
+    }
+    std::string val = edit_value(src);
+    if (static_cast<size_t>(a) >= val.size() || static_cast<size_t>(b) > val.size()) {
+        return;
+    }
+    std::string txt = val.substr(static_cast<size_t>(a),
+                                 static_cast<size_t>(b - a));
+    if (txt.empty()) {
+        return;
+    }
+    size_t t = caret_from_point(r, dst, hit, x, y);
+    if (dst == src) {
+        if (t >= static_cast<size_t>(a) && t <= static_cast<size_t>(b)) {
+            return; /* dropped on itself */
+        }
+        if (!copy && t > static_cast<size_t>(b)) {
+            t -= static_cast<size_t>(b - a); /* shift after removal */
+        }
+        if (copy) {
+            edit_replace(r, dst, t, t, txt);
+        } else {
+            edit_replace(r, dst, static_cast<size_t>(a), static_cast<size_t>(b), "");
+            edit_replace(r, dst, t, t, txt);
+        }
+    } else {
+        if (!copy) {
+            edit_replace(r, src, static_cast<size_t>(a), static_cast<size_t>(b), "");
+        }
+        edit_replace(r, dst, t, t, txt);
+    }
 }
 
 extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
