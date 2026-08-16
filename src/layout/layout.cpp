@@ -410,10 +410,10 @@ int position_kind(const std::string& p)
     return 0; /* static */
 }
 
-/* collect a text run (concatenated text children) for the renderer.
- * <br> elements produce a line break, matching browser behavior. Text nodes
- * that are pure whitespace (source indentation/newlines) are skipped - they
- * would otherwise become tall blank text runs that inflate block heights. */
+/* A text node that is pure whitespace (source indentation/newlines) is
+ * skipped - it would otherwise become a tall blank text run that inflates
+ * block heights. (build() then interleaves the non-blank runs with element
+ * children in DOM order so inline elements flow between their text.) */
 static bool text_is_blank(const lxb_char_t* d, size_t n)
 {
     for (size_t i = 0; i < n; ++i) {
@@ -425,27 +425,104 @@ static bool text_is_blank(const lxb_char_t* d, size_t n)
     return true;
 }
 
-std::string collect_text(lxb_dom_element* el)
+/* input type classification: 0 = text-like, 1 = button/other, 2 = checkbox
+ * or radio (native control look, no field chrome) */
+int input_kind(lxb_dom_element* el)
 {
-    std::string out;
-    lxb_dom_node* n = el->node.first_child;
-    while (n) {
-        if (n->type == LXB_DOM_NODE_TYPE_TEXT || n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
-            const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
-            if (s->data && !text_is_blank(s->data, s->length)) {
-                out.append(reinterpret_cast<const char*>(s->data), s->length);
-            }
-        } else if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            lxb_dom_element* e = lxb_dom_interface_element(n);
-            size_t elen = 0;
-            const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
-            if (ename && elen == 2 && std::memcmp(ename, "br", 2) == 0) {
-                out += '\n';
-            }
+    size_t alen = 0;
+    const lxb_char_t* t = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &alen);
+    if (t && alen > 0) {
+        if ((alen == 8 && std::memcmp(t, "checkbox", 8) == 0) ||
+            (alen == 5 && std::memcmp(t, "radio", 5) == 0)) {
+            return 2;
         }
-        n = n->next;
     }
-    return out;
+    return 0;
+}
+
+/* tag name -> WUI_TAG_* id (ECS component). The name comes from lexbor
+ * (lowercase); a length-classified comparison covers the common tags. */
+int tag_id_of(lxb_dom_element* el)
+{
+    if (!el) {
+        return WUI_TAG_UNKNOWN;
+    }
+    size_t len = 0;
+    const lxb_char_t* name = lxb_dom_element_local_name(el, &len);
+    if (!name) {
+        return WUI_TAG_UNKNOWN;
+    }
+    if (len == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6') {
+        return WUI_TAG_H1 + (name[1] - '1'); /* h1-h6 */
+    }
+    switch (len) {
+    case 1:
+        if (name[0] == 'p') return WUI_TAG_P;
+        if (name[0] == 'a') return WUI_TAG_A;
+        if (name[0] == 'b') return WUI_TAG_B;
+        if (name[0] == 'i') return WUI_TAG_I;
+        if (name[0] == 'u') return WUI_TAG_UL;
+        return WUI_TAG_UNKNOWN;
+    case 2:
+        if (std::memcmp(name, "ul", 2) == 0) return WUI_TAG_UL;
+        if (std::memcmp(name, "ol", 2) == 0) return WUI_TAG_OL;
+        if (std::memcmp(name, "li", 2) == 0) return WUI_TAG_LI;
+        if (std::memcmp(name, "dl", 2) == 0) return WUI_TAG_DL;
+        if (std::memcmp(name, "dt", 2) == 0) return WUI_TAG_DT;
+        if (std::memcmp(name, "dd", 2) == 0) return WUI_TAG_DD;
+        if (std::memcmp(name, "em", 2) == 0) return WUI_TAG_EM;
+        if (std::memcmp(name, "br", 2) == 0) return WUI_TAG_BR;
+        if (std::memcmp(name, "hr", 2) == 0) return WUI_TAG_HR;
+        if (std::memcmp(name, "tr", 2) == 0) return WUI_TAG_TR;
+        if (std::memcmp(name, "td", 2) == 0) return WUI_TAG_TD;
+        if (std::memcmp(name, "th", 2) == 0) return WUI_TAG_TH;
+        return WUI_TAG_UNKNOWN;
+    case 3:
+        if (std::memcmp(name, "div", 3) == 0) return WUI_TAG_DIV;
+        if (std::memcmp(name, "img", 3) == 0) return WUI_TAG_IMG;
+        if (std::memcmp(name, "nav", 3) == 0) return WUI_TAG_NAV;
+        if (std::memcmp(name, "pre", 3) == 0) return WUI_TAG_PRE;
+        return WUI_TAG_UNKNOWN;
+    case 4:
+        if (std::memcmp(name, "span", 4) == 0) return WUI_TAG_SPAN;
+        if (std::memcmp(name, "head", 4) == 0) return WUI_TAG_HEAD;
+        if (std::memcmp(name, "body", 4) == 0) return WUI_TAG_BODY;
+        if (std::memcmp(name, "html", 4) == 0) return WUI_TAG_HTML;
+        if (std::memcmp(name, "main", 4) == 0) return WUI_TAG_MAIN;
+        if (std::memcmp(name, "code", 4) == 0) return WUI_TAG_CODE;
+        return WUI_TAG_UNKNOWN;
+    case 5:
+        if (std::memcmp(name, "input", 5) == 0) return WUI_TAG_INPUT;
+        if (std::memcmp(name, "label", 5) == 0) return WUI_TAG_LABEL;
+        if (std::memcmp(name, "meter", 5) == 0) return WUI_TAG_METER;
+        if (std::memcmp(name, "table", 5) == 0) return WUI_TAG_TABLE;
+        if (std::memcmp(name, "aside", 5) == 0) return WUI_TAG_ASIDE;
+        return WUI_TAG_UNKNOWN;
+    case 6:
+        if (std::memcmp(name, "select", 6) == 0) return WUI_TAG_SELECT;
+        if (std::memcmp(name, "option", 6) == 0) return WUI_TAG_OPTION;
+        if (std::memcmp(name, "button", 6) == 0) return WUI_TAG_BUTTON;
+        if (std::memcmp(name, "strong", 6) == 0) return WUI_TAG_STRONG;
+        if (std::memcmp(name, "header", 6) == 0) return WUI_TAG_HEADER;
+        if (std::memcmp(name, "footer", 6) == 0) return WUI_TAG_FOOTER;
+        return WUI_TAG_UNKNOWN;
+    case 7:
+        if (std::memcmp(name, "details", 7) == 0) return WUI_TAG_DETAILS;
+        if (std::memcmp(name, "summary", 7) == 0) return WUI_TAG_SUMMARY;
+        if (std::memcmp(name, "article", 7) == 0) return WUI_TAG_ARTICLE;
+        if (std::memcmp(name, "section", 7) == 0) return WUI_TAG_SECTION;
+        return WUI_TAG_UNKNOWN;
+    case 8:
+        if (std::memcmp(name, "textarea", 8) == 0) return WUI_TAG_TEXTAREA;
+        if (std::memcmp(name, "progress", 8) == 0) return WUI_TAG_PROGRESS;
+        return WUI_TAG_UNKNOWN;
+    case 10:
+        if (std::memcmp(name, "blockquote", 10) == 0) return WUI_TAG_BLOCKQUOTE;
+        return WUI_TAG_UNKNOWN;
+    default:
+        return WUI_TAG_UNKNOWN;
+    }
 }
 
 struct Builder
@@ -615,6 +692,7 @@ struct Builder
         /* scalars reset here; style/text are STL containers (default-
          * constructed by new_node) and must NOT be memset */
         n->el = el;
+        n->tag_id = tag_id_of(el);
         n->parent = parent;
         n->z = 0;
         n->opacity = 1.0f;
@@ -651,6 +729,42 @@ struct Builder
             }
             if (n->style.find("display") == n->style.end()) {
                 n->style["display"] = "inline-block";
+            }
+        }
+        /* form controls get the browser-default inline size (~20ch): as
+         * inline-blocks their content estimate is 0 (option/value text is
+         * not a text run), which would collapse them to zero width.
+         * checkbox/radio are sized by the renderer (native control look)
+         * and drop the field border/padding. */
+        if (tname0 && n->style.find("width") == n->style.end()) {
+            bool ctrl = (tlen0 == 6 && std::memcmp(tname0, "select", 6) == 0) ||
+                        (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0) ||
+                        (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0) ||
+                        (tlen0 == 8 && std::memcmp(tname0, "progress", 8) == 0) ||
+                        (tlen0 == 5 && std::memcmp(tname0, "meter", 5) == 0);
+            if (ctrl) {
+                if (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0 &&
+                    input_kind(n->el) == 2) {
+                    /* checkbox/radio: fixed control box, no field chrome */
+                    n->style["width"] = "16px";
+                    n->style["height"] = "16px";
+                    n->style["padding"] = "0";
+                    n->style["border"] = "none";
+                    n->style["background"] = "none";
+                } else if (tlen0 == 8 && std::memcmp(tname0, "progress", 8) == 0) {
+                    /* progress/meter: wide track, fixed height */
+                    n->style["width"] = "16em";
+                    n->style["height"] = "6px";
+                    n->style["padding"] = "0";
+                    n->style["border"] = "none";
+                } else if (tlen0 == 5 && std::memcmp(tname0, "meter", 5) == 0) {
+                    n->style["width"] = "16em";
+                    n->style["height"] = "6px";
+                    n->style["padding"] = "0";
+                    n->style["border"] = "none";
+                } else {
+                    n->style["width"] = "12em";
+                }
             }
         }
 
@@ -726,42 +840,149 @@ struct Builder
             n->opacity *= parent->opacity;
         }
 
-        /* text runs: ::before/::after pseudo content becomes its own run
-         * so pseudo styles (color/font) apply to it; the element's own
-         * text is a separate run */
-        std::string txt = collect_text(el);
+        /* children in DOM order: own text runs and element children
+         * interleave, so inline elements (strong/em/span/...) flow between
+         * their surrounding text. ::before/::after pseudo content becomes
+         * its own run (pseudo styles apply to it).
+         * A <details> without the open attribute collapses: only its first
+         * <summary> child renders (the clickable title). */
         std::string pre, post;
         pseudo_content(el, 1, pre);
         pseudo_content(el, 2, post);
-        if (n->visible) {
-            if (!pre.empty()) {
-                add_run(n, pre, pseudo_style(n->style, el, 1));
-            }
-            if (!txt.empty()) {
-                add_run(n, txt, n->style);
-            }
-            if (!post.empty()) {
-                add_run(n, post, pseudo_style(n->style, el, 2));
+        bool details_collapsed = false;
+        if (n->el) {
+            size_t dlen = 0;
+            const lxb_char_t* dname = lxb_dom_element_local_name(n->el, &dlen);
+            if (dname && dlen == 7 && std::memcmp(dname, "details", 7) == 0) {
+                /* boolean attribute: <details open> may have no value, so
+                 * has_attribute (not get_attribute) decides */
+                if (!lxb_dom_element_has_attribute(
+                        n->el, (const lxb_char_t*)"open", 4)) {
+                    details_collapsed = true;
+                }
             }
         }
-
-        /* element children */
+        bool summary_seen = false;
+        /* inline markers injected into the first text run (C++ work: the
+         * engine has no ::marker or [attr] selector):
+         *   <summary> in <details>  -> ▸/▾ collapse indicator
+         *   <li> in <ul>/<ol>       -> bullet "• " / ordinal "N. " */
+        std::string run_marker;
+        bool run_marker_done = false;
+        if (n->el && parent && parent->el) {
+            size_t plen = 0;
+            const lxb_char_t* pname =
+                lxb_dom_element_local_name(parent->el, &plen);
+            if (plen == 7 && std::memcmp(pname, "details", 7) == 0) {
+                /* boolean attribute: presence (not value) decides */
+                run_marker =
+                    lxb_dom_element_has_attribute(
+                        parent->el, (const lxb_char_t*)"open", 4)
+                        ? "\xe2\x96\xbe "
+                        : "\xe2\x96\xb8 ";
+            } else if (plen == 2 && std::memcmp(pname, "ul", 2) == 0) {
+                run_marker = "\xe2\x80\xa2 "; /* bullet */
+            } else if (plen == 2 && std::memcmp(pname, "ol", 2) == 0) {
+                int idx = 1;
+                for (lxb_dom_node* s = n->el->node.prev; s; s = s->prev) {
+                    if (s->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                        ++idx;
+                    }
+                }
+                run_marker = std::to_string(idx) + ". ";
+            }
+        }
         whaleui_layout_node_t** link = &n->first_child;
         while (*link && (*link)->next) {
             link = &(*link)->next;
         }
+        std::string cur_run;
+        bool prev_run_space = false; /* last flushed run ends with a space */
+        auto flush_run = [&]() {
+            if (cur_run.empty()) {
+                return;
+            }
+            /* add_run already appends t to the child chain */
+            whaleui_layout_node_t* t = add_run(n, cur_run, n->style);
+            prev_run_space = cur_run.back() == ' ' ||
+                             cur_run.back() == '\t';
+            link = &t->next;
+            cur_run.clear();
+        };
+        if (n->visible && !pre.empty()) {
+            whaleui_layout_node_t* t =
+                add_run(n, pre, pseudo_style(n->style, el, 1));
+            link = &t->next;
+        }
         lxb_dom_node* c = el->node.first_child;
         while (c) {
-            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-                whaleui_layout_node_t* child = build(lxb_dom_interface_element(c), n);
-                if (!*link) {
-                    *link = child;
+            bool is_el = c->type == LXB_DOM_NODE_TYPE_ELEMENT;
+            /* collapsed details: keep only the first <summary> child */
+            if (details_collapsed && !summary_seen) {
+                if (is_el) {
+                    lxb_dom_element* se = lxb_dom_interface_element(c);
+                    size_t slen = 0;
+                    const lxb_char_t* sname =
+                        lxb_dom_element_local_name(se, &slen);
+                    if (sname && slen == 7 &&
+                        std::memcmp(sname, "summary", 7) == 0) {
+                        summary_seen = true; /* fall through: build it */
+                    } else {
+                        c = c->next;
+                        continue;
+                    }
                 } else {
-                    (*link)->next = child;
+                    c = c->next;
+                    continue;
                 }
-                link = &child->next;
+            } else if (details_collapsed) {
+                break; /* everything after the summary is hidden */
+            }
+            if (n->visible &&
+                (c->type == LXB_DOM_NODE_TYPE_TEXT ||
+                 c->type == LXB_DOM_NODE_TYPE_CDATA_SECTION)) {
+                const lexbor_str_t* s =
+                    &lxb_dom_interface_text(c)->char_data.data;
+                if (s->data && !text_is_blank(s->data, s->length)) {
+                    if (cur_run.empty() && !run_marker.empty() &&
+                        !run_marker_done) {
+                        cur_run = run_marker;
+                        run_marker_done = true;
+                    }
+                    const lxb_char_t* d = s->data;
+                    size_t dlen = s->length;
+                    /* element boundary: "a " + " b" collapses to "a b" */
+                    if (cur_run.empty() && prev_run_space &&
+                        (d[0] == ' ' || d[0] == '\t')) {
+                        ++d;
+                        --dlen;
+                    }
+                    cur_run.append(reinterpret_cast<const char*>(d), dlen);
+                }
+            } else if (is_el) {
+                lxb_dom_element* e = lxb_dom_interface_element(c);
+                size_t elen = 0;
+                const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+                if (ename && elen == 2 && std::memcmp(ename, "br", 2) == 0) {
+                    cur_run += '\n'; /* line break inside the run */
+                } else {
+                    flush_run();
+                    whaleui_layout_node_t* child = build(e, n);
+                    if (!*link) {
+                        *link = child;
+                    } else {
+                        (*link)->next = child;
+                    }
+                    link = &child->next;
+                }
             }
             c = c->next;
+        }
+        flush_run();
+        if (n->visible && !post.empty()) {
+            whaleui_layout_node_t* t =
+                add_run(n, post, pseudo_style(n->style, el, 2));
+            link = &t->next;
         }
         return n;
     }
@@ -1080,19 +1301,74 @@ struct Builder
         }
     }
 
+    /* estimated inline width of a line-flow node (text run or inline
+     * element): used to decide where a line wraps before laying it out */
+    int inline_est_w(whaleui_layout_node_t* c, int font_px)
+    {
+        float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
+        if (c->is_text) {
+            float fs = len_px(get(c->style, "font-size"), 0, em);
+            if (fs <= 0) {
+                fs = em;
+            }
+            return static_cast<int>(text_est_width(c->text, fs));
+        }
+        return static_cast<int>(estimate_content_width(c, em));
+    }
+
     void layout_block(whaleui_layout_node_t* n, int inner_w, int inner_h,
                       int font_px, int& kid_cursor)
     {
         (void)inner_h;
         /* block flow: children stack below each other, starting at the
          * container's content origin (padding/border are already excluded
-         * via content.y) */
+         * via content.y). Consecutive text runs and inline elements flow
+         * on one horizontal line (DOM order), wrapping at the edge - so
+         * <p>a <em>e</em> b</p> paints as one line, not three boxes. */
         int cursor = n->content.y;
+        int right_edge = n->content.x + inner_w;
         whaleui_layout_node_t* c = n->first_child;
         while (c) {
-            layout(c, n->content.x, n->content.y, inner_w, inner_h,
-                   font_px, &cursor);
-            c = c->next;
+            if (!c->visible) {
+                c = c->next;
+                continue;
+            }
+            int pk = position_kind(get(c->style, "position"));
+            bool inl = c->is_text ||
+                       (pk == 0 &&
+                        display_kind(get(c->style, "display")) == 2);
+            if (!inl) {
+                layout(c, n->content.x, n->content.y, inner_w, inner_h,
+                       font_px, &cursor);
+                c = c->next;
+                continue;
+            }
+            /* one inline line (line_top fixed, x advances; wrap restarts
+             * at the container's left edge) */
+            int line_top = cursor;
+            int x = n->content.x;
+            int max_h = 0;
+            while (c && c->visible &&
+                   (c->is_text ||
+                    (position_kind(get(c->style, "position")) == 0 &&
+                     display_kind(get(c->style, "display")) == 2))) {
+                int est = inline_est_w(c, font_px);
+                if (x > n->content.x && x + est > right_edge) {
+                    cursor = line_top + max_h;
+                    line_top = cursor;
+                    x = n->content.x;
+                    max_h = 0;
+                }
+                int c2 = line_top;
+                layout(c, x, line_top, right_edge - x, inner_h, font_px,
+                       &c2);
+                x += c->border.w;
+                if (c->border.h > max_h) {
+                    max_h = c->border.h;
+                }
+                c = c->next;
+            }
+            cursor = line_top + max_h;
         }
         kid_cursor = cursor - n->content.y;
     }

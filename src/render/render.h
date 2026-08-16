@@ -257,8 +257,27 @@ void whaleui_render_set_css(whaleui_render_t* render,
 void whaleui_render_invalidate(whaleui_render_t* render);
 void whaleui_render_invalidate_rect(whaleui_render_t* render, int x, int y, int w, int h);
 
+/* Drop every cache keyed on DOM elements (text rasters, decoded images,
+ * select/scroll/edit state, hover/focus). Call when the document is
+ * replaced (window load_html) - stale element pointers must not leak
+ * TTF_Text/SDL_Surface objects or dangle across documents. */
+void whaleui_render_reset_dom(whaleui_render_t* render);
+
 /* Paint one frame for the window. Returns 0 on success. */
 int whaleui_render_frame(whaleui_render_t* render, whaleui_dom_document_t* doc);
+
+/* The layout tree of the most recent frame (for DOM geometry queries like
+ * getBoundingClientRect); NULL when nothing was rendered yet. The tree is
+ * owned by the render context and must not be modified. */
+whaleui_layout_tree_t* whaleui_render_last_tree(void);
+
+/* DOM element under (x, y) in the current layout tree (hit test), or NULL.
+ * Used by the app loop to dispatch DOM mouse events. */
+whaleui_dom_element_t* whaleui_render_hit_element(whaleui_render_t* r, int x, int y);
+
+/* The currently focused element (last clicked control), or NULL. Used by
+ * the app loop to dispatch DOM keyboard events. */
+whaleui_dom_element_t* whaleui_render_focus_element(whaleui_render_t* r);
 
 /* Handle a resize: recreate offscreen target, invalidate. */
 int whaleui_render_resize(whaleui_render_t* render, int width, int height);

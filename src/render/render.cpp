@@ -47,10 +47,19 @@ whaleui_gpu_t* g_gpu = nullptr;
  * own background normally instead of leaving the region transparent. */
 int g_backdrop_active = 0;
 
+/* font style bits (mirror SDL_ttf's TTF_STYLE_*; local constants so lite/
+ * minimal builds don't need SDL3_ttf headers - the values match) */
+enum { kFontBold = 1, kFontItalic = 2 };
+
 /* shadow parsing (defined below; forward-declared for paint_text) */
 int parse_shadow_any(const std::string& v, int& ox, int& oy, int& blur,
                      unsigned int& col);
 std::vector<std::string> split_space2(const std::string& v);
+
+/* last layout tree rendered by any window (DOM geometry queries);
+ * NULL until the first frame. The tree itself is owned by the render
+ * context that produced it. */
+whaleui_layout_tree_t* g_last_tree = nullptr;
 
 /* --- color --- */
 
@@ -813,6 +822,19 @@ bool tag_eq(lxb_dom_element* el, const char* tag)
     return n == tlen && std::memcmp(name, tag, tlen) == 0;
 }
 
+/* input[type=checkbox/radio]: native control drawn + toggled by the engine */
+bool is_check_radio(lxb_dom_element* el)
+{
+    if (!tag_eq(el, "input")) {
+        return false;
+    }
+    size_t alen = 0;
+    const lxb_char_t* t = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &alen);
+    return t && ((alen == 8 && std::memcmp(t, "checkbox", 8) == 0) ||
+                 (alen == 5 && std::memcmp(t, "radio", 5) == 0));
+}
+
 /* is this element a text-editing target? input(type=text)/textarea, or any
  * element with contenteditable != "false" */
 bool is_editable(lxb_dom_element* el)
@@ -837,6 +859,36 @@ bool is_editable(lxb_dom_element* el)
     size_t alen = 0;
     const lxb_char_t* ce = lxb_dom_element_get_attribute(
         el, (const lxb_char_t*)"contenteditable", 15, &alen);
+    if (ce && alen > 0) {
+        return !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
+    }
+    return false;
+}
+
+/* editable check via the layout node's tag component (O(1), skips the
+ * local_name call for every painted node) */
+bool is_editable_node(whaleui_layout_node_t* n)
+{
+    if (!n || !n->el) {
+        return false;
+    }
+    if (n->tag_id == WUI_TAG_INPUT || n->tag_id == WUI_TAG_TEXTAREA) {
+        if (n->tag_id == WUI_TAG_INPUT) {
+            size_t alen = 0;
+            const lxb_char_t* t = lxb_dom_element_get_attribute(
+                n->el, (const lxb_char_t*)"type", 4, &alen);
+            /* non-text input types (button/checkbox/radio/...) are not
+             * text-editable */
+            if (t && alen > 0 &&
+                !(alen == 4 && std::memcmp(t, "text", 4) == 0)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    size_t alen = 0;
+    const lxb_char_t* ce = lxb_dom_element_get_attribute(
+        n->el, (const lxb_char_t*)"contenteditable", 15, &alen);
     if (ce && alen > 0) {
         return !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
     }
@@ -922,6 +974,9 @@ size_t utf8_next(const std::string& s, size_t b)
 }
 
 } // namespace
+
+/* window -> framebuffer coordinate scale (FSR); defined in the C API area */
+static void fb_coords(whaleui_render_t* r, int& x, int& y);
 
 extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
 {
@@ -1039,14 +1094,15 @@ std::vector<std::string> split_families(const std::string& s)
 #ifdef WHALEUI_BUILD_FULL
 
 /* open a font for a family (no fallback chain); "" or generic families pick
- * the default font */
+ * the default font. style: TTF_STYLE_* bits (BOLD/ITALIC). */
 TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family, int size,
-                           bool bold, bool use_cache)
+                           int style, bool use_cache)
 {
     if (size <= 0) {
         size = 16;
     }
-    std::string key = family + "|" + std::to_string(size) + "|" + (bold ? "b" : "n");
+    std::string key = family + "|" + std::to_string(size) + "|" +
+                      std::to_string(style);
     if (use_cache) {
         for (auto& f : r->fonts) {
             if (f.first == key) {
@@ -1078,8 +1134,8 @@ TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family, int s
             font = TTF_OpenFontIO(io, true, static_cast<float>(size));
         }
     }
-    if (font && bold) {
-        TTF_SetFontStyle(font, TTF_STYLE_BOLD);
+    if (font && style) {
+        TTF_SetFontStyle(font, style);
     }
     if (use_cache && font) {
         r->fonts.emplace_back(key, font);
@@ -1089,7 +1145,7 @@ TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family, int s
 
 /* attach every other registered font as a fallback (same size) so glyphs
  * missing from `font` (CJK, emoji, ...) resolve through the library */
-void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, bool bold)
+void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, int style)
 {
     if (!font) {
         return;
@@ -1099,7 +1155,7 @@ void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, bool b
     }
     whaleui_font_registry* reg = whaleui_font_registry_get();
     for (size_t i = 0; i < reg->count; ++i) {
-        TTF_Font* fb = render_open_font(r, reg->fonts[i].family, size, bold, true);
+        TTF_Font* fb = render_open_font(r, reg->fonts[i].family, size, style, true);
         if (fb && fb != font) {
             TTF_AddFallbackFont(font, fb);
         }
@@ -1111,12 +1167,13 @@ void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, bool b
 }
 
 TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size,
-                          bool bold)
+                          int style)
 {
     if (size <= 0) {
         size = 16;
     }
-    std::string key = family + "|" + std::to_string(size) + "|" + (bold ? "b" : "n");
+    std::string key = family + "|" + std::to_string(size) + "|" +
+                      std::to_string(style);
     for (auto& f : r->fonts) {
         if (f.first == key) {
             return f.second;
@@ -1129,27 +1186,27 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
     }
     TTF_Font* font = nullptr;
     for (const std::string& fam : fams) {
-        font = render_open_font(r, fam, size, bold, false);
+        font = render_open_font(r, fam, size, style, false);
         if (font) {
             break;
         }
     }
     if (!font) {
         /* nothing matched: use the default font */
-        if (bold && r->font_default) {
-            TTF_SetFontStyle(r->font_default, TTF_STYLE_BOLD);
+        if (style && r->font_default) {
+            TTF_SetFontStyle(r->font_default, style);
         }
         font = r->font_default;
     }
     if (font) {
-        render_build_fallback(r, font, size, bold);
+        render_build_fallback(r, font, size, style);
         r->fonts.emplace_back(key, font);
     }
     return font;
 }
 #else /* !WHALEUI_BUILD_FULL: text rendering needs SDL3_ttf (full only).
          stb_font text lands with the lite/minimal font path. */
-TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, bool) { return nullptr; }
+TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, int) { return nullptr; }
 #endif
 
 /* --- painting --- */
@@ -1212,7 +1269,8 @@ TTF_Text* text_obj(whaleui_render_t* r, const std::string& text, int fs,
     if (text.empty()) {
         return nullptr;
     }
-    TTF_Font* font = render_get_font(r, family, fs, bold);
+    TTF_Font* font = render_get_font(r, family, fs,
+                                     bold ? kFontBold : 0);
     if (!font) {
         return nullptr;
     }
@@ -1394,7 +1452,8 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bold)
 {
 #ifdef WHALEUI_BUILD_FULL
-    TTF_Font* font = render_get_font(r, family, fs, bold);
+    TTF_Font* font = render_get_font(r, family, fs,
+                                     bold ? kFontBold : 0);
     if (font) {
         int h = TTF_GetFontHeight(font);
         if (h > 0) {
@@ -1655,6 +1714,7 @@ void apply_text_transform(std::string& s, const std::string& t)
 
 /* render one text string inside the box (bx,by,bw,bh). align: 0=left,
  * 1=center, 2=right. Shared by text runs and <select> controls.
+ * style: TTF_STYLE_* bits (bold/italic).
  * ckey: element to cache the TTF_Text against (NULL = no caching).
  * lsp: letter-spacing in px (>0 paints glyph by glyph with that gap;
  * TTF_Text has no spacing control, so this is a per-glyph path).
@@ -1662,14 +1722,14 @@ void apply_text_transform(std::string& s, const std::string& t)
 void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
-                  bool bold, int align, lxb_dom_element* ckey,
+                  int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp = 0, bool wrap = false)
 {
 #ifdef WHALEUI_BUILD_FULL
     if (fs <= 0) {
         fs = 16;
     }
-    TTF_Font* font = render_get_font(r, family, fs, bold);
+    TTF_Font* font = render_get_font(r, family, fs, style);
     if (!font) {
         return;
     }
@@ -1751,8 +1811,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * (key) or the content changed (TTF_Text is immutable). Wrapped
          * runs also key on the wrap width so they don't share objects. */
         char key[96];
-        std::snprintf(key, sizeof(key), "%p|%d|%c|%s|%d",
-                      static_cast<void*>(ckey), fs, bold ? 'b' : 'n',
+        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d",
+                      static_cast<void*>(ckey), fs, style,
                       family.c_str(), wrap ? bw : -1);
         cache_key = key;
         whaleui_render_t::TextCacheEntry& e = r->text_cache[cache_key];
@@ -2017,7 +2077,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 cp, &gw, &gh, &xoff, &yoff);
             if (bmp && gw > 0 && gh > 0) {
                 const int dy = baseline + yoff;
-                for (int pass = 0; pass < (bold ? 2 : 1); ++pass) {
+                for (int pass = 0;
+                     pass < ((style & kFontBold) ? 2 : 1); ++pass) {
                     const int dx = static_cast<int>(px) + xoff + pass;
                     for (int yy = 0; yy < gh; ++yy) {
                         const int ty2 = dy + yy;
@@ -2344,6 +2405,136 @@ void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
     SDL_SetTextInputArea(r->window, &rect, 0);
 }
 
+/* checkbox/radio native control (no field chrome; 16px box from layout) */
+void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
+                    int off_x, int off_y, const Clip* clip)
+{
+    lxb_dom_element* el = n->el;
+    if (!el) {
+        return;
+    }
+    size_t alen = 0;
+    const lxb_char_t* t = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &alen);
+    bool is_radio = t && alen == 5 && std::memcmp(t, "radio", 5) == 0;
+    bool checked = lxb_dom_element_has_attribute(
+        el, (const lxb_char_t*)"checked", 7);
+    int bx = n->border.x + off_x;
+    int by = n->border.y + off_y;
+    int bw = n->border.w, bh = n->border.h;
+    if (bw <= 0 || bh <= 0) {
+        return;
+    }
+    unsigned int bg = 0xFFFFFFFF, fg = 0xFF8a8a8a, acc = 0xFF0067C0;
+    auto it = r->theme_vars.find("--field");
+    if (it != r->theme_vars.end()) {
+        whaleui_render_parse_color(it->second.c_str(), &bg);
+    }
+    auto itb = r->theme_vars.find("--border");
+    if (itb != r->theme_vars.end()) {
+        whaleui_render_parse_color(itb->second.c_str(), &fg);
+    }
+    auto ita = r->theme_vars.find("--accent");
+    if (ita != r->theme_vars.end()) {
+        whaleui_render_parse_color(ita->second.c_str(), &acc);
+    }
+    int cx = bx + bw / 2, cy = by + bh / 2;
+    if (is_radio) {
+        int rad = bw / 2;
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh, rad,
+                        bg, clip);
+        /* ring: 1px dark outline via a smaller inner fill */
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
+                        bw - 2, bh - 2, rad - 1, bg, clip);
+        /* outline */
+        for (int k = 0; k < 1; ++k) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
+                            bw - 2, bh - 2, rad - 1, fg, clip);
+        }
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
+                        bw - 2, bh - 2, rad - 1, bg, clip);
+        if (checked) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, cx - bw / 4,
+                            cy - bh / 4, bw / 2, bh / 2, bw / 4, acc, clip);
+        }
+    } else {
+        int rad = 3;
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh, rad,
+                        bg, clip);
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
+                        bw - 2, bh - 2, rad, fg, clip);
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
+                        bw - 2, bh - 2, rad, bg, clip);
+        if (checked) {
+            /* check mark: two strokes drawn as thick lines */
+            int sw = bw / 5;
+            if (sw < 1) {
+                sw = 1;
+            }
+            fill_rect(r->pixels, r->fb_w, r->fb_h,
+                      bx + bw / 5, cy, bw / 4, sw, acc, clip);
+            fill_rect(r->pixels, r->fb_w, r->fb_h,
+                      bx + bw / 2 - sw / 2, cy, sw, bh / 3, acc, clip);
+            fill_rect(r->pixels, r->fb_w, r->fb_h,
+                      bx + bw / 2, cy - bh / 4, bw / 3, sw, acc, clip);
+        }
+    }
+}
+
+/* <progress>/<meter>: a track with a filled portion (value/max, clamped) */
+void paint_progress(whaleui_render_t* r, whaleui_layout_node_t* n,
+                    int off_x, int off_y, const Clip* clip)
+{
+    lxb_dom_element* el = n->el;
+    if (!el) {
+        return;
+    }
+    double value = 0, max = 1;
+    size_t alen = 0;
+    const lxb_char_t* v = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"value", 5, &alen);
+    if (v && alen > 0) {
+        value = std::atof(reinterpret_cast<const char*>(v));
+    }
+    const lxb_char_t* m = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"max", 3, &alen);
+    if (m && alen > 0) {
+        double mx = std::atof(reinterpret_cast<const char*>(m));
+        if (mx > 0) {
+            max = mx;
+        }
+    }
+    if (value < 0) {
+        value = 0;
+    }
+    if (value > max) {
+        value = max;
+    }
+    int bx = n->content.x + off_x;
+    int by = n->content.y + off_y;
+    int bw = n->content.w, bh = n->content.h;
+    if (bw <= 0 || bh <= 0) {
+        return;
+    }
+    unsigned int track = 0xFFE0E0E0, fill = 0xFF0067C0;
+    auto it = r->theme_vars.find("--field");
+    if (it != r->theme_vars.end()) {
+        whaleui_render_parse_color(it->second.c_str(), &track);
+    }
+    auto ita = r->theme_vars.find("--accent");
+    if (ita != r->theme_vars.end()) {
+        whaleui_render_parse_color(ita->second.c_str(), &fill);
+    }
+    int rad = bh / 2;
+    fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh, rad,
+                    track, clip);
+    int fw2 = static_cast<int>(bw * (value / max));
+    if (fw2 > 0) {
+        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, fw2, bh, rad,
+                        fill, clip);
+    }
+}
+
 /* editable controls: input paints its value text (always); when focused, a
  * selection highlight + caret + IME composition overlay are drawn on top.
  * textarea/contenteditable glyphs come from the layout text run - this only
@@ -2364,6 +2555,9 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     std::string fw = sget(n->style, "font-weight");
     bool bold = fw == "bold" || fw == "bolder" ||
                 (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+    std::string fst = sget(n->style, "font-style");
+    int style = (bold ? kFontBold : 0) |
+                ((fst == "italic" || fst == "oblique") ? kFontItalic : 0);
     std::string val = edit_value(el);
     bool focused = (el == r->edit_el);
     /* caret/highlight geometry: input centers in its content box; textarea/
@@ -2381,7 +2575,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
         draw_text_at(r, val, n->content.x + off_x, n->content.y,
                      n->content.w, n->content.h,
-                     fs, family, fg, bold, 0, el, clip);
+                     fs, family, fg, style, 0, el, clip);
     }
     if (focused) {
         size_t a = 0, b = 0;
@@ -2408,7 +2602,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             int cxx = 0, cyy = 0, chh = 16;
             caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
             draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
-                         fs, family, comp, bold, 0, el, clip);
+                         fs, family, comp, style, 0, el, clip);
         }
     }
 }
@@ -2482,10 +2676,15 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         fs = std::atoi(fsv.c_str());
     }
     std::string family = sget(n->style, "font-family");
-    /* font-weight: bold/bolder/600-900 render bold */
+    /* font-weight: bold/bolder/600-900 render bold; font-style italic/
+     * oblique render italic (TTF style bits, per-tag UA defaults make
+     * <strong>/<em> work without any page CSS) */
     std::string fw = sget(n->style, "font-weight");
     bool bold = fw == "bold" || fw == "bolder" ||
                 (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+    std::string fst = sget(n->style, "font-style");
+    int style = (bold ? kFontBold : 0) |
+                ((fst == "italic" || fst == "oblique") ? kFontItalic : 0);
     /* text-align aligns within the parent element's content box */
     std::string ta = sget(n->style, "text-align");
     int align = 0;
@@ -2536,11 +2735,11 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                     unsigned int sc = (ka << 24) | (scol & 0x00FFFFFF);
                     draw_text_at(r, shown, tx0 + sox - k, ty0 + soy - k,
                                  box->content.w, n->border.h, fs, family, sc,
-                                 bold, align, n->el, clip, lsp, wrap);
+                                 style, align, n->el, clip, lsp, wrap);
                 }
             }
             draw_text_at(r, shown, tx0 + sox, ty0 + soy, box->content.w,
-                         n->border.h, fs, family, scol, bold, align, n->el,
+                         n->border.h, fs, family, scol, style, align, n->el,
                          clip, lsp, wrap);
         }
     }
@@ -2578,7 +2777,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 }
                 draw_text_at(r, shown, tx0 + dx * sw, ty0 + dy * sw,
                              box->content.w, n->border.h, fs, family, scc,
-                             bold, align, n->el, clip, lsp, wrap);
+                             style, align, n->el, clip, lsp, wrap);
             }
         }
     }
@@ -2586,7 +2785,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
     draw_text_at(r, shown, tx0, ty0, box->content.w, n->border.h,
-                 fs, family, color, bold, align, n->el, clip, lsp, wrap);
+                 fs, family, color, style, align, n->el, clip, lsp, wrap);
 
     /* text-decoration: underline / line-through lines over the box */
     std::string td = sget(n->style, "text-decoration");
@@ -2676,11 +2875,11 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     int vy = n->content.y + off_y - 2;
     draw_text_at(r, texts[sel], n->content.x + off_x + 2, vy,
-                 text_w, n->content.h, fs, "", fg, false, 0, n->el, clip);
+                 text_w, n->content.h, fs, "", fg, 0, 0, n->el, clip);
     /* large solid triangle ¨‹: the small ? is only a few px tall and looks
      * like it floats above the text baseline */
     draw_text_at(r, "\xe2\x96\xbc", arrow_x, vy,
-                 16, n->content.h, fs, "", fg, false, 0, n->el, clip);
+                 16, n->content.h, fs, "", fg, 0, 0, n->el, clip);
 }
 
 /* the expanded option list. Painted LAST (highest z), after the whole
@@ -2775,7 +2974,7 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
                          kSelectItemH, fs, "", acc, true, 0, n->el, clip);
         } else {
             draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                         kSelectItemH, fs, "", fg, false, 0, n->el, clip);
+                         kSelectItemH, fs, "", fg, 0, 0, n->el, clip);
         }
     }
     /* border around the list (follows the corner arcs when rounded) */
@@ -3376,8 +3575,16 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     if (n->scroll_max > 0) {
         paint_scrollbar(r, n, nox, noy, eff);
     }
-    /* editable control: value text (input) + selection/caret overlay */
-    if (n->el && is_editable(n->el)) {
+    /* native controls drawn by the engine (not editable): checkbox/radio
+     * boxes and progress/meter tracks. tag_id pre-filters before the
+     * attribute checks. */
+    const int tid = n->tag_id;
+    if (n->el && tid == WUI_TAG_INPUT && is_check_radio(n->el)) {
+        paint_checkbox(r, n, nox, noy, eff);
+    } else if (n->el &&
+               (tid == WUI_TAG_PROGRESS || tid == WUI_TAG_METER)) {
+        paint_progress(r, n, nox, noy, eff);
+    } else if (n->el && is_editable_node(n)) {
         paint_editable(r, n, nox, noy, eff);
     }
     /* <select> control: value + arrow painted here; the expanded list is
@@ -3814,7 +4021,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
         if (io) {
             r->font_default = TTF_OpenFontIO(io, true, 16.0f);
             if (r->font_default) {
-                render_build_fallback(r, r->font_default, 16, false);
+                render_build_fallback(r, r->font_default, 16, 0);
             }
         }
     }
@@ -3828,6 +4035,9 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
         return;
     }
     whaleui_layout_destroy(r->tree);
+    if (g_last_tree == r->tree) {
+        g_last_tree = nullptr; /* the tree this pointer referenced is gone */
+    }
     whaleui_anim_destroy(r->anim);
     if (r->rules) {
         whaleui_css_rules_destroy(r->rules, r->rule_count);
@@ -3926,6 +4136,64 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
      * fresh keyframes copy */
     whaleui_anim_reset(r->anim);
     whaleui_anim_set_keyframes(r->anim, &r->keyframes);
+    r->has_dirty = 1;
+}
+
+extern "C" whaleui_layout_tree_t* whaleui_render_last_tree(void)
+{
+    return g_last_tree;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_render_hit_element(whaleui_render_t* r,
+                                                             int x, int y)
+{
+    if (!r || !r->tree) {
+        return nullptr;
+    }
+    fb_coords(r, x, y);
+    whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
+    return hit ? reinterpret_cast<whaleui_dom_element_t*>(hit->el) : nullptr;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_render_focus_element(whaleui_render_t* r)
+{
+    return r ? reinterpret_cast<whaleui_dom_element_t*>(r->focus_el) : nullptr;
+}
+
+extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+#ifdef WHALEUI_BUILD_FULL
+    for (auto& e : r->text_cache) {
+        TTF_DestroyText(e.second.t);
+        SDL_DestroySurface(e.second.surf);
+    }
+    r->text_cache.clear();
+    for (auto& im : r->images) {
+        SDL_DestroySurface(im.second);
+    }
+    r->images.clear();
+#endif
+    r->open_select = nullptr;
+    r->open_select_hover = 0;
+    r->select_index.clear();
+    r->scrolls.clear();
+    r->last_scrolls.clear();
+    r->hover_el = nullptr;
+    r->focus_el = nullptr;
+    r->pressed_el = nullptr;
+    r->sel_anchor_el = nullptr;
+    r->sel_focus_el = nullptr;
+    r->sel_anchor = r->sel_focus = 0;
+    r->selecting = 0;
+    r->edit_el = nullptr;
+    r->compose.clear();
+    r->drag_scroll_el = nullptr;
+    r->drag_scroll_node = nullptr;
+    r->scroll_max_el = nullptr;
+    r->wheel_node = nullptr;
     r->has_dirty = 1;
 }
 
@@ -4071,6 +4339,93 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     if (hit && is_select_node(hit)) {
         r->open_select = hit->el;
         r->open_select_hover = 0;
+        r->has_dirty = 1;
+    }
+    /* 3. clicking a <summary> toggles its parent <details> (collapse/
+     * expand is a C++ behavior, not pure CSS). The hit may be the summary
+     * itself or a run inside it: walk up to the nearest summary. */
+    {
+        lxb_dom_element* el = hit ? hit->el : nullptr;
+        while (el && !tag_eq(el, "summary")) {
+            lxb_dom_node* p = el->node.parent;
+            if (!p || p->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                break;
+            }
+            el = lxb_dom_interface_element(p);
+        }
+        if (el && tag_eq(el, "summary")) {
+            lxb_dom_node* par = el->node.parent;
+            if (par && par->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* det = lxb_dom_interface_element(par);
+                size_t dlen = 0;
+                const lxb_char_t* dname =
+                    lxb_dom_element_local_name(det, &dlen);
+                if (dname && dlen == 7 &&
+                    std::memcmp(dname, "details", 7) == 0) {
+                    if (lxb_dom_element_has_attribute(
+                            det, (const lxb_char_t*)"open", 4)) {
+                        lxb_dom_element_remove_attribute(
+                            det, (const lxb_char_t*)"open", 4);
+                    } else {
+                        lxb_dom_element_set_attribute(
+                            det, (const lxb_char_t*)"open", 4,
+                            (const lxb_char_t*)"", 0);
+                    }
+                    r->has_dirty = 1; /* relayout: show/hide the body */
+                }
+            }
+        }
+    }
+    /* 4. checkbox/radio toggle the checked attribute (radio is exclusive
+     * within its name group, matching browser behavior) */
+    if (hit && hit->el && is_check_radio(hit->el)) {
+        if (lxb_dom_element_has_attribute(hit->el, (const lxb_char_t*)"checked", 7)) {
+            lxb_dom_element_remove_attribute(hit->el, (const lxb_char_t*)"checked", 7);
+        } else {
+            lxb_dom_element_set_attribute(hit->el, (const lxb_char_t*)"checked", 7,
+                                          (const lxb_char_t*)"", 0);
+            size_t nlen = 0;
+            const lxb_char_t* nm = lxb_dom_element_get_attribute(
+                hit->el, (const lxb_char_t*)"name", 4, &nlen);
+            size_t tlen = 0;
+            const lxb_char_t* tname = lxb_dom_element_get_attribute(
+                hit->el, (const lxb_char_t*)"type", 4, &tlen);
+            bool radio = tname && tlen == 5 &&
+                         std::memcmp(tname, "radio", 5) == 0;
+            if (radio && nm && nlen > 0) {
+                /* clear checked on every other radio with the same name */
+                std::function<void(lxb_dom_node*)> uncheck =
+                    [&](lxb_dom_node* nd) {
+                        while (nd) {
+                            if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                                lxb_dom_element* e = lxb_dom_interface_element(nd);
+                                if (e != hit->el &&
+                                    lxb_dom_element_has_attribute(
+                                        e, (const lxb_char_t*)"checked", 7)) {
+                                    size_t nn = 0;
+                                    const lxb_char_t* en = lxb_dom_element_get_attribute(
+                                        e, (const lxb_char_t*)"name", 4, &nn);
+                                    if (en && nn == nlen &&
+                                        std::memcmp(en, nm, nlen) == 0) {
+                                        lxb_dom_element_remove_attribute(
+                                            e, (const lxb_char_t*)"checked", 7);
+                                    }
+                                }
+                                if (nd->first_child) {
+                                    uncheck(nd->first_child);
+                                }
+                            }
+                            nd = nd->next;
+                        }
+                    };
+                lxb_dom_document* doc2 = hit->el->node.owner_document;
+                lxb_dom_element* docroot =
+                    doc2 ? lxb_dom_document_element(doc2) : nullptr;
+                if (docroot) {
+                    uncheck(&docroot->node);
+                }
+            }
+        }
         r->has_dirty = 1;
     }
     return 0;
@@ -4533,6 +4888,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                          &r->theme_vars, r->fb_w, r->fb_h,
                                          &st, &r->scrolls, r->anim,
                                          r->text_scale);
+        g_last_tree = r->tree; /* DOM geometry queries see this frame */
         r->has_dirty = 0;
         r->bounds_valid = 0; /* subtree paint bounds are stale */
         r->drag_scroll_node = nullptr; /* layout nodes were recreated */

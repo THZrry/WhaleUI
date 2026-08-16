@@ -29,9 +29,34 @@ typedef struct whaleui_rect
     int x, y, w, h;
 } whaleui_rect_t;
 
+/* Tag category id - the first ECS-style component on layout nodes.
+ * Computed ONCE per element during the layout pass (layout.cpp tag_id_of),
+ * then queried by paint/hit/click code as an O(1) array read instead of
+ * repeated lxb_dom_element_local_name + memcmp tag comparisons. */
+enum
+{
+    WUI_TAG_UNKNOWN = 0,
+    WUI_TAG_HTML, WUI_TAG_BODY, WUI_TAG_HEAD,
+    WUI_TAG_DIV, WUI_TAG_SPAN, WUI_TAG_P, WUI_TAG_A,
+    WUI_TAG_STRONG, WUI_TAG_B, WUI_TAG_EM, WUI_TAG_I,
+    WUI_TAG_UL, WUI_TAG_OL, WUI_TAG_LI, WUI_TAG_DL, WUI_TAG_DT, WUI_TAG_DD,
+    WUI_TAG_H1, WUI_TAG_H2, WUI_TAG_H3, WUI_TAG_H4, WUI_TAG_H5, WUI_TAG_H6,
+    WUI_TAG_IMG, WUI_TAG_BR, WUI_TAG_HR,
+    WUI_TAG_INPUT, WUI_TAG_SELECT, WUI_TAG_OPTION, WUI_TAG_TEXTAREA,
+    WUI_TAG_BUTTON, WUI_TAG_LABEL,
+    WUI_TAG_DETAILS, WUI_TAG_SUMMARY,
+    WUI_TAG_PROGRESS, WUI_TAG_METER,
+    WUI_TAG_TABLE, WUI_TAG_TR, WUI_TAG_TD, WUI_TAG_TH,
+    WUI_TAG_HEADER, WUI_TAG_FOOTER, WUI_TAG_MAIN, WUI_TAG_SECTION,
+    WUI_TAG_ARTICLE, WUI_TAG_NAV, WUI_TAG_ASIDE,
+    WUI_TAG_CODE, WUI_TAG_PRE, WUI_TAG_BLOCKQUOTE,
+    WUI_TAG_COUNT
+};
+
 struct whaleui_layout_node
 {
     lxb_dom_element* el;
+    int tag_id;              /* WUI_TAG_* component (computed at layout) */
 
     whaleui_rect_t border;   /* border-box: margin excluded */
     whaleui_rect_t content;  /* content-box: padding/border excluded */

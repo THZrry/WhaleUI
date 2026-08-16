@@ -4,6 +4,7 @@
 
 #include "core/app.h"
 #include "core/window.h"
+#include "dom/events.h"
 #include "platform/platform.h"
 #include "render/render.h"
 #include "style/theme.h"
@@ -13,6 +14,17 @@
 #include <cstring>
 
 namespace {
+
+/* dispatch a DOM event on the given element (no-op when NULL) */
+void dom_dispatch(whaleui_dom_element_t* el, const char* type, int key,
+                  int mx, int my, int button, float wx, float wy)
+{
+    if (el) {
+        whaleui_dom_dispatch_event_full(
+            reinterpret_cast<lxb_dom_element*>(el), type, key, mx, my, button,
+            wx, wy);
+    }
+}
 /* theme resolution: SYSTEM -> the OS scheme captured at app_create */
 whaleui_theme_t resolved_theme(const whaleui_app_t* app)
 {
@@ -118,6 +130,9 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 if (w && w->render) {
                     whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
                                               1, static_cast<int>(e.key.mod));
+                    dom_dispatch(whaleui_render_focus_element(w->render),
+                                 "keydown", static_cast<int>(e.key.key),
+                                 0, 0, 0, 0, 0);
                 }
                 if (app->key_cb) {
                     app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
@@ -129,6 +144,9 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                 if (w && w->render) {
                     whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
                                               0, static_cast<int>(e.key.mod));
+                    dom_dispatch(whaleui_render_focus_element(w->render),
+                                 "keyup", static_cast<int>(e.key.key),
+                                 0, 0, 0, 0, 0);
                 }
                 if (app->key_cb) {
                     app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
@@ -220,6 +238,17 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                                 val && app->select_cb) {
                                 app->select_cb(app, val, app->select_ud);
                             }
+                            whaleui_dom_element_t* hit = whaleui_render_hit_element(
+                                win->render, static_cast<int>(e.button.x),
+                                static_cast<int>(e.button.y));
+                            dom_dispatch(hit, "mousedown", 0,
+                                         static_cast<int>(e.button.x),
+                                         static_cast<int>(e.button.y),
+                                         e.button.button, 0, 0);
+                            dom_dispatch(hit, "click", 0,
+                                         static_cast<int>(e.button.x),
+                                         static_cast<int>(e.button.y),
+                                         e.button.button, 0, 0);
                             break;
                         }
                     }
@@ -231,6 +260,13 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                         if (win->render &&
                             SDL_GetWindowID(win->sdl) == e.button.windowID) {
                             whaleui_render_set_pressed(win->render, 0, 0, 0);
+                            dom_dispatch(
+                                whaleui_render_hit_element(
+                                    win->render, static_cast<int>(e.button.x),
+                                    static_cast<int>(e.button.y)),
+                                "mouseup", 0, static_cast<int>(e.button.x),
+                                static_cast<int>(e.button.y),
+                                e.button.button, 0, 0);
                             break;
                         }
                     }

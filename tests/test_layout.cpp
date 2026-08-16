@@ -1,6 +1,7 @@
 // test_layout: box model + block flow + basic flex.
 #include "whaleui.h"
 #include "layout/layout.h"
+#include "style/theme.h"
 
 #include <lexbor/dom/dom.h>
 
@@ -689,6 +690,111 @@ int main(void)
         whaleui_layout_node_t* d = find_tag(t->root, "div");
         assert(d != nullptr);
         assert(d->border.h >= 30); /* 16px font × 2.0 = 32 */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* <details> without the open attribute collapses to its first
+     * <summary>; with open it expands */
+    {
+        const char* html =
+            "<body><details><summary>more</summary><p>body</p></details>"
+            "</body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        assert(find_tag(t->root, "details") != nullptr);
+        assert(find_tag(t->root, "p") == nullptr); /* body hidden */
+        whaleui_layout_node_t* sum = find_tag(t->root, "summary");
+        assert(sum != nullptr);
+        /* the summary's run carries the collapse marker (▸) */
+        assert(sum->first_child && sum->first_child->is_text);
+        assert(sum->first_child->text.rfind("\xe2\x96\xb8", 0) == 0);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+
+        const char* open_html =
+            "<body><details open><summary>more</summary><p>body</p>"
+            "</details></body>";
+        doc = whaleui_dom_parse_html(open_html, std::strlen(open_html));
+        assert(doc != nullptr);
+        t = whaleui_layout_compute(doc, nullptr, 0, nullptr, 800, 600,
+                                   nullptr, nullptr, nullptr, 1.0f);
+        assert(t != nullptr);
+        assert(find_tag(t->root, "p") != nullptr); /* body visible */
+        sum = find_tag(t->root, "summary");
+        assert(sum != nullptr && sum->first_child);
+        assert(sum->first_child->text.rfind("\xe2\x96\xbe", 0) == 0); /* ▾ */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* inline elements flow on one line with their surrounding text (UA
+     * default display), so <em>/<strong> do not break the line */
+    {
+        std::string css = whaleui_theme_default_css("fluent");
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p>a <em>e</em> b</p></body>", 28);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* p = find_tag(t->root, "p");
+        assert(p != nullptr);
+        whaleui_layout_node_t* r1 = p->first_child;
+        assert(r1 && r1->is_text && r1->text == "a ");
+        whaleui_layout_node_t* em = r1->next;
+        assert(em && !em->is_text);
+        assert(em->border.y == r1->border.y); /* same line */
+        assert(em->border.x == r1->border.x + r1->border.w);
+        whaleui_layout_node_t* r2 = em->next;
+        assert(r2 && r2->is_text && r2->text == "b");
+        assert(r2->border.y == r1->border.y);
+        assert(r2->border.x == em->border.x + em->border.w);
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* <ul>/<ol> items get engine-injected list markers in their first
+     * text run: bullet for ul, ordinal for ol (browser list-style) */
+    {
+        const char* html =
+            "<body><ul><li>a</li><li>b</li></ul>"
+            "<ol><li>one</li><li>two</li></ol></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* li = find_tag(t->root, "li");
+        assert(li != nullptr && li->first_child && li->first_child->is_text);
+        assert(li->first_child->text.rfind("\xe2\x80\xa2", 0) == 0); /* • */
+        /* second ul li also bulleted */
+        whaleui_layout_node_t* li2 = li->next;
+        assert(li2 != nullptr && li2->first_child);
+        assert(li2->first_child->text.rfind("\xe2\x80\xa2", 0) == 0);
+        /* first ol li: ordinal "1. " */
+        whaleui_layout_node_t* ol = find_tag(t->root, "ol");
+        assert(ol != nullptr);
+        whaleui_layout_node_t* o1 = ol->first_child;
+        assert(o1 != nullptr && o1->first_child);
+        assert(o1->first_child->text.rfind("1. ", 0) == 0);
+        whaleui_layout_node_t* o2 = o1->next;
+        assert(o2 != nullptr && o2->first_child);
+        assert(o2->first_child->text.rfind("2. ", 0) == 0);
         whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }

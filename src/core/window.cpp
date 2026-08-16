@@ -313,6 +313,11 @@ extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
     if (win->document) {
         whaleui_dom_document_destroy(win->document);
     }
+    /* drop caches keyed on the old document's elements (text rasters,
+     * images, select/scroll/edit state) before the new DOM takes over */
+    if (win->render) {
+        whaleui_render_reset_dom(win->render);
+    }
     win->document = whaleui_dom_parse_html(html, std::strlen(html));
     if (!win->document) {
         return -2;

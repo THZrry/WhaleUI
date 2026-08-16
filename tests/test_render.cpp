@@ -249,6 +249,41 @@ int main(void)
         assert(found_red);
         whaleui_window_destroy(w3);
     }
+    /* font-style: italic renders slanted glyphs: the ink of the same
+     * character (48px X) must differ from the normal glyph */
+    {
+        auto ink_count = [](whaleui_window_t* w) {
+            int ink = 0;
+            for (int yy = 0; yy < 100; yy += 2) {
+                for (int xx = 0; xx < 200; xx += 2) {
+                    if (((gpixel(w->render, xx, yy) >> 16) & 0xFF) > 0x80) {
+                        ++ink;
+                    }
+                }
+            }
+            return ink;
+        };
+        whaleui_window_t* wn = whaleui_window_create(app, "inorm", 200, 100);
+        assert(wn != nullptr);
+        assert(whaleui_window_load_html(wn,
+            "<html><body><p style=\"font-size:48px;\">X</p></body></html>") == 0);
+        assert(whaleui_window_show(wn) == 0);
+        assert(whaleui_render_frame(wn->render, wn->document) == 0);
+        int norm = ink_count(wn);
+        assert(norm > 0); /* the glyph actually painted */
+        whaleui_window_destroy(wn);
+        whaleui_window_t* wi = whaleui_window_create(app, "iital", 200, 100);
+        assert(wi != nullptr);
+        assert(whaleui_window_load_html(wi,
+            "<html><body><p style=\"font-size:48px;font-style:italic;\">X"
+            "</p></body></html>") == 0);
+        assert(whaleui_window_show(wi) == 0);
+        assert(whaleui_render_frame(wi->render, wi->document) == 0);
+        int ital = ink_count(wi);
+        whaleui_window_destroy(wi);
+        assert(ital > 0);
+        assert(ital != norm); /* slant moves the ink */
+    }
     /* <select> dropdown interaction */
     {
         whaleui_window_t* w = whaleui_window_create(app, "select", 300, 200);
@@ -290,6 +325,134 @@ int main(void)
         assert(rc == 1);
         assert(val != nullptr && std::strcmp(val, "b") == 0);
         assert(w->render->open_select == nullptr);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* <details> click-to-toggle: a <summary> click flips the open attribute
+     * and the body appears/disappears on the next layout pass */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "details", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><details><summary>more</summary><p>body</p>"
+            "</details></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_summary = [](whaleui_layout_tree_t* tr)
+            -> whaleui_layout_node_t* {
+            for (auto& n : tr->arena) {
+                if (n.visible && n.el) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 7 &&
+                        std::memcmp(name, "summary", 7) == 0) {
+                        return &n;
+                    }
+                }
+            }
+            return nullptr;
+        };
+        auto has_p = [](whaleui_layout_tree_t* tr) {
+            for (auto& n : tr->arena) {
+                if (n.visible && n.el) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 1 && name[0] == 'p') {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* sum = find_summary(t);
+        assert(sum != nullptr);
+        lxb_dom_element* det = lxb_dom_interface_element(sum->el->node.parent);
+        assert(det != nullptr);
+        assert(!has_p(t)); /* collapsed */
+        assert(!lxb_dom_element_has_attribute(
+            det, (const lxb_char_t*)"open", 4));
+        /* click the summary -> open */
+        const char* val = nullptr;
+        assert(whaleui_render_handle_click(
+                   w->render, sum->border.x + 5, sum->border.y + 5, &val) == 0);
+        assert(lxb_dom_element_has_attribute(det, (const lxb_char_t*)"open", 4));
+        whaleui_render_frame(w->render, w->document);
+        whaleui_layout_tree_t* t2 = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t2 != nullptr);
+        assert(has_p(t2)); /* body visible after expand */
+        /* click again -> collapse */
+        whaleui_layout_node_t* sum2 = find_summary(t2);
+        assert(sum2 != nullptr);
+        assert(whaleui_render_handle_click(
+                   w->render, sum2->border.x + 5, sum2->border.y + 5, &val) == 0);
+        assert(!lxb_dom_element_has_attribute(det, (const lxb_char_t*)"open", 4));
+        whaleui_layout_destroy(t2);
+        whaleui_layout_destroy(t);
+        whaleui_window_destroy(w);
+    }
+
+    /* checkbox/radio: clicking toggles checked; radio is exclusive within
+     * a name group */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ckbx", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body>"
+            "<input type=\"checkbox\" id=\"c1\">"
+            "<input type=\"radio\" name=\"g\" id=\"r1\">"
+            "<input type=\"radio\" name=\"g\" id=\"r2\">"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            w->document, w->render->rules, w->render->rule_count,
+            &w->render->theme_vars, 300, 200, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        /* locate checkbox + radios by id */
+        lxb_dom_element* cb = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(w->document, "c1"));
+        lxb_dom_element* r1 = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(w->document, "r1"));
+        lxb_dom_element* r2 = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(w->document, "r2"));
+        assert(cb && r1 && r2);
+        /* find their layout nodes (16px boxes) */
+        whaleui_layout_node_t* nc = nullptr, * n1 = nullptr, * n2 = nullptr;
+        for (auto& nd : t->arena) {
+            if (nd.visible && nd.el == cb) { nc = &nd; }
+            if (nd.visible && nd.el == r1) { n1 = &nd; }
+            if (nd.visible && nd.el == r2) { n2 = &nd; }
+        }
+        assert(nc && n1 && n2);
+        assert(!lxb_dom_element_has_attribute(cb, (const lxb_char_t*)"checked", 7));
+        /* click checkbox -> checked */
+        assert(whaleui_render_handle_click(
+                   w->render, nc->border.x + 8, nc->border.y + 8, nullptr) == 0);
+        assert(lxb_dom_element_has_attribute(cb, (const lxb_char_t*)"checked", 7));
+        /* click again -> unchecked */
+        assert(whaleui_render_handle_click(
+                   w->render, nc->border.x + 8, nc->border.y + 8, nullptr) == 0);
+        assert(!lxb_dom_element_has_attribute(cb, (const lxb_char_t*)"checked", 7));
+        /* radio: clicking r1 checks it; clicking r2 unchecks r1 */
+        assert(whaleui_render_handle_click(
+                   w->render, n1->border.x + 8, n1->border.y + 8, nullptr) == 0);
+        assert(lxb_dom_element_has_attribute(r1, (const lxb_char_t*)"checked", 7));
+        assert(whaleui_render_handle_click(
+                   w->render, n2->border.x + 8, n2->border.y + 8, nullptr) == 0);
+        assert(!lxb_dom_element_has_attribute(r1, (const lxb_char_t*)"checked", 7));
+        assert(lxb_dom_element_has_attribute(r2, (const lxb_char_t*)"checked", 7));
         whaleui_layout_destroy(t);
         whaleui_window_destroy(w);
     }
