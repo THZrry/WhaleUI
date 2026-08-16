@@ -119,6 +119,18 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               float text_scale);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
+/* Text-width metric hook: the renderer installs this so layout measures
+ * REAL glyph widths (inline-line x positions, wrap points, flex sizing)
+ * instead of the built-in estimate. letter_spacing_px is the resolved
+ * letter-spacing (already px). Return the pixel width of the UTF-8 string,
+ * or <= 0 to fall back to the estimate. NULL (pure layout tests) uses the
+ * estimate. */
+typedef float (*whaleui_text_metric_fn)(const char* utf8, size_t len,
+                                        float font_px, bool bold,
+                                        const char* family,
+                                        float letter_spacing_px);
+void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn);
+
 #ifdef __cplusplus
 }
 #endif

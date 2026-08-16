@@ -61,6 +61,52 @@ std::vector<std::string> split_space2(const std::string& v);
  * context that produced it. */
 whaleui_layout_tree_t* g_last_tree = nullptr;
 
+/* the render context currently laying out (real text metric hook) */
+whaleui_render_t* g_metric_render = nullptr;
+
+#ifdef WHALEUI_BUILD_FULL
+TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family,
+                          int size, int style);
+/* real text width for the layout pass: measure with the actual TTF font
+ * (fallback chain included) so inline-line x positions and wrap points
+ * match the painted glyphs. Returns 0 to fall back to the estimate. */
+float render_text_metric(const char* utf8, size_t len, float font_px,
+                         bool bold, const char* family, float lsp_px)
+{
+    whaleui_render_t* r = g_metric_render;
+    if (!r || !utf8 || len == 0) {
+        return 0;
+    }
+    int fs = static_cast<int>(font_px);
+    if (fs <= 0) {
+        fs = 16;
+    }
+    TTF_Font* font = render_get_font(r, family ? family : "", fs,
+                                     bold ? kFontBold : 0);
+    if (!font) {
+        return 0;
+    }
+    int w = 0;
+    size_t ml = 0;
+    if (!TTF_MeasureString(font, utf8, len, 0, &w, &ml)) {
+        return 0;
+    }
+    float total = static_cast<float>(w);
+    if (lsp_px > 0) {
+        size_t chars = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if ((static_cast<unsigned char>(utf8[i]) & 0xC0) != 0x80) {
+                ++chars;
+            }
+        }
+        if (chars > 1) {
+            total += lsp_px * static_cast<float>(chars - 1);
+        }
+    }
+    return total;
+}
+#endif
+
 /* --- color --- */
 
 struct NamedColor { const char* name; unsigned int value; };
@@ -4026,6 +4072,10 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->fsr_sharpness = 0.4f;
     r->scroll_fn = scroll_default;
     r->scroll_ud = nullptr;
+#ifdef WHALEUI_BUILD_FULL
+    /* real glyph widths for the layout pass (inline x, wrap points) */
+    whaleui_layout_set_text_metric(render_text_metric);
+#endif
     r->cursor_arrow = nullptr;
     r->cursor_text = nullptr;
     r->cursor_pointer = nullptr;
@@ -4074,6 +4124,9 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     whaleui_layout_destroy(r->tree);
     if (g_last_tree == r->tree) {
         g_last_tree = nullptr; /* the tree this pointer referenced is gone */
+    }
+    if (g_metric_render == r) {
+        g_metric_render = nullptr; /* metric hook must not dangle */
     }
     whaleui_anim_destroy(r->anim);
     if (r->rules) {
@@ -4886,6 +4939,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return 0;
     }
     r->scroll_dirty = 0;
+#ifdef WHALEUI_BUILD_FULL
+    /* the layout pass measures real glyph widths through this context */
+    g_metric_render = r;
+#endif
     /* FSR decision: auto mode watches display size + power state, so it can
      * flip at runtime; switching resolution rebuilds the framebuffer */
     {
@@ -4953,6 +5010,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             };
         clamp_sc(r->tree->root);
+#ifdef WHALEUI_BUILD_FULL
+        g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
+#endif
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles
          * and refresh the cascaded opacity (children inherit it) */

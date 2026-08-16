@@ -594,6 +594,69 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* 6kb reference page (the one that shows layout/scroll regressions):
+     * scrolled strips must repaint with content, and letter-spaced inline
+     * runs must not overlap (spacing counts in the layout width) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "q6k", 720, 600);
+        assert(w != nullptr);
+        assert(whaleui_window_load_uri(
+                   w, TEST_URI_RAW("Qwen_html_20260814_6ni9q8tk8.html")) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree->root->scroll_max > 0);
+        auto has_ink = [](whaleui_render_t* r, int y0, int y1) {
+            for (int yy = y0; yy < y1; yy += 4) {
+                for (int xx = 0; xx < 720; xx += 4) {
+                    if (((gpixel(r, xx, yy) >> 16) & 0xFF) > 0x50) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        /* step down: EVERY scroll repaints its exposed strip; the page is
+         * text-heavy so each strip must carry ink (blank strips = the
+         * regression) */
+        for (int i = 0; i < 10; ++i) {
+            whaleui_render_handle_wheel(w->render, 360, 300, -2.0f);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            assert(has_ink(w->render, 520, 600));
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* letter-spacing counts in the inline-line layout width: spaced runs
+     * must not overlap the following run */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "lsp", 300, 80);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p style=\"font-size:32px;letter-spacing:8px;\">"
+            "ab<em>cd</em>ef</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        std::vector<int> runs;
+        bool prev = false;
+        for (int xx = 0; xx < 300; ++xx) {
+            bool has = false;
+            for (int yy = 0; yy < 80 && !has; yy += 2) {
+                if (((gpixel(w->render, xx, yy) >> 16) & 0xFF) > 0x80) {
+                    has = true;
+                }
+            }
+            if (has && !prev) {
+                runs.push_back(xx);
+            }
+            prev = has;
+        }
+        assert(runs.size() >= 2); /* spaced runs stay separated */
+        if (runs.size() >= 2) {
+            assert(runs.back() - runs.front() >= 30);
+        }
+        whaleui_window_destroy(w);
+    }
+
     /* editable input: click focuses + places the caret; typing + backspace
      * update the DOM value */
     {

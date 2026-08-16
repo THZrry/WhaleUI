@@ -315,32 +315,81 @@ float text_est_width(const std::string& s, float fs)
     return w;
 }
 
-/* estimated line count when `text` wraps at `avail` px (avg glyph width
- * by character class, matching text_est_width) */
-size_t est_wrap_lines(const std::string& s, float fs, int avail)
+/* renderer-installed real text metric (NULL in pure layout tests) */
+static whaleui_text_metric_fn g_text_metric = nullptr;
+
+/* UTF-8 character count */
+size_t utf8_count(const std::string& s)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if ((c & 0xC0) != 0x80) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+/* real text width when the renderer installed a metric hook (TTF), else
+ * the estimate + letter-spacing gaps */
+float text_measure(const std::string& s, float fs, const std::string& family,
+                   bool bold, float lsp_px)
+{
+    float w = 0;
+    if (g_text_metric && !s.empty()) {
+        w = g_text_metric(s.c_str(), s.size(), fs, bold, family.c_str(),
+                          lsp_px);
+    }
+    if (w <= 0) {
+        w = text_est_width(s, fs);
+        if (lsp_px > 0 && s.size() > 1) {
+            w += lsp_px * static_cast<float>(utf8_count(s) - 1);
+        }
+    }
+    return w;
+}
+/* font-weight: bold/bolder/600-900 render bold */
+bool font_weight_bold(const WhaleUIComputedStyle& s)
+{
+    std::string fw = get(s, "font-weight");
+    return fw == "bold" || fw == "bolder" ||
+           (!fw.empty() && std::atoi(fw.c_str()) >= 600);
+}
+
+/* letter-spacing in px (em/% resolved against fs) */
+float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
+{
+    std::string v = get(s, "letter-spacing");
+    if (v.empty() || v == "normal") {
+        return 0;
+    }
+    float n = static_cast<float>(std::atof(v.c_str()));
+    return v.find("em") != std::string::npos ? n * fs : n;
+}
+
+/* estimated line count when `text` wraps at `avail` px: avg glyph width
+ * from the real metric when available, else the character-class estimate
+ * (both including letter-spacing) */
+size_t est_wrap_lines(const std::string& s, float fs, int avail,
+                      const std::string& family, bool bold, float lsp_px)
 {
     if (avail <= 0) {
         return 1;
     }
-    float cur = 0;
-    size_t lines = 1;
-    for (size_t i = 0; i < s.size();) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
-        float w;
-        if (c < 0x80) {
-            w = fs * 0.5f;
-            ++i;
-        } else {
-            size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-            w = fs * 0.95f;
-            i += n;
-        }
-        if (cur + w > static_cast<float>(avail) && cur > 0) {
-            ++lines;
-            cur = w;
-        } else {
-            cur += w;
-        }
+    size_t chars = utf8_count(s);
+    if (chars == 0) {
+        return 1;
+    }
+    float total = text_measure(s, fs, family, bold, lsp_px);
+    float avg = total / static_cast<float>(chars);
+    if (avg <= 0) {
+        avg = fs * 0.5f;
+    }
+    size_t lines = static_cast<size_t>(total / static_cast<float>(avail)) + 1;
+    /* a single long word must not split below its real width */
+    if (lines < 1) {
+        lines = 1;
     }
     return lines;
 }
@@ -378,7 +427,9 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
-            w += text_est_width(c->text, fs);
+            w += text_measure(c->text, fs, get(c->style, "font-family"),
+                              font_weight_bold(c->style),
+                              letter_spacing_px(c->style, fs));
         } else {
             w += estimate_content_width(c, em);
         }
@@ -1033,9 +1084,13 @@ struct Builder
             if (get(n->style, "white-space") == "nowrap") {
                 avail = 0x7FFFFFFF;
             }
-            /* wrap estimate per character class (ASCII half, CJK full);
-             * longest run (a single \n-free line) sets the width */
-            size_t wrap_lines = est_wrap_lines(n->text, fs, avail);
+            std::string fam2 = get(n->style, "font-family");
+            bool bold2 = font_weight_bold(n->style);
+            float lsp2 = letter_spacing_px(n->style, static_cast<float>(fs));
+            /* wrap estimate (real glyph widths via the metric hook when
+             * installed); longest run (a single \n-free line) sets width */
+            size_t wrap_lines = est_wrap_lines(n->text, fs, avail, fam2,
+                                               bold2, lsp2);
             if (wrap_lines > lines) {
                 lines = wrap_lines;
             }
@@ -1047,7 +1102,8 @@ struct Builder
                 if (j == std::string::npos) {
                     j = n->text.size();
                 }
-                float lw = text_est_width(n->text.substr(i, j - i), fs);
+                float lw = text_measure(n->text.substr(i, j - i), fs, fam2,
+                                        bold2, lsp2);
                 if (lw > max_w) {
                     max_w = lw;
                 }
@@ -1304,7 +1360,7 @@ struct Builder
     }
 
     /* estimated inline width of a line-flow node (text run or inline
-     * element): used to decide where a line wraps before laying it out */
+     * element): real glyph widths via the metric hook when installed */
     int inline_est_w(whaleui_layout_node_t* c, int font_px)
     {
         float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
@@ -1313,7 +1369,10 @@ struct Builder
             if (fs <= 0) {
                 fs = em;
             }
-            return static_cast<int>(text_est_width(c->text, fs));
+            return static_cast<int>(text_measure(
+                c->text, fs, get(c->style, "font-family"),
+                font_weight_bold(c->style),
+                letter_spacing_px(c->style, fs)));
         }
         return static_cast<int>(estimate_content_width(c, em));
     }
@@ -1463,8 +1522,13 @@ struct Builder
                 if (is_auto) {
                     h = estimate_content_width(k, em); /* rough height proxy */
                 }
-                main_size[i] = k->is_text ? static_cast<int>(text_est_width(k->text, fs))
-                                          : static_cast<int>(h);
+                main_size[i] = k->is_text
+                                   ? static_cast<int>(text_measure(
+                                         k->text, fs,
+                                         get(k->style, "font-family"),
+                                         font_weight_bold(k->style),
+                                         letter_spacing_px(k->style, fs)))
+                                   : static_cast<int>(h);
             } else {
                 float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
                 if (is_auto) {
@@ -1479,8 +1543,13 @@ struct Builder
                         w = m;
                     }
                 }
-                main_size[i] = k->is_text ? static_cast<int>(text_est_width(k->text, fs))
-                                          : static_cast<int>(w);
+                main_size[i] = k->is_text
+                                   ? static_cast<int>(text_measure(
+                                         k->text, fs,
+                                         get(k->style, "font-family"),
+                                         font_weight_bold(k->style),
+                                         letter_spacing_px(k->style, fs)))
+                                   : static_cast<int>(w);
             }
             if (is_auto && main_size[i] == 0) {
                 main_size[i] = 1; /* avoid zero-size main axis items */
@@ -1685,7 +1754,10 @@ struct Builder
                 }
             }
             if (chars > 0) {
-                size_t lines = est_wrap_lines(all, fs, inner_w);
+                size_t lines = est_wrap_lines(
+                    all, fs, inner_w, get(k->style, "font-family"),
+                    font_weight_bold(k->style),
+                    letter_spacing_px(k->style, fs));
                 h = static_cast<float>(lines) * line_height_px(k->style, fs);
             } else {
                 /* no direct text: the height is the sum of the block-flow
@@ -1911,4 +1983,9 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
 extern "C" void whaleui_layout_destroy(whaleui_layout_tree_t* tree)
 {
     delete tree;
+}
+
+extern "C" void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn)
+{
+    g_text_metric = fn;
 }
