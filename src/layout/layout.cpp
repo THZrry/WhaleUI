@@ -381,14 +381,14 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
     return v.find("em") != std::string::npos ? n * fs : n;
 }
 
-/* estimated line count when `text` wraps at `avail` px: avg glyph width
- * (estimate + letter-spacing; the real-metric hook is reserved for the
- * inline-line x positions, block runs keep this fast path) */
+/* estimated line count when `text` wraps at `avail` px. Short text that
+ * clearly fits one line uses the fast estimate; anything that may wrap is
+ * measured with the real glyph width so the laid-out line count matches
+ * the painted wrap (an under-estimate left "推理能力强" splitting its last
+ * character). */
 size_t est_wrap_lines(const std::string& s, float fs, int avail,
                       const std::string& family, bool bold, float lsp_px)
 {
-    (void)family;
-    (void)bold;
     if (avail <= 0) {
         return 1;
     }
@@ -396,13 +396,15 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
     if (chars == 0) {
         return 1;
     }
-    float total = text_measure_est(s, fs, lsp_px);
-    float avg = total / static_cast<float>(chars);
-    if (avg <= 0) {
-        avg = fs * 0.5f;
+    float est = text_measure_est(s, fs, lsp_px);
+    if (est + 4 <= static_cast<float>(avail)) {
+        return 1; /* clearly one line */
+    }
+    float total = text_measure(s, fs, family, bold, lsp_px);
+    if (total <= static_cast<float>(avail)) {
+        return 1;
     }
     size_t lines = static_cast<size_t>(total / static_cast<float>(avail)) + 1;
-    /* a single long word must not split below its real width */
     if (lines < 1) {
         lines = 1;
     }
@@ -439,10 +441,21 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     if (fs <= 0) {
         fs = em;
     }
+    /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
+     * painted wrap width follows the box, so an under-sized estimate
+     * splits short text mid-word ("01", "V3", "推理能力强") */
+    bool inline_box = display_kind(get(k->style, "display")) == 2;
+    std::string fam = get(k->style, "font-family");
+    bool bold = font_weight_bold(k->style);
+    float lsp = letter_spacing_px(k->style, fs);
     float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
-            w += text_measure_est(c->text, fs, letter_spacing_px(c->style, fs));
+            if (inline_box) {
+                w += text_measure(c->text, fs, fam, bold, lsp);
+            } else {
+                w += text_measure_est(c->text, fs, lsp);
+            }
         } else {
             w += estimate_content_width(c, em);
         }
@@ -453,6 +466,11 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
         float base = 0;
         float l = len_px(p, base, em);
         w += l * 2;
+    }
+    if (inline_box) {
+        /* 2px safety margin: the painted wrap uses the box width, and a
+         * 1px sub-pixel difference would split the last glyph */
+        w += 2;
     }
     return w;
 }
