@@ -857,6 +857,13 @@ struct Builder
                     n->style["height"] = "6px";
                     n->style["padding"] = "0";
                     n->style["border"] = "none";
+                } else if (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
+                           n->style.find("height") == n->style.end()) {
+                    /* textarea: fixed default height (browser-like); the
+                     * content scrolls inside (overflow:auto) instead of
+                     * growing the control as lines are added */
+                    n->style["width"] = "12em";
+                    n->style["height"] = "60px";
                 } else {
                     n->style["width"] = "12em";
                 }

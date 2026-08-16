@@ -1523,6 +1523,140 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* double-click then drag LEFT keeps the originally selected word:
+     * the fixed end stays on the right boundary */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dbl-left", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">hello world foo</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "hello ", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int xw = run->border.x + tw + 4; /* inside "world" */
+        whaleui_render_set_pressed_ex(w->render, xw, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
+        /* drag left into "hello": the right edge stays at 11 (world kept) */
+        int tw1 = 0;
+        text_size(w->render, "hel", fs, family, bold, &tw1, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw1 + 2, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 11);
+        whaleui_window_destroy(w);
+    }
+
+    /* clicking far right on a multi-line textarea lands on that LINE's end,
+     * not the end of the whole text */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "line-end", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "ab\ncd</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int lh = text_line_h(w->render, fs, family, bold);
+        /* first line, far right of the text */
+        whaleui_render_set_pressed(w->render, run->border.x + 150,
+                                   run->border.y + lh / 2, 1);
+        assert(w->render->sel_anchor == 2); /* end of "ab" line */
+        assert(w->render->sel_focus == 2);
+        /* above the text (textarea top padding): line start, not the end */
+        whaleui_render_set_pressed(w->render, run->border.x + 1,
+                                   run->border.y - 3, 1);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* up/down keep the character column across lines */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "navcol", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "hello\nworld</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        /* caret at the line start, then three rights -> column 3 */
+        whaleui_render_set_pressed(w->render, run->border.x + 1,
+                                   run->border.y + 2, 1);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, 0);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, 0);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, 0);
+        assert(w->render->sel_anchor == 3); /* "hel|lo" */
+        /* down keeps column 3: "wor|ld" (6+3=9) */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_DOWN, 1, 0);
+        assert(w->render->sel_anchor == 9 && w->render->sel_focus == 9);
+        /* up returns to column 3 of "hello" */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_UP, 1, 0);
+        assert(w->render->sel_anchor == 3 && w->render->sel_focus == 3);
+        whaleui_window_destroy(w);
+    }
+
+    /* a textarea without an explicit height gets a fixed default height
+     * (content scrolls inside instead of growing the control) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-height", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\">line one&#10;line two&#10;"
+            "line three&#10;line four&#10;line five</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name = lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 && std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        assert(ta->border.h >= 60 && ta->border.h <= 75);
+        assert(ta->scroll_max > 0); /* content taller than the fixed box */
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     anim_runs();
     return 0;

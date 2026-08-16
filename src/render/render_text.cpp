@@ -1401,11 +1401,11 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     if (py < 0) {
         py = 0;
     }
-    /* at/past the right edge of the text: the caret goes to the very end,
-     * so the last character can be selected */
+    /* at/past the right edge: clamp to the text width so the substring
+     * lookup still lands on THIS line (SDL_ttf returns that line's end for
+     * an over-wide x) instead of jumping to the very end of the whole text */
     if (px >= tw) {
-        TTF_DestroyText(t);
-        return text.size();
+        px = tw > 0 ? tw - 1 : 0;
     }
     if (py >= th) {
         py = th > 0 ? th - 1 : 0;
@@ -1439,6 +1439,7 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     }
     const StbFonts::TLine& ln = ls[static_cast<size_t>(line)];
     int xacc = 0;
+    size_t last_end = text.size();
     for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
         size_t fi = stb.pick(stb.pref, ln.cps[gi]);
         int adv = 0, lsb = 0;
@@ -1450,7 +1451,11 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
             return ln.starts[gi];
         }
         xacc += w;
+        size_t cl = utf8_char_len(static_cast<unsigned char>(
+            text[ln.starts[gi]]));
+        last_end = ln.starts[gi] + cl; /* past the line's last char */
     }
-    return text.size();
+    return last_end; /* over the line's right edge: the LINE end, not the
+                      * whole text end (matches the full-build fix) */
 #endif
 }

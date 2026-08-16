@@ -37,6 +37,8 @@ def load_words(limit):
                 freq = 0
             scored.append((freq, w))
     scored.sort(key=lambda kv: -kv[0])  # descending frequency
+    if limit is None:
+        return [w for _, w in scored]
     return [w for _, w in scored[:limit]]
 
 
@@ -72,8 +74,8 @@ def gen(path, words, guard):
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    full = load_words(20000)
-    lite = load_words(1000)
+    full = load_words(None)   # the whole 2-4 hanzi dictionary (~300k)
+    lite = load_words(10000)  # top 10k by frequency
     gen(os.path.join(root, "src", "render", "cjk_dict_full.h"), full,
         "WHALEUI_CJK_DICT_FULL_H")
     gen(os.path.join(root, "src", "render", "cjk_dict_lite.h"), lite,

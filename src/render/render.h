@@ -151,6 +151,9 @@ struct whaleui_render
     int drag_sel_active;
     int drag_copy;
     int press_caret;
+    /* remembered character column for up/down caret moves; -1 = none.
+     * Reset whenever the caret moves horizontally or the text changes. */
+    int nav_col;
 
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */

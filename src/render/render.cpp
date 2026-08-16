@@ -580,27 +580,55 @@ static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
 
 /* drag: move the selection focus end to the element under the mouse.
  * sel_mode extends by word (double-click) or line (triple-click) so the
- * drag continues in the same unit the click started. */
+ * drag continues in the same unit the click started. The fixed end stays
+ * on the boundary AWAY from the drag direction: dragging left keeps the
+ * right boundary (and vice versa), so the originally selected word/line
+ * never shrinks away from the anchor side. */
 void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
                             int x, int y)
 {
     if (!hit) {
         return;
     }
+    auto extend = [r](const std::string& text, size_t off, bool editable,
+                      size_t* lo, size_t* hi) {
+        int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
+        int b = r->sel_anchor < r->sel_focus ? r->sel_focus : r->sel_anchor;
+        if (r->sel_mode == 1) {
+            size_t ws = 0, we = 0;
+            word_range(text, off, &ws, &we);
+            if (off <= static_cast<size_t>(a)) {
+                /* dragging left of the anchor: keep the right edge fixed */
+                *lo = ws;
+                *hi = static_cast<size_t>(b);
+            } else {
+                *lo = static_cast<size_t>(a);
+                *hi = we;
+            }
+        } else if (r->sel_mode == 2) {
+            if (off <= static_cast<size_t>(a)) {
+                *lo = line_start(text, off);
+                *hi = line_end(text, static_cast<size_t>(b));
+            } else {
+                *lo = static_cast<size_t>(a);
+                *hi = line_end(text, off);
+            }
+        } else {
+            *lo = static_cast<size_t>(a);
+            *hi = off;
+        }
+        (void)editable;
+    };
     if (hit->is_text) {
         r->sel_focus_el = hit->el;
         size_t off = static_cast<size_t>(byte_at_node(r, hit, x, y));
-        if (r->sel_mode == 1) {
-            size_t ws = 0, we = 0;
-            word_range(hit->text, off, &ws, &we);
-            r->sel_focus = static_cast<int>(off <= static_cast<size_t>(r->sel_anchor)
-                                                ? ws : we);
-        } else if (r->sel_mode == 2) {
-            r->sel_focus = static_cast<int>(
-                off <= static_cast<size_t>(r->sel_anchor)
-                    ? line_start(hit->text, off) : line_end(hit->text, off));
-        } else {
+        size_t lo = 0, hi = 0;
+        extend(hit->text, off, false, &lo, &hi);
+        if (r->sel_mode == 0) {
             r->sel_focus = static_cast<int>(off);
+        } else {
+            r->sel_anchor = static_cast<int>(lo);
+            r->sel_focus = static_cast<int>(hi);
         }
         /* repaint only: the highlight reads r->sel_*, the layout tree is
          * unchanged, so dragging must not relayout every mouse move */
@@ -609,21 +637,22 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
         r->sel_focus_el = hit->el;
         std::string val = edit_value(hit->el);
         size_t off = static_cast<size_t>(caret_from_point(r, hit->el, hit, x, y));
-        if (r->sel_mode == 1) {
-            size_t ws = 0, we = 0;
-            word_range(val, off, &ws, &we);
-            r->sel_focus = static_cast<int>(off <= static_cast<size_t>(r->sel_anchor)
-                                                ? ws : we);
-        } else if (r->sel_mode == 2) {
-            r->sel_focus = static_cast<int>(
-                off <= static_cast<size_t>(r->sel_anchor)
-                    ? line_start(val, off) : line_end(val, off));
-        } else {
+        size_t lo = 0, hi = 0;
+        extend(val, off, true, &lo, &hi);
+        if (r->sel_mode == 0) {
             r->sel_focus = static_cast<int>(off);
+        } else {
+            r->sel_anchor = static_cast<int>(lo);
+            r->sel_focus = static_cast<int>(hi);
         }
         r->scroll_dirty = 1;
     }
 }
+
+/* keep the caret visible after an edit; defined below */
+static void edit_ensure_visible(whaleui_render_t* r);
+whaleui_layout_node_t* find_node_by_el(whaleui_layout_tree_t* tree,
+                                       lxb_dom_element* el);
 
 /* replace [a,b) of the editable value with `insertion`, move the caret to
  * the end of the insertion and write the result back into the DOM */
@@ -646,7 +675,60 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     r->sel_anchor_el = r->sel_focus_el = el;
     r->sel_anchor = r->sel_focus = static_cast<int>(caret);
     r->compose.clear();
+    r->nav_col = -1; /* the text changed: the remembered column is stale */
     r->has_dirty = 1;
+    edit_ensure_visible(r);
+}
+
+/* after an edit, scroll the editable's scrollable box so the caret line
+ * stays inside the visible area (typing past the bottom scrolls down,
+ * jumping back up scrolls up - the control never grows) */
+static void edit_ensure_visible(whaleui_render_t* r)
+{
+    if (!r->edit_el || !r->tree) {
+        return;
+    }
+    whaleui_layout_node_t* n = find_node_by_el(r->tree, r->edit_el);    if (!n || n->scroll_max <= 0) {
+        return; /* single-line input: no vertical scroll */
+    }
+    std::string val = edit_value(r->edit_el);
+    int fs;
+    std::string family;
+    bool bold;
+    node_font(n, &fs, &family, &bold);
+    int cx = 0, cy = 0, ch = 16;
+    caret_pos(r, val, fs, family, bold,
+              static_cast<size_t>(r->sel_focus), &cx, &cy, &ch);
+    whaleui_layout_node_t* geo = editable_geo(n);
+    int tx = 0, ty = 0;
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    int off = node_scroll_off(r, n);
+    /* caret window y = laid-out y + caret offset + ancestor scrolls
+     * + (baked scroll - current scroll); the text run's laid-out y already
+     * includes the baked shift */
+    long base = static_cast<long>(ty) + cy + off + n->scroll_y;
+    long top = static_cast<long>(n->content.y) + off;
+    long bot = top + n->content.h;
+    int& cur = r->scrolls[r->edit_el];
+    int nv = cur;
+    long need_lo = base + ch - bot;
+    long need_hi = base - top;
+    if (nv < need_lo) {
+        nv = static_cast<int>(need_lo);
+    }
+    if (nv > need_hi) {
+        nv = static_cast<int>(need_hi);
+    }
+    if (nv > n->scroll_max) {
+        nv = n->scroll_max;
+    }
+    if (nv < 0) {
+        nv = 0;
+    }
+    if (nv != cur) {
+        cur = nv;
+        r->scroll_dirty = 1;
+    }
 }
 
 bool is_contenteditable(lxb_dom_element* el)
@@ -666,6 +748,30 @@ size_t line_end(const std::string& s, size_t b)
 {
     size_t p = s.find('\n', b);
     return p == std::string::npos ? s.size() : p;
+}
+
+/* character column of byte b within its line (for up/down navigation) */
+static size_t col_of(const std::string& s, size_t b)
+{
+    size_t ls = line_start(s, b);
+    size_t col = 0;
+    for (size_t p = ls; p < b && p < s.size(); p = utf8_next(s, p)) {
+        ++col;
+    }
+    return col;
+}
+/* byte offset of the col-th character in the line starting at line_off
+ * (clamped to the line end) */
+static size_t col_at(const std::string& s, size_t line_off, size_t col)
+{
+    size_t le = line_end(s, line_off);
+    size_t p = line_off;
+    size_t c = 0;
+    while (p < le && c < col) {
+        p = utf8_next(s, p);
+        ++c;
+    }
+    return p;
 }
 
 /* --- word navigation (ctrl+arrows, double-click, drag continuation) --- */
@@ -787,8 +893,9 @@ static bool cjk_chars_split(void) { return false; }
 /* --- dictionary segmentation (full/lite builds) --- */
 
 /* longest-match lookup over the compact per-head grouped dictionary:
- * the word's first char indexes the group, the rest is compared against
- * the group's tails (each head char stored once). */
+ * the word's first char indexes the group (binary search over the
+ * codepoint-sorted groups; UTF-8 byte order == codepoint order), the rest
+ * is compared against the group's tails (each head char stored once). */
 static bool cjk_dict_has(const std::string& w)
 {
     if (w.empty()) {
@@ -800,14 +907,22 @@ static bool cjk_dict_has(const std::string& w)
     }
     std::string head = w.substr(0, hl);
     std::string tail = w.substr(hl);
-    for (int g = 0; g < kCjkGroupCount; ++g) {
-        if (head == kCjkDict[g].head) {
-            for (int i = 0; i < kCjkDict[g].count; ++i) {
-                if (tail == kCjkDict[g].tails[i]) {
+    int lo = 0, hi = kCjkGroupCount - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        int cmp = head.compare(kCjkDict[mid].head);
+        if (cmp == 0) {
+            for (int i = 0; i < kCjkDict[mid].count; ++i) {
+                if (tail == kCjkDict[mid].tails[i]) {
                     return true;
                 }
             }
             return false;
+        }
+        if (cmp < 0) {
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
         }
     }
     return false;
@@ -1170,28 +1285,39 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
     size_t cur = static_cast<size_t>(focus);
     switch (keycode) {
     case WHALEUI_KEY_LEFT:
+        r->nav_col = -1;
         set(ctrl ? word_prev(val, cur) : utf8_prev(val, cur));
         break;
     case WHALEUI_KEY_RIGHT:
+        r->nav_col = -1;
         set(ctrl ? word_next(val, cur) : utf8_next(val, cur));
         break;
     case WHALEUI_KEY_HOME:
+        r->nav_col = -1;
         set(ctrl ? 0 : line_start(val, cur));
         break;
     case WHALEUI_KEY_END:
+        r->nav_col = -1;
         set(ctrl ? val.size() : line_end(val, cur));
         break;
-    case WHALEUI_KEY_UP: { /* simplified: jump to the previous line start */
+    case WHALEUI_KEY_UP: { /* keep the character column across lines */
+        if (r->nav_col < 0) {
+            r->nav_col = static_cast<int>(col_of(val, cur));
+        }
         size_t ls = line_start(val, cur);
         if (ls > 0) {
-            set(line_start(val, ls - 1));
+            set(col_at(val, line_start(val, ls - 1),
+                       static_cast<size_t>(r->nav_col)));
         }
         break;
     }
-    case WHALEUI_KEY_DOWN: { /* simplified: jump to the next line start */
+    case WHALEUI_KEY_DOWN: {
+        if (r->nav_col < 0) {
+            r->nav_col = static_cast<int>(col_of(val, cur));
+        }
         size_t le = line_end(val, cur);
         if (le < val.size()) {
-            set(le + 1);
+            set(col_at(val, le + 1, static_cast<size_t>(r->nav_col)));
         }
         break;
     }
@@ -1273,6 +1399,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_pointer = nullptr;
     r->anim = whaleui_anim_create();
     r->text_scale = 1.0f;
+    r->nav_col = -1;
     r->partial = 0;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
     r->text_layer.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0);
@@ -1964,6 +2091,7 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             /* focus the editable control and place the caret / word / line */
             r->edit_el = el;
             r->sel_anchor_el = r->sel_focus_el = el;
+            r->nav_col = -1;
             std::string val = edit_value(el);
             size_t off = caret_from_point(r, el, hit, x, y);
             if (r->press_clicks >= 3) {
