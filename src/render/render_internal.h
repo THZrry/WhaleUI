@@ -108,16 +108,20 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family,
                           int size, int style);
 size_t utf8_char_len(unsigned char c);
 void apply_text_transform(std::string& s, const std::string& t);
+/* wrap_w > 0: measure/hit against a TTF wrap width, so editing math
+ * (caret/selection/click) matches what draw_text_at actually paints. 0 =
+ * single-line layout (only \n breaks), the historic behavior. */
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
-               const std::string& family, bool bold, int* tw, int* th);
+               const std::string& family, bool bold, int* tw, int* th,
+               int wrap_w = 0);
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family,
                 bool bold);
 std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
                              int fs, const std::string& family, bool bold,
-                             size_t a, size_t b);
+                             size_t a, size_t b, int wrap_w = 0);
 void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, size_t off,
-               int* cx, int* cy, int* ch);
+               int* cx, int* cy, int* ch, int wrap_w = 0);
 void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
@@ -135,17 +139,22 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
                           int sel_hi, const Clip* clip);
 void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
                  int fs, const std::string& family, bool bold,
-                 size_t off, const Clip* clip);
+                 size_t off, const Clip* clip, int wrap_w = 0);
 void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
                      const std::string& family, bool bold, size_t caret,
-                     int tx, int ty);
+                     int tx, int ty, int wrap_w = 0);
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, int seq, int sel_lo, int sel_hi, const Clip* clip);
 void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
                  const std::string& text, int fs, const std::string& family,
-                 bool bold, int* tx, int* ty);
+                 bool bold, int* tx, int* ty, int wrap_w = 0);
 size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
-                    const std::string& family, bool bold, int px, int py);
+                    const std::string& family, bool bold, int px, int py,
+                    int wrap_w = 0);
+/* wrap width a text run paints at (draw_text_at's avail_w): the parent
+ * content right edge minus the run's laid-out x; 0 when the run never
+ * wraps (white-space: nowrap) */
+int run_wrap_w(whaleui_layout_node_t* n);
 
 /* --- controls (render_control.cpp) --- */
 
@@ -174,6 +183,8 @@ bool is_editable(lxb_dom_element* el);
 bool is_editable_node(whaleui_layout_node_t* n);
 std::string edit_value(lxb_dom_element* el);
 void edit_set_value(lxb_dom_element* el, const std::string& s);
+void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
+                  const std::string& insertion);
 size_t utf8_prev(const std::string& s, size_t b);
 size_t utf8_next(const std::string& s, size_t b);
 int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n);

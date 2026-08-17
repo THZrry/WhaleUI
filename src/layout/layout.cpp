@@ -1563,7 +1563,14 @@ struct Builder
                  * sequence stays consistent for hit-testing */
                 const int real_w = c->is_text ? est : 0;
                 if (real_w > 0) {
-                    c->border.w = real_w;
+                    /* a run wider than the line remainder soft-wraps inside
+                     * itself at paint time (avail_w = right_edge - x); cap
+                     * the laid-out width to the remainder so the box matches
+                     * the painted wrap instead of spilling past the edge
+                     * (a long textarea line would stretch the column). The
+                     * text-run pass already sized the height for wrap. */
+                    int rem = right_edge - x;
+                    c->border.w = rem > 0 && real_w > rem ? rem : real_w;
                 }
                 x += c->border.w;
                 if (c->border.h > max_h) {

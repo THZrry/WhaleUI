@@ -341,7 +341,8 @@ struct StbFonts
 #endif
 
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
-               const std::string& family, bool bold, int* tw, int* th)
+               const std::string& family, bool bold, int* tw, int* th,
+               int wrap_w)
 {
     *tw = *th = 0;
     if (text.empty()) {
@@ -350,6 +351,9 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
 #ifdef WHALEUI_BUILD_FULL
     TTF_Text* t = text_obj(r, text, fs, family, bold);
     if (t) {
+        if (wrap_w > 0) {
+            TTF_SetTextWrapWidth(t, wrap_w);
+        }
         TTF_GetTextSize(t, tw, th);
         TTF_DestroyText(t);
     }
@@ -385,7 +389,7 @@ int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bol
 
 std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
                              int fs, const std::string& family, bool bold,
-                             size_t a, size_t b)
+                             size_t a, size_t b, int wrap_w)
 {
     std::vector<TRect> out;
     if (a > text.size()) {
@@ -404,6 +408,9 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
     TTF_Text* t = text_obj(r, text, fs, family, bold);
     if (!t) {
         return out;
+    }
+    if (wrap_w > 0) {
+        TTF_SetTextWrapWidth(t, wrap_w);
     }
     int count = 0;
     TTF_SubString** subs = TTF_GetTextSubStringsForRange(
@@ -466,7 +473,7 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
 
 void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, size_t off,
-               int* cx, int* cy, int* ch)
+               int* cx, int* cy, int* ch, int wrap_w)
 {
     int lh = text_line_h(r, fs, family, bold);
     if (off == 0) {
@@ -475,7 +482,8 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
         *ch = lh;
         return;
     }
-    std::vector<TRect> rs = sel_rects(r, text, fs, family, bold, 0, off);
+    std::vector<TRect> rs = sel_rects(r, text, fs, family, bold, 0, off,
+                                      wrap_w);
     if (rs.empty()) {
         *cx = 0;
         *cy = 0;
@@ -1125,15 +1133,17 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
 {
         size_t a = 0, b = 0;
     int tw = 0, th = 0;
-    text_size(r, n->text, fs, family, bold, &tw, &th);
+    int ww = run_wrap_w(n);
+    text_size(r, n->text, fs, family, bold, &tw, &th, ww);
     if (th <= 0) {
         return;
     }
     int tx = 0, ty = 0;
-    text_origin(r, n, n->text, fs, family, bold, &tx, &ty);
+    text_origin(r, n, n->text, fs, family, bold, &tx, &ty, ww);
     tx += off_x;
     ty += off_y;
-    std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b);
+    std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b,
+                                         ww);
     expand_hl_rects(rects, text_line_h(r, fs, family, bold));
     unsigned int hl = sel_hl_color(r, n, 0x3C);
     for (size_t i = 0; i < rects.size(); ++i) {
@@ -1158,26 +1168,26 @@ unsigned int sel_hl_color(whaleui_render_t* r, whaleui_layout_node_t* n,
 
 void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
                  int fs, const std::string& family, bool bold,
-                 size_t off, const Clip* clip)
+                 size_t off, const Clip* clip, int wrap_w)
 {
     if ((SDL_GetTicks() / 500) & 1) {
         return; /* blink: off half the time */
     }
     int cx = 0, cy = 0, ch = 16;
-    caret_pos(r, text, fs, family, bold, off, &cx, &cy, &ch);
+    caret_pos(r, text, fs, family, bold, off, &cx, &cy, &ch, wrap_w);
     fill_rect(r->pixels, r->fb_w, r->fb_h, tx + cx, ty + cy, 1, ch,
               accent_hl(r, 0xFF), clip);
 }
 
 void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
                      const std::string& family, bool bold, size_t caret,
-                     int tx, int ty)
+                     int tx, int ty, int wrap_w)
 {
     if (!r->edit_el || !r->window) {
         return;
     }
     int cxx = 0, cyy = 0, chh = 16;
-    caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
+    caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh, wrap_w);
     int wx = tx + cxx;
     int wy = ty + cyy;
     if (r->fb_w != r->width && r->width > 0) {
@@ -1368,10 +1378,10 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 
 void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
                  const std::string& text, int fs, const std::string& family,
-                 bool bold, int* tx, int* ty)
+                 bool bold, int* tx, int* ty, int wrap_w)
 {
     int tw = 0, th = 0;
-    text_size(r, text, fs, family, bold, &tw, &th);
+    text_size(r, text, fs, family, bold, &tw, &th, wrap_w);
     if (n->is_text) {
         *tx = n->border.x;
         *ty = n->border.y + (n->border.h - th) / 2;
@@ -1381,9 +1391,27 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
 }
 
+/* wrap width a text run paints at (draw_text_at's avail_w): the parent
+ * content right edge minus the run's laid-out x; 0 when the run never
+ * wraps (white-space: nowrap) */
+int run_wrap_w(whaleui_layout_node_t* n)
+{
+    if (!n) {
+        return 0;
+    }
+    if (sget(n->style, "white-space") == "nowrap") {
+        return 0;
+    }
+    whaleui_layout_node_t* box =
+        (n->parent && !n->parent->is_text) ? n->parent : n;
+    int w = box->content.x + box->content.w - n->border.x;
+    return w > 0 ? w : 0;
+}
+
 /* byte offset of the text under (px,py), relative to the text top-left */
 size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
-                    const std::string& family, bool bold, int px, int py)
+                    const std::string& family, bool bold, int px, int py,
+                    int wrap_w)
 {
     if (text.empty()) {
         return 0;
@@ -1392,6 +1420,9 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     TTF_Text* t = text_obj(r, text, fs, family, bold);
     if (!t) {
         return 0;
+    }
+    if (wrap_w > 0) {
+        TTF_SetTextWrapWidth(t, wrap_w);
     }
     int tw = 0, th = 0;
     TTF_GetTextSize(t, &tw, &th);
@@ -1409,6 +1440,35 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     }
     if (py >= th) {
         py = th > 0 ? th - 1 : 0;
+    }
+    if (wrap_w > 0) {
+        /* wrapped layout: find the line under py; a click past the line's
+         * real width lands on the line END (SDL_ttf's point hit would
+         * otherwise advance past the newline into the next line). The line
+         * substrings carry each wrapped line's rect and byte range. */
+        int cnt = 0;
+        TTF_SubString** subs = TTF_GetTextSubStringsForRange(
+            t, 0, static_cast<int>(text.size()), &cnt);
+        if (subs) {
+            for (int i = 0; i < cnt; ++i) {
+                if (py >= subs[i]->rect.y &&
+                    py < subs[i]->rect.y + subs[i]->rect.h) {
+                    if (px >= subs[i]->rect.x + subs[i]->rect.w) {
+                        int l2 = subs[i]->length;
+                        bool ends_nl =
+                            l2 > 0 && text[static_cast<size_t>(
+                                              subs[i]->offset + l2 - 1)] == '\n';
+                        size_t line_off = static_cast<size_t>(subs[i]->offset +
+                                                              l2 - (ends_nl ? 1 : 0));
+                        SDL_free(subs);
+                        TTF_DestroyText(t);
+                        return line_off;
+                    }
+                    break;
+                }
+            }
+            SDL_free(subs);
+        }
     }
     TTF_SubString sub;
     size_t off = text.size();

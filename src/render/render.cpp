@@ -544,9 +544,11 @@ size_t byte_at_node(whaleui_render_t* r, whaleui_layout_node_t* hit, int x, int 
     bool bold;
     node_font(hit, &fs, &family, &bold);
     int tx = 0, ty = 0;
-    text_origin(r, hit, hit->text, fs, family, bold, &tx, &ty);
+    int ww = run_wrap_w(hit);
+    text_origin(r, hit, hit->text, fs, family, bold, &tx, &ty, ww);
     int off = node_scroll_off(r, hit);
-    return byte_at_text(r, hit->text, fs, family, bold, x - tx, y - ty - off);
+    return byte_at_text(r, hit->text, fs, family, bold, x - tx, y - ty - off,
+                        ww);
 }
 
 /* caret byte offset in an editable element at (x,y); hit is the layout node
@@ -568,7 +570,8 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     bool bold;
     node_font(box, &fs, &family, &bold);
     int tx = 0, ty = 0;
-    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    int ww = tag_eq(el, "input") ? 0 : run_wrap_w(geo);
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty, ww);
     int off = node_scroll_off(r, hit);
     /* single-line input content scrolls horizontally with the caret */
     int hx = 0;
@@ -576,7 +579,8 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
         auto hi = r->hscrolls.find(el);
         hx = hi == r->hscrolls.end() ? 0 : hi->second;
     }
-    return byte_at_text(r, val, fs, family, bold, x - tx + hx, y - ty - off);
+    return byte_at_text(r, val, fs, family, bold, x - tx + hx, y - ty - off,
+                        ww);
 }
 
 /* word/line helpers are defined below (editing section) */
@@ -703,12 +707,13 @@ static void edit_ensure_visible(whaleui_render_t* r)
     std::string family;
     bool bold;
     node_font(n, &fs, &family, &bold);
+    whaleui_layout_node_t* geo = editable_geo(n);
+    int wrap_w = tag_eq(r->edit_el, "input") ? 0 : run_wrap_w(geo);
     int cx = 0, cy = 0, ch = 16;
     caret_pos(r, val, fs, family, bold,
-              static_cast<size_t>(r->sel_focus), &cx, &cy, &ch);
-    whaleui_layout_node_t* geo = editable_geo(n);
+              static_cast<size_t>(r->sel_focus), &cx, &cy, &ch, wrap_w);
     int tx = 0, ty = 0;
-    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty, wrap_w);
     int off = node_scroll_off(r, n);
     if (tag_eq(r->edit_el, "input")) {
         /* horizontal: keep the caret inside the content box. The text
@@ -2460,6 +2465,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             };
         clamp_sc(r->tree->root);
+        /* after a DOM edit the layout tree is fresh here: re-run the
+         * caret-visible scroll so a caret just typed past the visible
+         * area (or on a wrapped line) scrolls the box. edit_replace's
+         * earlier call ran against the stale tree (scroll_max was 0),
+         * so this is the pass that actually scrolls textareas. */
+        if (r->edit_el) {
+            edit_ensure_visible(r);
+        }
 #ifdef WHALEUI_BUILD_FULL
         g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
 #endif

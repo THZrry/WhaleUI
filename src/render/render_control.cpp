@@ -162,8 +162,11 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * contenteditable follow the layout text run so they line up with the
      * painted glyphs (which sit at the run's top, not the box center) */
     whaleui_layout_node_t* geo = editable_geo(n);
+    /* editable text wraps like the painted run does (textarea/content-
+     * editable wrap at their content width; input stays single-line) */
+    int wrap_w = tag_eq(el, "input") ? 0 : run_wrap_w(geo);
     int tx = 0, ty = 0;
-    text_origin(r, geo, val, fs, family, bold, &tx, &ty);
+    text_origin(r, geo, val, fs, family, bold, &tx, &ty, wrap_w);
     tx += off_x;
     ty += off_y;
     int th = text_line_h(r, fs, family, bold);
@@ -212,7 +215,8 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (focused) {
         size_t a = 0, b = 0;
         if (sel_range_for(r, el, val.size(), &a, &b, -1, -1, -1)) {
-            std::vector<TRect> rects = sel_rects(r, val, fs, family, bold, a, b);
+            std::vector<TRect> rects = sel_rects(r, val, fs, family, bold,
+                                                 a, b, wrap_w);
             expand_hl_rects(rects, text_line_h(r, fs, family, bold));
             unsigned int hl = sel_hl_color(r, n, 0x3C);
             if (tag_eq(el, "input") && geo->content.h > 0) {
@@ -238,13 +242,14 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             caret = val.size();
         }
         /* keep the IME candidate window anchored at the caret */
-        update_ime_area(r, val, fs, family, bold, caret, tx, ty);
-        paint_caret(r, tx, ty, val, fs, family, bold, caret, ic);
+        update_ime_area(r, val, fs, family, bold, caret, tx, ty, wrap_w);
+        paint_caret(r, tx, ty, val, fs, family, bold, caret, ic, wrap_w);
         if (!r->compose.empty()) {
             unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
             unsigned int comp = (0xC8 << 24) | (fg & 0x00FFFFFF);
             int cxx = 0, cyy = 0, chh = 16;
-            caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh);
+            caret_pos(r, val, fs, family, bold, caret, &cxx, &cyy, &chh,
+                      wrap_w);
             draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
                          fs, family, comp, style, 0, el, ic);
         }

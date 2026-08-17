@@ -1876,6 +1876,110 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* long textarea values soft-wrap: the run's laid-out width stays inside
+     * the box (typing never stretches the control), and the caret/click
+     * math follows the wrapped lines, not the raw \n lines */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-wrap", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">x</textarea>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_ta = [](whaleui_layout_tree_t* t) {
+            for (auto& n : t->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 8 &&
+                        std::memcmp(name, "textarea", 8) == 0) {
+                        return &n;
+                    }
+                }
+            }
+            return (whaleui_layout_node_t*)nullptr;
+        };
+        whaleui_layout_node_t* ta = find_ta(w->render->tree);
+        assert(ta != nullptr);
+        int w0 = ta->border.w;
+        /* grow the value well past the box width: wraps, never stretches */
+        std::string long_v(100, 'a');
+        edit_set_value(ta->el, long_v);
+        w->render->has_dirty = 1;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        ta = find_ta(w->render->tree);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(ta != nullptr && run != nullptr);
+        assert(ta->border.w == w0);             /* control width unchanged */
+        assert(run->border.w <= ta->content.w); /* run wraps inside the box */
+        /* caret at the value end sits on a wrapped line (y > 0), inside the
+         * box width - not one long line stretching past it */
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(ta, &fs, &family, &bold);
+        int cx = 0, cy = 0, chh = 16;
+        caret_pos(w->render, long_v, fs, family, bold, long_v.size(),
+                  &cx, &cy, &chh, run_wrap_w(run));
+        assert(cy > 0);                        /* wrapped past line 1 */
+        assert(cx <= ta->content.w);
+        /* clicking the wrapped second line lands mid-text, not at the end */
+        int tx = 0, ty = 0;
+        text_origin(w->render, run, long_v, fs, family, bold, &tx, &ty,
+                    run_wrap_w(run));
+        size_t off = byte_at_text(w->render, long_v, fs, family, bold,
+                                  tx + 30, ty + chh * 2, run_wrap_w(run));
+        assert(off > 0 && off < long_v.size());
+        whaleui_window_destroy(w);
+    }
+
+    /* wrapping textarea content scrolls the caret into view: typing at the
+     * end of a long wrapped value scrolls the box, not the control */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-wrap-scroll",
+                                                    300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:56px\"></textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        /* focus the textarea and type a long wrapped value */
+        w->render->edit_el = ta->el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        std::string long_v(200, 'a');
+        edit_replace(w->render, ta->el, 0, 0, long_v);
+        /* the caret sits at the end of ~8 wrapped lines; the relayout in
+         * the next frame rebuilds scroll_max and scrolls the fixed-height
+         * box to keep the caret visible */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->scrolls[ta->el] > 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     anim_runs();
     return 0;
