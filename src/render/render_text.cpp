@@ -1483,12 +1483,18 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
 {
     int tw = 0, th = 0;
     text_size(r, text, fs, family, bold, &tw, &th, wrap_w);
+    /* vertical centering, clamped to non-negative: the layout box height
+     * (estimated wrap lines) can come out shorter than the painted text
+     * (per-glyph wrap), and a negative (border.h - th)/2 pushes the first
+     * line above the box - invisible text, caret drifting below it */
     if (n->is_text) {
         *tx = n->border.x;
-        *ty = n->border.y + (n->border.h - th) / 2;
+        int dy = (n->border.h - th) / 2;
+        *ty = n->border.y + (dy > 0 ? dy : 0);
     } else {
         *tx = n->content.x;
-        *ty = n->content.y + (n->content.h - th) / 2;
+        int dy = (n->content.h - th) / 2;
+        *ty = n->content.y + (dy > 0 ? dy : 0);
     }
 }
 
