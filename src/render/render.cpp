@@ -367,9 +367,10 @@ static void fb_coords(whaleui_render_t* r, int& x, int& y);
 
 /* --- text measuring / hit-testing ---
  * Shared by selection and caret placement. Must match what draw_text_at
- * paints (same font, same wrapping). Full build: TTF_Text (fallback chain +
- * wrapping handled natively). Lite/minimal: stb_truetype per-glyph metrics,
- * simpler but functionally equivalent. */
+ * paints (same font, same wrapping). One program-side layout (UTF-8
+ * decode + soft wrap) drives both backends; glyph advance comes from
+ * SDL3_ttf (full) or stb_truetype (lite/minimal) through a shared
+ * per-glyph callback, so wrapping/caret/selection agree everywhere. */
 
 
 
@@ -394,9 +395,8 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
 /* render one text string inside the box (bx,by,bw,bh). align: 0=left,
  * 1=center, 2=right. Shared by text runs and <select> controls.
  * style: TTF_STYLE_* bits (bold/italic).
- * ckey: element to cache the TTF_Text against (NULL = no caching).
- * lsp: letter-spacing in px (>0 paints glyph by glyph with that gap;
- * TTF_Text has no spacing control, so this is a per-glyph path).
+ * ckey: element to cache the rasterized buffer against (NULL = no caching).
+ * lsp: letter-spacing in px (added to every glyph advance).
  * wrap: wrap long text to bw (multi-line; height grows with line count). */
 
 /* --- text selection + editing overlay --- */
@@ -1693,10 +1693,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
         TTF_CloseFont(f.second);
     }
     TTF_CloseFont(r->font_default);
-    for (auto& e : r->text_cache) {
-        TTF_DestroyText(e.second.t);
-        SDL_DestroySurface(e.second.surf);
-    }
+    /* text_cache 的栅格化缓冲是 std::vector,随 map 析构自动释放 */
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
     }
@@ -1708,9 +1705,6 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     }
     if (r->cursor_pointer) {
         SDL_DestroyCursor(r->cursor_pointer);
-    }
-    if (r->text_engine) {
-        TTF_DestroySurfaceTextEngine(r->text_engine);
     }
 #endif
     whaleui_gpu_destroy(r->gpu);
@@ -1811,10 +1805,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         return;
     }
 #ifdef WHALEUI_BUILD_FULL
-    for (auto& e : r->text_cache) {
-        TTF_DestroyText(e.second.t);
-        SDL_DestroySurface(e.second.surf);
-    }
+    /* text_cache 缓冲为 std::vector,直接清空即可 */
     r->text_cache.clear();
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
@@ -2828,7 +2819,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->edit_scroll_need = 0;
         }
 #ifdef WHALEUI_BUILD_FULL
-        g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
+        g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
     } else if (animating) {
         /* paint-only animation: apply the tick's values to the tree styles
@@ -2914,7 +2905,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 };
             clamp_sc(r->tree->root);
 #ifdef WHALEUI_BUILD_FULL
-            g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
+            g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
         } else {
             r->has_dirty = 1; /* tree inconsistent: full rebuild */

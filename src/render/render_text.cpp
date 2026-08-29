@@ -132,31 +132,6 @@ static void layout_decode(const std::string& text, TextLayout& L)
     }
 }
 
-/* UTF-8 编码一个码点(最多 4 字节),返回字节数 */
-static size_t utf8_encode_cp(unsigned int cp, char* out)
-{
-    if (cp < 0x80) {
-        out[0] = static_cast<char>(cp);
-        return 1;
-    }
-    if (cp <= 0x7FF) {
-        out[0] = static_cast<char>(0xC0 | (cp >> 6));
-        out[1] = static_cast<char>(0x80 | (cp & 0x3F));
-        return 2;
-    }
-    if (cp <= 0xFFFF) {
-        out[0] = static_cast<char>(0xE0 | (cp >> 12));
-        out[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out[2] = static_cast<char>(0x80 | (cp & 0x3F));
-        return 3;
-    }
-    out[0] = static_cast<char>(0xF0 | (cp >> 18));
-    out[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out[3] = static_cast<char>(0x80 | (cp & 0x3F));
-    return 4;
-}
-
 /* 解码显示文本中字符索引 ci 处的码点 */
 static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
     size_t b0 = L.dbytes[ci];
@@ -259,6 +234,18 @@ static TextLayout layout_text(const std::string& text, int wrap_w, int lh,
 }
 
 /* --- 文本测宽/命中/选择(共用实现,基于上面的行布局) --- */
+
+/* 字形位图(统一后端接口,full 与 stb 共用):像素为 0xAARRGGBB;
+ * colored=true 时像素自带颜色(彩色 emoji),否则像素为前景色 × alpha。
+ * xoff/yoff 为位图相对 pen+baseline 的绘制偏移。 */
+struct GlyphImg
+{
+    int w, h;
+    int xoff, yoff;
+    int advance;
+    bool colored;
+    std::vector<unsigned int> px;
+};
 
 /* full: 单字符宽度测量的上下文(字体从 render_get_font 取) */
 struct TextMeasureCtx
@@ -395,30 +382,9 @@ TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, int) { ret
 /* (struct TRect lives in render_internal.h) */
 
 #ifdef WHALEUI_BUILD_FULL
-TTF_Text* text_obj(whaleui_render_t* r, const std::string& text, int fs,
-                   const std::string& family, bool bold)
-{
-    if (text.empty()) {
-        return nullptr;
-    }
-    TTF_Font* font = render_get_font(r, family, fs,
-                                     bold ? kFontBold : 0);
-    if (!font) {
-        return nullptr;
-    }
-    if (!r->text_engine) {
-        r->text_engine = TTF_CreateSurfaceTextEngine();
-    }
-    if (!r->text_engine) {
-        return nullptr;
-    }
-    return TTF_CreateText(r->text_engine, font, text.c_str(), text.size());
-}
-
-/* full: 单字符像素宽。ASCII 走 TTF_GetGlyphMetrics + 缓存表(布局热路径
- * 不建 TTF_Text);非 ASCII 用 TTF_Text 单字符测宽(带 fallback chain,
- * CJK/emoji 宽度正确)。ponytail: 非 ASCII 逐字符建 TTF_Text 较慢,若
- * 中文长文本成为瓶颈,加一张按 codepoint 的字宽缓存(或大字纹理缩放)。 */
+/* full: 单字符像素宽。ASCII 与非 ASCII 统一走 TTF_GetGlyphMetrics(带
+ * fallback chain,CJK/emoji 宽度正确),与 glyph_img_ttf 的 advance 同源,
+ * 渲染位置与布局宽度严格一致。ASCII 用缓存表,非 ASCII 按 (font,cp) 缓存。 */
 static int glyph_ttf(unsigned int cp, void* st)
 {
     TextMeasureCtx* c = static_cast<TextMeasureCtx*>(st);
@@ -439,38 +405,250 @@ static int glyph_ttf(unsigned int cp, void* st)
         }
         return c->r->ascii_w[cp];
     }
-    /* non-ASCII: cached per (font, codepoint); the fallback chain makes a
-     * per-char TTF_Text expensive, and unbounded per-char creation made
-     * large CJK pages quadratic */
+    /* non-ASCII: cached per (font, codepoint); fallback chain included */
     std::pair<TTF_Font*, unsigned int> key(font, cp);
     auto it = c->r->glyph_w_cache.find(key);
     if (it != c->r->glyph_w_cache.end()) {
         return it->second;
     }
-    char buf[5];
-    size_t n = utf8_encode_cp(cp, buf);
-    if (!c->r->text_engine) {
-        c->r->text_engine = TTF_CreateSurfaceTextEngine();
+    int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
+    TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv);
+    c->r->glyph_w_cache[key] = adv;
+    return adv;
+}
+
+/* full: 字形位图(统一 GlyphImg 接口)。TTF_GetGlyphImage 走 fallback 链,
+ * TTF_IMAGE_COLOR(COLR 彩色字形)→ 像素自带颜色;TTF_IMAGE_ALPHA(灰度)
+ * → 填 fg 色。定位:x = pen + minx(bitmap_left), y = baseline - maxy
+ * (bitmap_top),与 TTF_GetGlyphMetrics 返回一致;advance 与 glyph_ttf 同源。
+ * ponytail: 每字形建/销毁一个 SDL_Surface,无 ckey 的路径(select 下拉等)
+ * 每帧逐字形渲染;若这类短文本成瓶颈,按 (font,cp) 缓存字形位图。 */
+static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
+                          int fs, int style, unsigned int cp, unsigned int fg,
+                          GlyphImg& out)
+{
+    TTF_Font* font = render_get_font(r, family, fs, style);
+    if (!font) {
+        return false;
     }
-    if (!c->r->text_engine) {
-        return 0;
+    int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
+    if (!TTF_GetGlyphMetrics(font, cp, &minx, &maxx, &miny, &maxy, &adv)) {
+        return false;
     }
-    TTF_Text* t = TTF_CreateText(c->r->text_engine, font, buf, n);
-    if (!t) {
-        return 0;
+    TTF_ImageType type = TTF_IMAGE_INVALID;
+    SDL_Surface* img = TTF_GetGlyphImage(font, cp, &type);
+    if (!img) {
+        return false;
     }
-    int w = 0, h = 0;
-    TTF_GetTextSize(t, &w, &h);
-    TTF_DestroyText(t);
-    c->r->glyph_w_cache[key] = w;
-    return w;
+    out.w = img->w;
+    out.h = img->h;
+    out.xoff = minx;
+    out.yoff = -maxy;
+    out.advance = adv;
+    out.colored = (type == TTF_IMAGE_COLOR);
+    out.px.resize(static_cast<size_t>(img->w) * img->h);
+    if (out.colored) {
+        /* ARGB8888 小端内存序 = B,G,R,A → 0xAARRGGBB,与 framebuffer 一致 */
+        std::memcpy(out.px.data(), img->pixels, out.px.size() * 4);
+    } else {
+        /* 灰度字形:SDL3_ttf 写白色 + alpha,替换为 fg 色(乘 fg alpha) */
+        const unsigned char* p =
+            static_cast<const unsigned char*>(img->pixels);
+        const unsigned int rgb = fg & 0xFFFFFF;
+        const unsigned int fa = (fg >> 24) & 0xFF;
+        for (size_t i = 0; i < out.px.size(); ++i) {
+            unsigned int a = p[i * 4 + 3] * fa / 255;
+            out.px[i] = a ? (a << 24) | rgb : 0;
+        }
+    }
+    SDL_DestroySurface(img);
+    return true;
 }
 #else
+/* --- stb_truetype 后端:测宽 + 彩色字形(COLR/CPAL,参考 stb#512/#1135) --- */
+
+/* 大端读取(sfnt 表字段均为 big-endian) */
+static unsigned int be16(const unsigned char* p)
+{
+    return (static_cast<unsigned int>(p[0]) << 8) | p[1];
+}
+static unsigned int be32(const unsigned char* p)
+{
+    return (static_cast<unsigned int>(p[0]) << 24) |
+           (static_cast<unsigned int>(p[1]) << 16) |
+           (static_cast<unsigned int>(p[2]) << 8) | p[3];
+}
+
+/* 在字体数据中查找 sfnt 表(tag 4 字节)的偏移,返回相对数据起点的偏移;
+ * TTC 取第一个字体。找不到返回 -1。 */
+static int font_table_off(const unsigned char* data, size_t len, const char* tag)
+{
+    if (!data || len < 12) {
+        return -1;
+    }
+    int fontstart = stbtt_GetFontOffsetForIndex(data, 0);
+    if (fontstart < 0 || fontstart + 12 > static_cast<int>(len)) {
+        return -1;
+    }
+    unsigned int n = be16(data + fontstart + 4);
+    for (unsigned int i = 0; i < n; ++i) {
+        size_t r = static_cast<size_t>(fontstart) + 12 + i * 16;
+        if (r + 16 > len) {
+            return -1;
+        }
+        const unsigned char* rec = data + r;
+        if (rec[0] == static_cast<unsigned char>(tag[0]) &&
+            rec[1] == static_cast<unsigned char>(tag[1]) &&
+            rec[2] == static_cast<unsigned char>(tag[2]) &&
+            rec[3] == static_cast<unsigned char>(tag[3])) {
+            unsigned int off = be32(rec + 8);
+            return off < len ? static_cast<int>(off) : -1;
+        }
+    }
+    return -1;
+}
+
+/* COLR 层记录:层字形 id + 调色板条目(参考 stb#1135 的 stbtt_glyphlayer) */
+struct ColrLayer { unsigned short glyph; unsigned short color; };
+
+/* 查找 glyph 的 COLR 层(线性扫描;base glyph records 按 glyph id 升序,
+ * 数量级几百~几千,每字形一次可接受)。返回层数,0 = 该字形无层。 */
+static int colr_layers(const unsigned char* data, int colr_off,
+                       unsigned int gid, const ColrLayer*& out)
+{
+    const unsigned char* t = data + colr_off;
+    unsigned int n = be16(t + 2);
+    unsigned int bgo = be32(t + 4);
+    unsigned int lo = be32(t + 8);
+    for (unsigned int i = 0; i < n; ++i) {
+        const unsigned char* r = t + bgo + i * 6;
+        if (be16(r) == gid) {
+            unsigned int fi = be16(r + 2);
+            unsigned int nl = be16(r + 4);
+            out = reinterpret_cast<const ColrLayer*>(t + lo + fi * 4);
+            return static_cast<int>(nl);
+        }
+    }
+    return 0;
+}
+
+/* CPAL v0 调色板颜色(BGRA 内存序 → 0xAARRGGBB);colorid==0xFFFF 由调用
+ * 方用前景色。取调色板 0(首个)。 */
+static unsigned int colr_palette_color(const unsigned char* data, int cpal_off,
+                                       unsigned int colorid)
+{
+    if (cpal_off < 0 || colorid == 0xFFFF) {
+        return 0xFFFFFFFF;
+    }
+    const unsigned char* t = data + cpal_off;
+    unsigned int npa = be16(t + 4);
+    unsigned int npe = be16(t + 2);
+    if (npa == 0 || colorid >= npe) {
+        return 0xFFFFFFFF;
+    }
+    unsigned int cro = be32(t + 8);
+    unsigned int pidx = be16(t + 12); /* palette 0 的 colorRecordIndices */
+    const unsigned char* c = t + cro + pidx * 4 + colorid * 4;
+    return (static_cast<unsigned int>(c[3]) << 24) |
+           (static_cast<unsigned int>(c[2]) << 16) |
+           (static_cast<unsigned int>(c[1]) << 8) | c[0];
+}
+
+/* 渲染 COLR 分层字形为 RGBA(0xAARRGGBB);返回 false 表示无层(调用方走
+ * 普通灰度路径)。每层 stbtt 位图 + 调色板颜色,src-over 合成。 */
+static bool colr_render(const stbtt_fontinfo& info, float scale,
+                        const unsigned char* data, int colr_off, int cpal_off,
+                        unsigned int gid, unsigned int fg,
+                        std::vector<unsigned int>& px, int& w, int& h,
+                        int& xoff, int& yoff)
+{
+    const ColrLayer* layers = nullptr;
+    int nl = colr_layers(data, colr_off, gid, layers);
+    if (nl <= 0) {
+        return false;
+    }
+    struct R { unsigned char* bmp; int w, h, x, y; unsigned int color; };
+    std::vector<R> rs;
+    int minx = 0x7FFFFFFF, miny = 0x7FFFFFFF, maxx = -0x7FFFFFFF, maxy = -0x7FFFFFFF;
+    for (int i = 0; i < nl; ++i) {
+        int bw = 0, bh = 0, bx = 0, by = 0;
+        unsigned char* bmp = stbtt_GetGlyphBitmap(&info, scale, scale,
+                                                  layers[i].glyph,
+                                                  &bw, &bh, &bx, &by);
+        if (!bmp || bw <= 0 || bh <= 0) {
+            stbtt_FreeBitmap(bmp, nullptr);
+            continue;
+        }
+        R r;
+        r.bmp = bmp;
+        r.w = bw;
+        r.h = bh;
+        r.x = bx;
+        r.y = by;
+        r.color = colr_palette_color(data, cpal_off, layers[i].color);
+        if (layers[i].color == 0xFFFF) {
+            r.color = fg;
+        }
+        rs.push_back(r);
+        if (bx < minx) minx = bx;
+        if (by < miny) miny = by;
+        if (bx + bw > maxx) maxx = bx + bw;
+        if (by + bh > maxy) maxy = by + bh;
+    }
+    if (rs.empty()) {
+        return false;
+    }
+    w = maxx - minx;
+    h = maxy - miny;
+    xoff = minx;
+    yoff = miny;
+    px.assign(static_cast<size_t>(w) * h, 0);
+    for (size_t ri = 0; ri < rs.size(); ++ri) {
+        const R& r = rs[ri];
+        const unsigned int sr = (r.color >> 16) & 0xFF;
+        const unsigned int sg = (r.color >> 8) & 0xFF;
+        const unsigned int sb = r.color & 0xFF;
+        for (int yy = 0; yy < r.h; ++yy) {
+            int dy = r.y - miny + yy;
+            if (dy < 0 || dy >= h) {
+                continue;
+            }
+            for (int xx = 0; xx < r.w; ++xx) {
+                unsigned int sa = r.bmp[yy * r.w + xx];
+                if (sa == 0) {
+                    continue;
+                }
+                int dx = r.x - minx + xx;
+                if (dx < 0 || dx >= w) {
+                    continue;
+                }
+                unsigned int& d = px[static_cast<size_t>(dy) * w + dx];
+                unsigned int da = (d >> 24) & 0xFF;
+                /* src-over */
+                unsigned int oa = sa + da * (255 - sa) / 255;
+                if (oa == 0) {
+                    continue;
+                }
+                unsigned int dr = (d >> 16) & 0xFF;
+                unsigned int dg = (d >> 8) & 0xFF;
+                unsigned int db = d & 0xFF;
+                unsigned int oc = (sr * sa + dr * da * (255 - sa) / 255) / oa;
+                unsigned int og = (sg * sa + dg * da * (255 - sa) / 255) / oa;
+                unsigned int ob = (sb * sa + db * da * (255 - sa) / 255) / oa;
+                d = (oa << 24) | (oc << 16) | (og << 8) | ob;
+            }
+        }
+        stbtt_FreeBitmap(r.bmp, nullptr);
+    }
+    return true;
+}
+
 /* stb font table for measuring (mirrors the draw path in draw_text_at) */
 struct StbFonts
 {
     struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
     std::vector<F> fonts;
+    std::vector<int> colr, cpal; /* 每字体 COLR/CPAL 表偏移;无表为 -1 */
     size_t pref;
     int line_h;
     explicit StbFonts(const std::string& family, int fs)
@@ -488,6 +666,7 @@ struct StbFonts
             f.line_h = line_h;
             const unsigned char* d = reg->fonts[fi].data;
             size_t l = reg->fonts[fi].len;
+            int co = -1, cp = -1;
             if (d && l >= 4) {
                 int off = stbtt_GetFontOffsetForIndex(d, 0);
                 if (off >= 0 && stbtt_InitFont(&f.info, d, off)) {
@@ -497,8 +676,12 @@ struct StbFonts
                     f.line_h = static_cast<int>((f.asc - desc + linegap) * f.scale + 0.5f);
                     f.ok = true;
                     line_h = f.line_h;
+                    co = font_table_off(d, l, "COLR");
+                    cp = font_table_off(d, l, "CPAL");
                 }
             }
+            colr.push_back(co);
+            cpal.push_back(cp);
             fonts.push_back(f);
         }
         /* preferred font: first CSS family match, else first usable font */
@@ -560,6 +743,52 @@ static int glyph_stb(unsigned int cp, void* st)
     int adv = 0, lsb = 0;
     stbtt_GetCodepointHMetrics(&f->fonts[fi].info, cp, &adv, &lsb);
     return static_cast<int>(adv * f->fonts[fi].scale + 0.5f);
+}
+
+/* stb: 字形位图(统一 GlyphImg 接口)。COLR 分层字形输出自带颜色
+ * (colored=true),普通字形为 fg 色 × alpha。xoff/yoff 为相对 pen+baseline
+ * 的位图偏移(stb 语义,与 glyph_stb 同源测宽)。 */
+static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
+                          GlyphImg& out)
+{
+    size_t fi = stb.pick(stb.pref, cp);
+    if (fi == static_cast<size_t>(-1)) {
+        return false;
+    }
+    const StbFonts::F& f = stb.fonts[fi];
+    int adv = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(&f.info, cp, &adv, &lsb);
+    out.advance = static_cast<int>(adv * f.scale + 0.5f);
+    unsigned int gid = stbtt_FindGlyphIndex(&f.info, cp);
+    if (gid == 0) {
+        return false;
+    }
+    const unsigned char* data = f.info.data;
+    if (stb.colr[fi] >= 0 &&
+        colr_render(f.info, f.scale, data, stb.colr[fi], stb.cpal[fi],
+                    gid, fg, out.px, out.w, out.h, out.xoff, out.yoff)) {
+        out.colored = true;
+        return true;
+    }
+    unsigned char* bmp = stbtt_GetGlyphBitmap(&f.info, f.scale, f.scale,
+                                              gid, &out.w, &out.h,
+                                              &out.xoff, &out.yoff);
+    if (!bmp || out.w <= 0 || out.h <= 0) {
+        stbtt_FreeBitmap(bmp, nullptr);
+        return false;
+    }
+    out.colored = false;
+    out.px.resize(static_cast<size_t>(out.w) * out.h);
+    const unsigned int sr = (fg >> 16) & 0xFF;
+    const unsigned int sg = (fg >> 8) & 0xFF;
+    const unsigned int sb = fg & 0xFF;
+    const unsigned int fa = (fg >> 24) & 0xFF; /* 前景 alpha 乘到字形上 */
+    for (size_t i = 0; i < out.px.size(); ++i) {
+        unsigned int a = bmp[i] * fa / 255;
+        out.px[i] = a ? (a << 24) | (sr << 16) | (sg << 8) | sb : 0;
+    }
+    stbtt_FreeBitmap(bmp, nullptr);
+    return true;
 }
 #endif
 
@@ -793,309 +1022,188 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp, bool wrap)
 {
-#ifdef WHALEUI_BUILD_FULL
     if (fs <= 0) {
         fs = 16;
     }
+    const bool bold = (style & kFontBold) != 0;
+    int lh = text_line_h(r, fs, family, bold);
+    if (lh <= 0) {
+        lh = fs;
+    }
+    /* 统一字形接口:排版(测宽)与绘制共用同一后端字形来源,advance/偏移
+     * 严格一致,full 与 stb 只有这里不同,渲染循环只有一份 */
+    int baseline_off;
+    TextLayout L;
+#ifdef WHALEUI_BUILD_FULL
     TTF_Font* font = render_get_font(r, family, fs, style);
     if (!font) {
         return;
     }
-    /* TTF_Text honors the fallback chain (CJK/emoji glyphs) */
-    TTF_TextEngine* engine = r->text_engine;
-    if (!engine) {
-        engine = TTF_CreateSurfaceTextEngine();
-        r->text_engine = engine;
-    }
-    if (!engine) {
-        return;
-    }
-    if (lsp > 0 && !text.empty()) {
-        /* letter-spacing: split into UTF-8 chars, measure once, then paint
-         * each glyph shifted by lsp. Short text in practice (headings,
-         * nav labels), so no caching here. */
-        std::vector<std::string> chs;
-        std::vector<int> cws;
-        int total = 0, th = 0;
-        for (size_t i = 0; i < text.size();) {
-            size_t n = utf8_char_len(static_cast<unsigned char>(text[i]));
-            if (i + n > text.size()) {
-                n = 1;
-            }
-            std::string ch = text.substr(i, n);
-            i += n;
-            TTF_Text* ct = TTF_CreateText(engine, font, ch.c_str(), ch.size());
-            int w = 0, h = 0;
-            if (ct) {
-                TTF_GetTextSize(ct, &w, &h);
-                TTF_DestroyText(ct);
-            }
-            if (h > th) {
-                th = h;
-            }
-            chs.push_back(ch);
-            cws.push_back(w);
-            total += w;
-        }
-        int tw = total + lsp * (static_cast<int>(chs.size()) - 1);
-        int tx = bx;
-        if (align == 1) {
-            tx = bx + (bw - tw) / 2;
-        } else if (align == 2) {
-            tx = bx + bw - tw;
-        }
-        int ty = by + (bh - th) / 2;
-        for (size_t i = 0; i < chs.size(); ++i) {
-            if (cws[i] <= 0) {
-                continue;
-            }
-            TTF_Text* ct = TTF_CreateText(engine, font, chs[i].c_str(), chs[i].size());
-            if (!ct) {
-                continue;
-            }
-            SDL_Surface* cs = SDL_CreateSurface(cws[i], th, SDL_PIXELFORMAT_RGBA8888);
-            if (cs) {
-                SDL_FillSurfaceRect(cs, nullptr, 0);
-                TTF_DrawSurfaceText(ct, 0, 0, cs);
-                if (g_gpu) {
-                    blend_surface(r->text_layer, r->fb_w, r->fb_h, cs, tx, ty,
-                                  clip, &color);
-                } else {
-                    blend_surface(r->pixels, r->fb_w, r->fb_h, cs, tx, ty,
-                                  clip, &color);
-                }
-                SDL_DestroySurface(cs);
-            }
-            TTF_DestroyText(ct);
-            tx += cws[i] + lsp;
-        }
-        return;
-    }
-    /* 程序内排版决定换行(唯一排版,full/stb 共用);渲染层一次画整段:
-     * 断点插 \n 后整段 TTF_Text 无 wrap 渲染。每字符一个 TTF_Text 在
-     * CJK 大页面上是平方级开销(每个字符创建+销毁),整段渲染回到线性。 */
-    bool bold = (style & kFontBold) != 0;
-    int lh = text_line_h(r, fs, family, bold);
-    if (lh <= 0) {
-        lh = fs > 0 ? fs : 16;
-    }
+    baseline_off = TTF_GetFontAscent(font);
     TextMeasureCtx mc = { r, fs, family, bold };
-    TextLayout L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh,
-                               glyph_ttf, &mc);
-    int tw = L.tw, th = L.th;
-    if (tw > 0 && th > 0) {
-        int tx = bx;
-        if (align == 1) {
-            tx = bx + (bw - tw) / 2;
-        } else if (align == 2) {
-            tx = bx + bw - tw;
-        }
-        /* line-box centering, shared by every text path; the <select>
-         * value nudges itself up in paint_select_value instead, so this
-         * function has no global side effects on other text. Wrapped text
-         * taller than the box stays top-aligned (no negative centering). */
-        int ty = th <= bh ? by + (bh - th) / 2 : by;
-        std::string render_text;
-        for (size_t li = 0; li < L.lines.size(); ++li) {
-            const TextLayoutLine& ln = L.lines[li];
-            size_t b0 = (ln.cstart < L.dbytes.size()) ? L.dbytes[ln.cstart]
-                                                      : L.disp.size();
-            size_t b1 = (ln.cend < L.dbytes.size()) ? L.dbytes[ln.cend]
-                                                    : L.disp.size();
-            if (b1 > b0) {
-                render_text.append(L.disp, b0, b1 - b0);
-            }
-            if (li + 1 < L.lines.size()) {
-                render_text += '\n';
-            }
-        }
-        std::string cache_key;
-        if (ckey) {
-            /* the key must include the text: reusing the raster when only
-             * the string changed (same box size) showed stale glyphs -
-             * typed characters did not render until a line count change
-             * (Enter) rebuilt the surface. */
-            uint64_t h = 1469598103934665603ull;
-            for (size_t i = 0; i < render_text.size(); ++i) {
-                h ^= static_cast<unsigned char>(render_text[i]);
-                h *= 1099511628211ull;
-            }
-            char key[128];
-            std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%zu|%llu",
-                          static_cast<void*>(ckey), fs, style,
-                          family.c_str(), wrap ? bw : -1, render_text.size(),
-                          static_cast<unsigned long long>(h));
-            cache_key = key;
-        }
-        auto rasterize = [&](SDL_Surface* s) {
-            TTF_Text* ct = TTF_CreateText(engine, font, render_text.c_str(),
-                                          render_text.size());
-            if (ct) {
-                TTF_DrawSurfaceText(ct, 0, 0, s);
-                TTF_DestroyText(ct);
-            }
-        };
-        SDL_Surface* surf = nullptr;
-        if (!cache_key.empty()) {
-            /* reuse the rasterized surface; recreate on size change */
-            whaleui_render_t::TextCacheEntry& e = r->text_cache[cache_key];
-            surf = e.surf;
-            if (!surf || surf->w != tw || surf->h != th) {
-                if (surf) {
-                    SDL_DestroySurface(surf);
-                }
-                surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
-                if (surf) {
-                    SDL_FillSurfaceRect(surf, nullptr, 0);
-                    rasterize(surf);
-                }
-                e.surf = surf;
-                e.ax = -1; /* atlas slot is stale after a re-rasterize */
-            }
-        } else {
-            surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
-            if (surf) {
-                SDL_FillSurfaceRect(surf, nullptr, 0);
-                rasterize(surf);
-            }
-        }
-        if (surf) {
-            if (g_gpu) {
-                /* text goes to the CPU layer (geometries stay on the GPU
-                 * draw list); the layer is composited into the target by a
-                 * compute pass after the geometry render pass */
-                blend_surface(r->text_layer, r->fb_w, r->fb_h, surf, tx, ty,
-                              clip, &color);
-            } else {
-                blend_surface(r->pixels, r->fb_w, r->fb_h, surf, tx, ty,
-                              clip, &color);
-            }
-        }
-        if (cache_key.empty() && surf) {
-            SDL_DestroySurface(surf);
-        }
-    }
-#else /* !WHALEUI_BUILD_FULL: stb_truetype text (lite/minimal) */
-    (void)ckey;
-    if (fs <= 0) {
-        fs = 16;
-    }
+    L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_ttf, &mc);
+#else
     StbFonts stb(family, fs);
     if (stb.pref == static_cast<size_t>(-1)) {
         return;
     }
-    /* 同一份程序内排版:控制字符 + soft-wrap 与 full 完全一致 */
-    const int lh = stb.line_h;
-    TextLayout L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh,
-                               glyph_stb, &stb);
+    baseline_off = static_cast<int>(stb.fonts[stb.pref].asc *
+                                    stb.fonts[stb.pref].scale + 0.5f);
+    L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_stb, &stb);
+#endif
     if (L.lines.empty()) {
         return;
     }
-    int total_w = L.tw;
-    int total_h = L.th;
-    if (total_w <= 0 || total_h <= 0) {
+    const int tw = L.tw;
+    const int th = L.th;
+    if (tw <= 0 || th <= 0) {
         return;
     }
-    /* rasterize into an alpha-only buffer (same layout as the framebuffer).
-     * bold is a fake bold: the glyph bitmap is blitted once more 1px to the
-     * right (alpha max), since stb_truetype has no style synthesis. */
-    std::vector<unsigned int> buf(static_cast<size_t>(total_w) * total_h, 0);
-    const float baseline_off =
-        stb.fonts[stb.pref].asc * stb.fonts[stb.pref].scale;
+    auto glyph_img = [&](unsigned int cp, GlyphImg& g) {
+#ifdef WHALEUI_BUILD_FULL
+        return glyph_img_ttf(r, family, fs, style, cp, color, g);
+#else
+        return glyph_img_stb(stb, cp, color, g);
+#endif
+    };
+    /* 逐字形渲染(唯一循环):字形位图(RGBA,已含前景色或彩色 emoji 自身
+     * 颜色)src-over 到文本缓冲。stb 无合成粗体:普通字形右移 1px 再画
+     * 一次(fake bold);full 的粗体由 FreeType 在字形内完成。 */
+    std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
     for (size_t li = 0; li < L.lines.size(); ++li) {
         const TextLayoutLine& ln = L.lines[li];
-        const int baseline = static_cast<int>(li * lh + baseline_off + 0.5f);
-        float px = 0;
+        const int baseline = static_cast<int>(li * lh) + baseline_off;
+        int px = 0;
         for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
-            unsigned int cp = disp_cp_at(L, ci);
-            size_t fi = stb.pick(stb.pref, cp);
-            if (fi == static_cast<size_t>(-1)) {
-                continue;
-            }
-            int adv = 0, lsb = 0;
-            stbtt_GetCodepointHMetrics(&stb.fonts[fi].info, cp, &adv, &lsb);
-            int gw = 0, gh = 0, xoff = 0, yoff = 0;
-            unsigned char* bmp = stbtt_GetCodepointBitmap(
-                &stb.fonts[fi].info, stb.fonts[fi].scale,
-                stb.fonts[fi].scale, cp, &gw, &gh, &xoff, &yoff);
-            if (bmp && gw > 0 && gh > 0) {
-                const int dy = baseline + yoff;
-                for (int pass = 0;
-                     pass < ((style & kFontBold) ? 2 : 1); ++pass) {
-                    const int dx = static_cast<int>(px) + xoff + pass;
-                    for (int yy = 0; yy < gh; ++yy) {
-                        const int ty2 = dy + yy;
-                        if (ty2 < 0 || ty2 >= total_h) {
+            GlyphImg g = {};
+            if (glyph_img(disp_cp_at(L, ci), g)) {
+                const int passes =
+#ifndef WHALEUI_BUILD_FULL
+                    (bold && !g.colored) ? 2 :
+#endif
+                    1;
+                for (int pass = 0; pass < passes; ++pass) {
+                    const int dx0 = px + g.xoff + pass;
+                    const int dy0 = baseline + g.yoff;
+                    for (int yy = 0; yy < g.h; ++yy) {
+                        const int ty2 = dy0 + yy;
+                        if (ty2 < 0 || ty2 >= th) {
                             continue;
                         }
-                        for (int xx = 0; xx < gw; ++xx) {
-                            const int tx2 = dx + xx;
-                            if (tx2 < 0 || tx2 >= total_w) {
+                        for (int xx = 0; xx < g.w; ++xx) {
+                            const int tx2 = dx0 + xx;
+                            if (tx2 < 0 || tx2 >= tw) {
                                 continue;
                             }
-                            const unsigned int a = bmp[yy * gw + xx];
-                            if (a == 0) {
+                            const unsigned int sp =
+                                g.px[static_cast<size_t>(yy) * g.w + xx];
+                            const unsigned int sa = (sp >> 24) & 0xFF;
+                            if (sa == 0) {
                                 continue;
                             }
-                            unsigned int& dst = buf[ty2 * total_w + tx2];
-                            if (a > dst) {
-                                dst = a;
+                            unsigned int& d =
+                                buf[static_cast<size_t>(ty2) * tw + tx2];
+                            const unsigned int da = (d >> 24) & 0xFF;
+                            const unsigned int oa =
+                                sa + da * (255 - sa) / 255;
+                            if (oa == 0) {
+                                continue;
                             }
+                            const unsigned int sr = (sp >> 16) & 0xFF;
+                            const unsigned int sg = (sp >> 8) & 0xFF;
+                            const unsigned int sb = sp & 0xFF;
+                            const unsigned int dr = (d >> 16) & 0xFF;
+                            const unsigned int dg = (d >> 8) & 0xFF;
+                            const unsigned int db = d & 0xFF;
+                            d = (oa << 24) |
+                                (((sr * sa + dr * da * (255 - sa) / 255) /
+                                  oa) << 16) |
+                                (((sg * sa + dg * da * (255 - sa) / 255) /
+                                  oa) << 8) |
+                                ((sb * sa + db * da * (255 - sa) / 255) / oa);
                         }
                     }
                 }
-                stbtt_FreeBitmap(bmp, nullptr);
             }
-            px += adv * stb.fonts[fi].scale;
+            px += g.advance + lsp;
         }
     }
-    /* place + blend (single pass, tinted by `color`) */
+    /* 对齐(line-box 居中;超出盒子保持顶部对齐,select 值自行微调) */
     int tx = bx;
     if (align == 1) {
-        tx = bx + (bw - total_w) / 2;
+        tx = bx + (bw - tw) / 2;
     } else if (align == 2) {
-        tx = bx + bw - total_w;
+        tx = bx + bw - tw;
     }
-    int ty = total_h <= bh ? by + (bh - total_h) / 2 : by;
-    const unsigned int tr = (color >> 16) & 0xFF;
-    const unsigned int tg = (color >> 8) & 0xFF;
-    const unsigned int tb = color & 0xFF;
-    const unsigned int ta = (color >> 24) & 0xFF;
-    for (int yy = 0; yy < total_h; ++yy) {
+    const int ty = th <= bh ? by + (bh - th) / 2 : by;
+    /* 缓存(full):同一 ckey+样式+文本复用栅格化缓冲;颜色烘焙进缓冲,
+     * 所以 key 含 color/lsp。stb 分支无缓存(现状)。 */
+    std::vector<unsigned int>* src = &buf;
+#ifdef WHALEUI_BUILD_FULL
+    if (ckey && !text.empty()) {
+        uint64_t h = 1469598103934665603ull;
+        for (size_t i = 0; i < text.size(); ++i) {
+            h ^= static_cast<unsigned char>(text[i]);
+            h *= 1099511628211ull;
+        }
+        char key[160];
+        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu",
+                      static_cast<void*>(ckey), fs, style, family.c_str(),
+                      wrap ? bw : -1, color, lsp,
+                      static_cast<unsigned long long>(h));
+        whaleui_render_t::TextCacheEntry& e = r->text_cache[key];
+        if (e.px.empty() || e.w != tw || e.h != th) {
+            e.px = std::move(buf);
+            e.w = tw;
+            e.h = th;
+        }
+        src = &e.px;
+    }
+#endif
+    /* blend:直通 RGBA(不再用前景色染色,彩色 emoji 保留自身颜色)。
+     * GPU 路径写 text_layer,CPU 路径写 framebuffer。 */
+    std::vector<unsigned int>& fb = g_gpu ? r->text_layer : r->pixels;
+    const int fw = g_gpu ? r->fb_w : r->width;
+    const int fh = g_gpu ? r->fb_h : r->height;
+    for (int yy = 0; yy < th; ++yy) {
         const int fy = ty + yy;
-        if (fy < 0 || fy >= r->height) {
+        if (fy < 0 || fy >= fh) {
             continue;
         }
         if (clip && (fy < clip->y || fy >= clip->y + clip->h)) {
             continue;
         }
-        for (int xx = 0; xx < total_w; ++xx) {
-            const unsigned int a = buf[yy * total_w + xx];
-            if (a == 0) {
+        for (int xx = 0; xx < tw; ++xx) {
+            const unsigned int sp = (*src)[static_cast<size_t>(yy) * tw + xx];
+            const unsigned int sa = (sp >> 24) & 0xFF;
+            if (sa == 0) {
                 continue;
             }
             const int fx = tx + xx;
-            if (fx < 0 || fx >= r->width) {
+            if (fx < 0 || fx >= fw) {
                 continue;
             }
             if (clip && (fx < clip->x || fx >= clip->x + clip->w)) {
                 continue;
             }
-            const unsigned int fa = (a * ta) / 255;
-            if (fa == 0) {
+            unsigned int& d = fb[static_cast<size_t>(fy) * fw + fx];
+            const unsigned int da = (d >> 24) & 0xFF;
+            const unsigned int oa = sa + da * (255 - sa) / 255;
+            if (oa == 0) {
                 continue;
             }
-            unsigned int& d = r->pixels[fy * r->width + fx];
+            const unsigned int sr = (sp >> 16) & 0xFF;
+            const unsigned int sg = (sp >> 8) & 0xFF;
+            const unsigned int sb = sp & 0xFF;
             const unsigned int dr = (d >> 16) & 0xFF;
             const unsigned int dg = (d >> 8) & 0xFF;
             const unsigned int db = d & 0xFF;
-            const unsigned int nr = (tr * fa + dr * (255 - fa)) / 255;
-            const unsigned int ng = (tg * fa + dg * (255 - fa)) / 255;
-            const unsigned int nb = (tb * fa + db * (255 - fa)) / 255;
-            d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+            d = (oa << 24) |
+                (((sr * sa + dr * da * (255 - sa) / 255) / oa) << 16) |
+                (((sg * sa + dg * da * (255 - sa) / 255) / oa) << 8) |
+                ((sb * sa + db * da * (255 - sa) / 255) / oa);
         }
     }
-#endif /* WHALEUI_BUILD_FULL */
 }
 
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,

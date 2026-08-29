@@ -27,8 +27,6 @@ typedef struct SDL_GPUComputePipeline SDL_GPUComputePipeline;
 typedef struct SDL_Surface SDL_Surface;
 typedef struct SDL_Cursor SDL_Cursor;
 typedef struct TTF_Font TTF_Font;
-typedef struct TTF_TextEngine TTF_TextEngine;
-typedef struct TTF_Text TTF_Text;
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,7 +56,6 @@ struct whaleui_render
     /* font cache: "family|size" -> TTF_Font */
     std::vector<std::pair<std::string, TTF_Font*>> fonts;
     TTF_Font* font_default;
-    TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
     /* ASCII glyph-advance cache (layout hot path): rebuilt when the font
      * changes. Full build only; stb measures directly from its font table. */
     TTF_Font* ascii_font;
@@ -69,19 +66,15 @@ struct whaleui_render
      * keeps layout linear. */
     std::map<std::pair<TTF_Font*, unsigned int>, int> glyph_w_cache;
 
-    /* text cache: one TTF_Text + rasterized surface per element+style,
-     * reused across frames. Rebuilding text objects AND re-rasterizing
-     * every run per frame was the dominant paint cost on text-heavy pages
-     * (~13fps); cached frames are millisecond cheap. The entry stores the
-     * last text so edits recreate the pair. */
+    /* text cache: one rasterized RGBA buffer per element+style, reused
+     * across frames. Rebuilding text objects AND re-rasterizing every run
+     * per frame was the dominant paint cost on text-heavy pages (~13fps);
+     * cached frames are millisecond cheap. The key includes the text so
+     * edits recreate the buffer. */
     struct TextCacheEntry
     {
-        TTF_Text* t;
-        SDL_Surface* surf; /* rasterized glyphs (drawn with the default
-                              color; tinting happens at blend time) */
-        std::string text;
-        /* glyph atlas slot (GPU path): surface pixels live here */
-        int ax, ay, aw, ah;
+        std::vector<unsigned int> px; /* 0xAARRGGBB,已含前景色/彩色字形色 */
+        int w, h;
     };
     std::map<std::string, TextCacheEntry> text_cache;
 

@@ -100,9 +100,6 @@ TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family,
                            int size, int style, bool use_cache);
 void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size,
                            int style);
-/* create a (non-cached) TTF_Text for measuring */
-TTF_Text* text_obj(whaleui_render_t* r, const std::string& text, int fs,
-                   const std::string& family, bool bold);
 #endif
 TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family,
                           int size, int style);
