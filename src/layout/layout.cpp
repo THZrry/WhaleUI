@@ -519,6 +519,12 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     bool bold = font_weight_bold(k->style);
     float lsp = letter_spacing_px(k->style, fs);
     float w = 0;
+    /* a block container's natural width is the widest child, not the sum:
+     * summing every child made a card's "content width" include hidden
+     * placeholders (h2 + input + textarea + contenteditable), so the
+     * flex min-content floor grew with typed text before it was needed.
+     * Only inline content (text runs / inline boxes on one line) sums. */
+    bool container_inline = display_kind(get(k->style, "display")) == 2;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
             /* width = the LONGEST line, not the whole run: measuring the
@@ -543,9 +549,19 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
                 }
                 p0 = q0 + 1;
             }
-            w += best;
+            if (container_inline) {
+                w += best;
+            } else if (best > w) {
+                w = best;
+            }
         } else {
-            w += estimate_content_width(c, em);
+            float ew = estimate_content_width(c, em);
+            bool cinline = display_kind(get(c->style, "display")) == 2;
+            if (container_inline || cinline) {
+                w += ew;
+            } else if (ew > w) {
+                w = ew;
+            }
         }
     }
     /* padding left/right */
