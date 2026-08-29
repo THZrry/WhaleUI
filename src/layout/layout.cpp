@@ -440,29 +440,36 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
 /* line height in px from the style: number (× fs), px, em (× fs) or % */
 float line_height_px(const WhaleUIComputedStyle& s, float fs)
 {
-    /* explicit line-height wins; the font's real height (via the renderer
-     * hook) otherwise, so text boxes match the painted glyphs */
+    /* absolute line-height (px/em/%) wins. A unitless value (1.2/1.5/2)
+     * is relative to the font, but the renderer's text_line_h measures the
+     * real font height - using the unitless factor here made laid-out
+     * boxes (textarea height, scroll_max) disagree with the painted lines.
+     * So unitless uses the renderer hook (falling back to fs*n in pure
+     * layout tests that have no hook). */
     std::string v = get(s, "line-height");
-    if (!v.empty()) {
+    if (!v.empty() &&
+        (v.find("px") != std::string::npos ||
+         v.find("em") != std::string::npos ||
+         v.find('%') != std::string::npos)) {
         if (v.find("px") != std::string::npos) {
             return static_cast<float>(std::atof(v.c_str()));
         }
         if (v.find("em") != std::string::npos) {
             return static_cast<float>(std::atof(v.c_str())) * fs;
         }
-        if (v.find('%') != std::string::npos) {
-            return fs * static_cast<float>(std::atof(v.c_str())) / 100.0f;
-        }
-        float n = static_cast<float>(std::atof(v.c_str()));
-        if (n > 0) {
-            return fs * n;
-        }
+        return fs * static_cast<float>(std::atof(v.c_str())) / 100.0f;
     }
     if (g_line_height) {
         std::string fam = get(s, "font-family");
         float lh = g_line_height(fs, font_weight_bold(s), fam.c_str());
         if (lh > 0) {
             return lh;
+        }
+    }
+    if (!v.empty()) {
+        float n = static_cast<float>(std::atof(v.c_str()));
+        if (n > 0) {
+            return fs * n;
         }
     }
     return fs * 1.2f;

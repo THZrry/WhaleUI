@@ -2353,15 +2353,15 @@ int main(void)
         assert(whaleui_render_frame(w->render, w->document) == 0);
         int s0 = w->render->scrolls[tel];
         assert(s0 >= 0);
-        /* wheel down 3 notches over the textarea */
+        /* wheel down 1 notch (40px) over the textarea */
         whaleui_render_handle_wheel(w->render, ta->border.x + 10,
-                                    ta->border.y + 10, -3.0f);
+                                    ta->border.y + 10, -1.0f);
         int s1 = w->render->scrolls[tel];
         assert(s1 > s0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         /* a second wheel keeps scrolling: not yanked back to the caret */
         whaleui_render_handle_wheel(w->render, ta->border.x + 10,
-                                    ta->border.y + 10, -3.0f);
+                                    ta->border.y + 10, -1.0f);
         assert(w->render->scrolls[tel] > s1);
         whaleui_window_destroy(w);
     }
@@ -2453,6 +2453,59 @@ int main(void)
         edit_replace(w->render, iel, 0, 3, "");
         assert(whaleui_render_frame(w->render, w->document) == 0);
         assert(w->render->hscrolls[iel] == 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* editing the first line after the textarea scrolled must keep it
+     * rendered (regression: first line went blank while other lines
+     * painted) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "firstline", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:60px\">aaaa\nbbbb\ncccc\ndddd\neeee\nffff\ngggg\n"
+            "hhhh\niiii\njjjj</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        /* scroll to the bottom, then jump back to the first line */
+        w->render->sel_anchor = w->render->sel_focus =
+            static_cast<int>(w->render->scrolls[tel] + ta->scroll_max);
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_END, 1, 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        edit_replace(w->render, tel, 0, 0, "X");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* the first line's text is painted: scan the top text rows for
+         * non-background ink near the textarea's left edge */
+        bool ink = false;
+        for (int yy = ta->content.y + 1; yy < ta->content.y + 20 && !ink;
+             yy += 1) {
+            for (int xx = ta->content.x + 1; xx < ta->content.x + 24;
+                 xx += 1) {
+                unsigned int p = gpixel(w->render, xx, yy);
+                if (((p >> 16) & 0xFF) > 0x40) {
+                    ink = true;
+                    break;
+                }
+            }
+        }
+        assert(ink);
         whaleui_window_destroy(w);
     }
 
