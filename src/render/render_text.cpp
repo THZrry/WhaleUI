@@ -1497,7 +1497,9 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
         *ty = n->border.y + (dy > 0 ? dy : 0);
     } else {
         *tx = n->content.x;
-        int dy = (n->content.h - th) / 2;
+        /* empty value (th == 0): top-aligned, not centered - centering
+         * put the caret of an empty textarea at the bottom of the box */
+        int dy = th > 0 ? (n->content.h - th) / 2 : 0;
         *ty = n->content.y + (dy > 0 ? dy : 0);
     }
 }

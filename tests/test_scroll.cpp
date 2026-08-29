@@ -786,6 +786,139 @@ int main(void)
         whaleui_window_destroy(w2);
     }
 
+    /* textarea boundary details: demo-style 2-line CJK+ASCII fits exactly
+     * (no scroll), 12 lines reach the TRUE top by wheel (no ~half-line
+     * shortfall), and the scrollbar thumb length matches the range */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-edge", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:56px;box-sizing:border-box\">多行文本\n"
+            "支持 Enter 换行</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        int smax_fit = ta->scroll_max;
+        std::printf("[scroll] ta-edge fit smax=%d ch=%d\n", smax_fit,
+                    ta->content.h);
+        std::fflush(stdout);
+        assert(smax_fit == 0); /* 2 lines fit: no scroll */
+        whaleui_window_destroy(w);
+
+        /* 12 lines: wheel to the top must reveal the LAST line (the
+         * scroll_max must not fall short by ~half a line) */
+        whaleui_window_t* w2 =
+            whaleui_window_create(app, "ta-edge2", 300, 200);
+        assert(w2 != nullptr);
+        std::string html = "<html><body><textarea id=\"t\" "
+                           "style=\"width:200px;height:56px\">";
+        for (int i = 0; i < 12; ++i) {
+            html += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        }
+        html += "</textarea></body></html>";
+        assert(whaleui_window_load_html(w2, html.c_str()) == 0);
+        assert(whaleui_window_show(w2) == 0);
+        assert(whaleui_render_frame(w2->render, w2->document) == 0);
+        whaleui_layout_node_t* ta2 = nullptr;
+        for (auto& n : w2->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta2 != nullptr);
+        int smax2 = ta2->scroll_max;
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w2->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+            }
+        }
+        assert(run != nullptr);
+        /* last run's bottom minus content.y is the true content height */
+        int true_bottom = run->border.y + run->border.h - ta2->content.y +
+                          ta2->scroll_y;
+        int expect_max = true_bottom - ta2->content.h;
+        std::printf("[scroll] ta-edge2 smax=%d expect=%d lh_diff=%d\n",
+                    smax2, expect_max, smax2 - expect_max);
+        std::fflush(stdout);
+        /* at most a couple of px off (rounding), never ~half a line */
+        assert(smax2 >= expect_max - 3);
+        lxb_dom_element* tel = ta2->el;
+        for (int i = 0; i < 40; ++i) {
+            whaleui_render_handle_wheel(w2->render, ta2->border.x + 10,
+                                        ta2->border.y + 10, -1.0f);
+        }
+        std::printf("[scroll] ta-edge2 bottom s=%d smax=%d\n",
+                    w2->render->scrolls[tel], smax2);
+        std::fflush(stdout);
+        assert(w2->render->scrolls[tel] >= smax2 - 1);
+        whaleui_window_destroy(w2);
+    }
+
+    /* an EMPTY textarea: the caret sits on the FIRST line (top), not the
+     * bottom of the box */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-empty", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:56px\"></textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* caret for offset 0 must be at the textarea's content top */
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(ta, &fs, &family, &bold);
+        int tx = 0, ty = 0;
+        text_origin(w->render, ta, "", fs, family, bold, &tx, &ty,
+                    run_wrap_w(ta));
+        std::printf("[scroll] ta-empty caret_y=%d content_y=%d\n", ty,
+                    ta->content.y);
+        std::fflush(stdout);
+        assert(ty <= ta->content.y + 2); /* caret at the TOP of the box */
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
