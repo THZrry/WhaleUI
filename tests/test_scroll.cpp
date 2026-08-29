@@ -4,6 +4,7 @@
 #include "whaleui.h"
 #include "render/render.h"
 #include "render/render_internal.h"
+#include "render/gpu.h"
 #include "core/window.h"
 #include "test_util.h"
 
@@ -13,6 +14,49 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+
+/* read one pixel back from the GPU composited target (R8G8B8A8) */
+static unsigned int gpixel(whaleui_render_t* r, int x, int y)
+{
+    if (!r || !r->gpu) {
+        return 0;
+    }
+    SDL_GPUDevice* dev = r->gpu->device;
+    SDL_GPUTransferBufferCreateInfo tbi = {};
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    tbi.size = 4;
+    SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+    if (!tb) {
+        return 0;
+    }
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion region = {};
+    region.texture = r->gpu->target2;
+    region.x = static_cast<Uint32>(x < 0 ? 0 : x);
+    region.y = static_cast<Uint32>(y < 0 ? 0 : y);
+    region.w = 1;
+    region.h = 1;
+    region.d = 1;
+    SDL_GPUTextureTransferInfo ti = {};
+    ti.transfer_buffer = tb;
+    SDL_DownloadFromGPUTexture(cp, &region, &ti);
+    SDL_EndGPUCopyPass(cp);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence) {
+        SDL_WaitForGPUFences(dev, false, &fence, 1);
+        SDL_ReleaseGPUFence(dev, fence);
+    }
+    unsigned int px = 0;
+    void* data = SDL_MapGPUTransferBuffer(dev, tb, true);
+    if (data) {
+        const unsigned char* p = static_cast<const unsigned char*>(data);
+        px = 0xFF000000 | (static_cast<unsigned int>(p[0]) << 16) |
+             (static_cast<unsigned int>(p[1]) << 8) | p[2];
+        SDL_UnmapGPUTransferBuffer(dev, tb);
+    }
+    return px;
+}
 
 int main(void)
 {
@@ -238,8 +282,109 @@ int main(void)
             /* the page scroll range reaches the real content bottom */
             assert(run_bottom <= content_bottom + 2);
             assert(run_bottom > content_bottom - 40);
+            /* wheel must scroll the page and KEEP the position: a frame
+             * (repaint) must not reset it to the top */
+            lxb_dom_element* rel = root->el;
+            int s0 = w->render->scrolls[rel];
+            whaleui_render_handle_wheel(w->render, 250, 200, -1.0f);
+            int s1 = w->render->scrolls[rel];
+            assert(s1 > s0);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            std::printf("[scroll] q21k wheel s0=%d s1=%d after-frame=%d\n",
+                        s0, s1, w->render->scrolls[rel]);
+            std::fflush(stdout);
+            assert(w->render->scrolls[rel] == s1); /* no jump to top */
             whaleui_window_destroy(w);
         }
+    }
+
+    /* paint must actually move the content with the scroll: after a wheel
+     * on the page, a top block scrolls out of view (pixel check). If the
+     * position only lives in scrolls and the paint resets, the content
+     * stays at the top - the "jumps back to top" report. */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "paint-scroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div id=\"top\" style=\"width:300px;height:80px;"
+            "background-color:#ff0000;\"></div>"
+            "<div style=\"width:300px;height:400px;"
+            "background-color:#0000ff;\"></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* the red block is at the top before scrolling */
+        unsigned int c0 = gpixel(w->render, 10, 10);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        int s0 = w->render->scrolls[rel];
+        /* scroll down ~100px: red leaves the top, blue arrives */
+        for (int i = 0; i < 5; ++i) {
+            whaleui_render_handle_wheel(w->render, 150, 150, -1.0f);
+        }
+        int s1 = w->render->scrolls[rel];
+        assert(s1 >= s0 + 100);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int c1 = gpixel(w->render, 10, 10);
+        std::printf("[scroll] paint c0=%08X c1=%08X s=%d\n", c0, c1,
+                    w->render->scrolls[rel]);
+        std::fflush(stdout);
+        assert(c0 == 0xFFFF0000);       /* red at top before */
+        assert(c1 == 0xFF0000FF);       /* blue scrolled in: content moved */
+        whaleui_window_destroy(w);
+    }
+
+    /* demo-style page (flex row of cards with an input and a textarea):
+     * the page must scroll to its real bottom, and the single-line input
+     * must not claim the vertical wheel */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "demo-scroll", 500, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><head><style>"
+            ".row { display:flex; } .card { flex:1; border:1px solid "
+            "black; padding:8px; }"
+            "</style></head><body><div class=\"row\"><div class=\"card\">"
+            "<h2>Edit</h2>"
+            "<p><input id=\"i\" style=\"width:100%\" value=\"input\"></p>"
+            "<p><textarea id=\"t\" style=\"width:100%;height:56px\">"
+            "aaaa\nbbbb\ncccc</textarea></p>"
+            "</div><div class=\"card\">Scroll card<br>line 1<br>line 2<br>"
+            "line 3<br>line 4<br>line 5<br>line 6<br>line 7<br>line 8<br>"
+            "line 9<br>line 10</div></div>"
+            "<div style=\"height:300px;background:#eee\"></div>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        assert(root->scroll_max > 0);
+        /* the page bottom is reachable: scroll to max */
+        w->render->scrolls[rel] = root->scroll_max;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* wheel on the single-line input scrolls the PAGE, not the input */
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 &&
+                    std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        lxb_dom_element* iel = inp->el;
+        assert(w->render->scrolls.find(iel) == w->render->scrolls.end() ||
+               w->render->scrolls[iel] == 0);
+        whaleui_render_handle_wheel(w->render, inp->border.x + 10,
+                                    inp->border.y + 10, -1.0f);
+        assert(w->render->scrolls.find(iel) == w->render->scrolls.end() ||
+               w->render->scrolls[iel] == 0); /* input untouched */
+        assert(w->render->scrolls[rel] > 0);  /* the page scrolled */
+        whaleui_window_destroy(w);
     }
 
     whaleui_app_destroy(app);
