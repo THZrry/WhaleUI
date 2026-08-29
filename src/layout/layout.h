@@ -164,6 +164,13 @@ typedef float (*whaleui_line_height_fn)(float font_px, bool bold,
                                         const char* family);
 void whaleui_layout_set_line_height_metric(whaleui_line_height_fn fn);
 
+/* wrapped line count of `s` at `avail` px (per-line, real pixel widths);
+ * C wrapper of the anonymous-namespace helper (not linkable directly).
+ * Exported for tests; the renderer installs the real text metric. */
+size_t whaleui_est_wrap_lines(const char* utf8, size_t len, float fs,
+                              int avail, bool bold, const char* family,
+                              float lsp_px);
+
 #ifdef __cplusplus
 }
 #endif

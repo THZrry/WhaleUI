@@ -1130,5 +1130,29 @@ int main(void)
         assert(sm("ab\n") > 0);   /* trailing newline: empty last line */
     }
 
+    /* est_wrap_lines must stay stable as content grows: one line until the
+     * content actually exceeds the width, then it wraps - the "line
+     * length changes with every keystroke" symptom is a bug */
+    {
+        /* 16px font, ASCII est width 8px; avail 30px holds 3 chars */
+        assert(whaleui_est_wrap_lines("a", 1, 16, 30, false, "", 0) == 1);
+        assert(whaleui_est_wrap_lines("ab", 2, 16, 30, false, "", 0) == 1);
+        assert(whaleui_est_wrap_lines("abc", 3, 16, 30, false, "", 0) == 1);
+        assert(whaleui_est_wrap_lines("abcd", 4, 16, 30, false, "", 0) == 2);
+        assert(whaleui_est_wrap_lines("abcdef", 6, 16, 30, false, "", 0) ==
+               2);
+        /* adding one more char wraps the second line to a third */
+        assert(whaleui_est_wrap_lines("abcdefg", 7, 16, 30, false, "", 0) ==
+               3);
+        /* wide avail: everything fits on one line regardless of length */
+        assert(whaleui_est_wrap_lines("abcdefghij", 10, 16, 200, false, "",
+                                      0) == 1);
+        /* explicit newlines split lines; trailing \n keeps the empty line */
+        assert(whaleui_est_wrap_lines("ab\ncd", 5, 16, 200, false, "", 0) ==
+               2);
+        assert(whaleui_est_wrap_lines("ab\n", 3, 16, 200, false, "", 0) ==
+               2);
+    }
+
     return 0;
 }

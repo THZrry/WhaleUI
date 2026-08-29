@@ -437,6 +437,12 @@ static size_t wrap_line_count(const std::string& seg, float fs, int avail,
             }
             start += l2;
         } else {
+            /* word wrap: break after the last space inside the fitted
+             * prefix (like the render layout), so words are not split */
+            size_t sp = seg.rfind(' ', lo - 1);
+            if (sp != std::string::npos && sp >= start && sp + 1 > start) {
+                lo = sp + 1;
+            }
             start = lo;
         }
         if (start < seg.size()) {
@@ -2106,6 +2112,15 @@ struct Builder
 };
 
 } // namespace
+
+/* C wrapper for tests (the helper lives in the anonymous namespace) */
+extern "C" size_t whaleui_est_wrap_lines(const char* utf8, size_t len,
+                                         float fs, int avail, bool bold,
+                                         const char* family, float lsp_px)
+{
+    return est_wrap_lines(std::string(utf8, len), fs, avail,
+                          family ? family : "", bold, lsp_px);
+}
 
 extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     whaleui_dom_document_t* doc,

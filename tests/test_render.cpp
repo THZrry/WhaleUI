@@ -2323,6 +2323,139 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* wheel scrolling a focused textarea must keep scrolling (the caret-
+     * visible scroll must not yank the content back) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wscroll", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:60px\">aaaa\nbbbb\ncccc\ndddd\neeee\nffff\ngggg\n"
+            "hhhh\niiii\njjjj</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int s0 = w->render->scrolls[tel];
+        assert(s0 >= 0);
+        /* wheel down 3 notches over the textarea */
+        whaleui_render_handle_wheel(w->render, ta->border.x + 10,
+                                    ta->border.y + 10, -3.0f);
+        int s1 = w->render->scrolls[tel];
+        assert(s1 > s0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* a second wheel keeps scrolling: not yanked back to the caret */
+        whaleui_render_handle_wheel(w->render, ta->border.x + 10,
+                                    ta->border.y + 10, -3.0f);
+        assert(w->render->scrolls[tel] > s1);
+        whaleui_window_destroy(w);
+    }
+
+    /* the layout's wrapped line count (run height) agrees with the render
+     * layout (text_size): per-line pixel widths, not total/avail */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "lh", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:100px;"
+            "height:200px\">iii\nWWWWWWWWWWWWWWWWWWWWWWWWWWWW</textarea>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (!n.visible) {
+                continue;
+            }
+            if (!ta && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                }
+            }
+            if (n.is_text) {
+                run = &n;
+            }
+        }
+        assert(run != nullptr && ta != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, run->text, fs, family, bold, &tw, &th,
+                  run_wrap_w(run));
+        int lh = text_line_h(w->render, fs, family, bold);
+        /* "iii" fits one line; the 28 W's wrap at ~4 per 100px -> 7 lines */
+        assert(th > 2 * lh);
+        assert(run->border.h == th); /* layout and render agree on lines */
+        whaleui_window_destroy(w);
+    }
+
+    /* horizontal scroll follows the content: grows only when the text
+     * overflows, and shrinks back when the content no longer needs it */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "hshr", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:120px\" value=\"\">"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        lxb_dom_element* iel = inp->el;
+        w->render->edit_el = iel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        /* short content: no scroll */
+        std::string short_v(3, 'x');
+        edit_replace(w->render, iel, 0, 0, short_v);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->hscrolls[iel] == 0);
+        /* long content overflows: scrolls */
+        std::string long_v(80, 'x');
+        edit_replace(w->render, iel, 3, 3, long_v.substr(3));
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->hscrolls[iel] > 0);
+        /* shrink the content back: the scroll returns to 0 */
+        int hs1 = w->render->hscrolls[iel];
+        edit_replace(w->render, iel, 3, 83, "");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->hscrolls[iel] < hs1);
+        edit_replace(w->render, iel, 0, 3, "");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->hscrolls[iel] == 0);
+        whaleui_window_destroy(w);
+    }
+
     /* caret at a line start renders at x=0 of that line, not at the
      * previous line's end (regression: both positions drew identically) */
     {
