@@ -1062,6 +1062,67 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* 2-line textarea inside a scrollable page: still fits -> no range,
+     * even with the page scrolled (the "2 lines behave like 20" report) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta2-in-page", 400, 250);
+        assert(w != nullptr);
+        std::string html = "<html><body>";
+        for (int i = 0; i < 6; ++i) {
+            html += "<div style=\"height:60px\">page line " +
+                    std::to_string(i) + "</div>";
+        }
+        html += "<textarea id=\"t\" style=\"width:300px;height:56px\">"
+                "多行文本\n支持 Enter 换行</textarea></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        int smax0 = ta->scroll_max;
+        std::printf("[scroll] ta2-in-page smax=%d\n", smax0);
+        std::fflush(stdout);
+        assert(smax0 == 0); /* 2 lines fit: no scroll range in-page */
+        /* scroll the page, then re-check the textarea range is still 0 */
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        for (int i = 0; i < 4; ++i) {
+            whaleui_render_handle_wheel(w->render, 200, 50, -1.0f);
+        }
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        std::printf("[scroll] ta2-in-page after page scroll smax=%d\n",
+                    ta->scroll_max);
+        std::fflush(stdout);
+        assert(ta->scroll_max == 0);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
