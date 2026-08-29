@@ -1515,7 +1515,8 @@ int main(void)
         /* click mid-"line two" at line-one's window position: the caret
          * lands inside the word (offset > 0); without the scroll fix the
          * offset math goes negative and resolves to 0 */
-        int y = run1->border.y + run1->border.h / 2;
+        int y = run2->border.y - w->render->scrolls[sc->el] +
+                run2->border.h / 2; /* run2's scrolled window position */
         whaleui_render_set_pressed(w->render, run2->border.x + 40, y, 1);
         assert(w->render->sel_anchor_el != nullptr);
         assert(w->render->sel_anchor > 0);
