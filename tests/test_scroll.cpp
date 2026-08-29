@@ -153,6 +153,53 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* 2b. single-line input with an overflowing value: the wheel scrolls
+     * the input horizontally (hscrolls) and must NOT scroll the page.
+     * A short value falls through to the page (browser-like). */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "inp-hscroll", 300, 200);
+        assert(w != nullptr);
+        std::string html = "<html><body style=\"height:900px;\">"
+                           "<input id=\"long\" style=\"width:120px\" "
+                           "value=\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnop\">"
+                           "<input id=\"short\" style=\"width:120px\" value=\"ab\">"
+                           "</body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        lxb_dom_element *long_el = nullptr, *short_el = nullptr;
+        int lx = 0, ly = 0, sx = 0, sy = 0;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 &&
+                    std::memcmp(name, "input", 5) == 0) {
+                    if (!long_el) {
+                        long_el = n.el;
+                        lx = n.border.x + 10;
+                        ly = n.border.y + 10;
+                    } else {
+                        short_el = n.el;
+                        sx = n.border.x + 10;
+                        sy = n.border.y + 10;
+                    }
+                }
+            }
+        }
+        assert(long_el && short_el);
+        lxb_dom_element* root_el = w->render->tree->root->el;
+        /* long value: wheel over it moves hscrolls, page stays */
+        whaleui_render_handle_wheel(w->render, lx, ly, -1.0f);
+        assert(w->render->hscrolls[long_el] > 0);
+        assert(w->render->scrolls[root_el] == 0);
+        /* short value: wheel over it falls through to the page */
+        whaleui_render_handle_wheel(w->render, sx, sy, -1.0f);
+        assert(w->render->scrolls[root_el] > 0);
+        whaleui_window_destroy(w);
+    }
+
     /* 3. page scroll range reaches the true content bottom: the ancestor
      * boxes keep their layout-estimated heights, so scroll_max must come
      * from the corrected subtree, not from a parent border.h */

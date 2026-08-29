@@ -2521,7 +2521,10 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
          * estimate says "no overflow" (scroll_max == 0) must NOT swallow
          * the event, or the wheel over a small textarea/input is lost and
          * the page underneath never scrolls. Single-line inputs never
-         * scroll vertically - they are skipped too. */
+         * scroll vertically - instead, when their value overflows the box
+         * horizontally the wheel scrolls the value sideways (like the
+         * caret-driven hscroll); with no horizontal overflow they fall
+         * through to the page. */
         bool is_input = false;
         if (n->el) {
             size_t ilen = 0;
@@ -2529,8 +2532,41 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
                 lxb_dom_element_local_name(n->el, &ilen);
             is_input = ilen == 5 && std::memcmp(iname, "input", 5) == 0;
         }
-        if ((ov == "auto" || ov == "scroll") && !is_input &&
-            n->scroll_max > 0) {
+        if (is_input) {
+            std::string val = edit_value(n->el);
+            int hmax = 0;
+            if (!val.empty()) {
+                int fs = 0;
+                std::string fam;
+                bool bold = false;
+                node_font(n, &fs, &fam, &bold);
+                int tw = 0, th = 0;
+                text_size(r, val, fs, fam, bold, &tw, &th, 0);
+                hmax = tw - n->content.w;
+                if (hmax < 0) {
+                    hmax = 0;
+                }
+            }
+            if (hmax > 0) {
+                /* value overflows: scroll it horizontally, swallow the
+                 * wheel (the page does not move) */
+                int& hcur = r->hscrolls[n->el];
+                int nv = hcur + delta;
+                if (nv > hmax) {
+                    nv = hmax;
+                }
+                if (nv < 0) {
+                    nv = 0;
+                }
+                if (nv != hcur) {
+                    hcur = nv;
+                    r->scroll_dirty = 1;
+                }
+                return;
+            }
+            continue; /* no horizontal overflow: page scrolls */
+        }
+        if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
             do_scroll(n);
             return;
         }
