@@ -2489,7 +2489,20 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             continue;
         }
         std::string ov = sget(n->style, "overflow");
-        if (ov == "auto" || ov == "scroll") {
+        /* only boxes that can actually scroll claim the wheel: a box whose
+         * estimate says "no overflow" (scroll_max == 0) must NOT swallow
+         * the event, or the wheel over a small textarea/input is lost and
+         * the page underneath never scrolls. Single-line inputs never
+         * scroll vertically - they are skipped too. */
+        bool is_input = false;
+        if (n->el) {
+            size_t ilen = 0;
+            const lxb_char_t* iname =
+                lxb_dom_element_local_name(n->el, &ilen);
+            is_input = ilen == 5 && std::memcmp(iname, "input", 5) == 0;
+        }
+        if ((ov == "auto" || ov == "scroll") && !is_input &&
+            n->scroll_max > 0) {
             do_scroll(n);
             return;
         }
