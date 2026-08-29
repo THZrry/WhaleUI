@@ -2279,6 +2279,50 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* up/down caret navigation: up on the first line keeps the caret,
+     * down goes to the next line (regression: up on line 1 jumped) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "nav", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px\">"
+            "ab\ncd\nef</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        /* up on the first line: caret stays put */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_UP, 1, 0);
+        assert(w->render->sel_focus == 0);
+        /* down goes to the next line start (same column) */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_DOWN, 1, 0);
+        assert(w->render->sel_focus == 3); /* "cd" start */
+        /* down again to the last line */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_DOWN, 1, 0);
+        assert(w->render->sel_focus == 6); /* "ef" start */
+        /* down at the last line: stays */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_DOWN, 1, 0);
+        assert(w->render->sel_focus == 6);
+        /* up back to the middle line */
+        whaleui_render_handle_key(w->render, WHALEUI_KEY_UP, 1, 0);
+        assert(w->render->sel_focus == 3);
+        whaleui_window_destroy(w);
+    }
+
     /* caret at a line start renders at x=0 of that line, not at the
      * previous line's end (regression: both positions drew identically) */
     {

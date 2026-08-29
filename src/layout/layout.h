@@ -157,6 +157,13 @@ typedef float (*whaleui_text_metric_fn)(const char* utf8, size_t len,
                                         float letter_spacing_px);
 void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn);
 
+/* REAL line height (px) for a font/size/style, so laid-out text boxes
+ * (textarea heights, scroll_max) match the painted glyphs. NULL uses the
+ * fs*1.2 estimate. */
+typedef float (*whaleui_line_height_fn)(float font_px, bool bold,
+                                        const char* family);
+void whaleui_layout_set_line_height_metric(whaleui_line_height_fn fn);
+
 #ifdef __cplusplus
 }
 #endif

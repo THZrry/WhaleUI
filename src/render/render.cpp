@@ -90,6 +90,27 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
     }
     return total;
 }
+
+/* real line height for the layout pass (TTF font metrics), so textarea
+ * heights / scroll_max match the painted glyph line boxes */
+float render_line_height(float font_px, bool bold, const char* family)
+{
+    whaleui_render_t* r = g_metric_render;
+    if (!r) {
+        return 0;
+    }
+    int fs = static_cast<int>(font_px);
+    if (fs <= 0) {
+        fs = 16;
+    }
+    TTF_Font* font = render_get_font(r, family ? family : "", fs,
+                                     bold ? kFontBold : 0);
+    if (!font) {
+        return 0;
+    }
+    int h = TTF_GetFontHeight(font);
+    return h > 0 ? static_cast<float>(h) : 0;
+}
 #endif
 
 /* --- color --- */
@@ -935,7 +956,10 @@ bool is_contenteditable(lxb_dom_element* el)
 
 size_t line_start(const std::string& s, size_t b)
 {
-    size_t p = s.rfind('\n', b == 0 ? std::string::npos : b - 1);
+    if (b == 0) {
+        return 0;
+    }
+    size_t p = s.rfind('\n', b - 1);
     return p == std::string::npos ? 0 : p + 1;
 }
 size_t line_end(const std::string& s, size_t b)
@@ -1569,6 +1593,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
 #ifdef WHALEUI_BUILD_FULL
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);
+    whaleui_layout_set_line_height_metric(render_line_height);
 #endif
     r->cursor_arrow = nullptr;
     r->cursor_text = nullptr;

@@ -1090,5 +1090,45 @@ int main(void)
         }
     }
 
+    /* per-line wrap drives the textarea scroll range: short single-line
+     * content fits (scroll_max 0); the same content wrapped to 2 lines or
+     * split by newlines overflows the fixed height (scroll_max > 0) */
+    {
+        auto sm = [](const char* body) {
+            std::string html = "<html><body><textarea "
+                               "style=\"width:30px;height:30px\">" +
+                               std::string(body) +
+                               "</textarea></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html.c_str(), html.size());
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            int smax = -1;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 8 &&
+                    std::memcmp(nm, "textarea", 8) == 0) {
+                    smax = n.scroll_max;
+                    break;
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+            return smax;
+        };
+        assert(sm("ab") == 0);    /* one short line fits */
+        assert(sm("abcdef") > 0); /* wraps to 2 lines -> overflows */
+        assert(sm("ab\ncd") > 0); /* two explicit lines */
+        assert(sm("ab\n") > 0);   /* trailing newline: empty last line */
+    }
+
     return 0;
 }

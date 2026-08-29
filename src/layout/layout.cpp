@@ -318,6 +318,8 @@ float text_est_width(const std::string& s, float fs)
 
 /* renderer-installed real text metric (NULL in pure layout tests) */
 static whaleui_text_metric_fn g_text_metric = nullptr;
+/* renderer-installed real line height (NULL uses fs*1.2) */
+static whaleui_line_height_fn g_line_height = nullptr;
 
 /* UTF-8 character count */
 size_t utf8_count(const std::string& s)
@@ -386,27 +388,86 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
  * measured with the real glyph width so the laid-out line count matches
  * the painted wrap (an under-estimate left "推理能力强" splitting its last
  * character). */
-size_t est_wrap_lines(const std::string& s, float fs, int avail,
-                      const std::string& family, bool bold, float lsp_px)
+/* wrapped line count of one segment (no '\n'): greedy binary-search breaks
+ * using the real per-line pixel width, so the laid-out height matches the
+ * painted wrap (a simple total-width/avail division under-counts when
+ * characters are not uniform width) */
+static size_t wrap_line_count(const std::string& seg, float fs, int avail,
+                              const std::string& family, bool bold,
+                              float lsp_px)
 {
-    if (avail <= 0) {
+    if (seg.empty() || avail <= 0) {
         return 1;
     }
-    size_t chars = utf8_count(s);
-    if (chars == 0) {
-        return 1;
-    }
-    float est = text_measure_est(s, fs, lsp_px);
+    float est = text_measure_est(seg, fs, lsp_px);
     if (est + 4 <= static_cast<float>(avail)) {
         return 1; /* clearly one line */
     }
-    float total = text_measure(s, fs, family, bold, lsp_px);
-    if (total <= static_cast<float>(avail)) {
+    size_t lines = 1;
+    size_t start = 0;
+    while (start < seg.size()) {
+        /* longest UTF-8-aligned prefix whose real width fits in avail */
+        size_t lo = start, hi = seg.size();
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo + 1) / 2;
+            while (mid > start && (seg[mid] & 0xC0) == 0x80) {
+                --mid; /* align to a char boundary */
+            }
+            if (mid <= start) {
+                break;
+            }
+            float w = text_measure(seg.substr(start, mid - start), fs,
+                                   family, bold, lsp_px);
+            if (w <= static_cast<float>(avail)) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if (lo <= start) {
+            /* a single character is wider than the box: force one */
+            unsigned char c = static_cast<unsigned char>(seg[start]);
+            size_t l2 = 1;
+            if (c >= 0xF0) {
+                l2 = 4;
+            } else if (c >= 0xE0) {
+                l2 = 3;
+            } else if (c >= 0xC0) {
+                l2 = 2;
+            }
+            start += l2;
+        } else {
+            start = lo;
+        }
+        if (start < seg.size()) {
+            ++lines;
+        }
+    }
+    return lines;
+}
+
+size_t est_wrap_lines(const std::string& s, float fs, int avail,
+                      const std::string& family, bool bold, float lsp_px)
+{
+    if (s.empty() || avail <= 0) {
         return 1;
     }
-    size_t lines = static_cast<size_t>(total / static_cast<float>(avail)) + 1;
-    if (lines < 1) {
-        lines = 1;
+    size_t lines = 0;
+    size_t p = 0;
+    while (p < s.size()) {
+        size_t q = s.find('\n', p);
+        if (q == std::string::npos) {
+            q = s.size();
+        }
+        lines += wrap_line_count(s.substr(p, q - p), fs, avail, family,
+                                 bold, lsp_px);
+        if (q == s.size()) {
+            break;
+        }
+        p = q + 1;
+    }
+    if (s.back() == '\n') {
+        ++lines; /* trailing newline keeps the empty last line */
     }
     return lines;
 }
@@ -414,22 +475,32 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
 /* line height in px from the style: number (× fs), px, em (× fs) or % */
 float line_height_px(const WhaleUIComputedStyle& s, float fs)
 {
-    float lh = fs * 1.2f;
+    /* explicit line-height wins; the font's real height (via the renderer
+     * hook) otherwise, so text boxes match the painted glyphs */
     std::string v = get(s, "line-height");
-    if (v.empty()) {
-        return lh;
+    if (!v.empty()) {
+        if (v.find("px") != std::string::npos) {
+            return static_cast<float>(std::atof(v.c_str()));
+        }
+        if (v.find("em") != std::string::npos) {
+            return static_cast<float>(std::atof(v.c_str())) * fs;
+        }
+        if (v.find('%') != std::string::npos) {
+            return fs * static_cast<float>(std::atof(v.c_str())) / 100.0f;
+        }
+        float n = static_cast<float>(std::atof(v.c_str()));
+        if (n > 0) {
+            return fs * n;
+        }
     }
-    if (v.find("px") != std::string::npos) {
-        return static_cast<float>(std::atof(v.c_str()));
+    if (g_line_height) {
+        std::string fam = get(s, "font-family");
+        float lh = g_line_height(fs, font_weight_bold(s), fam.c_str());
+        if (lh > 0) {
+            return lh;
+        }
     }
-    if (v.find("em") != std::string::npos) {
-        return static_cast<float>(std::atof(v.c_str())) * fs;
-    }
-    if (v.find('%') != std::string::npos) {
-        return fs * static_cast<float>(std::atof(v.c_str())) / 100.0f;
-    }
-    float n = static_cast<float>(std::atof(v.c_str()));
-    return n > 0 ? fs * n : lh;
+    return fs * 1.2f;
 }
 
 /* rough content width of a node: summed direct text runs + padding,
@@ -2182,4 +2253,9 @@ extern "C" int whaleui_layout_relayout(
 extern "C" void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn)
 {
     g_text_metric = fn;
+}
+
+extern "C" void whaleui_layout_set_line_height_metric(whaleui_line_height_fn fn)
+{
+    g_line_height = fn;
 }
