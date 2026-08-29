@@ -101,6 +101,10 @@ struct whaleui_render
     struct lxb_dom_element* hover_el;
     /* previous hover target, dirtied for a partial repaint on change */
     struct lxb_dom_element* hover_old_el;
+    /* an edit/caret move happened: the frame's relayout pass should
+     * scroll the caret visible ONCE. User scrolls (wheel/drag) never set
+     * this, so a focused textarea is not locked to the caret line. */
+    int edit_scroll_need;
     /* last clicked control (:focus) and the element the left button is
      * held down on (:active) */
     struct lxb_dom_element* focus_el;

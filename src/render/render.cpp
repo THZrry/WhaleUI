@@ -1,4 +1,4 @@
-/* Renderer core: per-window render context, frame loop and interaction
+﻿/* Renderer core: per-window render context, frame loop and interaction
  * (hit-test / click / wheel / editing / FSR decision).
  *
  * Paint primitives, colors, text and controls live in the split sources
@@ -837,6 +837,7 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     r->compose.clear();
     r->nav_col = -1; /* the text changed: the remembered column is stale */
     r->has_dirty = 1;
+    r->edit_scroll_need = 1;
     edit_ensure_visible(r);
 }
 
@@ -867,6 +868,7 @@ static void edit_undo(whaleui_render_t* r)
     r->compose.clear();
     r->has_dirty = 1;
     r->redo_stack.push_back(op);
+    r->edit_scroll_need = 1;
     edit_ensure_visible(r);
 }
 
@@ -897,6 +899,7 @@ static void edit_redo(whaleui_render_t* r)
     r->compose.clear();
     r->has_dirty = 1;
     r->undo_stack.push_back(op);
+    r->edit_scroll_need = 1;
     edit_ensure_visible(r);
 }
 
@@ -1509,6 +1512,7 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
             r->sel_anchor = r->sel_focus = static_cast<int>(nf);
         }
         r->has_dirty = 1;
+        r->edit_scroll_need = 1;
         edit_ensure_visible(r); /* keep the caret in view while navigating */
     };
     size_t cur = static_cast<size_t>(focus);
@@ -1824,6 +1828,8 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->hscrolls.clear();
     r->last_scrolls.clear();
     r->hover_el = nullptr;
+    r->hover_old_el = nullptr;
+    r->edit_scroll_need = 0;
     r->focus_el = nullptr;
     r->pressed_el = nullptr;
     r->sel_anchor_el = nullptr;
@@ -2168,7 +2174,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         }
         update_selection_focus(r, hit, x, y);
         /* dragging past the visible edge must scroll the editable box
-         * (single-line inputs scroll horizontally, textareas vertically) */
+         * (single-line inputs scroll horizontally, textareas vertically) */r->edit_scroll_need = 1;
         edit_ensure_visible(r);
     }
 }
@@ -2353,7 +2359,7 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             }
             r->sel_mode = r->press_clicks >= 3 ? 2 : (r->press_clicks == 2 ? 1 : 0);
             /* mouse click (not a drag yet) can move the caret past the
-             * visible edge of a horizontally scrolled input: bring it back */
+             * visible edge of a horizontally scrolled input: bring it back */r->edit_scroll_need = 1;
             edit_ensure_visible(r);
             SDL_StartTextInput(r->window);
         } else if (hit && hit->is_text) {
@@ -2819,9 +2825,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * caret-visible scroll so a caret just typed past the visible
          * area (or on a wrapped line) scrolls the box. edit_replace's
          * earlier call ran against the stale tree (scroll_max was 0),
-         * so this is the pass that actually scrolls textareas. */
-        if (r->edit_el) {
+         * so this is the pass that actually scrolls textareas. Only an
+         * EDIT sets edit_scroll_need: a user wheel/drag must never be
+         * yanked back to the caret line (the "caret locks the scroll"). */
+        if (r->edit_el && r->edit_scroll_need) {
             edit_ensure_visible(r);
+            r->edit_scroll_need = 0;
         }
 #ifdef WHALEUI_BUILD_FULL
         g_metric_render = nullptr; /* layout done; paint uses TTF_Text */
@@ -3189,4 +3198,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     SDL_SubmitGPUCommandBuffer(cmd);
     return 0;
 }
+
+
+
 

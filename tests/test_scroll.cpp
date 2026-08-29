@@ -460,11 +460,21 @@ int main(void)
             }
         }
         assert(hov != nullptr);
+        lxb_dom_element* hel = hov->el; /* DOM element survives rebuilds */
         unsigned int pre_h0 =
             gpixel(w->render, hov->border.x + 2, hov->border.y + 2);
         whaleui_render_set_hover(w->render, hov->border.x + 5,
                                  hov->border.y + 5);
         assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* re-locate the hover target: the relayout rebuilt the tree */
+        hov = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el == hel && !n.is_text) {
+                hov = &n;
+                break;
+            }
+        }
+        assert(hov != nullptr);
         unsigned int pre_h1 =
             gpixel(w->render, hov->border.x + 2, hov->border.y + 2);
         std::printf("[scroll] hover-pre %08X -> %08X\n", pre_h0, pre_h1);
@@ -916,6 +926,139 @@ int main(void)
                     ta->content.y);
         std::fflush(stdout);
         assert(ty <= ta->content.y + 2); /* caret at the TOP of the box */
+        whaleui_window_destroy(w);
+    }
+
+    /* nested scrolling: a textarea INSIDE a scrollable page - both use the
+     * same scroll machinery and each keeps its own exact range while the
+     * other scrolls (page scroll must not perturb the textarea range and
+     * vice versa) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "nested-scroll", 400, 250);
+        assert(w != nullptr);
+        std::string html = "<html><body>";
+        for (int i = 0; i < 8; ++i) {
+            html += "<div style=\"height:60px\">page line " +
+                    std::to_string(i) + "</div>";
+        }
+        html += "<textarea id=\"t\" style=\"width:300px;height:56px\">";
+        for (int i = 0; i < 10; ++i) {
+            html += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        }
+        html += "</textarea></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr && root->scroll_max > 0);
+        int page_max = root->scroll_max;
+        int ta_max = ta->scroll_max;
+        assert(ta_max > 0);
+        /* scroll the PAGE: the textarea range must not change */
+        lxb_dom_element* rel = root->el;
+        for (int i = 0; i < 6; ++i) {
+            whaleui_render_handle_wheel(w->render, 200, 50, -1.0f);
+        }
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        root = w->render->tree->root;
+        /* re-locate the textarea after the rebuild */
+        ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        std::printf("[scroll] nested page s=%d ta_max=%d (was %d)\n",
+                    w->render->scrolls[rel], ta->scroll_max, ta_max);
+        std::fflush(stdout);
+        assert(ta->scroll_max == ta_max); /* page scroll leaves ta intact */
+        /* now scroll the textarea itself (wheel at its VISUAL position:
+         * the page is already scrolled by s) */
+        lxb_dom_element* tel = ta->el;
+        int page_s = w->render->scrolls[rel];
+        int tawx = ta->border.x + 10;
+        int tawy = ta->border.y - page_s + 10;
+        for (int i = 0; i < 30; ++i) {
+            whaleui_render_handle_wheel(w->render, tawx, tawy, -1.0f);
+        }
+        std::printf("[scroll] nested ta bottom s=%d smax=%d\n",
+                    w->render->scrolls[tel], ta->scroll_max);
+        std::fflush(stdout);
+        assert(w->render->scrolls[tel] >= ta->scroll_max - 1);
+        /* and the page range is still exact */
+        assert(w->render->scrolls[rel] <= page_max);
+        whaleui_window_destroy(w);
+    }
+
+    /* a focused textarea: after an edit the caret-visible scroll may move
+     * it, but a USER wheel afterwards must not be yanked back to the
+     * caret line */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "caret-scroll", 300, 200);
+        assert(w != nullptr);
+        std::string html = "<html><body><textarea id=\"t\" "
+                           "style=\"width:200px;height:40px\">";
+        for (int i = 0; i < 10; ++i) {
+            html += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        }
+        html += "</textarea></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr && ta->scroll_max > 0);
+        lxb_dom_element* tel = ta->el;
+        /* focus + move the caret to the END (an edit that must scroll the
+         * caret visible) */
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        edit_replace(w->render, tel, 0, 0, "xxxxxxxxxxxxxxxxxxxxxx\n");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int s_after_edit = w->render->scrolls[tel];
+        /* a user wheel over the textarea must move it freely */
+        whaleui_render_handle_wheel(w->render, ta->border.x + 10,
+                                    ta->border.y + 10, -1.0f);
+        int s1 = w->render->scrolls[tel];
+        assert(s1 > s_after_edit);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* no edit since: the frame must NOT pull it back to the caret */
+        std::printf("[scroll] caret-scroll edit=%d wheel=%d after=%d\n",
+                    s_after_edit, s1, w->render->scrolls[tel]);
+        std::fflush(stdout);
+        assert(w->render->scrolls[tel] == s1);
         whaleui_window_destroy(w);
     }
 
