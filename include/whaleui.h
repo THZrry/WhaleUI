@@ -51,7 +51,7 @@ extern "C" {
 /* build variant macros are defined by the build system:
  *   WHALEUI_BUILD_FULL / WHALEUI_BUILD_LITE / WHALEUI_BUILD_MINIMAL */
 
-#define WHALEUI_VERSION "0.9"
+#define WHALEUI_VERSION "0.91"
 
 /* ======================= build info ======================= */
 
