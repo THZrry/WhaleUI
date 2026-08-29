@@ -2708,24 +2708,38 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         fix_run_h(r->tree->root);
         std::function<void(whaleui_layout_node_t*)> fix_sm =
             [&](whaleui_layout_node_t* nd) {
-                if (nd->scroll_max > 0 && nd->el) {
-                    int bottom = 0;
-                    for (whaleui_layout_node_t* c = nd->first_child; c;
-                         c = c->next) {
-                        int b = c->border.y + c->border.h - nd->content.y;
-                        if (b > bottom) {
-                            bottom = b;
+                /* recompute for every scrollable box AND the page root:
+                 * the layout estimated line counts, so a box whose content
+                 * only exceeds its height in the render layout had
+                 * scroll_max == 0 here and could never scroll. */
+                if (nd->el && !nd->is_text) {
+                    std::string ov = sget(nd->style, "overflow");
+                    bool scrollable =
+                        ov == "auto" || ov == "scroll" ||
+                        nd == r->tree->root;
+                    if (scrollable) {
+                        int bottom = 0;
+                        for (whaleui_layout_node_t* c = nd->first_child; c;
+                             c = c->next) {
+                            int b = c->border.y + c->border.h -
+                                    nd->content.y;
+                            if (b > bottom) {
+                                bottom = b;
+                            }
                         }
-                    }
-                    int cmax = bottom - nd->content.h;
-                    nd->scroll_max = cmax > 0 ? cmax : 0;
-                    auto it = r->scrolls.find(nd->el);
-                    if (it != r->scrolls.end()) {
-                        if (it->second > nd->scroll_max) {
-                            it->second = nd->scroll_max;
+                        int cmax = bottom - nd->content.h;
+                        if (cmax < 0) {
+                            cmax = 0;
                         }
-                        if (it->second < 0) {
-                            it->second = 0;
+                        nd->scroll_max = cmax;
+                        auto it = r->scrolls.find(nd->el);
+                        if (it != r->scrolls.end()) {
+                            if (it->second > nd->scroll_max) {
+                                it->second = nd->scroll_max;
+                            }
+                            if (it->second < 0) {
+                                it->second = 0;
+                            }
                         }
                     }
                 }

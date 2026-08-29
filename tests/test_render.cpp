@@ -1,4 +1,4 @@
-// test_render: paint pipeline verification on the SDL_GPU path.
+ï»¿// test_render: paint pipeline verification on the SDL_GPU path.
 // Color parsing always runs; window-level assertions run only when a GPU
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
@@ -1140,7 +1140,7 @@ int main(void)
         assert(w != nullptr);
         assert(whaleui_window_load_html(w,
             "<html><body><input id=\"i\" value=\"\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c"
-            "\xe4\xb8\x96\xe7\x95\x8c\"></body></html>") == 0); /* "ä½ å¥½ï¼Œä¸–ç•? */
+            "\xe4\xb8\x96\xe7\x95\x8c\"></body></html>") == 0); /* "æµ£çŠ²ã‚½é”›å±¼ç¬˜é£? */
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_layout_node_t* inp = nullptr;
@@ -1158,12 +1158,12 @@ int main(void)
         whaleui_render_set_pressed(w->render, inp->content.x + 1,
                                    inp->content.y + 2, 1);
         assert(w->render->sel_anchor == 0);
-        /* ctrl+right: "ä½ å¥½" (6 bytes), then "ä¸–ç•Œ" (12 bytes) */
+        /* ctrl+right: "æµ£çŠ²ã‚½" (6 bytes), then "æ¶“æ «æ™«" (12 bytes) */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
         whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 15 && w->render->sel_focus == 15);
-        /* ctrl+left skips the comma and lands at "ä½ å¥½" start */
+        /* ctrl+left skips the comma and lands at "æµ£çŠ²ã‚½" start */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 9 && w->render->sel_focus == 9);
         whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
@@ -1306,8 +1306,8 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
-    /* dictionary word segmentation (full build): ctrl+right jumps ÄãºÃ ->
-     * ÊÀ½ç as two words; a word absent from the dictionary falls back to a
+    /* dictionary word segmentation (full build): ctrl+right jumps ä½ å¥½ ->
+     * ä¸–ç•Œ as two words; a word absent from the dictionary falls back to a
      * single hanzi */
     {
         whaleui_window_t* w = whaleui_window_create(app, "dictword", 300, 200);
@@ -1315,7 +1315,7 @@ int main(void)
         assert(whaleui_window_load_html(w,
             "<html><body><input id=\"i\" style=\"width:200px\" "
             "value=\"\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c\">"
-            "</body></html>") == 0); /* "ÄãºÃÊÀ½ç" */
+            "</body></html>") == 0); /* "ä½ å¥½ä¸–ç•Œ" */
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_layout_node_t* inp = nullptr;
@@ -1333,12 +1333,12 @@ int main(void)
         whaleui_render_set_pressed(w->render, inp->content.x + 1,
                                    inp->content.y + 2, 1);
         assert(w->render->sel_anchor == 0);
-        /* ÄãºÃ (6 bytes), then ÊÀ½ç (12) */
+        /* ä½ å¥½ (6 bytes), then ä¸–ç•Œ (12) */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
         whaleui_render_handle_key(w->render, WHALEUI_KEY_RIGHT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 12 && w->render->sel_focus == 12);
-        /* back: ÊÀ½ç -> ÄãºÃ */
+        /* back: ä¸–ç•Œ -> ä½ å¥½ */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
         assert(w->render->sel_anchor == 6 && w->render->sel_focus == 6);
         whaleui_render_handle_key(w->render, WHALEUI_KEY_LEFT, 1, SDL_KMOD_CTRL);
@@ -2281,6 +2281,177 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* contenteditable width: soft wraps must stay inside the box - the
+     * auto width is capped at 12em, never the sum of the wrapped lines */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wrapw", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><span id=\"s\" contenteditable=\"true\">"
+            "ab</span></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_span = [&]() -> whaleui_layout_node_t* {
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 4 &&
+                        std::memcmp(name, "span", 4) == 0) {
+                        return &n;
+                    }
+                }
+            }
+            return nullptr;
+        };
+        whaleui_layout_node_t* sp = find_span();
+        assert(sp != nullptr);
+        int w0 = sp->border.w;
+        lxb_dom_element* el = sp->el;
+        w->render->edit_el = el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        /* 40 chars (320px) far past the 12em (192px) auto width */
+        edit_replace(w->render, el, 0, 0,
+                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        sp = find_span(); /* re-locate: nodes were rebuilt */
+        assert(sp != nullptr);
+        int w1 = sp->border.w;        assert(w1 <= w0); /* wraps inside the box, never widens */
+        whaleui_window_destroy(w);
+    }
+
+    /* contenteditable inside a constrained parent wraps at the parent
+     * width: the box never exceeds the available space, even when the
+     * text alone is wider than it */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wrapcap", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"width:240px\"><span "
+            "id=\"s\" contenteditable=\"true\" "
+            "style=\"border:1px solid black;padding:5px 10px\">"
+            "ab</span></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_span = [&]() -> whaleui_layout_node_t* {
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 4 &&
+                        std::memcmp(name, "span", 4) == 0) {
+                        return &n;
+                    }
+                }
+            }
+            return nullptr;
+        };
+        whaleui_layout_node_t* sp = find_span();
+        assert(sp != nullptr);
+        int w0 = sp->border.w;
+        lxb_dom_element* el = sp->el;
+        w->render->edit_el = el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        /* 40 chars (320px) wider than the 240px parent */
+        edit_replace(w->render, el, 0, 0,
+                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        sp = find_span();
+        assert(sp != nullptr);
+        int w1 = sp->border.w;
+        assert(w1 <= 240); /* wraps inside the parent, no overflow */
+        whaleui_window_destroy(w);
+    }
+
+    /* a flex:1 card holding a contenteditable must not widen as text is
+     * typed (the span's un-wrapped estimate must not drive the card) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "flexce", 600, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div style=\"display:flex\"><div "
+            "id=\"c\" style=\"flex:1;border:1px solid black\">"
+            "<p><span id=\"s\" contenteditable=\"true\">ab</span></p>"
+            "</div><div style=\"flex:1\">x</div></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_el = [&](const char* tag, int nth) -> whaleui_layout_node_t* {
+            int cnt = 0;
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == std::strlen(tag) &&
+                        std::memcmp(name, tag, len) == 0 &&
+                        ++cnt == nth) {
+                        return &n;
+                    }
+                }
+            }
+            return nullptr;
+        };
+        whaleui_layout_node_t* card = find_el("div", 2); /* the flex card */
+        assert(card != nullptr);
+        int c0 = card->border.w;
+        whaleui_layout_node_t* sp = find_el("span", 1);
+        assert(sp != nullptr);
+        lxb_dom_element* el = sp->el;
+        w->render->edit_el = el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        edit_replace(w->render, el, 0, 0,
+                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        card = find_el("div", 2);
+        assert(card != nullptr);
+        int c1 = card->border.w;
+        assert(c1 == c0); /* the card keeps its flex share */
+        whaleui_window_destroy(w);
+    }
+
+    /* textarea with an explicit height keeps it while text wraps into
+     * more lines: the box must not grow (it scrolls instead) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "tah", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:56px\">ab</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        auto find_ta = [&]() -> whaleui_layout_node_t* {
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 8 &&
+                        std::memcmp(name, "textarea", 8) == 0) {
+                        return &n;
+                    }
+                }
+            }
+            return nullptr;
+        };
+        whaleui_layout_node_t* ta = find_ta();
+        assert(ta != nullptr);
+        int h0 = ta->border.h;
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 2;
+        /* 6 lines of text: wraps inside the 200px width */
+        std::string many;
+        for (int i = 0; i < 6; ++i) {
+            many += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        }
+        edit_replace(w->render, tel, 0, 2, many);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        ta = find_ta(); /* re-locate after the rebuild */
+        assert(ta != nullptr);
+        int h1 = ta->border.h;
+                     ta->scroll_max);
+        assert(h1 == h0); /* explicit height: grows, it scrolls */
+        whaleui_window_destroy(w);
+    }
+
     /* up/down caret navigation: up on the first line keeps the caret,
      * down goes to the next line (regression: up on line 1 jumped) */
     {
@@ -2409,6 +2580,102 @@ int main(void)
         whaleui_render_set_pressed(w->render, bx, y1, 0);
         assert(w->render->drag_scroll_el == nullptr);
         assert(w->render->scrolls[tel] == before_up);
+        whaleui_window_destroy(w);
+    }
+
+    /* dragging near the bottom edge must clamp at scroll_max and stay
+     * stable (no bounce between max and max-1 on small mouse moves) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "sbdrgbot", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:60px\">aaaa\nbbbb\ncccc\ndddd\neeee\nffff\ngggg\n"
+            "hhhh\niiii\njjjj</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        assert(ta->scroll_max > 0);
+        lxb_dom_element* tel = ta->el;
+        const int bx = ta->border.x + ta->border.w - 4;
+        /* press at the very bottom of the track and nudge */
+        int ybot = ta->border.y + ta->border.h - 2;
+        whaleui_render_set_pressed(w->render, bx, ybot, 1);
+        assert(w->render->drag_scroll_el == tel);
+        int s1 = w->render->scrolls[tel];
+        assert(s1 == ta->scroll_max); /* bottom drag clamps at max */
+        whaleui_render_set_hover(w->render, bx, ybot - 1);
+        whaleui_render_set_hover(w->render, bx, ybot + 1);
+        int s2 = w->render->scrolls[tel];
+        assert(s2 >= s1 - 1 && s2 <= s1); /* monotone, no bounce */
+        whaleui_render_set_pressed(w->render, bx, ybot, 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* wheel over the demo-style scroll region: monotone, clamps at the
+     * bottom, and a down-wheel at max must NOT bounce back up */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wregion", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><div id=\"sc\" style=\"overflow:auto;"
+            "height:120px\">line 1<br>line 2<br>line 3<br>line 4<br>"
+            "line 5<br>line 6<br>line 7<br>line 8<br>line 9<br>line 10"
+            "</div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* sc = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 &&
+                    std::memcmp(name, "div", 3) == 0 &&
+                    n.scroll_max > 0) {
+                    sc = &n;
+                    break;
+                }
+            }
+        }
+        assert(sc != nullptr && sc->scroll_max > 0);
+        lxb_dom_element* el = sc->el;
+        int cx = sc->border.x + sc->border.w / 2;
+        int cy = sc->border.y + sc->border.h / 2;
+        int s0 = w->render->scrolls[el];
+        whaleui_render_handle_wheel(w->render, cx, cy, -1.0f);
+        int s1 = w->render->scrolls[el];
+        assert(s1 > s0);
+        whaleui_render_handle_wheel(w->render, cx, cy, -1.0f);
+        int s2 = w->render->scrolls[el];
+        assert(s2 >= s1); /* monotone down */
+        /* wheel down until clamped at max */
+        int s3 = s2;
+        for (int i = 0; i < 20; ++i) {
+            whaleui_render_handle_wheel(w->render, cx, cy, -1.0f);
+            s3 = w->render->scrolls[el];
+            if (s3 == sc->scroll_max) {
+                break;
+            }
+        }
+        assert(s3 == sc->scroll_max);
+        /* another down-wheel stays at max: no bounce */
+        whaleui_render_handle_wheel(w->render, cx, cy, -1.0f);
+        assert(w->render->scrolls[el] == s3);
+        /* wheel up moves back up */
+        whaleui_render_handle_wheel(w->render, cx, cy, 1.0f);
+        assert(w->render->scrolls[el] < s3);
         whaleui_window_destroy(w);
     }
     {
@@ -2768,3 +3035,5 @@ int anim_runs(void)
     whaleui_app_destroy(app);
     return 1;
 }
+
+
