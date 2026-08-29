@@ -270,11 +270,10 @@ static const char* kTextCompositeCS = R"(
 [numthreads(16, 16, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     float4 t = text_layer.Load(int3(id.xy, 0));
-    if (t.a > 0.001) {
-        out_tex[id.xy] = t;
-    } else {
-        out_tex[id.xy] = geometry.Load(int3(id.xy, 0));
-    }
+    float4 g = geometry.Load(int3(id.xy, 0));
+    /* text_layer holds straight (non-premultiplied) color + real alpha:
+     * glyph edges must blend over the geometry, not replace it */
+    out_tex[id.xy] = float4(t.rgb * t.a + g.rgb * (1.0 - t.a), 1.0);
 }
 )";
 
