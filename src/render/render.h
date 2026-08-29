@@ -175,6 +175,18 @@ struct whaleui_render
     struct lxb_dom_element* edit_el;
     /* IME composition text (SDL_EVENT_TEXT_EDITING), drawn at the caret */
     std::string compose;
+    /* undo/redo stack (Ctrl-Z/Y): each entry replaces [a,b) of the target
+     * element's value with `ins` (removing `del`). The element pointer is
+     * stable across layout-tree rebuilds. */
+    struct EditOp
+    {
+        struct lxb_dom_element* el;
+        size_t a, b;
+        std::string ins;
+        std::string del;
+    };
+    std::vector<EditOp> undo_stack;
+    std::vector<EditOp> redo_stack;
 
     /* CSS animation engine (animate.h): @keyframes + transition. Animations
      * are interpolated into the computed styles during the layout pass;

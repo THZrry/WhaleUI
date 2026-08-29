@@ -950,5 +950,47 @@ int main(void)
         assert(s2 > 0);               /* multi-line content scrolls */
     }
 
+    /* an auto-width inline-block with long editable text wraps: the width
+     * follows the longest wrapped line (capped to the available width)
+     * instead of stretching to the whole unwrapped text; the height grows
+     * with the wrapped lines */
+    {
+        auto meas = [](const char* html, int* w, int* h) {
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html, std::strlen(html));
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            *w = *h = -1;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 4 && std::memcmp(nm, "span", 4) == 0) {
+                    *w = n.border.w;
+                    *h = n.border.h;
+                    break;
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        };
+        int w1, h1, w2, h2;
+        meas("<html><body><span style=\"display:inline-block\">x</span>"
+             "</body></html>",
+             &w1, &h1);
+        meas("<html><body><span style=\"display:inline-block\">"
+             "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee "
+             "ffffffffff gggggggggg hhhhhhhhhh</span></body></html>",
+             &w2, &h2);
+        assert(w1 > 0 && w1 < 400);
+        assert(w2 <= 400);  /* capped to the available width, not stretched */
+        assert(h2 > h1);    /* wrapped to multiple lines */
+    }
+
     return 0;
 }

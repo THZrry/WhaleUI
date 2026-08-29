@@ -1273,8 +1273,14 @@ struct Builder
         int bw;
         if (w_auto) {
             if (display_kind(get(n->style, "display")) == 2) {
-                /* inline / inline-block shrink to content */
-                bw = static_cast<int>(estimate_content_width(n, em)) + mx;
+                /* inline / inline-block shrink to content: the preferred
+                 * width is the unwrapped content, capped to the available
+                 * width so long editable text wraps instead of stretching
+                 * the box (width follows the longest wrapped line) */
+                int pref = static_cast<int>(estimate_content_width(n, em)) +
+                           mx;
+                int cap = avail_w - mx;
+                bw = pref < cap ? pref : cap;
             } else {
                 bw = avail_w - mx;
             }

@@ -682,6 +682,15 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     if (a > b) {
         std::swap(a, b);
     }
+    /* push an undo record (replace [a,b) with insertion, dropping del);
+     * typed keystrokes are coalesced by resetting redo. No record when the
+     * edit is a no-op. */
+    if (!(insertion.empty() && a == b)) {
+        whaleui_render_t::EditOp op = {el, a, b, insertion,
+                                       val.substr(a, b - a)};
+        r->undo_stack.push_back(op);
+        r->redo_stack.clear();
+    }
     std::string nv = val.substr(0, a) + insertion + val.substr(b);
     edit_set_value(el, nv);
     size_t caret = a + insertion.size();
@@ -690,6 +699,64 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     r->compose.clear();
     r->nav_col = -1; /* the text changed: the remembered column is stale */
     r->has_dirty = 1;
+    edit_ensure_visible(r);
+}
+
+/* Ctrl-Z: apply the last edit in reverse and move the caret to the start
+ * of the undone range; the record moves to the redo stack. */
+static void edit_undo(whaleui_render_t* r)
+{
+    if (r->undo_stack.empty() || !r->tree) {
+        return;
+    }
+    whaleui_render_t::EditOp op = r->undo_stack.back();
+    r->undo_stack.pop_back();
+    std::string val = edit_value(op.el);
+    if (op.a > val.size()) {
+        op.a = val.size();
+    }
+    size_t e = op.a + op.ins.size();
+    if (e > val.size()) {
+        e = val.size();
+    }
+    std::string nv = val.substr(0, op.a) + op.del + val.substr(e);
+    edit_set_value(op.el, nv);
+    r->edit_el = op.el;
+    r->sel_anchor_el = r->sel_focus_el = op.el;
+    r->sel_anchor = r->sel_focus = static_cast<int>(op.a);
+    r->nav_col = -1;
+    r->compose.clear();
+    r->has_dirty = 1;
+    r->redo_stack.push_back(op);
+    edit_ensure_visible(r);
+}
+
+/* Ctrl-Y / Ctrl-Shift-Z: re-apply the last undone edit; the record moves
+ * back to the undo stack. */
+static void edit_redo(whaleui_render_t* r)
+{
+    if (r->redo_stack.empty() || !r->tree) {
+        return;
+    }
+    whaleui_render_t::EditOp op = r->redo_stack.back();
+    r->redo_stack.pop_back();
+    std::string val = edit_value(op.el);
+    if (op.a > val.size()) {
+        op.a = val.size();
+    }
+    size_t e = op.a + op.del.size();
+    if (e > val.size()) {
+        e = val.size();
+    }
+    std::string nv = val.substr(0, op.a) + op.ins + val.substr(e);
+    edit_set_value(op.el, nv);
+    r->edit_el = op.el;
+    r->sel_anchor_el = r->sel_focus_el = op.el;
+    r->sel_anchor = r->sel_focus = static_cast<int>(op.a + op.ins.size());
+    r->nav_col = -1;
+    r->compose.clear();
+    r->has_dirty = 1;
+    r->undo_stack.push_back(op);
     edit_ensure_visible(r);
 }
 
@@ -1263,6 +1330,16 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
             }
             return;
         }
+        case 'z':
+            if ((mods & SDL_KMOD_SHIFT) != 0) {
+                edit_redo(r); /* ctrl+shift+z */
+            } else {
+                edit_undo(r);
+            }
+            return;
+        case 'y':
+            edit_redo(r);
+            return;
         default:
             break; /* ctrl+arrows/others fall through to movement */
         }
@@ -1610,6 +1687,8 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->selecting = 0;
     r->edit_el = nullptr;
     r->compose.clear();
+    r->undo_stack.clear();
+    r->redo_stack.clear();
     r->drag_scroll_el = nullptr;
     r->drag_scroll_node = nullptr;
     r->scroll_max_el = nullptr;
