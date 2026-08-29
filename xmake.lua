@@ -141,6 +141,13 @@ for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_sty
         set_default(has_config("tests"))
         on_load(function (target)
             use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
         end)
         target_end()
 end

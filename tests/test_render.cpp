@@ -11,6 +11,7 @@
 
 #include <lexbor/dom/dom.h>
 #include <SDL3/SDL.h>
+#include <SDL3_ttf/SDL_ttf.h>
 
 #include <cassert>
 #include <cstdio>
@@ -2366,8 +2367,49 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
-    /* the layout's wrapped line count (run height) agrees with the render
-     * layout (text_size): per-line pixel widths, not total/avail */
+    /* scrollbar drag: pressing the right-side track and moving the mouse
+     * must move the content proportionally (scrolls follows the drag) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "sbdrg", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:60px\">aaaa\nbbbb\ncccc\ndddd\neeee\nffff\ngggg\n"
+            "hhhh\niiii\njjjj</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        assert(ta->scroll_max > 0);
+        lxb_dom_element* tel = ta->el;
+        const int bx = ta->border.x + ta->border.w - 4; /* inside the bar */
+        /* press the track at 1/3 height, then drag down to 2/3 */
+        int y0 = ta->border.y + ta->border.h / 3;
+        whaleui_render_set_pressed(w->render, bx, y0, 1);
+        assert(w->render->drag_scroll_el == tel);
+        int after_press = w->render->scrolls[tel];
+        int y1 = ta->border.y + ta->border.h * 2 / 3;
+        whaleui_render_set_hover(w->render, bx, y1);
+        assert(w->render->scrolls[tel] > after_press);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* release: drag ends, scroll position stays */
+        int before_up = w->render->scrolls[tel];
+        whaleui_render_set_pressed(w->render, bx, y1, 0);
+        assert(w->render->drag_scroll_el == nullptr);
+        assert(w->render->scrolls[tel] == before_up);
+        whaleui_window_destroy(w);
+    }
     {
         whaleui_window_t* w = whaleui_window_create(app, "lh", 300, 200);
         assert(whaleui_window_load_html(w,
