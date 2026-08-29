@@ -2390,6 +2390,48 @@ int main(void)
             }
             return nullptr;
         };
+        /* the same structure with a textarea (the reported case): the card
+         * must keep its flex share while the textarea text wraps */
+        {
+            whaleui_window_t* w2 =
+                whaleui_window_create(app, "flexta", 600, 200);
+            assert(whaleui_window_load_html(w2,
+                "<html><body><div style=\"display:flex\"><div "
+                "id=\"c\" style=\"flex:1;border:1px solid black\">"
+                "<textarea id=\"t\" style=\"width:100%;height:56px\">ab"
+                "</textarea></div><div style=\"flex:1\">x</div></div>"
+                "</body></html>") == 0);
+            assert(whaleui_window_show(w2) == 0);
+            assert(whaleui_render_frame(w2->render, w2->document) == 0);
+            whaleui_layout_node_t* card2 = find_el("div", 2);
+            assert(card2 != nullptr);
+            int c0 = card2->border.w;
+            whaleui_layout_node_t* ta = nullptr;
+            for (auto& n : w2->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 8 &&
+                        std::memcmp(name, "textarea", 8) == 0) {
+                        ta = &n;
+                        break;
+                    }
+                }
+            }
+            assert(ta != nullptr);
+            lxb_dom_element* tel = ta->el;
+            w2->render->edit_el = tel;
+            w2->render->sel_anchor = w2->render->sel_focus = 2;
+            edit_replace(w2->render, tel, 0, 2,
+                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert(whaleui_render_frame(w2->render, w2->document) == 0);
+            card2 = find_el("div", 2);
+            assert(card2 != nullptr);
+            int c1 = card2->border.w;
+            assert(c1 == c0); /* typing never widens the flex card */
+            whaleui_window_destroy(w2);
+        }
         whaleui_layout_node_t* card = find_el("div", 2); /* the flex card */
         assert(card != nullptr);
         int c0 = card->border.w;
@@ -2447,7 +2489,6 @@ int main(void)
         ta = find_ta(); /* re-locate after the rebuild */
         assert(ta != nullptr);
         int h1 = ta->border.h;
-                     ta->scroll_max);
         assert(h1 == h0); /* explicit height: grows, it scrolls */
         whaleui_window_destroy(w);
     }

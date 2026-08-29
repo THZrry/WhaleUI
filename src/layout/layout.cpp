@@ -511,6 +511,17 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     if (fs <= 0) {
         fs = em;
     }
+    /* a textarea's min-content is its default width: the value wraps
+     * inside the box, so the un-wrapped longest line must never stretch
+     * the parent (typing past the edge widened the box - "it grows
+     * after the line wraps"). Other controls have no text runs. */
+    if (k->el) {
+        size_t tlen = 0;
+        const lxb_char_t* tn = lxb_dom_element_local_name(k->el, &tlen);
+        if (tlen == 8 && std::memcmp(tn, "textarea", 8) == 0) {
+            return fs * 12.0f; /* 12em default */
+        }
+    }
     /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
      * painted wrap width follows the box, so an under-sized estimate
      * splits short text mid-word ("01", "V3", "推理能力强") */
