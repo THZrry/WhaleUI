@@ -1758,11 +1758,12 @@ int main(void)
         text_size(w->render, "hel", fs, family, bold, &tw1, &th);
         whaleui_render_set_hover(w->render, run->border.x + tw1 + 2, y);
         assert(w->render->sel_anchor == 0 && w->render->sel_focus == 11);
-        /* drag back right: the left edge stays at 0 */
+        /* drag back right into "world": the added word collapses - the
+         * selection returns to the original word (anchor stays put) */
         int tw2 = 0;
-        text_size(w->render, "hello world ", fs, family, bold, &tw2, &th);
-        whaleui_render_set_hover(w->render, run->border.x + tw2 + 4, y);
-        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 15);
+        text_size(w->render, "hello wor", fs, family, bold, &tw2, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tw2 + 2, y);
+        assert(w->render->sel_anchor == 6 && w->render->sel_focus == 11);
         whaleui_window_destroy(w);
     }
 
@@ -2108,6 +2109,11 @@ int main(void)
         text_size(w->render, "fo", fs, family, bold, &twf, &th);
         whaleui_render_set_hover(w->render, run->border.x + twf + 1, y);
         assert(w->render->sel_anchor == 0 && w->render->sel_focus == 7);
+        /* drag back into "bar": the added "foo" collapses again */
+        int twb = 0;
+        text_size(w->render, "foo ba", fs, family, bold, &twb, &th);
+        whaleui_render_set_hover(w->render, run->border.x + twb + 2, y);
+        assert(w->render->sel_anchor == 4 && w->render->sel_focus == 7);
         whaleui_render_set_pressed_ex(w->render, 0, 0, 0, 1, 0);
         whaleui_window_destroy(w);
     }
@@ -2141,6 +2147,43 @@ int main(void)
         int th = 0;
         text_size(w->render, "a\tb\rc\nd", fs, family, bold, &w1, &th, 0);
         assert(th == 2 * text_line_h(w->render, fs, family, bold));
+        whaleui_window_destroy(w);
+    }
+
+    /* caret at a line start renders at x=0 of that line, not at the
+     * previous line's end (regression: both positions drew identically) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "caret-linestart",
+                                                    300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:300px\">"
+            "ab\ncd</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int lh = text_line_h(w->render, fs, family, bold);
+        int ww = run_wrap_w(run);
+        int cx = -1, cy = -1, ch = -1;
+        caret_pos(w->render, run->text, fs, family, bold, 2, &cx, &cy, &ch,
+                  ww); /* end of line 1 */
+        int end_x = cx;
+        assert(cy == 0 && cx > 0);
+        caret_pos(w->render, run->text, fs, family, bold, 3, &cx, &cy, &ch,
+                  ww); /* start of line 2 */
+        assert(cy == lh);          /* on line 2 */
+        assert(cx == 0);           /* x=0, not the previous line's end */
+        assert(end_x != cx || cy != 0);
         whaleui_window_destroy(w);
     }
 

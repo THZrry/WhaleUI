@@ -905,5 +905,50 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* editable controls do not grow when text is typed: input/textarea
+     * widths come from CSS (or the 12em default); a fixed-height textarea
+     * keeps its height and scrolls multi-line content instead of being
+     * stretched (browser UA behavior: textarea scrolls by default) */
+    {
+        const char* short_html =
+            "<html><body><textarea style=\"width:200px;height:60px\">"
+            "x</textarea></body></html>";
+        const char* long_html =
+            "<html><body><textarea style=\"width:200px;height:60px\">"
+            "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\ndddddddddd\neeeeeeeeee"
+            "</textarea></body></html>";
+        auto meas = [](const char* html, int* w, int* h, int* smax) {
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html, std::strlen(html));
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            *w = *h = *smax = -1;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 8 && std::memcmp(nm, "textarea", 8) == 0) {
+                    *w = n.border.w;
+                    *h = n.border.h;
+                    *smax = n.scroll_max;
+                    break;
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        };
+        int w1, h1, s1, w2, h2, s2;
+        meas(short_html, &w1, &h1, &s1);
+        meas(long_html, &w2, &h2, &s2);
+        assert(w1 == w2 && w1 == 200);
+        assert(h1 == h2 && h1 == 60); /* fixed height, not stretched */
+        assert(s2 > 0);               /* multi-line content scrolls */
+    }
+
     return 0;
 }

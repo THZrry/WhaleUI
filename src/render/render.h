@@ -149,6 +149,14 @@ struct whaleui_render
     int sel_mode;
     /* click count of the current press (1/2/3 from the platform) */
     int press_clicks;
+    /* word/line drag-extension anchors (set on double/triple-click): the
+     * boundary where the click started. The drag keeps this end fixed and
+     * only moves the other end, so dragging away then back collapses the
+     * selection to what was originally chosen (standard editor behavior).
+     * Stored separately because sel_anchor/sel_focus are the display
+     * bounds and may flip while dragging. */
+    int sel_drag_anchor;
+    int sel_drag_focus;
     /* drag-and-drop of an existing selection: press went down inside the
      * selection (drag_sel), the drag passed the threshold (drag_sel_active),
      * and ctrl was held on release (drag_copy: copy instead of move).

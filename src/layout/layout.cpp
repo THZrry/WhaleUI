@@ -874,8 +874,16 @@ struct Builder
         /* textarea default height must apply regardless of the width check
          * above (an explicit width skips that block entirely) */
         if (tname0 && tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
-            n->style.find("height") == n->style.end() && input_kind(n->el) == 0) {
-            n->style["height"] = "60px";
+            input_kind(n->el) == 0) {
+            if (n->style.find("height") == n->style.end()) {
+                n->style["height"] = "60px";
+            }
+            /* textarea scrolls its content by default (browser UA style),
+             * so typing more lines never stretches the control - the fixed
+             * height stays and the content scrolls inside */
+            if (n->style.find("overflow") == n->style.end()) {
+                n->style["overflow"] = "auto";
+            }
         }
         /* contenteditable elements default to inline, whose width follows
          * the text: the box would stretch with every typed character (the

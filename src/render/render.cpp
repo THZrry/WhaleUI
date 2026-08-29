@@ -602,36 +602,31 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
     }
     auto extend = [r](const std::string& text, size_t off, bool editable,
                       size_t* lo, size_t* hi) {
-        int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
-        int b = r->sel_anchor < r->sel_focus ? r->sel_focus : r->sel_anchor;
         if (r->sel_mode == 1) {
             size_t ws = 0, we = 0;
             word_range(text, off, &ws, &we);
-            if (off <= static_cast<size_t>(a)) {
-                /* dragging left of the anchor: keep the right edge fixed */
+            if (off <= static_cast<size_t>(r->sel_drag_anchor)) {
+                /* dragging left of the click anchor: extend left, keep the
+                 * original right edge fixed */
                 *lo = ws;
-                *hi = static_cast<size_t>(b);
+                *hi = static_cast<size_t>(r->sel_drag_focus);
             } else {
-                *lo = static_cast<size_t>(a);
-                /* dragging right: the right edge extends, but never
-                 * shrinks below the current selection end. Without the
-                 * max, dragging back from [0,7) into "foo" re-runs
-                 * word_end(off)=3 and silently cancels the selected
-                 * word ("bar" was lost on left-then-right drags). */
-                *hi = we > static_cast<size_t>(b) ? we
-                                                  : static_cast<size_t>(b);
+                /* dragging right (or back into the original word): the left
+                 * edge stays at the click anchor, the right edge follows -
+                 * dragging back collapses the added words again */
+                *lo = static_cast<size_t>(r->sel_drag_anchor);
+                *hi = we;
             }
         } else if (r->sel_mode == 2) {
-            if (off <= static_cast<size_t>(a)) {
+            if (off <= static_cast<size_t>(r->sel_drag_anchor)) {
                 *lo = line_start(text, off);
-                *hi = line_end(text, static_cast<size_t>(b));
+                *hi = static_cast<size_t>(r->sel_drag_focus);
             } else {
-                *lo = static_cast<size_t>(a);
-                size_t le = line_end(text, off);
-                *hi = le > static_cast<size_t>(b) ? le
-                                                  : static_cast<size_t>(b);
+                *lo = static_cast<size_t>(r->sel_drag_anchor);
+                *hi = line_end(text, off);
             }
         } else {
+            int a = r->sel_anchor < r->sel_focus ? r->sel_anchor : r->sel_focus;
             *lo = static_cast<size_t>(a);
             *hi = off;
         }
@@ -2114,13 +2109,19 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             std::string val = edit_value(el);
             size_t off = caret_from_point(r, el, hit, x, y);
             if (r->press_clicks >= 3) {
-                r->sel_anchor = static_cast<int>(line_start(val, off));
-                r->sel_focus = static_cast<int>(line_end(val, off));
+                int ls = static_cast<int>(line_start(val, off));
+                int le = static_cast<int>(line_end(val, off));
+                r->sel_anchor = ls;
+                r->sel_focus = le;
+                r->sel_drag_anchor = ls;
+                r->sel_drag_focus = le;
             } else if (r->press_clicks == 2) {
                 size_t ws = 0, we = 0;
                 word_range(val, off, &ws, &we);
                 r->sel_anchor = static_cast<int>(ws);
                 r->sel_focus = static_cast<int>(we);
+                r->sel_drag_anchor = static_cast<int>(ws);
+                r->sel_drag_focus = static_cast<int>(we);
             } else {
                 r->sel_anchor = r->sel_focus = static_cast<int>(off);
             }
@@ -2139,13 +2140,19 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             r->sel_anchor_el = r->sel_focus_el = hit->el;
             size_t off = byte_at_node(r, hit, x, y);
             if (r->press_clicks >= 3) {
-                r->sel_anchor = static_cast<int>(line_start(hit->text, off));
-                r->sel_focus = static_cast<int>(line_end(hit->text, off));
+                int ls = static_cast<int>(line_start(hit->text, off));
+                int le = static_cast<int>(line_end(hit->text, off));
+                r->sel_anchor = ls;
+                r->sel_focus = le;
+                r->sel_drag_anchor = ls;
+                r->sel_drag_focus = le;
             } else if (r->press_clicks == 2) {
                 size_t ws = 0, we = 0;
                 word_range(hit->text, off, &ws, &we);
                 r->sel_anchor = static_cast<int>(ws);
                 r->sel_focus = static_cast<int>(we);
+                r->sel_drag_anchor = static_cast<int>(ws);
+                r->sel_drag_focus = static_cast<int>(we);
             } else {
                 r->sel_anchor = r->sel_focus = static_cast<int>(off);
             }

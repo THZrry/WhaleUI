@@ -653,24 +653,62 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
                int* cx, int* cy, int* ch, int wrap_w)
 {
     int lh = text_line_h(r, fs, family, bold);
-    if (off == 0) {
+    if (lh <= 0) {
+        lh = fs > 0 ? fs : 16;
+    }
+    if (text.empty()) {
         *cx = 0;
         *cy = 0;
         *ch = lh;
         return;
     }
-    std::vector<TRect> rs = sel_rects(r, text, fs, family, bold, 0, off,
-                                      wrap_w);
-    if (rs.empty()) {
-        *cx = 0;
-        *cy = 0;
-        *ch = lh;
-        return;
+    if (off > text.size()) {
+        off = text.size();
     }
-    const TRect& last = rs.back();
-    *cx = last.x + last.w;
-    *cy = last.y;
-    *ch = last.h;
+#ifdef WHALEUI_BUILD_FULL
+    TextMeasureCtx mc = { r, fs, family, bold };
+    TextGlyphFn gw = glyph_ttf;
+    void* st = &mc;
+#else
+    StbFonts stb(family, fs);
+    TextGlyphFn gw = glyph_stb;
+    void* st = &stb;
+#endif
+    TextLayout L = layout_text(text, wrap_w, lh, gw, st);
+    const size_t nc = L.map.size();
+    /* 找 off 所在行:off 落在 [行首偏移, 行尾偏移] 区间。
+     * 行首时 caret 画在该行 x=0(不是前一行的行尾)。 */
+    for (size_t li = 0; li < L.lines.size(); ++li) {
+        const TextLayoutLine& ln = L.lines[li];
+        size_t ls_off = (ln.cstart < nc) ? L.map[ln.cstart] : off;
+        size_t le_off = (ln.cend < nc) ? L.map[ln.cend] : text.size();
+        if (off < ls_off) {
+            /* 落在上一行末尾之后、本行行首之前:只在空行之间的
+             * \n 处可能;当作本行行首处理 */
+            *cx = 0;
+            *cy = static_cast<int>(li) * lh;
+            *ch = lh;
+            return;
+        }
+        if (off >= ls_off && off <= le_off) {
+            int xacc = 0;
+            for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+                if (L.map[ci] >= off) {
+                    break;
+                }
+                xacc += gw(disp_cp_at(L, ci), st);
+            }
+            *cx = xacc;
+            *cy = static_cast<int>(li) * lh;
+            *ch = lh;
+            return;
+        }
+    }
+    /* 兜底:文本末尾 */
+    const TextLayoutLine& last = L.lines.back();
+    *cx = last.w;
+    *cy = static_cast<int>(L.lines.size() - 1) * lh;
+    *ch = lh;
 }
 
 /* defined below (editing helpers); needed by the paint path above */
