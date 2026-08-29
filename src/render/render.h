@@ -63,6 +63,11 @@ struct whaleui_render
      * changes. Full build only; stb measures directly from its font table. */
     TTF_Font* ascii_font;
     int ascii_w[128];
+    /* non-ASCII glyph-advance cache (full build): measuring CJK/emoji via a
+     * per-char TTF_Text was the dominant cost on large CJK pages (every
+     * char created + destroyed a TTF_Text); caching per (font, codepoint)
+     * keeps layout linear. */
+    std::map<std::pair<TTF_Font*, unsigned int>, int> glyph_w_cache;
 
     /* text cache: one TTF_Text + rasterized surface per element+style,
      * reused across frames. Rebuilding text objects AND re-rasterizing

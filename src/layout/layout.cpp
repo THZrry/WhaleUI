@@ -388,76 +388,16 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
  * measured with the real glyph width so the laid-out line count matches
  * the painted wrap (an under-estimate left "推理能力强" splitting its last
  * character). */
-/* wrapped line count of one segment (no '\n'): greedy binary-search breaks
- * using the real per-line pixel width, so the laid-out height matches the
- * painted wrap (a simple total-width/avail division under-counts when
- * characters are not uniform width) */
-static size_t wrap_line_count(const std::string& seg, float fs, int avail,
-                              const std::string& family, bool bold,
-                              float lsp_px)
-{
-    if (seg.empty() || avail <= 0) {
-        return 1;
-    }
-    float est = text_measure_est(seg, fs, lsp_px);
-    if (est + 4 <= static_cast<float>(avail)) {
-        return 1; /* clearly one line */
-    }
-    size_t lines = 1;
-    size_t start = 0;
-    while (start < seg.size()) {
-        /* longest UTF-8-aligned prefix whose real width fits in avail */
-        size_t lo = start, hi = seg.size();
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo + 1) / 2;
-            while (mid > start && (seg[mid] & 0xC0) == 0x80) {
-                --mid; /* align to a char boundary */
-            }
-            if (mid <= start) {
-                break;
-            }
-            float w = text_measure(seg.substr(start, mid - start), fs,
-                                   family, bold, lsp_px);
-            if (w <= static_cast<float>(avail)) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        if (lo <= start) {
-            /* a single character is wider than the box: force one */
-            unsigned char c = static_cast<unsigned char>(seg[start]);
-            size_t l2 = 1;
-            if (c >= 0xF0) {
-                l2 = 4;
-            } else if (c >= 0xE0) {
-                l2 = 3;
-            } else if (c >= 0xC0) {
-                l2 = 2;
-            }
-            start += l2;
-        } else {
-            /* word wrap: break after the last space inside the fitted
-             * prefix (like the render layout), so words are not split */
-            size_t sp = seg.rfind(' ', lo - 1);
-            if (sp != std::string::npos && sp >= start && sp + 1 > start) {
-                lo = sp + 1;
-            }
-            start = lo;
-        }
-        if (start < seg.size()) {
-            ++lines;
-        }
-    }
-    return lines;
-}
-
 size_t est_wrap_lines(const std::string& s, float fs, int avail,
                       const std::string& family, bool bold, float lsp_px)
 {
     if (s.empty() || avail <= 0) {
         return 1;
     }
+    /* Per logical line (explicit '\n' segments): the cheap estimate first,
+     * then one whole-segment measure. This is a height estimate only - the
+     * renderer's layout_wrap does the exact per-glyph wrap. Never binary
+     * search per line: that made large pages quadratic. */
     size_t lines = 0;
     size_t p = 0;
     while (p < s.size()) {
@@ -465,8 +405,27 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
         if (q == std::string::npos) {
             q = s.size();
         }
-        lines += wrap_line_count(s.substr(p, q - p), fs, avail, family,
-                                 bold, lsp_px);
+        std::string seg = s.substr(p, q - p);
+        if (seg.empty()) {
+            lines += 1; /* empty line */
+        } else {
+            float est = text_measure_est(seg, fs, lsp_px);
+            if (est + 4 <= static_cast<float>(avail)) {
+                lines += 1; /* clearly one line */
+            } else {
+                float total = text_measure(seg, fs, family, bold, lsp_px);
+                if (total <= static_cast<float>(avail)) {
+                    lines += 1;
+                } else {
+                    size_t n = static_cast<size_t>(
+                        total / static_cast<float>(avail));
+                    if (total > static_cast<float>(n) * avail) {
+                        ++n;
+                    }
+                    lines += n > 0 ? n : 1;
+                }
+            }
+        }
         if (q == s.size()) {
             break;
         }

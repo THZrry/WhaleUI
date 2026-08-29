@@ -439,6 +439,14 @@ static int glyph_ttf(unsigned int cp, void* st)
         }
         return c->r->ascii_w[cp];
     }
+    /* non-ASCII: cached per (font, codepoint); the fallback chain makes a
+     * per-char TTF_Text expensive, and unbounded per-char creation made
+     * large CJK pages quadratic */
+    std::pair<TTF_Font*, unsigned int> key(font, cp);
+    auto it = c->r->glyph_w_cache.find(key);
+    if (it != c->r->glyph_w_cache.end()) {
+        return it->second;
+    }
     char buf[5];
     size_t n = utf8_encode_cp(cp, buf);
     if (!c->r->text_engine) {
@@ -454,6 +462,7 @@ static int glyph_ttf(unsigned int cp, void* st)
     int w = 0, h = 0;
     TTF_GetTextSize(t, &w, &h);
     TTF_DestroyText(t);
+    c->r->glyph_w_cache[key] = w;
     return w;
 }
 #else
@@ -862,10 +871,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         return;
     }
-    /* 程序内排版决定换行与字形位置(唯一排版,full/stb 共用);
-     * 渲染层只画字形:字符逐个画入整块缓存 surface,位置与
-     * caret/selection 数学完全一致(TTF_Text 整段含 kerning,
-     * 与逐字测量不一致,故这里逐字符绘制,视觉上少字距)。 */
+    /* 程序内排版决定换行(唯一排版,full/stb 共用);渲染层一次画整段:
+     * 断点插 \n 后整段 TTF_Text 无 wrap 渲染。每字符一个 TTF_Text 在
+     * CJK 大页面上是平方级开销(每个字符创建+销毁),整段渲染回到线性。 */
     bool bold = (style & kFontBold) != 0;
     int lh = text_line_h(r, fs, family, bold);
     if (lh <= 0) {
@@ -897,27 +905,25 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                           family.c_str(), wrap ? bw : -1);
             cache_key = key;
         }
-        /* rasterize the layout line by line into the cached surface */
+        /* display text: layout lines joined by \n (TTF_Text wraps at \n,
+         * line height = the font's, which matches text_line_h) */
+        std::string render_text;
+        for (size_t li = 0; li < L.lines.size(); ++li) {
+            const TextLayoutLine& ln = L.lines[li];
+            size_t b0 = L.dbytes[ln.cstart];
+            size_t b1 = (ln.cend < L.dbytes.size()) ? L.dbytes[ln.cend]
+                                                    : L.disp.size();
+            render_text.append(L.disp, b0, b1 - b0);
+            if (li + 1 < L.lines.size()) {
+                render_text += '\n';
+            }
+        }
         auto rasterize = [&](SDL_Surface* s) {
-            for (size_t li = 0; li < L.lines.size(); ++li) {
-                const TextLayoutLine& ln = L.lines[li];
-                int xacc = 0;
-                for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
-                    unsigned int cp = disp_cp_at(L, ci);
-                    int w = glyph_ttf(cp, &mc);
-                    if (w <= 0) {
-                        continue;
-                    }
-                    char buf[5];
-                    size_t bn = utf8_encode_cp(cp, buf);
-                    TTF_Text* ct = TTF_CreateText(engine, font, buf, bn);
-                    if (ct) {
-                        TTF_DrawSurfaceText(ct, xacc,
-                                            static_cast<int>(li) * lh, s);
-                        TTF_DestroyText(ct);
-                    }
-                    xacc += w;
-                }
+            TTF_Text* ct = TTF_CreateText(engine, font, render_text.c_str(),
+                                          render_text.size());
+            if (ct) {
+                TTF_DrawSurfaceText(ct, 0, 0, s);
+                TTF_DestroyText(ct);
             }
         };
         SDL_Surface* surf = nullptr;

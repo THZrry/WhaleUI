@@ -1154,5 +1154,23 @@ int main(void)
                2);
     }
 
+    /* large CJK content stays linear: est_wrap_lines on a long Chinese
+     * string must not blow up (regression: per-char TTF_Text / per-line
+     * binary search made big pages hang) */
+    {
+        std::string big;
+        for (int i = 0; i < 1000; ++i) {
+            big += "\xe6\xb1\x89\xe5\xad\x97\xe6\xb5\x8b\xe8\xaf\x95"
+                   "\xe6\x96\x87\xe6\x9c\xac\xe5\x86\x85\xe5\xae\xb9";
+        }
+        clock_t t0 = clock();
+        size_t lines = whaleui_est_wrap_lines(big.c_str(), big.size(), 16,
+                                              200, false, "", 0);
+        clock_t t1 = clock();
+        assert(lines > 1);
+        double ms = static_cast<double>(t1 - t0) * 1000.0 / CLOCKS_PER_SEC;
+        assert(ms < 500.0); /* estimate path must stay fast */
+    }
+
     return 0;
 }
