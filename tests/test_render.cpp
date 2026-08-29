@@ -2491,12 +2491,28 @@ int main(void)
         w->render->sel_anchor = w->render->sel_focus = 0;
         edit_replace(w->render, tel, 0, 0, "X");
         assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* re-locate the textarea in the fresh tree (the old node was
+         * destroyed by the relayout) before reading its geometry */
+        whaleui_layout_node_t* ta2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta2 != nullptr);
         /* the first line's text is painted: scan the top text rows for
          * non-background ink near the textarea's left edge */
         bool ink = false;
-        for (int yy = ta->content.y + 1; yy < ta->content.y + 20 && !ink;
+        for (int yy = ta2->content.y + 1; yy < ta2->content.y + 20 && !ink;
              yy += 1) {
-            for (int xx = ta->content.x + 1; xx < ta->content.x + 24;
+            for (int xx = ta2->content.x + 1; xx < ta2->content.x + 24;
                  xx += 1) {
                 unsigned int p = gpixel(w->render, xx, yy);
                 if (((p >> 16) & 0xFF) > 0x40) {
@@ -2543,6 +2559,36 @@ int main(void)
         assert(cy == lh);          /* on line 2 */
         assert(cx == 0);           /* x=0, not the previous line's end */
         assert(end_x != cx || cy != 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* the whole-run TTF_Text render must lay lines at text_line_h:
+     * TTF_Text("a\nb") height == 2 * text_line_h, otherwise the painted
+     * text, the caret and the selection highlight drift line by line */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ttflh", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p>x</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int fs = 16;
+        std::string fam;
+        bool bold = false;
+        int lh = text_line_h(w->render, fs, fam, bold);
+        TTF_Font* font = render_get_font(w->render, "", fs, 0);
+        assert(font != nullptr);
+        if (!w->render->text_engine) {
+            w->render->text_engine = TTF_CreateSurfaceTextEngine();
+        }
+        assert(w->render->text_engine != nullptr);
+        TTF_Text* t = TTF_CreateText(w->render->text_engine, font, "a\nb", 3);
+        assert(t != nullptr);
+        int tw = 0, th = 0;
+        TTF_GetTextSize(t, &tw, &th);
+        printf("[ttflh] lh=%d ttf_two_lines_h=%d (expect %d)\n", lh, th,
+               2 * lh);
+        assert(th == 2 * lh); /* whole-run render lines match text_line_h */
+        TTF_DestroyText(t);
         whaleui_window_destroy(w);
     }
 
