@@ -1049,10 +1049,12 @@ int main(void)
         for (int i = 0; i < 30; ++i) {
             whaleui_render_handle_wheel(w->render, tawx, tawy, -1.0f);
         }
-        std::printf("[scroll] nested ta bottom s=%d smax=%d\n",
-                    w->render->scrolls[tel], ta->scroll_max);
+        std::printf("[scroll] nested ta bottom s=%d smax=%d page_s=%d\n",
+                    w->render->scrolls[tel], ta->scroll_max, page_s);
         std::fflush(stdout);
         assert(w->render->scrolls[tel] >= ta->scroll_max - 1);
+        /* scrolling the textarea must NOT drag the page along */
+        assert(w->render->scrolls[rel] == page_s);
         /* and the page range is still exact */
         assert(w->render->scrolls[rel] <= page_max);
         whaleui_window_destroy(w);

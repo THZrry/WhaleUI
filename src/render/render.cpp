@@ -2964,10 +2964,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::map<lxb_dom_element*, int> cur;
         std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
-                if (nd->scroll_max > 0 && nd->el) {
-                    auto it = r->scrolls.find(nd->el);
+                /* only the PAGE (root) participates in the image shift: an
+                 * embedded scrollable (textarea/overflow:auto box) scrolls
+                 * its own content, which the paint pass re-draws at its own
+                 * scroll offset. Including it in scroll_dy shifted the WHOLE
+                 * image by the textarea's scroll, then the textarea re-scrolled
+                 * on top - the textarea dragged the page along. Scroll-shift
+                 * is a page-level optimization only. */
+                if (nd == r->tree->root && r->tree->root->el) {
+                    auto it = r->scrolls.find(r->tree->root->el);
                     if (it != r->scrolls.end()) {
-                        cur[nd->el] = it->second;
+                        cur[r->tree->root->el] = it->second;
                     }
                 }
                 for (whaleui_layout_node_t* c = nd->first_child; c;
