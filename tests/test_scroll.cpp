@@ -1123,6 +1123,104 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* exact demo card (flex card with h2 + input + 2-line textarea +
+     * contenteditable): the textarea must still have NO scroll range -
+     * "2 lines scroll like 70" points at the card/flex siblings leaking
+     * into the textarea's content bottom */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-in-card", 500, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><head><style>.row { display:flex; } .card { flex:1; "
+            "border:1px solid black; padding:8px; }</style></head><body>"
+            "<div class=\"row\"><div class=\"card\">"
+            "<h2>Edit &amp; IME</h2>"
+            "<p><input style=\"width:100%;box-sizing:border-box\" "
+            "value=\"x\"></p>"
+            "<p><textarea style=\"width:100%;height:56px;"
+            "box-sizing:border-box\">多行文本&#10;支持 Enter 换行"
+            "</textarea></p>"
+            "<p><span contenteditable=\"true\">可编辑</span></p>"
+            "</div><div class=\"card\">other card<br>line 1<br>line 2<br>"
+            "</div></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        int smax = ta->scroll_max;
+        int ch = ta->content.h;
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+            }
+        }
+        std::printf("[scroll] ta-in-card smax=%d ch=%d run_bottom=%d "
+                    "ta_y=%d\n",
+                    smax, ch,
+                    run ? run->border.y + run->border.h : -1,
+                    ta->border.y);
+        std::fflush(stdout);
+        assert(smax == 0); /* 2 lines fit inside the card textarea */
+        whaleui_window_destroy(w);
+    }
+
+    /* the FULL demo page (extracted from examples/demo.cpp): the demo
+     * textarea reports a ~70-line scroll range - reproduce it here */
+    {
+        const char* path = WHALEUI_TEST_ROOT "/temp/demo_full.html";
+        FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            std::printf("[scroll] demo_full.html missing, skipping\n");
+            std::fflush(stdout);
+        } else {
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            std::string html(static_cast<size_t>(sz), '\0');
+            std::fread(&html[0], 1, static_cast<size_t>(sz), f);
+            std::fclose(f);
+            whaleui_window_t* w =
+                whaleui_window_create(app, "demo-full-page", 700, 500);
+            assert(w != nullptr);
+            assert(whaleui_window_load_html(w, html.c_str()) == 0);
+            assert(whaleui_app_set_theme(app, WHALEUI_THEME_LIGHT) == 0);
+            assert(whaleui_window_show(w) == 0);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            whaleui_layout_node_t* ta = nullptr;
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 8 &&
+                        std::memcmp(name, "textarea", 8) == 0) {
+                        ta = &n;
+                        break;
+                    }
+                }
+            }
+            assert(ta != nullptr);
+            std::printf("[scroll] demo-full ta smax=%d ch=%d h=%d\n",
+                        ta->scroll_max, ta->content.h, ta->border.h);
+            std::fflush(stdout);
+            assert(ta->scroll_max == 0); /* 2 lines fit: no range */
+            whaleui_window_destroy(w);
+        }
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
