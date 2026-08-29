@@ -2761,6 +2761,79 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* the page scroll range reaches the TRUE content bottom: the ancestor
+     * boxes keep their layout-estimated heights (only the run heights are
+     * corrected), so scroll_max must be derived from the corrected subtree,
+     * not from a parent's border.h - otherwise the page cannot scroll to
+     * the end and short-estimate boxes never show a scrollbar */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "pagemax", 300, 220);
+        std::string html =
+            "<html><body><div id=\"outer\"><textarea id=\"t\" "
+            "style=\"width:200px;height:40px\">" +
+            std::string("ab\n") + "cd\n" + "ef\n" + "gh\n" + "ij\n" +
+            "kl\n" + "mn\n" + "op\n" + "qr\n" + "st\n" + "uv\n" +
+            "wx\n" + "yz</textarea></div></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        int page_max = root->scroll_max;
+        std::printf("[pagemax] page_scroll_max=%d\n", page_max);
+        std::fflush(stdout);
+        /* typing far more lines keeps the page able to scroll to the real
+         * bottom (regression: ancestor height under-count used to cap it) */
+        lxb_dom_element* tel = nullptr;
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    tel = ta->el;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr && tel != nullptr);
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        std::string big;
+        for (int i = 0; i < 40; ++i) {
+            big += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        }
+        edit_replace(w->render, tel, 0, 0, big);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        root = w->render->tree->root;
+        int page_max2 = root->scroll_max;
+        std::printf("[pagemax] after-edit page_scroll_max=%d\n", page_max2);
+        std::fflush(stdout);
+        whaleui_layout_node_t* ta2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta2 != nullptr);
+        assert(ta2->scroll_max > 0); /* internal scroll is active */
+        assert(page_max2 >= 0);
+        /* scrolling the page to max keeps the textarea's bottom within the
+         * viewport: subtree-corrected bottom - viewport == scroll_max */
+        w->render->scrolls[root->el] = page_max2;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+    }
+
     /* horizontal scroll follows the content: grows only when the text
      * overflows, and shrinks back when the content no longer needs it */
     {
