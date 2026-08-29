@@ -895,20 +895,6 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * function has no global side effects on other text. Wrapped text
          * taller than the box stays top-aligned (no negative centering). */
         int ty = th <= bh ? by + (bh - th) / 2 : by;
-        std::string cache_key;
-        if (ckey) {
-            /* cache key keeps the wrap width so different soft-wraps
-             * never share a raster */
-            char key[96];
-            std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d",
-                          static_cast<void*>(ckey), fs, style,
-                          family.c_str(), wrap ? bw : -1);
-            cache_key = key;
-        }
-        /* display text: layout lines joined by \n (TTF_Text wraps at \n,
-         * line height = the font's, which matches text_line_h). An empty
-         * last line (text ending in \n) has cstart == cend == map.size(),
-         * so its byte offsets are clamped to disp.size(). */
         std::string render_text;
         for (size_t li = 0; li < L.lines.size(); ++li) {
             const TextLayoutLine& ln = L.lines[li];
@@ -922,6 +908,24 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             if (li + 1 < L.lines.size()) {
                 render_text += '\n';
             }
+        }
+        std::string cache_key;
+        if (ckey) {
+            /* the key must include the text: reusing the raster when only
+             * the string changed (same box size) showed stale glyphs -
+             * typed characters did not render until a line count change
+             * (Enter) rebuilt the surface. */
+            uint64_t h = 1469598103934665603ull;
+            for (size_t i = 0; i < render_text.size(); ++i) {
+                h ^= static_cast<unsigned char>(render_text[i]);
+                h *= 1099511628211ull;
+            }
+            char key[128];
+            std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%zu|%llu",
+                          static_cast<void*>(ckey), fs, style,
+                          family.c_str(), wrap ? bw : -1, render_text.size(),
+                          static_cast<unsigned long long>(h));
+            cache_key = key;
         }
         auto rasterize = [&](SDL_Surface* s) {
             TTF_Text* ct = TTF_CreateText(engine, font, render_text.c_str(),
