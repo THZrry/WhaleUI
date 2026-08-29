@@ -1177,6 +1177,57 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* focus the demo textarea (the screenshot shows a focused/blue-border
+     * textarea): focusing must NOT inflate its scroll range */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-focus", 500, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><head><style>.row { display:flex; } .card { flex:1; "
+            "border:1px solid black; padding:8px; }</style></head><body>"
+            "<div class=\"row\"><div class=\"card\">"
+            "<h2>Edit</h2>"
+            "<p><textarea style=\"width:100%;height:56px;"
+            "box-sizing:border-box\">多行文本&#10;支持 Enter 换行"
+            "</textarea></p>"
+            "</div></div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        int smax0 = ta->scroll_max;
+        /* focus it (screenshot shows the focused state) */
+        lxb_dom_element* tel = ta->el;
+        w->render->edit_el = tel;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el == tel && !n.is_text) {
+                ta = &n;
+                break;
+            }
+        }
+        assert(ta != nullptr);
+        std::printf("[scroll] ta-focus smax0=%d smax_focused=%d ch=%d\n",
+                    smax0, ta->scroll_max, ta->content.h);
+        std::fflush(stdout);
+        assert(ta->scroll_max == 0); /* focus does not add a range */
+        whaleui_window_destroy(w);
+    }
+
     /* the FULL demo page (extracted from examples/demo.cpp): the demo
      * textarea reports a ~70-line scroll range - reproduce it here */
     {
@@ -1213,12 +1264,83 @@ int main(void)
                 }
             }
             assert(ta != nullptr);
-            std::printf("[scroll] demo-full ta smax=%d ch=%d h=%d\n",
-                        ta->scroll_max, ta->content.h, ta->border.h);
+            std::printf("[scroll] ta-focus-afterpage smax0=%d\n",
+                        ta->scroll_max);
             std::fflush(stdout);
-            assert(ta->scroll_max == 0); /* 2 lines fit: no range */
+            assert(ta->scroll_max == 0);
+            /* scroll the PAGE (wheel in a blank page area), then re-check:
+             * the textarea range must stay 0 */
+            whaleui_layout_node_t* root = w->render->tree->root;
+            lxb_dom_element* rel = root->el;
+            for (int i = 0; i < 6; ++i) {
+                whaleui_render_handle_wheel(w->render, 350, 30, -1.0f);
+            }
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            ta = nullptr;
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 8 &&
+                        std::memcmp(name, "textarea", 8) == 0) {
+                        ta = &n;
+                        break;
+                    }
+                }
+            }
+            assert(ta != nullptr);
+            std::printf("[scroll] ta-focus-afterpage page_s=%d ta_smax=%d\n",
+                        w->render->scrolls[rel], ta->scroll_max);
+            std::fflush(stdout);
+            assert(ta->scroll_max == 0); /* page scroll keeps ta at 0 */
             whaleui_window_destroy(w);
         }
+    }
+
+    /* even if the textarea has a stale/large live scroll (e.g. after a
+     * scroll or an FSR relayout), a relayout must NOT inflate its range -
+     * the range depends only on content, never on scroll_y */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-stale-scroll", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:56px\">多行文本\n支持 Enter 换行</textarea>"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        lxb_dom_element* tel = ta->el;
+        /* a stale live scroll from a previous state */
+        w->render->scrolls[tel] = 1400;
+        w->render->hover_old_el = tel; /* force a relayout path */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el == tel && !n.is_text) {
+                ta = &n;
+                break;
+            }
+        }
+        assert(ta != nullptr);
+        std::printf("[scroll] ta-stale-scroll smax=%d\n", ta->scroll_max);
+        std::fflush(stdout);
+        assert(ta->scroll_max == 0); /* 2 lines: never a 70-line range */
+        whaleui_window_destroy(w);
     }
 
     whaleui_app_destroy(app);

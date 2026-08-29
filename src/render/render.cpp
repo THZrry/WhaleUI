@@ -2772,19 +2772,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             }
             if (scrollable) {
-                /* inner_bottom is unbaked (children got child_comp). The
-                 * box's own content.y may or may not have been baked
-                 * (content.y -= scroll_y); take the larger interpretation
-                 * so the range never under-counts (which would clamp the
-                 * live scroll back). */
+                /* inner_bottom is unbaked (children got child_comp): the
+                 * range is the true content height, independent of the
+                 * live scroll. The earlier max-with-cmax2 double-counted
+                 * scroll_y when the box had scroll_y > 0 (or a scrolled
+                 * ancestor), inflating the range (a 2-line textarea that
+                 * reported ~70 lines after a scroll/FSR relayout). */
                 int cmax =
                     (inner_bottom - nd->content.y) - nd->content.h;
-                int cmax2 =
-                    (inner_bottom - (nd->content.y + nd->scroll_y)) -
-                    nd->content.h;
-                if (cmax2 > cmax) {
-                    cmax = cmax2;
-                }
                 if (cmax < 0) {
                     cmax = 0;
                 }
