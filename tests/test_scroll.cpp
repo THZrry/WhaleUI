@@ -124,8 +124,6 @@ int main(void)
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_layout_node_t* root = w->render->tree->root;
-        std::printf("[scroll] page_scroll_max=%d\n", root->scroll_max);
-        std::fflush(stdout);
         assert(root->scroll_max > 0);
         /* the bottom text is reachable: scroll to max, then the last run's
          * bottom is at the viewport bottom */

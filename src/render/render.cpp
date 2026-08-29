@@ -2741,6 +2741,24 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             it->second = 0;
                         }
                     }
+                } else if (inner_bottom > nd->border.y + nd->border.h) {
+                    /* auto-height box whose content (run heights now
+                     * corrected to the real line height) is taller than
+                     * the layout estimate: grow the box so the parent
+                     * chain's bottom reflects the real content. Explicit
+                     * heights stay fixed (content overflows / scrolls). */
+                    std::string hh = sget(nd->style, "height");
+                    bool h_auto = hh.empty() || hh == "auto";
+                    if (h_auto) {
+                        nd->border.h = inner_bottom - nd->border.y;
+                        int ch = nd->border.h - nd->padding[0] -
+                                 nd->padding[2] - nd->border_w[0] -
+                                 nd->border_w[2];
+                        if (ch < 0) {
+                            ch = 0;
+                        }
+                        nd->content.h = ch;
+                    }
                 }
             }
             return scrollable ? (nd->border.y + nd->border.h)
