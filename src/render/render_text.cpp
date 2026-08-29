@@ -241,6 +241,12 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
             }
         }
     }
+    /* 文本以 \n 结尾时,末尾还有一个空行(编辑器里光标停在最后一行)。
+     * 不补上,text_size/绘制/命中就少算一行,内容整体偏下。 */
+    if (!L.lines.empty() && !L.disp.empty() && L.disp.back() == '\n') {
+        L.lines.push_back({nc, nc, 0});
+        L.th += lh;
+    }
 }
 
 static TextLayout layout_text(const std::string& text, int wrap_w, int lh,

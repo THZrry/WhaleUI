@@ -992,5 +992,97 @@ int main(void)
         assert(h2 > h1);    /* wrapped to multiple lines */
     }
 
+    /* REPRO: editable controls' size when text is added/removed - does the
+     * width follow the content (unwrapped) or stay CSS-defined? */
+    {
+        struct C
+        {
+            const char* name;
+            const char* short_html;
+            const char* long_html;
+        };
+        C cases[] = {
+            {"textarea default",
+             "<html><body><textarea>x</textarea></body></html>",
+             "<html><body><textarea>aaaaaaaaaa bbbbbbbbbb cccccccccc "
+             "dddddddddd eeeeeeeeee ffffffffff gggggggggg</textarea>"
+             "</body></html>"},
+            {"textarea w:auto",
+             "<html><body><textarea style=\"width:auto\">x</textarea>"
+             "</body></html>",
+             "<html><body><textarea style=\"width:auto\">aaaaaaaaaa "
+             "bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff "
+             "gggggggggg</textarea></body></html>"},
+            {"contenteditable span",
+             "<html><body><span contenteditable=\"true\">x</span>"
+             "</body></html>",
+             "<html><body><span contenteditable=\"true\">aaaaaaaaaa "
+             "bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff "
+             "gggggggggg</span></body></html>"},
+            {"contenteditable span w:auto",
+             "<html><body><span contenteditable=\"true\" "
+             "style=\"width:auto\">x</span></body></html>",
+             "<html><body><span contenteditable=\"true\" "
+             "style=\"width:auto\">aaaaaaaaaa bbbbbbbbbb cccccccccc "
+             "dddddddddd eeeeeeeeee ffffffffff gggggggggg</span>"
+             "</body></html>"},
+            {"contenteditable div",
+             "<html><body><div contenteditable=\"true\">x</div></body></html>",
+             "<html><body><div contenteditable=\"true\">aaaaaaaaaa "
+             "bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff "
+             "gggggggggg</div></body></html>"},
+            {"input default",
+             "<html><body><input value=\"x\"></body></html>",
+             "<html><body><input value=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\">"
+             "</body></html>"},
+            {"input w:auto",
+             "<html><body><input style=\"width:auto\" value=\"x\">"
+             "</body></html>",
+             "<html><body><input style=\"width:auto\" "
+             "value=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"></body></html>"},
+        };
+        auto find_ctrl = [](whaleui_layout_tree_t* t, const char* tag,
+                            int* w, int* h) {
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && std::strlen(tag) == len &&
+                    std::memcmp(nm, tag, len) == 0) {
+                    *w = n.border.w;
+                    *h = n.border.h;
+                    return;
+                }
+            }
+            *w = *h = -1;
+        };
+        for (auto& cs : cases) {
+            const char* tag = std::strstr(cs.short_html, "<textarea")
+                                  ? "textarea"
+                                  : (std::strstr(cs.short_html, "<input")
+                                         ? "input"
+                                         : (std::strstr(cs.short_html,
+                                                        "<div")
+                                                ? "div"
+                                                : "span"));
+            int w1, h1, w2, h2;
+            whaleui_layout_tree_t* t1 = do_layout(cs.short_html, 400, 300);
+            whaleui_layout_tree_t* t2 = do_layout(cs.long_html, 400, 300);
+            assert(t1 && t2);
+            find_ctrl(t1, tag, &w1, &h1);
+            find_ctrl(t2, tag, &w2, &h2);
+            printf("[len] %-26s short(w%dh%d) long(w%dh%d) %s\n", cs.name,
+                   w1, h1, w2, h2,
+                   (w1 == w2 && h1 == h2)
+                       ? "fixed"
+                       : (w1 != w2 ? "<-- WIDTH changed"
+                                   : "<-- HEIGHT changed"));
+            whaleui_layout_destroy(t2);
+            whaleui_layout_destroy(t1);
+        }
+    }
+
     return 0;
 }

@@ -2246,6 +2246,80 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* text length (text_size) must include a trailing empty line: "a\n"
+     * is two lines (the caret sits on the empty last line) - without it
+     * the painted text sits low and scrolling is off by one line */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "len", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p>x</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int fs = 16;
+        std::string fam;
+        bool bold = false;
+        int lh = text_line_h(w->render, fs, fam, bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "a\n", fs, fam, bold, &tw, &th, 0);
+        assert(th == 2 * lh); /* trailing newline -> empty last line */
+        text_size(w->render, "a\nb", fs, fam, bold, &tw, &th, 0);
+        assert(th == 2 * lh);
+        text_size(w->render, "a\n\n", fs, fam, bold, &tw, &th, 0);
+        assert(th == 3 * lh);
+        whaleui_window_destroy(w);
+    }
+
+    /* typing into an editable control must not change the control's own
+     * size (width comes from CSS; the height grows with wrapped lines
+     * only for auto-sized content) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "grow2", 400, 300);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:200px;"
+            "height:60px\">x</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        int w0 = ta->border.w, h0 = ta->border.h;
+        w->render->edit_el = ta->el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        std::string longv = "aaaa\nbbbb\ncccc\ndddd\neeee\n";
+        edit_replace(w->render, ta->el, 0, 0, longv);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta2 != nullptr);
+        assert(ta2->border.w == w0);
+        assert(ta2->border.h == h0); /* fixed height, content scrolls */
+        assert(ta2->scroll_max > 0);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     anim_runs();
     return 0;

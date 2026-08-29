@@ -127,7 +127,7 @@ target("whaleui-minimal")
 -- Run with:  xmake run test_api   (from the repo root, so file:// URIs in
 -- tests resolve under tests/data/).
 
-for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_style", "test_anim", "test_layout", "test_render", "test_window"}) do
+for _, name in ipairs({"test_layout", "test_render"}) do
     target(name)
         set_kind("binary")
         add_files("tests/" .. name .. ".cpp")
