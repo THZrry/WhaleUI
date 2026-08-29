@@ -906,14 +906,19 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             cache_key = key;
         }
         /* display text: layout lines joined by \n (TTF_Text wraps at \n,
-         * line height = the font's, which matches text_line_h) */
+         * line height = the font's, which matches text_line_h). An empty
+         * last line (text ending in \n) has cstart == cend == map.size(),
+         * so its byte offsets are clamped to disp.size(). */
         std::string render_text;
         for (size_t li = 0; li < L.lines.size(); ++li) {
             const TextLayoutLine& ln = L.lines[li];
-            size_t b0 = L.dbytes[ln.cstart];
+            size_t b0 = (ln.cstart < L.dbytes.size()) ? L.dbytes[ln.cstart]
+                                                      : L.disp.size();
             size_t b1 = (ln.cend < L.dbytes.size()) ? L.dbytes[ln.cend]
                                                     : L.disp.size();
-            render_text.append(L.disp, b0, b1 - b0);
+            if (b1 > b0) {
+                render_text.append(L.disp, b0, b1 - b0);
+            }
             if (li + 1 < L.lines.size()) {
                 render_text += '\n';
             }
