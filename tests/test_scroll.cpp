@@ -429,26 +429,22 @@ int main(void)
         }
     }
 
-    /* hovering an element after scrolling must not reset the page scroll:
-     * hover changes are paint-only (no relayout), the position survives */
+    /* hovering an element must not reset the page scroll, and the hover
+     * target repaints its :hover style (partial repaint): the target sits
+     * in the VIEWPORT so pixels are readable */
     {
         whaleui_window_t* w = whaleui_window_create(app, "hover-keep", 300, 200);
         assert(w != nullptr);
         assert(whaleui_window_load_html(w,
             "<html><head><style>div:hover { background:#ccc; }</style>"
-            "</head><body><div style=\"height:600px\"></div>"
-            "<div id=\"h\" style=\"height:60px\">tail</div></body></html>") == 0);
+            "</head><body><div id=\"h\" style=\"height:60px\">tail</div>"
+            "<div style=\"height:600px\"></div></body></html>") == 0);
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_layout_node_t* root = w->render->tree->root;
         lxb_dom_element* rel = root->el;
         assert(root->scroll_max > 0);
-        for (int i = 0; i < 8; ++i) {
-            whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
-        }
-        int s1 = w->render->scrolls[rel];
-        assert(s1 > 0);
-        /* move the mouse onto the hover target */
+        /* hover the in-viewport target (visual == layout) */
         whaleui_layout_node_t* hov = nullptr;
         for (auto& n : w->render->tree->arena) {
             if (n.visible && n.el && !n.is_text) {
@@ -464,13 +460,113 @@ int main(void)
             }
         }
         assert(hov != nullptr);
+        unsigned int pre_h0 =
+            gpixel(w->render, hov->border.x + 2, hov->border.y + 2);
         whaleui_render_set_hover(w->render, hov->border.x + 5,
                                  hov->border.y + 5);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int pre_h1 =
+            gpixel(w->render, hov->border.x + 2, hov->border.y + 2);
+        std::printf("[scroll] hover-pre %08X -> %08X\n", pre_h0, pre_h1);
+        std::fflush(stdout);
+        assert(pre_h1 != pre_h0); /* :hover style actually applies */
+        /* now scroll: position must survive a hover change AND the frame */
+        for (int i = 0; i < 8; ++i) {
+            whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        }
+        int s1 = w->render->scrolls[rel];
+        assert(s1 > 0);
+        /* move the mouse onto the (scrolled) tail element */
+        whaleui_layout_node_t* hov2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 &&
+                    std::memcmp(name, "div", 3) == 0 &&
+                    n.border.h == 60) {
+                    hov2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(hov2 != nullptr);
+        whaleui_render_set_hover(w->render, hov2->border.x + 5,
+                                 hov2->border.y + 5);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         std::printf("[scroll] hover s1=%d after=%d\n", s1,
                     w->render->scrolls[rel]);
         std::fflush(stdout);
         assert(w->render->scrolls[rel] == s1); /* position survives hover */
+        /* a distant pixel is untouched by the hover repaint */
+        whaleui_layout_node_t* far = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text && n.border.h == 600) {
+                far = &n;
+                break;
+            }
+        }
+        assert(far != nullptr);
+        int fv = far->border.y - w->render->scrolls[rel];
+        unsigned int fc0 = gpixel(w->render, far->border.x + 2, fv + 2);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int fc1 = gpixel(w->render, far->border.x + 2, fv + 2);
+        std::printf("[scroll] hover far %08X -> %08X\n", fc0, fc1);
+        std::fflush(stdout);
+        assert(fc1 == fc0); /* elsewhere untouched */
+        whaleui_window_destroy(w);
+    }
+
+    /* the scrollbar thumb must follow the wheel AND leave no residue: with
+     * scroll-shift, the shifted old thumb image must be overwritten by the
+     * scrollbar column repaint (pixel check on the right-edge column) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "sb-pixel", 200, 120);
+        assert(w != nullptr);
+        std::string html = "<html><body><div id=\"sc\" style=\"overflow:"
+                           "auto;height:80px;width:180px\">";
+        for (int i = 0; i < 30; ++i) {
+            html += "line " + std::to_string(i) + "<br>";
+        }
+        html += "</div></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* sc = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 &&
+                    std::memcmp(name, "div", 3) == 0 &&
+                    n.scroll_max > 0) {
+                    sc = &n;
+                    break;
+                }
+            }
+        }
+        assert(sc != nullptr && sc->scroll_max > 0);
+        lxb_dom_element* el = sc->el;
+        const int bx = sc->border.x + sc->border.w - 4; /* on the bar */
+        /* thumb starts at the top of the track */
+        unsigned int p0 = gpixel(w->render, bx, sc->border.y + 2);
+        int s0 = w->render->scrolls[el];
+        for (int i = 0; i < 6; ++i) {
+            whaleui_render_handle_wheel(w->render, sc->border.x + 10,
+                                        sc->border.y + 10, -1.0f);
+        }
+        int s1 = w->render->scrolls[el];
+        assert(s1 > s0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int p1 = gpixel(w->render, bx, sc->border.y + 2);
+        std::printf("[scroll] sb thumb p0=%08X p1=%08X s=%d\n", p0, p1,
+                    w->render->scrolls[el]);
+        std::fflush(stdout);
+        /* after scrolling down the thumb moved away from the top: the top
+         * of the track must no longer be thumb color */
+        assert(p1 != p0);
         whaleui_window_destroy(w);
     }
 

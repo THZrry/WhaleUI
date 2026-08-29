@@ -313,10 +313,17 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
             thumb = (0x55 << 24) | (c & 0x00FFFFFF);
         }
     }
+    /* the scrollbar column is repainted as its own region, IGNORING the
+     * caller's clip (which on a scroll-shift is only the exposed strip):
+     * the thumb can sit anywhere on the track, so a strip-only clip would
+     * leave the shifted old thumb image behind ("scrollbar rendering
+     * wrong" after restoring scroll-shift). The 8px column is cheap to
+     * repaint every scroll frame. */
+    Clip bar = { track_x, track_y, bw, track_h };
     fill_rect(r->pixels, r->fb_w, r->fb_h, track_x, track_y, bw, track_h,
-              track, clip);
+              track, &bar);
     fill_rect(r->pixels, r->fb_w, r->fb_h, track_x, thumb_y, bw, thumb_h,
-              thumb, clip);
+              thumb, &bar);
 }
 
 void select_options(lxb_dom_element* sel, std::vector<std::string>& texts,

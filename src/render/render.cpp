@@ -2114,6 +2114,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
+        r->hover_old_el = r->hover_el;
         r->hover_el = el;
         /* switch the system cursor: I-beam over editable text, pointer
          * over links/clickable controls, arrow otherwise */
@@ -2758,6 +2759,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (scrollable) {
                     int cmax =
                         (inner_bottom - nd->content.y) - nd->content.h;
+                    /* after a relayout with a live scroll, descendant
+                     * positions are baked up by scroll_y while the box's
+                     * own content.y may not be - under-counting the range
+                     * by exactly scroll_y (the "jumps back to top" after
+                     * hovering). Take the larger of both interpretations. */
+                    int cmax2 =
+                        (inner_bottom + nd->scroll_y - nd->content.y) -
+                        nd->content.h;
+                    if (cmax2 > cmax) {
+                        cmax = cmax2;
+                    }
                     if (cmax < 0) {
                         cmax = 0;
                     }
@@ -2794,8 +2806,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             return scrollable ? (nd->border.y + nd->border.h)
                               : inner_bottom;
         };
-        fix_sm(r->tree->root);
-        /* after a DOM edit the layout tree is fresh here: re-run the
+        fix_sm(r->tree->root);        /* after a DOM edit the layout tree is fresh here: re-run the
          * caret-visible scroll so a caret just typed past the visible
          * area (or on a wrapped line) scrolls the box. edit_replace's
          * earlier call ran against the stale tree (scroll_max was 0),
@@ -2974,6 +2985,44 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     bool partial = false; /* load-only repaint of a dirty region */
     if (scroll_dy != 0) {
         /* scroll strip handled above */
+    } else if (!animating && !r->edit_el && r->hover_old_el) {
+        /* hover change: repaint only the previous and current hover
+         * targets (their :hover style changed). The relayout already
+         * re-cascaded the styles; the geometry is stable. */
+        std::function<void(whaleui_layout_node_t*)> acc =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el &&
+                    (nd->el == r->hover_old_el ||
+                     nd->el == r->hover_el)) {
+                    /* visual position: the layout bounds are pre-scroll;
+                     * the paint pass draws at bounds + ancestor scroll */
+                    int off = 0;
+                    for (whaleui_layout_node_t* p = nd->parent; p;
+                         p = p->parent) {
+                        off += scroll_delta(r, p);
+                    }
+                    int x0 = nd->bounds.x;
+                    int y0 = nd->bounds.y + off;
+                    int x1 = x0 + nd->bounds.w;
+                    int y1 = y0 + nd->bounds.h;
+                    if (x0 < 0) x0 = 0;
+                    if (y0 < 0) y0 = 0;
+                    if (x1 > r->fb_w) x1 = r->fb_w;
+                    if (y1 > r->fb_h) y1 = r->fb_h;
+                    if (x1 > x0 && y1 > y0) {
+                        dirty_rect(x0, y0, x1, y1, &strip);
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    acc(c);
+                }
+            };
+        acc(r->tree->root);
+        if (strip.w > 0 && strip.h > 0) {
+            partial = true;
+        }
+        r->hover_old_el = nullptr;
     } else if (animating && !need_layout && !r->has_dirty && !r->edit_el) {
         /* paint-only animation: repaint only the animating elements'
          * bounding boxes (dirty-rect, keeps the rest of the frame) */

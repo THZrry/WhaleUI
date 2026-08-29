@@ -99,6 +99,8 @@ struct whaleui_render
 
     /* element under the mouse (for :hover rules) */
     struct lxb_dom_element* hover_el;
+    /* previous hover target, dirtied for a partial repaint on change */
+    struct lxb_dom_element* hover_old_el;
     /* last clicked control (:focus) and the element the left button is
      * held down on (:active) */
     struct lxb_dom_element* focus_el;
