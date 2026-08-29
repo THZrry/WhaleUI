@@ -168,7 +168,12 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty, wrap_w);
     tx += off_x;
-    ty += off_y;
+    /* the editable box's OWN scroll: the layout baked scroll_y into the
+     * run position, but the live scroll (edit_ensure_visible runs AFTER
+     * the relayout, and wheel scrolls never relayout) can differ - without
+     * this delta the first line stays shifted out of view and the caret
+     * renders below the text. */
+    ty += off_y + scroll_delta(r, n);
     int th = text_line_h(r, fs, family, bold);
 
     /* single-line input: content scrolls horizontally with the caret and is
