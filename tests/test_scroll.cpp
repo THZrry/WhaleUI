@@ -621,6 +621,94 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* q21k: many wheel steps with a frame between each must NOT shrink the
+     * range - the "each wheel makes the thumb a bit longer" report. The
+     * range only changes when content changes. */
+    {
+        const char* path = WHALEUI_TEST_ROOT
+            "/temp/Qwen_html_20260814_oeem340or.html";
+        FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            std::printf("[scroll] q21k file missing, skipping\n");
+            std::fflush(stdout);
+        } else {
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            std::string html(static_cast<size_t>(sz), '\0');
+            std::fread(&html[0], 1, static_cast<size_t>(sz), f);
+            std::fclose(f);
+            whaleui_window_t* w =
+                whaleui_window_create(app, "q21k-stable", 500, 400);
+            assert(w != nullptr);
+            assert(whaleui_window_load_html(w, html.c_str()) == 0);
+            assert(whaleui_window_show(w) == 0);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            whaleui_layout_node_t* root = w->render->tree->root;
+            lxb_dom_element* rel = root->el;
+            int smax0 = root->scroll_max;
+            assert(smax0 > 0);
+            int prev_s = 0;
+            for (int i = 0; i < 8; ++i) {
+                whaleui_render_handle_wheel(w->render, 250, 200, -1.0f);
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+                root = w->render->tree->root;
+                assert(w->render->scrolls[rel] > prev_s);
+                prev_s = w->render->scrolls[rel];
+            }
+            int smax1 = root->scroll_max;
+            std::printf("[scroll] q21k-stable smax %d -> %d s=%d\n", smax0,
+                        smax1, w->render->scrolls[rel]);
+            std::fflush(stdout);
+            assert(smax1 == smax0); /* range never shrinks while wheeling */
+            whaleui_window_destroy(w);
+        }
+    }
+
+    /* demo-shaped page: several flex rows of cards with inputs/textareas/
+     * hover styles - the page must scroll and reach its bottom */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "demo-full", 500, 300);
+        assert(w != nullptr);
+        std::string html =
+            "<html><head><style>"
+            ".row { display:flex; margin-bottom:10px; }"
+            ".card { flex:1; border:1px solid black; padding:8px; "
+            "margin:0 6px; }"
+            ".card:hover { background:#eee; }"
+            "</style></head><body>";
+        for (int r = 0; r < 4; ++r) {
+            html += "<div class=\"row\"><div class=\"card\"><h2>Card</h2>"
+                    "<p><input style=\"width:100%\"></p>"
+                    "<p><textarea style=\"width:100%;height:50px\">"
+                    "text</textarea></p></div>"
+                    "<div class=\"card\">line 1<br>line 2<br>line 3<br>"
+                    "</div></div>";
+        }
+        html += "</body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        int smax0 = root->scroll_max;
+        std::printf("[scroll] demo-full smax=%d\n", smax0);
+        std::fflush(stdout);
+        assert(smax0 > 0);
+        /* wheel must scroll, and must reach the bottom */
+        int s0 = w->render->scrolls[rel];
+        whaleui_render_handle_wheel(w->render, 250, 150, -1.0f);
+        assert(w->render->scrolls[rel] > s0);
+        for (int i = 0; i < 40; ++i) {
+            whaleui_render_handle_wheel(w->render, 250, 150, -1.0f);
+        }
+        std::printf("[scroll] demo-full bottom s=%d smax=%d\n",
+                    w->render->scrolls[rel], smax0);
+        std::fflush(stdout);
+        assert(w->render->scrolls[rel] >= smax0 - 1);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

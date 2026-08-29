@@ -2734,77 +2734,82 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         fix_run_h(r->tree->root);
         /* single post-order pass: compute each subtree's REAL bottom (the
          * run heights were just corrected above, but the ancestor boxes
-         * keep their layout-estimated heights - using a direct child's
-         * border.h here under-counts the content bottom, so the page could
-         * not scroll to the end and boxes with a short estimate showed no
-         * scrollbar at all). Each scrollable box / the root gets
-         * scroll_max = subtree_bottom - content.h. A scrollable box's
-         * content scrolls INSIDE it, so it never stretches its parent:
-         * its outward bottom is its own border box. */
-        std::function<int(whaleui_layout_node_t*)> fix_sm =
-            [&](whaleui_layout_node_t* nd) -> int {
-            int inner_bottom = nd->border.y + nd->border.h;
-            for (whaleui_layout_node_t* c = nd->first_child; c;
-                 c = c->next) {
-                int cb = fix_sm(c);
-                if (cb > inner_bottom) {
-                    inner_bottom = cb;
-                }
-            }
+         * keep their layout-estimated heights). The recursion carries
+         * `scomp` = the accumulated scroll_y of every scrollable ancestor:
+         * descendants are laid out against baked content.y (shifted up by
+         * -scroll_y), so adding the compensation back yields UNBAKED
+         * coordinates. Every result - scroll_max, grown auto-height boxes,
+         * the returned bottom - must be independent of the live scroll,
+         * otherwise a mid-scroll relayout (hover) shrinks the range, the
+         * thumb grows and the wheel stops early. */
+        std::function<int(whaleui_layout_node_t*, int)> fix_sm =
+            [&](whaleui_layout_node_t* nd, int scomp) -> int {
             bool scrollable = false;
             if (nd->el && !nd->is_text) {
                 std::string ov = sget(nd->style, "overflow");
                 scrollable = ov == "auto" || ov == "scroll" ||
                              nd == r->tree->root;
-                if (scrollable) {
-                    /* descendant positions are laid out relative to the
-                     * (baked) content.y, so inner_bottom already includes
-                     * the -scroll_y shift; adding scroll_y back gives the
-                     * UNBAKED content bottom, independent of the live
-                     * scroll. This must be deterministic across relayouts
-                     * (a hover/relayout mid-scroll must not change the
-                     * range, which made the thumb grow and the wheel stop
-                     * "mid-way"). */
-                    int cmax =
-                        (inner_bottom + nd->scroll_y - nd->content.y) -
-                        nd->content.h;
-                    if (cmax < 0) {
-                        cmax = 0;
-                    }
-                    nd->scroll_max = cmax;
-                    auto it = r->scrolls.find(nd->el);
-                    if (it != r->scrolls.end()) {
-                        if (it->second > nd->scroll_max) {
-                            it->second = nd->scroll_max;
-                        }
-                        if (it->second < 0) {
-                            it->second = 0;
-                        }
-                    }
-                } else if (inner_bottom > nd->border.y + nd->border.h) {
-                    /* auto-height box whose content (run heights now
-                     * corrected to the real line height) is taller than
-                     * the layout estimate: grow the box so the parent
-                     * chain's bottom reflects the real content. Explicit
-                     * heights stay fixed (content overflows / scrolls). */
-                    std::string hh = sget(nd->style, "height");
-                    bool h_auto = hh.empty() || hh == "auto";
-                    if (h_auto) {
-                        nd->border.h = inner_bottom - nd->border.y;
-                        int ch = nd->border.h - nd->padding[0] -
-                                 nd->padding[2] - nd->border_w[0] -
-                                 nd->border_w[2];
-                        if (ch < 0) {
-                            ch = 0;
-                        }
-                        nd->content.h = ch;
-                    }
+            }
+            int child_comp = scomp + (scrollable ? nd->scroll_y : 0);
+            int inner_bottom = nd->border.y + nd->border.h + scomp;
+            for (whaleui_layout_node_t* c = nd->first_child; c;
+                 c = c->next) {
+                int cb = fix_sm(c, child_comp);
+                if (cb > inner_bottom) {
+                    inner_bottom = cb;
                 }
             }
-            return scrollable ? (nd->border.y + nd->border.h)
-                              : inner_bottom;
+            if (scrollable) {
+                /* inner_bottom is unbaked (children got child_comp). The
+                 * box's own content.y may or may not have been baked
+                 * (content.y -= scroll_y); take the larger interpretation
+                 * so the range never under-counts (which would clamp the
+                 * live scroll back). */
+                int cmax =
+                    (inner_bottom - nd->content.y) - nd->content.h;
+                int cmax2 =
+                    (inner_bottom - (nd->content.y + nd->scroll_y)) -
+                    nd->content.h;
+                if (cmax2 > cmax) {
+                    cmax = cmax2;
+                }
+                if (cmax < 0) {
+                    cmax = 0;
+                }
+                nd->scroll_max = cmax;
+                auto it = r->scrolls.find(nd->el);
+                if (it != r->scrolls.end()) {
+                    if (it->second > nd->scroll_max) {
+                        it->second = nd->scroll_max;
+                    }
+                    if (it->second < 0) {
+                        it->second = 0;
+                    }
+                }
+                return nd->border.y + nd->border.h;
+            }
+            if (nd->el && !nd->is_text &&
+                inner_bottom > nd->border.y + nd->border.h + scomp) {
+                /* auto-height box whose content (run heights corrected to
+                 * the real line height) is taller than the layout
+                 * estimate: grow it with the UNBAKED height (stable
+                 * across scrolls). Explicit heights stay fixed. */
+                std::string hh = sget(nd->style, "height");
+                bool h_auto = hh.empty() || hh == "auto";
+                if (h_auto) {
+                    nd->border.h = inner_bottom - nd->border.y - scomp;
+                    int ch = nd->border.h - nd->padding[0] -
+                             nd->padding[2] - nd->border_w[0] -
+                             nd->border_w[2];
+                    if (ch < 0) {
+                        ch = 0;
+                    }
+                    nd->content.h = ch;
+                }
+            }
+            return inner_bottom;
         };
-        fix_sm(r->tree->root);        /* after a DOM edit the layout tree is fresh here: re-run the
+        fix_sm(r->tree->root, 0);        /* after a DOM edit the layout tree is fresh here: re-run the
          * caret-visible scroll so a caret just typed past the visible
          * area (or on a wrapped line) scrolls the box. edit_replace's
          * earlier call ran against the stale tree (scroll_max was 0),
