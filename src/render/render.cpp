@@ -2928,29 +2928,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             }
         }
         r->last_scrolls = std::move(cur);
-        /* scrollbar thumb lives on the container's right edge, outside the
-         * exposed strip the scroll-shift repaints - its position would stay
-         * stale ("scrollbar floats with the page"). Any scrollable box
-         * forces a full repaint on scroll (scrolling is low-frequency). */
-        if (scroll_dy != 0) {
-            bool any_sb = false;
-            std::function<void(whaleui_layout_node_t*)> has_sb =
-                [&](whaleui_layout_node_t* nd) {
-                    if (nd->scroll_max > 0) {
-                        any_sb = true;
-                        return;
-                    }
-                    for (whaleui_layout_node_t* c = nd->first_child; c &&
-                         !any_sb;
-                         c = c->next) {
-                        has_sb(c);
-                    }
-                };
-            has_sb(r->tree->root);
-            if (any_sb) {
-                scroll_dy = 0;
-            }
-        }
+        /* scroll-shift repaints only the exposed strip; scrollbar thumbs
+         * live on the containers' right edges, which are inside the
+         * full-width strip, so paint re-draws them at the NEW scroll
+         * position. No full repaint on scroll: that made large pages
+         * (qwen 21k) crawl while scrolling. */
     }
 
     /* paint: collect batched GPU draw commands. Text goes to the CPU layer

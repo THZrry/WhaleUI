@@ -387,6 +387,93 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* wheel right after load (before the first frame finishes): the page
+     * must still scroll to its real bottom afterwards - the early wheel
+     * must not leave scroll_max stuck at the un-corrected estimate */
+    {
+        const char* path = WHALEUI_TEST_ROOT
+            "/temp/Qwen_html_20260814_oeem340or.html";
+        FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            std::printf("[scroll] q21k file missing, skipping\n");
+            std::fflush(stdout);
+        } else {
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            std::string html(static_cast<size_t>(sz), '\0');
+            std::fread(&html[0], 1, static_cast<size_t>(sz), f);
+            std::fclose(f);
+            whaleui_window_t* w =
+                whaleui_window_create(app, "q21k-early", 500, 400);
+            assert(w != nullptr);
+            assert(whaleui_window_load_html(w, html.c_str()) == 0);
+            assert(whaleui_window_show(w) == 0);
+            /* wheel BEFORE the first frame */
+            whaleui_render_handle_wheel(w->render, 250, 200, -1.0f);
+            whaleui_render_handle_wheel(w->render, 250, 200, -1.0f);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            whaleui_layout_node_t* root = w->render->tree->root;
+            int smax = root->scroll_max;
+            std::printf("[scroll] q21k-early scroll_max=%d\n", smax);
+            std::fflush(stdout);
+            assert(smax > 0);
+            /* scroll to the bottom must be possible */
+            lxb_dom_element* rel = root->el;
+            for (int i = 0; i < 200; ++i) {
+                whaleui_render_handle_wheel(w->render, 250, 200, -1.0f);
+            }
+            assert(w->render->scrolls[rel] >= smax - 1);
+            whaleui_window_destroy(w);
+        }
+    }
+
+    /* hovering an element after scrolling must not reset the page scroll:
+     * hover changes are paint-only (no relayout), the position survives */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "hover-keep", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><head><style>div:hover { background:#ccc; }</style>"
+            "</head><body><div style=\"height:600px\"></div>"
+            "<div id=\"h\" style=\"height:60px\">tail</div></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        assert(root->scroll_max > 0);
+        for (int i = 0; i < 8; ++i) {
+            whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        }
+        int s1 = w->render->scrolls[rel];
+        assert(s1 > 0);
+        /* move the mouse onto the hover target */
+        whaleui_layout_node_t* hov = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 3 &&
+                    std::memcmp(name, "div", 3) == 0 &&
+                    n.border.h == 60) {
+                    hov = &n;
+                    break;
+                }
+            }
+        }
+        assert(hov != nullptr);
+        whaleui_render_set_hover(w->render, hov->border.x + 5,
+                                 hov->border.y + 5);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        std::printf("[scroll] hover s1=%d after=%d\n", s1,
+                    w->render->scrolls[rel]);
+        std::fflush(stdout);
+        assert(w->render->scrolls[rel] == s1); /* position survives hover */
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
