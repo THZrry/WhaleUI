@@ -187,6 +187,12 @@ struct whaleui_render
     };
     std::vector<EditOp> undo_stack;
     std::vector<EditOp> redo_stack;
+    /* contenteditable line storage (piece-table style): the text is held
+     * as lines so edits touch only the affected line instead of rebuilding
+     * the whole string. Ordinary input/textarea keep the plain string
+     * path. Invalidated (erased) whenever the DOM changes outside
+     * edit_replace (undo/redo/reset) and lazily rebuilt from the DOM. */
+    std::map<struct lxb_dom_element*, std::vector<std::string>> edit_lines;
 
     /* CSS animation engine (animate.h): @keyframes + transition. Animations
      * are interpolated into the computed styles during the layout pass;

@@ -2227,6 +2227,58 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* contenteditable uses line storage: multi-line edits produce the same
+     * DOM value as the string path, and undo/redo keep working */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "lines", 300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><span id=\"s\" contenteditable=\"true\">"
+            "ab\ncd</span></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* sp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 4 &&
+                    std::memcmp(name, "span", 4) == 0) {
+                    sp = &n;
+                    break;
+                }
+            }
+        }
+        assert(sp != nullptr);
+        lxb_dom_element* el = sp->el; /* capture before any frame */
+        w->render->edit_el = el;
+        w->render->sel_anchor = w->render->sel_focus = 0;
+        auto txt = [&]() -> const char* {
+            return whaleui_dom_get_text(
+                reinterpret_cast<whaleui_dom_element_t*>(el));
+        };
+        /* insert multi-line text at the start */
+        edit_replace(w->render, el, 0, 0, "XY\nZ");
+        assert(txt() != nullptr && std::strcmp(txt(), "XY\nZab\ncd") == 0);
+        /* delete across lines [2,4) removes "\nZ" -> lines merge */
+        edit_replace(w->render, el, 2, 4, "");
+        assert(txt() != nullptr && std::strcmp(txt(), "XYab\ncd") == 0);
+        /* append a newline: keeps the empty last line */
+        edit_replace(w->render, el, 7, 7, "\n");
+        assert(txt() != nullptr && std::strcmp(txt(), "XYab\ncd\n") == 0);
+        /* three undos return to the original value */
+        whaleui_render_handle_key(w->render, 'z', 1, SDL_KMOD_CTRL);
+        assert(txt() != nullptr && std::strcmp(txt(), "XYab\ncd") == 0);
+        whaleui_render_handle_key(w->render, 'z', 1, SDL_KMOD_CTRL);
+        assert(txt() != nullptr && std::strcmp(txt(), "XY\nZab\ncd") == 0);
+        whaleui_render_handle_key(w->render, 'z', 1, SDL_KMOD_CTRL);
+        assert(txt() != nullptr && std::strcmp(txt(), "ab\ncd") == 0);
+        /* redo restores the line storage result too */
+        whaleui_render_handle_key(w->render, 'y', 1, SDL_KMOD_CTRL);
+        assert(txt() != nullptr && std::strcmp(txt(), "XY\nZab\ncd") == 0);
+        whaleui_window_destroy(w);
+    }
+
     /* caret at a line start renders at x=0 of that line, not at the
      * previous line's end (regression: both positions drew identically) */
     {

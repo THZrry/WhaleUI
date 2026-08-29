@@ -666,6 +666,88 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
 static void edit_ensure_visible(whaleui_render_t* r);
 whaleui_layout_node_t* find_node_by_el(whaleui_layout_tree_t* tree,
                                        lxb_dom_element* el);
+bool is_contenteditable(lxb_dom_element* el); /* defined below */
+
+/* split a string into lines; a trailing \n keeps an empty last line
+ * (matches the text layout's line model) */
+static std::vector<std::string> split_lines(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t p = 0;
+    for (;;) {
+        size_t q = s.find('\n', p);
+        if (q == std::string::npos) {
+            out.push_back(s.substr(p));
+            break;
+        }
+        out.push_back(s.substr(p, q - p));
+        p = q + 1;
+    }
+    return out;
+}
+
+static std::string join_lines(const std::vector<std::string>& ls)
+{
+    std::string out;
+    for (size_t i = 0; i < ls.size(); ++i) {
+        if (i) {
+            out += '\n';
+        }
+        out += ls[i];
+    }
+    return out;
+}
+
+/* line-level replace of [a,b) of el's value with `ins`: operates on the
+ * cached line array (built from the DOM on first use), touches only the
+ * affected lines, and writes the result back to the DOM (which stays the
+ * single source of truth for measurement/rendering). */
+static std::string edit_lines_replace(whaleui_render_t* r,
+                                      lxb_dom_element* el, size_t a,
+                                      size_t b, const std::string& ins)
+{
+    auto& lines = r->edit_lines[el];
+    if (lines.empty()) {
+        lines = split_lines(edit_value(el));
+    }
+    /* byte offset -> (row, col): each line contributes len+1 (the \n) */
+    size_t pos = 0;
+    size_t r1 = 0, c1 = 0, r2 = 0, c2 = 0;
+    bool f1 = false, f2 = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (!f1 && a <= pos + lines[i].size()) {
+            r1 = i;
+            c1 = a - pos;
+            f1 = true;
+        }
+        if (!f2 && b <= pos + lines[i].size()) {
+            r2 = i;
+            c2 = b - pos;
+            f2 = true;
+        }
+        if (f1 && f2) {
+            break;
+        }
+        pos += lines[i].size() + 1;
+    }
+    if (!f1) {
+        r1 = lines.size() - 1;
+        c1 = lines[r1].size();
+    }
+    if (!f2) {
+        r2 = lines.size() - 1;
+        c2 = lines[r2].size();
+    }
+    std::string pre = lines[r1].substr(0, c1);
+    std::string suf = lines[r2].substr(c2);
+    std::string mid = pre + ins + suf;
+    lines.erase(lines.begin() + r1, lines.begin() + r2 + 1);
+    std::vector<std::string> ml = split_lines(mid);
+    lines.insert(lines.begin() + r1, ml.begin(), ml.end());
+    std::string nv = join_lines(lines);
+    edit_set_value(el, nv);
+    return nv;
+}
 
 /* replace [a,b) of the editable value with `insertion`, move the caret to
  * the end of the insertion and write the result back into the DOM */
@@ -691,8 +773,14 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
         r->undo_stack.push_back(op);
         r->redo_stack.clear();
     }
-    std::string nv = val.substr(0, a) + insertion + val.substr(b);
-    edit_set_value(el, nv);
+    std::string nv;
+    if (is_contenteditable(el)) {
+        /* line storage: only the affected lines are rebuilt */
+        nv = edit_lines_replace(r, el, a, b, insertion);
+    } else {
+        nv = val.substr(0, a) + insertion + val.substr(b);
+        edit_set_value(el, nv);
+    }
     size_t caret = a + insertion.size();
     r->sel_anchor_el = r->sel_focus_el = el;
     r->sel_anchor = r->sel_focus = static_cast<int>(caret);
@@ -721,6 +809,7 @@ static void edit_undo(whaleui_render_t* r)
     }
     std::string nv = val.substr(0, op.a) + op.del + val.substr(e);
     edit_set_value(op.el, nv);
+    r->edit_lines.erase(op.el); /* line cache is stale after a DOM edit */
     r->edit_el = op.el;
     r->sel_anchor_el = r->sel_focus_el = op.el;
     r->sel_anchor = r->sel_focus = static_cast<int>(op.a);
@@ -750,6 +839,7 @@ static void edit_redo(whaleui_render_t* r)
     }
     std::string nv = val.substr(0, op.a) + op.ins + val.substr(e);
     edit_set_value(op.el, nv);
+    r->edit_lines.erase(op.el); /* line cache is stale after a DOM edit */
     r->edit_el = op.el;
     r->sel_anchor_el = r->sel_focus_el = op.el;
     r->sel_anchor = r->sel_focus = static_cast<int>(op.a + op.ins.size());
@@ -1689,6 +1779,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->compose.clear();
     r->undo_stack.clear();
     r->redo_stack.clear();
+    r->edit_lines.clear();
     r->drag_scroll_el = nullptr;
     r->drag_scroll_node = nullptr;
     r->scroll_max_el = nullptr;
