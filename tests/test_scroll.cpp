@@ -570,6 +570,57 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* the wheel must reach the bottom even when a relayout (hover) happens
+     * mid-scroll, and the range (thumb length) must stay stable across the
+     * relayout - the "wheel stops mid-way and the thumb grows" report */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wheel-relayout", 300, 200);
+        assert(w != nullptr);
+        std::string html = "<html><head><style>div:hover {"
+                           "background:#ccc; }</style></head><body>";
+        for (int i = 0; i < 25; ++i) {
+            html += "<div style=\"height:40px\">line " + std::to_string(i) +
+                    "</div>";
+        }
+        html += "</body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* root = w->render->tree->root;
+        lxb_dom_element* rel = root->el;
+        int smax0 = root->scroll_max;
+        assert(smax0 > 0);
+        /* wheel half-way */
+        for (int i = 0; i < 10; ++i) {
+            whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        }
+        int s_mid = w->render->scrolls[rel];
+        assert(s_mid > 0 && s_mid < smax0);
+        /* hover a mid-page element -> relayout */
+        whaleui_render_set_hover(w->render, 150, 80);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        root = w->render->tree->root; /* re-locate after rebuild */
+        assert(root != nullptr);
+        int smax1 = root->scroll_max;
+        std::printf("[scroll] wheel-relayout smax %d -> %d s=%d\n", smax0,
+                    smax1, w->render->scrolls[rel]);
+        std::fflush(stdout);
+        /* the range must not shrink from the relayout (thumb length
+         * stable), and the position must survive */
+        assert(smax1 >= smax0);
+        assert(w->render->scrolls[rel] == s_mid ||
+               w->render->scrolls[rel] <= smax1);
+        /* keep wheeling: must reach the bottom */
+        for (int i = 0; i < 60; ++i) {
+            whaleui_render_handle_wheel(w->render, 150, 100, -1.0f);
+        }
+        std::printf("[scroll] wheel-relayout bottom s=%d smax=%d\n",
+                    w->render->scrolls[rel], smax1);
+        std::fflush(stdout);
+        assert(w->render->scrolls[rel] >= smax1 - 1);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

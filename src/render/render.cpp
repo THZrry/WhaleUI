@@ -2757,19 +2757,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 scrollable = ov == "auto" || ov == "scroll" ||
                              nd == r->tree->root;
                 if (scrollable) {
+                    /* descendant positions are laid out relative to the
+                     * (baked) content.y, so inner_bottom already includes
+                     * the -scroll_y shift; adding scroll_y back gives the
+                     * UNBAKED content bottom, independent of the live
+                     * scroll. This must be deterministic across relayouts
+                     * (a hover/relayout mid-scroll must not change the
+                     * range, which made the thumb grow and the wheel stop
+                     * "mid-way"). */
                     int cmax =
-                        (inner_bottom - nd->content.y) - nd->content.h;
-                    /* after a relayout with a live scroll, descendant
-                     * positions are baked up by scroll_y while the box's
-                     * own content.y may not be - under-counting the range
-                     * by exactly scroll_y (the "jumps back to top" after
-                     * hovering). Take the larger of both interpretations. */
-                    int cmax2 =
                         (inner_bottom + nd->scroll_y - nd->content.y) -
                         nd->content.h;
-                    if (cmax2 > cmax) {
-                        cmax = cmax2;
-                    }
                     if (cmax < 0) {
                         cmax = 0;
                     }
@@ -3001,10 +2999,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                          p = p->parent) {
                         off += scroll_delta(r, p);
                     }
-                    int x0 = nd->bounds.x;
-                    int y0 = nd->bounds.y + off;
-                    int x1 = x0 + nd->bounds.w;
-                    int y1 = y0 + nd->bounds.h;
+                    int x0 = nd->bounds.x - 2;
+                    int y0 = nd->bounds.y + off - 2;
+                    int x1 = x0 + nd->bounds.w + 4;
+                    int y1 = y0 + nd->bounds.h + 4;
                     if (x0 < 0) x0 = 0;
                     if (y0 < 0) y0 = 0;
                     if (x1 > r->fb_w) x1 = r->fb_w;
