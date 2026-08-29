@@ -831,7 +831,9 @@ struct Builder
          * not a text run), which would collapse them to zero width.
          * checkbox/radio are sized by the renderer (native control look)
          * and drop the field border/padding. */
-        if (tname0 && n->style.find("width") == n->style.end()) {
+        std::string cw0 = get(n->style, "width");
+        bool cw_missing = cw0.empty() || cw0 == "auto";
+        if (tname0 && cw_missing) {
             bool ctrl = (tlen0 == 6 && std::memcmp(tname0, "select", 6) == 0) ||
                         (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0) ||
                         (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0) ||
@@ -890,7 +892,7 @@ struct Builder
          * demo's editable span grew sideways while typing). Give them the
          * form-control treatment - inline-block + a fixed default width -
          * so typing wraps instead. */
-        if (tname0 && n->style.find("width") == n->style.end()) {
+        if (tname0 && cw_missing) {
             size_t alen = 0;
             const lxb_char_t* ce = lxb_dom_element_get_attribute(
                 n->el, (const lxb_char_t*)"contenteditable", 15, &alen);

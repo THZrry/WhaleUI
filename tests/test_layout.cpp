@@ -1073,12 +1073,18 @@ int main(void)
             assert(t1 && t2);
             find_ctrl(t1, tag, &w1, &h1);
             find_ctrl(t2, tag, &w2, &h2);
-            printf("[len] %-26s short(w%dh%d) long(w%dh%d) %s\n", cs.name,
-                   w1, h1, w2, h2,
-                   (w1 == w2 && h1 == h2)
-                       ? "fixed"
-                       : (w1 != w2 ? "<-- WIDTH changed"
-                                   : "<-- HEIGHT changed"));
+            /* the width stays CSS-defined (12em default even for
+             * width:auto); the height follows wrapped lines only for
+             * auto-height editable content */
+            assert(w1 == w2);
+            if (std::strstr(cs.short_html, "contenteditable")) {
+                assert(w1 == 192);
+                assert(h2 >= h1);
+            } else if (std::strstr(cs.short_html, "textarea")) {
+                assert(w1 == 192 && h1 == 60 && h2 == 60);
+            } else {
+                assert(w1 == 192 && h1 == h2);
+            }
             whaleui_layout_destroy(t2);
             whaleui_layout_destroy(t1);
         }

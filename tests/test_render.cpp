@@ -1967,16 +1967,19 @@ int main(void)
             }
         }
         assert(ta != nullptr);
+        /* capture the DOM element before the frame: the layout node is
+         * destroyed by the relayout, the DOM element stays valid */
+        lxb_dom_element* tel = ta->el;
         /* focus the textarea and type a long wrapped value */
-        w->render->edit_el = ta->el;
+        w->render->edit_el = tel;
         w->render->sel_anchor = w->render->sel_focus = 0;
         std::string long_v(200, 'a');
-        edit_replace(w->render, ta->el, 0, 0, long_v);
+        edit_replace(w->render, tel, 0, 0, long_v);
         /* the caret sits at the end of ~8 wrapped lines; the relayout in
          * the next frame rebuilds scroll_max and scrolls the fixed-height
          * box to keep the caret visible */
         assert(whaleui_render_frame(w->render, w->document) == 0);
-        assert(w->render->scrolls[ta->el] > 0);
+        assert(w->render->scrolls[tel] > 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         whaleui_window_destroy(w);
     }
@@ -2045,34 +2048,49 @@ int main(void)
         }
         assert(inp != nullptr);
         /* focus, then type a long value: caret at the end, scrolled.
-         * Focus is set directly (not via a synthetic click) so the test
-         * does not depend on hit-testing. */
-        w->render->edit_el = inp->el;
+         * The element pointer is captured before the frame (the layout
+         * node is rebuilt); the DOM element itself stays valid. */
+        lxb_dom_element* iel = inp->el;
+        w->render->edit_el = iel;
         w->render->sel_anchor = w->render->sel_focus = 0;
         std::string long_v(80, 'x');
-        edit_replace(w->render, inp->el, 0, 0, long_v);
+        edit_replace(w->render, iel, 0, 0, long_v);
         assert(whaleui_render_frame(w->render, w->document) == 0);
-        int hs0 = w->render->hscrolls[inp->el];
+        int hs0 = w->render->hscrolls[iel];
         assert(hs0 > 0);
         /* jump to the end with the keyboard: the text must scroll the
          * caret into view */
         whaleui_render_handle_key(w->render, WHALEUI_KEY_END, 1, 0);
-        assert(w->render->hscrolls[inp->el] >= hs0);
+        assert(w->render->hscrolls[iel] >= hs0);
+        /* re-locate the input in the fresh tree (the old node is gone) */
+        whaleui_layout_node_t* inp2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp2 = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp2 != nullptr);
         /* click the far-right edge: the caret is past the visible area and
          * the text must scroll it into view */
         whaleui_render_set_pressed(w->render,
-                                   inp->content.x + inp->content.w - 2,
-                                   inp->content.y + 2, 1);
+                                   inp2->content.x + inp2->content.w - 2,
+                                   inp2->content.y + 2, 1);
         whaleui_render_set_pressed(w->render, 0, 0, 0);
-        assert(w->render->hscrolls[inp->el] >= hs0);
+        assert(w->render->hscrolls[iel] >= hs0);
         /* drag the selection to the right edge: text follows the caret */
-        whaleui_render_set_pressed(w->render, inp->content.x + 2,
-                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, inp2->content.x + 2,
+                                   inp2->content.y + 2, 1);
         whaleui_render_set_hover(w->render,
-                                 inp->content.x + inp->content.w - 2,
-                                 inp->content.y + 2);
+                                 inp2->content.x + inp2->content.w - 2,
+                                 inp2->content.y + 2);
         whaleui_render_set_pressed(w->render, 0, 0, 0);
-        assert(w->render->hscrolls[inp->el] > 0);
+        assert(w->render->hscrolls[iel] > 0);
         whaleui_window_destroy(w);
     }
 
