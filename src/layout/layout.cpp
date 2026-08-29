@@ -388,16 +388,63 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
  * measured with the real glyph width so the laid-out line count matches
  * the painted wrap (an under-estimate left "推理能力强" splitting its last
  * character). */
+/* estimated wrapped line count of one segment (no '\n'): greedy per-char
+ * accumulation using the cheap per-char estimate, so the structure matches
+ * the renderer's per-glyph wrap (a total-width/avail division under-counts:
+ * 7 chars * 8px in a 30px box is 2 lines by division but 3 by greedy
+ * wrap). Runs in O(chars) with no font calls. */
+static size_t est_seg_lines(const std::string& seg, float fs, int avail,
+                            float lsp_px)
+{
+    if (seg.empty() || avail <= 0) {
+        return 1;
+    }
+    size_t lines = 1;
+    float wacc = 0;
+    size_t last_sp = std::string::npos;
+    float wacc_at_sp = 0;
+    size_t i = 0;
+    while (i < seg.size()) {
+        unsigned char c = static_cast<unsigned char>(seg[i]);
+        size_t len = 1;
+        float cw;
+        if (c < 0x80) {
+            cw = fs * 0.5f;
+        } else {
+            len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+            cw = fs * 0.95f;
+        }
+        if (wacc > 0 && wacc + cw > static_cast<float>(avail)) {
+            if (last_sp != std::string::npos) {
+                /* break after the space; its width was already counted */
+                ++lines;
+                i = last_sp + 1;
+                wacc = 0;
+                last_sp = std::string::npos;
+                continue;
+            }
+            ++lines;
+            wacc = 0;
+            continue;
+        }
+        wacc += cw;
+        if (c == ' ') {
+            last_sp = i;
+            wacc_at_sp = wacc;
+        }
+        i += len;
+    }
+    (void)wacc_at_sp;
+    (void)lsp_px;
+    return lines;
+}
+
 size_t est_wrap_lines(const std::string& s, float fs, int avail,
                       const std::string& family, bool bold, float lsp_px)
 {
     if (s.empty() || avail <= 0) {
         return 1;
     }
-    /* Per logical line (explicit '\n' segments): the cheap estimate first,
-     * then one whole-segment measure. This is a height estimate only - the
-     * renderer's layout_wrap does the exact per-glyph wrap. Never binary
-     * search per line: that made large pages quadratic. */
     size_t lines = 0;
     size_t p = 0;
     while (p < s.size()) {
@@ -405,27 +452,7 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
         if (q == std::string::npos) {
             q = s.size();
         }
-        std::string seg = s.substr(p, q - p);
-        if (seg.empty()) {
-            lines += 1; /* empty line */
-        } else {
-            float est = text_measure_est(seg, fs, lsp_px);
-            if (est + 4 <= static_cast<float>(avail)) {
-                lines += 1; /* clearly one line */
-            } else {
-                float total = text_measure(seg, fs, family, bold, lsp_px);
-                if (total <= static_cast<float>(avail)) {
-                    lines += 1;
-                } else {
-                    size_t n = static_cast<size_t>(
-                        total / static_cast<float>(avail));
-                    if (total > static_cast<float>(n) * avail) {
-                        ++n;
-                    }
-                    lines += n > 0 ? n : 1;
-                }
-            }
-        }
+        lines += est_seg_lines(s.substr(p, q - p), fs, avail, lsp_px);
         if (q == s.size()) {
             break;
         }
@@ -1688,6 +1715,8 @@ struct Builder
 
         /* measure each child's main-axis size (min: content) */
         std::vector<int> main_size(kids.size(), 0);
+        /* min-content floor for flex-basis:0 items (see flex shorthand) */
+        std::vector<int> flex_min0(kids.size(), -1);
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
             float fs = len_px(get(k->style, "font-size"), 0, em);
@@ -1705,8 +1734,20 @@ struct Builder
                                    : static_cast<int>(h);
             } else {
                 float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
+                float minc = 0;
                 if (is_auto) {
-                    w = estimate_content_width(k, em);
+                    minc = w = estimate_content_width(k, em);
+                }
+                /* "flex: <grow>" shorthand means flex-basis: 0% - the item
+                 * sizes purely by grow. Without this a flex:1 card holding a
+                 * textarea grows with every typed char (min-content = the
+                 * longest line). "flex: ... auto" keeps the content basis. */
+                bool basis0 = false;
+                std::string flex_s = get(k->style, "flex");
+                if (!flex_s.empty() &&
+                    flex_s.find("auto") == std::string::npos) {
+                    w = 0;
+                    basis0 = true;
                 }
                 /* min-width caps the measurement so space-between doesn't
                  * push items past the container edge */
@@ -1720,6 +1761,11 @@ struct Builder
                 main_size[i] = k->is_text
                                    ? static_cast<int>(text_measure_est(k->text, fs, letter_spacing_px(k->style, fs)))
                                    : static_cast<int>(w);
+                if (basis0) {
+                    flex_min0[i] = static_cast<int>(minc);
+                } else {
+                    flex_min0[i] = -1;
+                }
             }
             if (is_auto && main_size[i] == 0) {
                 main_size[i] = 1; /* avoid zero-size main axis items */
@@ -1771,6 +1817,9 @@ struct Builder
             whaleui_layout_node_t* k = kids[i];
             float grow = flex_grow(k->style);
             int sz = main_size[i] + (grow > 0 ? static_cast<int>(extra * grow) : 0);
+            if (flex_min0[i] > sz) {
+                sz = flex_min0[i]; /* flex-basis:0 still respects min-content */
+            }
             if (column) {
                 int c = n->content.y + static_cast<int>(pos);
                 layout(k, n->content.x, n->content.y, inner_w, sz, font_px, &c);

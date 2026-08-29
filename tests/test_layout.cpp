@@ -1,4 +1,4 @@
-// test_layout: box model + block flow + basic flex.
+﻿// test_layout: box model + block flow + basic flex.
 #include "whaleui.h"
 #include "dom/dom.h"
 #include "layout/layout.h"
@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 namespace {
@@ -691,7 +692,7 @@ int main(void)
         assert(t != nullptr);
         whaleui_layout_node_t* d = find_tag(t->root, "div");
         assert(d != nullptr);
-        assert(d->border.h >= 30); /* 16px font × 2.0 = 32 */
+        assert(d->border.h >= 30); /* 16px font 脳 2.0 = 32 */
         whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }
@@ -713,7 +714,7 @@ int main(void)
         assert(find_tag(t->root, "p") == nullptr); /* body hidden */
         whaleui_layout_node_t* sum = find_tag(t->root, "summary");
         assert(sum != nullptr);
-        /* the summary's run carries the collapse marker (▸) */
+        /* the summary's run carries the collapse marker (鈻? */
         assert(sum->first_child && sum->first_child->is_text);
         assert(sum->first_child->text.rfind("\xe2\x96\xb8", 0) == 0);
         whaleui_layout_destroy(t);
@@ -730,7 +731,7 @@ int main(void)
         assert(find_tag(t->root, "p") != nullptr); /* body visible */
         sum = find_tag(t->root, "summary");
         assert(sum != nullptr && sum->first_child);
-        assert(sum->first_child->text.rfind("\xe2\x96\xbe", 0) == 0); /* ▾ */
+        assert(sum->first_child->text.rfind("\xe2\x96\xbe", 0) == 0); /* 鈻?*/
         whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }
@@ -783,7 +784,7 @@ int main(void)
         assert(t != nullptr);
         whaleui_layout_node_t* li = find_tag(t->root, "li");
         assert(li != nullptr && li->first_child && li->first_child->is_text);
-        assert(li->first_child->text.rfind("\xe2\x80\xa2", 0) == 0); /* • */
+        assert(li->first_child->text.rfind("\xe2\x80\xa2", 0) == 0); /* 鈥?*/
         /* second ul li also bulleted */
         whaleui_layout_node_t* li2 = li->next;
         assert(li2 != nullptr && li2->first_child);
@@ -1141,9 +1142,9 @@ int main(void)
         assert(whaleui_est_wrap_lines("abcd", 4, 16, 30, false, "", 0) == 2);
         assert(whaleui_est_wrap_lines("abcdef", 6, 16, 30, false, "", 0) ==
                2);
-        /* adding one more char wraps the second line to a third */
-        assert(whaleui_est_wrap_lines("abcdefg", 7, 16, 30, false, "", 0) ==
-               3);
+        size_t g7 = whaleui_est_wrap_lines("abcdefg", 7, 16, 30, false, "",
+                                           0);
+        assert(g7 == 3);
         /* wide avail: everything fits on one line regardless of length */
         assert(whaleui_est_wrap_lines("abcdefghij", 10, 16, 200, false, "",
                                       0) == 1);
@@ -1211,5 +1212,98 @@ int main(void)
         assert(longline > one); /* the wide line sets the width */
     }
 
+    /* demo's textarea (width:100%;height:56px;box-sizing:border-box) must
+     * NOT grow with content: the width is CSS-defined and stays put even
+     * as text is typed (regression: width = CSS + longest line) */
+    {
+        auto w_of = [](const char* body) {
+            std::string html =
+                "<html><body><div style=\"width:300px\"><textarea "
+                "style=\"width:100%;height:56px;box-sizing:border-box\">" +
+                std::string(body) + "</textarea></div></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html.c_str(), html.size());
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            int w = -1;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 8 &&
+                    std::memcmp(nm, "textarea", 8) == 0) {
+                    w = n.border.w;
+                    break;
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+            return w;
+        };
+        int w_empty = w_of("");
+        int w_short = w_of("ab");
+        int w_long = w_of("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                          "\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert(w_empty > 0);
+        assert(w_short == w_empty);
+        assert(w_long == w_empty); /* width stays CSS-defined, no growth */
+    }
+
+    /* a flex:1 card holding a textarea must keep its flex share - the
+     * item's basis is 0% (grown from free space), NOT its content width,
+     * so typing into the textarea never widens the card */
+    {
+        const char* short_html =
+            "<html><body><div style=\"display:flex\">"
+            "<div class=\"card\" style=\"flex:1\">"
+            "<textarea style=\"width:100%;height:56px\">ab</textarea>"
+            "</div><div class=\"card\" style=\"flex:1\">x</div>"
+            "</div></body></html>";
+        const char* long_html =
+            "<html><body><div style=\"display:flex\">"
+            "<div class=\"card\" style=\"flex:1\">"
+            "<textarea style=\"width:100%;height:56px\">"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</textarea>"
+            "</div><div class=\"card\" style=\"flex:1\">x</div>"
+            "</div></body></html>";
+        auto card_w = [](const char* html, int which) {
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html, std::strlen(html));
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 600, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            int w = -1;
+            int idx = 0;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 3 && std::memcmp(nm, "div", 3) == 0) {
+                    if (idx++ == which) {
+                        w = n.border.w;
+                        break;
+                    }
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+            return w;
+        };
+        int w1 = card_w(short_html, 0);
+        int w2 = card_w(long_html, 0);
+        assert(w1 > 0);
+        assert(w2 == w1); /* typing into the textarea does not widen */
+    }
+
     return 0;
 }
+

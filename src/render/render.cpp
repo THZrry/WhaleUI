@@ -2682,6 +2682,59 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             };
         clamp_sc(r->tree->root);
+        /* the layout estimated wrapped lines; the per-glyph render layout
+         * can differ. Correct every text run's height to text_size and
+         * recompute scroll ranges, so the caret, selection, scrolling and
+         * the painted glyphs all agree. */
+        std::function<void(whaleui_layout_node_t*)> fix_run_h =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->is_text && !nd->text.empty()) {
+                    int fs;
+                    std::string fam;
+                    bool bold;
+                    node_font(nd, &fs, &fam, &bold);
+                    int tw = 0, th = 0;
+                    text_size(r, nd->text, fs, fam, bold, &tw, &th,
+                              run_wrap_w(nd));
+                    if (th > 0) {
+                        nd->border.h = th;
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    fix_run_h(c);
+                }
+            };
+        fix_run_h(r->tree->root);
+        std::function<void(whaleui_layout_node_t*)> fix_sm =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->scroll_max > 0 && nd->el) {
+                    int bottom = 0;
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        int b = c->border.y + c->border.h - nd->content.y;
+                        if (b > bottom) {
+                            bottom = b;
+                        }
+                    }
+                    int cmax = bottom - nd->content.h;
+                    nd->scroll_max = cmax > 0 ? cmax : 0;
+                    auto it = r->scrolls.find(nd->el);
+                    if (it != r->scrolls.end()) {
+                        if (it->second > nd->scroll_max) {
+                            it->second = nd->scroll_max;
+                        }
+                        if (it->second < 0) {
+                            it->second = 0;
+                        }
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    fix_sm(c);
+                }
+            };
+        fix_sm(r->tree->root);
         /* after a DOM edit the layout tree is fresh here: re-run the
          * caret-visible scroll so a caret just typed past the visible
          * area (or on a wrapped line) scrolls the box. edit_replace's
