@@ -1980,6 +1980,170 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* click the start of a soft-wrapped line: the caret lands on that
+     * line's first character (regression: only line 1 was reachable) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "wrap-linestart",
+                                                    400, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:140px;height:90px\">"
+            "abc def ghi jkl mno pqr stu vwx yz</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int lh = text_line_h(w->render, fs, family, bold);
+        int tw = 0, th = 0;
+        text_size(w->render, run->text, fs, family, bold, &tw, &th,
+                  run_wrap_w(run));
+        assert(th > lh); /* the value wraps to at least 2 lines */
+        /* click the second line's left edge: caret at the line start */
+        int y2 = run->border.y + lh + lh / 2;
+        whaleui_render_set_pressed_ex(w->render, run->border.x, y2, 1, 1, 0);
+        whaleui_render_set_pressed_ex(w->render, 0, 0, 0, 1, 0);
+        assert(w->render->edit_el != nullptr);
+        size_t want = byte_at_text(w->render, run->text, fs, family, bold,
+                                   0, lh, run_wrap_w(run));
+        assert(want > 0);
+        assert(static_cast<size_t>(w->render->sel_focus) == want);
+        whaleui_window_destroy(w);
+    }
+
+    /* single-line input scrolls the caret into view on click and drag
+     * (regression: text stayed put, caret sat past the visible edge) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "input-hscroll",
+                                                    300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:120px\" "
+            "value=\"abcdefghijklmnopqrstuvwxyz0123456789\"></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        /* focus, then type a long value: caret at the end, scrolled */
+        whaleui_render_set_pressed(w->render, inp->content.x + 2,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        std::string long_v(80, 'x');
+        edit_replace(w->render, inp->el, 0, 0, long_v);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int hs0 = w->render->hscrolls[inp->el];
+        assert(hs0 > 0);
+        /* click the far-right edge: the caret is past the visible area and
+         * the text must scroll it into view */
+        whaleui_render_set_pressed(w->render,
+                                   inp->content.x + inp->content.w - 2,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->hscrolls[inp->el] > hs0);
+        /* drag the selection to the right edge: text follows the caret */
+        whaleui_render_set_pressed(w->render, inp->content.x + 2,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_hover(w->render,
+                                 inp->content.x + inp->content.w - 2,
+                                 inp->content.y + 2);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->hscrolls[inp->el] > 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* double-click selects a word, then dragging left past it and back
+     * must never cancel the originally selected word (regression:
+     * drag->"foo" shrank the selection to "foo" and lost "bar") */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "dbl-dragleft",
+                                                    300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><p id=\"p\">foo bar baz</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int tw = 0, th = 0;
+        text_size(w->render, "foo ba", fs, family, bold, &tw, &th);
+        int y = run->border.y + run->border.h / 2;
+        int xbar = run->border.x + tw + 2; /* inside "bar" */
+        whaleui_render_set_pressed_ex(w->render, xbar, y, 1, 2, 0);
+        assert(w->render->sel_anchor == 4 && w->render->sel_focus == 7);
+        /* drag left to the space: "foo bar" selected */
+        int tws = 0;
+        text_size(w->render, "foo ", fs, family, bold, &tws, &th);
+        whaleui_render_set_hover(w->render, run->border.x + tws - 3, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 7);
+        /* drag further left into "foo": still [0,7), "bar" kept */
+        int twf = 0;
+        text_size(w->render, "fo", fs, family, bold, &twf, &th);
+        whaleui_render_set_hover(w->render, run->border.x + twf + 1, y);
+        assert(w->render->sel_anchor == 0 && w->render->sel_focus == 7);
+        whaleui_render_set_pressed_ex(w->render, 0, 0, 0, 1, 0);
+        whaleui_window_destroy(w);
+    }
+
+    /* control characters in editable text: \t expands to 4 spaces, \r is
+     * dropped (CRLF), \n splits lines, other C0/DEL are skipped */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ctrl-chars",
+                                                    300, 200);
+        assert(whaleui_window_load_html(w,
+            "<html><body><textarea id=\"t\" style=\"width:300px\">"
+            "a\tb\rc\nd</textarea></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* run = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                run = &n;
+                break;
+            }
+        }
+        assert(run != nullptr);
+        int fs;
+        std::string family;
+        bool bold;
+        node_font(run, &fs, &family, &bold);
+        int w1 = 0, h1 = 0, w2 = 0, h2 = 0;
+        text_size(w->render, "a\tb", fs, family, bold, &w1, &h1, 0);
+        text_size(w->render, "a    b", fs, family, bold, &w2, &h2, 0);
+        assert(w1 == w2); /* tab == 4 spaces */
+        int th = 0;
+        text_size(w->render, "a\tb\rc\nd", fs, family, bold, &w1, &th, 0);
+        assert(th == 2 * text_line_h(w->render, fs, family, bold));
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     anim_runs();
     return 0;

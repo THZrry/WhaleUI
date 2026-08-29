@@ -59,6 +59,10 @@ struct whaleui_render
     std::vector<std::pair<std::string, TTF_Font*>> fonts;
     TTF_Font* font_default;
     TTF_TextEngine* text_engine; /* lazy; TTF_Text supports font fallback */
+    /* ASCII glyph-advance cache (layout hot path): rebuilt when the font
+     * changes. Full build only; stb measures directly from its font table. */
+    TTF_Font* ascii_font;
+    int ascii_w[128];
 
     /* text cache: one TTF_Text + rasterized surface per element+style,
      * reused across frames. Rebuilding text objects AND re-rasterizing

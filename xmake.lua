@@ -184,4 +184,3 @@ target("demo")
     on_load(function (target)
         use_sdl3(target)
     end)
-

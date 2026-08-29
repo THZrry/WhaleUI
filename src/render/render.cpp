@@ -613,7 +613,13 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
                 *hi = static_cast<size_t>(b);
             } else {
                 *lo = static_cast<size_t>(a);
-                *hi = we;
+                /* dragging right: the right edge extends, but never
+                 * shrinks below the current selection end. Without the
+                 * max, dragging back from [0,7) into "foo" re-runs
+                 * word_end(off)=3 and silently cancels the selected
+                 * word ("bar" was lost on left-then-right drags). */
+                *hi = we > static_cast<size_t>(b) ? we
+                                                  : static_cast<size_t>(b);
             }
         } else if (r->sel_mode == 2) {
             if (off <= static_cast<size_t>(a)) {
@@ -621,7 +627,9 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
                 *hi = line_end(text, static_cast<size_t>(b));
             } else {
                 *lo = static_cast<size_t>(a);
-                *hi = line_end(text, off);
+                size_t le = line_end(text, off);
+                *hi = le > static_cast<size_t>(b) ? le
+                                                  : static_cast<size_t>(b);
             }
         } else {
             *lo = static_cast<size_t>(a);
@@ -1403,6 +1411,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_arrow = nullptr;
     r->cursor_text = nullptr;
     r->cursor_pointer = nullptr;
+    r->ascii_font = nullptr;
     r->anim = whaleui_anim_create();
     r->text_scale = 1.0f;
     r->nav_col = -1;
@@ -1937,6 +1946,9 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
             r->selecting = 1;
         }
         update_selection_focus(r, hit, x, y);
+        /* dragging past the visible edge must scroll the editable box
+         * (single-line inputs scroll horizontally, textareas vertically) */
+        edit_ensure_visible(r);
     }
 }
 
@@ -2113,6 +2125,9 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
                 r->sel_anchor = r->sel_focus = static_cast<int>(off);
             }
             r->sel_mode = r->press_clicks >= 3 ? 2 : (r->press_clicks == 2 ? 1 : 0);
+            /* mouse click (not a drag yet) can move the caret past the
+             * visible edge of a horizontally scrolled input: bring it back */
+            edit_ensure_visible(r);
             SDL_StartTextInput(r->window);
         } else if (hit && hit->is_text) {
             /* anchor a potential selection (only drags extend it) */

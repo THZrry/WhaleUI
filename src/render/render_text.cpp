@@ -60,6 +60,214 @@ std::vector<std::string> split_families(const std::string& s)
     return out;
 }
 
+/* --- 程序内文本排版:唯一实现,full 与 stb 共用 ---
+ * 排版负责 UTF-8 解码、控制字符处理与按像素宽度的 soft-wrap;
+ * 渲染层(SDL3_ttf / stb_truetype)只提供单字符宽度回调与字形绘制。
+ * 编辑数学(caret/selection/hit-test)与绘制共用同一份行布局,
+ * 所以 full 与 lite/minimal 的换行位置、控制字符行为完全一致。 */
+
+struct TextLayoutLine { size_t cstart; size_t cend; int w; };
+struct TextLayout {
+    std::string disp;          /* 显示文本:控制字符展开/移除后的 UTF-8 */
+    std::vector<size_t> map;   /* disp 每字符起点 → 原文本字节偏移 */
+    std::vector<size_t> dbytes;/* disp 每字符起点 → disp 字节偏移 */
+    std::vector<TextLayoutLine> lines;
+    int tw, th;
+};
+/* 单字符像素宽(渲染层实现;布局热路径 ASCII 走缓存) */
+typedef int (*TextGlyphFn)(unsigned int cp, void* st);
+
+/* 解码原文本为显示文本: \r 忽略(CRLF),\n 断行,\t 展开为 4 空格,
+ * 其余 C0/DEL 控制字符跳过(不占位);每个显示字符记录原偏移。 */
+static void layout_decode(const std::string& text, TextLayout& L)
+{
+    const unsigned char* sb =
+        reinterpret_cast<const unsigned char*>(text.c_str());
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t start = i;
+        unsigned char c = sb[i];
+        unsigned int cp = c;
+        int len = 1;
+        if (c >= 0x80) {
+            if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
+                cp = ((c & 0x1F) << 6) | (sb[i + 1] & 0x3F);
+                len = 2;
+            } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
+                cp = ((c & 0x0F) << 12) | ((sb[i + 1] & 0x3F) << 6) |
+                     (sb[i + 2] & 0x3F);
+                len = 3;
+            } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
+                cp = ((c & 0x07) << 18) | ((sb[i + 1] & 0x3F) << 12) |
+                     ((sb[i + 2] & 0x3F) << 6) | (sb[i + 3] & 0x3F);
+                len = 4;
+            } else {
+                cp = 0; /* malformed byte: skip */
+            }
+        }
+        i += len;
+        if (cp == '\r') {
+            continue;
+        }
+        if (cp == '\n') {
+            L.disp += '\n';
+            L.dbytes.push_back(L.disp.size() - 1);
+            L.map.push_back(start);
+            continue;
+        }
+        if (cp == '\t') {
+            for (int k = 0; k < 4; ++k) {
+                L.disp += ' ';
+                L.dbytes.push_back(L.disp.size() - 1);
+                L.map.push_back(start);
+            }
+            continue;
+        }
+        if (cp < 0x20 || cp == 0x7F) {
+            continue;
+        }
+        L.disp.append(text, start, static_cast<size_t>(len));
+        L.dbytes.push_back(L.disp.size() - static_cast<size_t>(len));
+        L.map.push_back(start);
+    }
+}
+
+/* UTF-8 编码一个码点(最多 4 字节),返回字节数 */
+static size_t utf8_encode_cp(unsigned int cp, char* out)
+{
+    if (cp < 0x80) {
+        out[0] = static_cast<char>(cp);
+        return 1;
+    }
+    if (cp <= 0x7FF) {
+        out[0] = static_cast<char>(0xC0 | (cp >> 6));
+        out[1] = static_cast<char>(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp <= 0xFFFF) {
+        out[0] = static_cast<char>(0xE0 | (cp >> 12));
+        out[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = static_cast<char>(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = static_cast<char>(0xF0 | (cp >> 18));
+    out[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* 解码显示文本中字符索引 ci 处的码点 */
+static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
+    size_t b0 = L.dbytes[ci];
+    size_t b1 = (ci + 1 < L.dbytes.size()) ? L.dbytes[ci + 1] : L.disp.size();
+    const unsigned char* u =
+        reinterpret_cast<const unsigned char*>(L.disp.c_str());
+    unsigned char c = u[b0];
+    if (c < 0x80) {
+        return c;
+    }
+    if ((c & 0xE0) == 0xC0 && b0 + 1 < b1) {
+        return ((c & 0x1F) << 6) | (u[b0 + 1] & 0x3F);
+    }
+    if ((c & 0xF0) == 0xE0 && b0 + 2 < b1) {
+        return ((c & 0x0F) << 12) | ((u[b0 + 1] & 0x3F) << 6) |
+               (u[b0 + 2] & 0x3F);
+    }
+    if ((c & 0xF8) == 0xF0 && b0 + 3 < b1) {
+        return ((c & 0x07) << 18) | ((u[b0 + 1] & 0x3F) << 12) |
+               ((u[b0 + 2] & 0x3F) << 6) | (u[b0 + 3] & 0x3F);
+    }
+    return 0;
+}
+
+/* 按 wrap_w 断行(逐字符累计宽度,超宽时回退到最后一个空格)。
+ * wrap_w <= 0 = 不软换行。返回每行的显示字符范围 [cstart,cend) 与像素宽。 */
+static void layout_wrap(TextLayout& L, int wrap_w, int lh,
+                        TextGlyphFn gw, void* st)
+{
+    const size_t nc = L.map.size();
+    size_t ci = 0;
+    while (ci < nc) {
+        size_t ls = ci;
+        int wacc = 0;
+        size_t last_sp = static_cast<size_t>(-1);
+        int wacc_at_sp = 0;
+        bool nl = false;
+        while (ci < nc) {
+            const char dch = L.disp[L.dbytes[ci]];
+            if (dch == '\n') {
+                nl = true;
+                break;
+            }
+            int w = gw(disp_cp_at(L, ci), st);
+            const bool is_sp = dch == ' ';
+            if (wrap_w > 0 && wacc > 0 && wacc + w > wrap_w) {
+                /* 超宽:优先回退到最后一个空格之后(词级断行) */
+                size_t br = ci;
+                int bw = wacc;
+                if (last_sp != static_cast<size_t>(-1)) {
+                    br = last_sp + 1;
+                    bw = wacc_at_sp;
+                }
+                if (br <= ls) { /* 空格是行首等异常:断在当前字符前 */
+                    br = ci;
+                    bw = wacc;
+                }
+                L.lines.push_back({ls, br, bw});
+                if (bw > L.tw) {
+                    L.tw = bw;
+                }
+                L.th += lh;
+                ci = br;
+                break;
+            }
+            wacc += w;
+            if (is_sp && wrap_w > 0) {
+                last_sp = ci;
+                wacc_at_sp = wacc;
+            }
+            ++ci;
+        }
+        if (ci >= nc || nl) {
+            /* 逻辑行自然结束(文本末尾或显式换行) */
+            L.lines.push_back({ls, ci, wacc});
+            if (wacc > L.tw) {
+                L.tw = wacc;
+            }
+            L.th += lh;
+            if (nl) {
+                ++ci; /* 跳过 \n */
+            }
+        }
+    }
+}
+
+static TextLayout layout_text(const std::string& text, int wrap_w, int lh,
+                              TextGlyphFn gw, void* st)
+{
+    TextLayout L = {};
+    layout_decode(text, L);
+    layout_wrap(L, wrap_w, lh, gw, st);
+    return L;
+}
+
+/* --- 文本测宽/命中/选择(共用实现,基于上面的行布局) --- */
+
+/* full: 单字符宽度测量的上下文(字体从 render_get_font 取) */
+struct TextMeasureCtx
+{
+    whaleui_render_t* r;
+    int fs;
+    std::string family;
+    bool bold;
+};
+#ifdef WHALEUI_BUILD_FULL
+static int glyph_ttf(unsigned int cp, void* st);
+#else
+static int glyph_stb(unsigned int cp, void* st);
+#endif
+
 #ifdef WHALEUI_BUILD_FULL
 
 /* open a font for a family (no fallback chain); "" or generic families pick
@@ -200,6 +408,48 @@ TTF_Text* text_obj(whaleui_render_t* r, const std::string& text, int fs,
     }
     return TTF_CreateText(r->text_engine, font, text.c_str(), text.size());
 }
+
+/* full: 单字符像素宽。ASCII 走 TTF_GetGlyphMetrics + 缓存表(布局热路径
+ * 不建 TTF_Text);非 ASCII 用 TTF_Text 单字符测宽(带 fallback chain,
+ * CJK/emoji 宽度正确)。ponytail: 非 ASCII 逐字符建 TTF_Text 较慢,若
+ * 中文长文本成为瓶颈,加一张按 codepoint 的字宽缓存(或大字纹理缩放)。 */
+static int glyph_ttf(unsigned int cp, void* st)
+{
+    TextMeasureCtx* c = static_cast<TextMeasureCtx*>(st);
+    TTF_Font* font = render_get_font(c->r, c->family, c->fs,
+                                     c->bold ? kFontBold : 0);
+    if (!font) {
+        return 0;
+    }
+    if (cp < 0x80) {
+        if (c->r->ascii_font != font) {
+            c->r->ascii_font = font;
+            for (int i = 0; i < 128; ++i) {
+                int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
+                TTF_GetGlyphMetrics(font, static_cast<Uint32>(i),
+                                    &m0, &m1, &m2, &m3, &adv);
+                c->r->ascii_w[i] = adv;
+            }
+        }
+        return c->r->ascii_w[cp];
+    }
+    char buf[5];
+    size_t n = utf8_encode_cp(cp, buf);
+    if (!c->r->text_engine) {
+        c->r->text_engine = TTF_CreateSurfaceTextEngine();
+    }
+    if (!c->r->text_engine) {
+        return 0;
+    }
+    TTF_Text* t = TTF_CreateText(c->r->text_engine, font, buf, n);
+    if (!t) {
+        return 0;
+    }
+    int w = 0, h = 0;
+    TTF_GetTextSize(t, &w, &h);
+    TTF_DestroyText(t);
+    return w;
+}
 #else
 /* stb font table for measuring (mirrors the draw path in draw_text_at) */
 struct StbFonts
@@ -283,61 +533,19 @@ struct StbFonts
         }
         return static_cast<size_t>(-1);
     }
-    /* decode UTF-8 into lines of codepoints + byte starts; measures widths */
-    struct TLine { std::vector<unsigned int> cps; std::vector<size_t> starts; int w; };
-    std::vector<TLine> lines(const std::string& text) const
-    {
-        std::vector<TLine> out;
-        out.push_back(TLine());
-        const unsigned char* sb = reinterpret_cast<const unsigned char*>(text.c_str());
-        size_t i = 0;
-        while (i < text.size()) {
-            size_t start = i;
-            unsigned char c = sb[i];
-            unsigned int cp = c;
-            int len = 1;
-            if (c >= 0x80) {
-                if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
-                    cp = ((c & 0x1F) << 6) | (sb[i + 1] & 0x3F);
-                    len = 2;
-                } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
-                    cp = ((c & 0x0F) << 12) | ((sb[i + 1] & 0x3F) << 6) |
-                         (sb[i + 2] & 0x3F);
-                    len = 3;
-                } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
-                    cp = ((c & 0x07) << 18) | ((sb[i + 1] & 0x3F) << 12) |
-                         ((sb[i + 2] & 0x3F) << 6) | (sb[i + 3] & 0x3F);
-                    len = 4;
-                } else {
-                    cp = 0;
-                }
-            }
-            i += len;
-            if (cp == '\n') {
-                out.push_back(TLine());
-                continue;
-            }
-            if (cp < 0x20 || cp == 0x7F) {
-                continue;
-            }
-            out.back().cps.push_back(cp);
-            out.back().starts.push_back(start);
-        }
-        for (size_t li = 0; li < out.size(); ++li) {
-            TLine& ln = out[li];
-            for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
-                size_t fi = pick(pref, ln.cps[gi]);
-                if (fi == static_cast<size_t>(-1)) {
-                    continue;
-                }
-                int adv = 0, lsb = 0;
-                stbtt_GetCodepointHMetrics(&fonts[fi].info, ln.cps[gi], &adv, &lsb);
-                ln.w += static_cast<int>(adv * fonts[fi].scale + 0.5f);
-            }
-        }
-        return out;
-    }
 };
+/* stb: 单字符像素宽(带 fallback 字体表) */
+static int glyph_stb(unsigned int cp, void* st)
+{
+    StbFonts* f = static_cast<StbFonts*>(st);
+    size_t fi = f->pick(f->pref, cp);
+    if (fi == static_cast<size_t>(-1)) {
+        return 0;
+    }
+    int adv = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(&f->fonts[fi].info, cp, &adv, &lsb);
+    return static_cast<int>(adv * f->fonts[fi].scale + 0.5f);
+}
 #endif
 
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
@@ -348,25 +556,16 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
     if (text.empty()) {
         return;
     }
+    int lh = text_line_h(r, fs, family, bold);
 #ifdef WHALEUI_BUILD_FULL
-    TTF_Text* t = text_obj(r, text, fs, family, bold);
-    if (t) {
-        if (wrap_w > 0) {
-            TTF_SetTextWrapWidth(t, wrap_w);
-        }
-        TTF_GetTextSize(t, tw, th);
-        TTF_DestroyText(t);
-    }
+    TextMeasureCtx mc = { r, fs, family, bold };
+    TextLayout L = layout_text(text, wrap_w, lh, glyph_ttf, &mc);
 #else
     StbFonts stb(family, fs);
-    std::vector<StbFonts::TLine> ls = stb.lines(text);
-    *th = static_cast<int>(ls.size()) * stb.line_h;
-    for (size_t i = 0; i < ls.size(); ++i) {
-        if (ls[i].w > *tw) {
-            *tw = ls[i].w;
-        }
-    }
+    TextLayout L = layout_text(text, wrap_w, lh, glyph_stb, &stb);
 #endif
+    *tw = L.tw;
+    *th = L.th;
 }
 
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bold)
@@ -404,49 +603,28 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
     if (a == b || text.empty()) {
         return out;
     }
+    int lh = text_line_h(r, fs, family, bold);
 #ifdef WHALEUI_BUILD_FULL
-    TTF_Text* t = text_obj(r, text, fs, family, bold);
-    if (!t) {
-        return out;
-    }
-    if (wrap_w > 0) {
-        TTF_SetTextWrapWidth(t, wrap_w);
-    }
-    int count = 0;
-    TTF_SubString** subs = TTF_GetTextSubStringsForRange(
-        t, static_cast<int>(a), static_cast<int>(b - a), &count);
-    if (subs) {
-        for (int i = 0; i < count; ++i) {
-            TRect rc;
-            rc.x = subs[i]->rect.x;
-            rc.y = subs[i]->rect.y;
-            rc.w = subs[i]->rect.w;
-            rc.h = subs[i]->rect.h;
-            out.push_back(rc);
-        }
-        /* single allocation; the whole array is freed once (see SDL_ttf) */
-        SDL_free(subs);
-    }
-    TTF_DestroyText(t);
+    TextMeasureCtx mc = { r, fs, family, bold };
+    TextGlyphFn gw = glyph_ttf;
+    void* st = &mc;
 #else
     StbFonts stb(family, fs);
-    std::vector<StbFonts::TLine> ls = stb.lines(text);
-    int lh = stb.line_h;
-    for (size_t li = 0; li < ls.size(); ++li) {
-        const StbFonts::TLine& ln = ls[li];
-        int x0 = -1, x1 = -1;
+    TextGlyphFn gw = glyph_stb;
+    void* st = &stb;
+#endif
+    TextLayout L = layout_text(text, wrap_w, lh, gw, st);
+    const size_t nc = L.map.size();
+    for (size_t li = 0; li < L.lines.size(); ++li) {
+        const TextLayoutLine& ln = L.lines[li];
         int xacc = 0;
-        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
-            size_t fs2 = stb.pick(stb.pref, ln.cps[gi]);
-            int adv = 0, lsb2 = 0;
-            if (fs2 != static_cast<size_t>(-1)) {
-                stbtt_GetCodepointHMetrics(&stb.fonts[fs2].info, ln.cps[gi], &adv, &lsb2);
-            }
-            int w = static_cast<int>(adv * (fs2 == static_cast<size_t>(-1) ? 0.5f : stb.fonts[fs2].scale) + 0.5f);
-            if (x0 < 0 && ln.starts[gi] >= a) {
+        int x0 = -1, x1 = -1;
+        for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+            int w = gw(disp_cp_at(L, ci), st);
+            if (x0 < 0 && L.map[ci] >= a) {
                 x0 = xacc;
             }
-            if (ln.starts[gi] >= b && x1 < 0) {
+            if (x1 < 0 && L.map[ci] >= b) {
                 x1 = xacc;
                 break;
             }
@@ -467,7 +645,6 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
         }
         break;
     }
-#endif
     return out;
 }
 
@@ -641,51 +818,19 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         return;
     }
-    TTF_Text* t = nullptr;
-    bool owned = true;
-    std::string cache_key;
-    if (ckey) {
-        /* reuse the cached text object; recreate when the style changed
-         * (key) or the content changed (TTF_Text is immutable). Wrapped
-         * runs also key on the wrap width so they don't share objects. */
-        char key[96];
-        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d",
-                      static_cast<void*>(ckey), fs, style,
-                      family.c_str(), wrap ? bw : -1);
-        cache_key = key;
-        whaleui_render_t::TextCacheEntry& e = r->text_cache[cache_key];
-        if (!e.t) {
-            e.t = TTF_CreateText(engine, font, text.c_str(), text.size());
-            e.text = text;
-        } else if (e.text != text) {
-            TTF_DestroyText(e.t);
-            e.t = TTF_CreateText(engine, font, text.c_str(), text.size());
-            e.text = text;
-            /* the rasterized bitmap is stale (same size may hold other
-             * glyphs): drop it so the next frame re-rasterizes */
-            if (e.surf) {
-                SDL_DestroySurface(e.surf);
-                e.surf = nullptr;
-            }
-        }
-        t = e.t;
-        owned = false;
-    } else {
-        t = TTF_CreateText(engine, font, text.c_str(), text.size());
+    /* 程序内排版决定换行与字形位置(唯一排版,full/stb 共用);
+     * 渲染层只画字形:字符逐个画入整块缓存 surface,位置与
+     * caret/selection 数学完全一致(TTF_Text 整段含 kerning,
+     * 与逐字测量不一致,故这里逐字符绘制,视觉上少字距)。 */
+    bool bold = (style & kFontBold) != 0;
+    int lh = text_line_h(r, fs, family, bold);
+    if (lh <= 0) {
+        lh = fs > 0 ? fs : 16;
     }
-    if (!t) {
-        return;
-    }
-    if (wrap && bw > 0) {
-        /* text runs wrap to their content width; the layout pass estimates
-         * the resulting height, the real size comes from TTF_Text here */
-        TTF_SetTextWrapWidth(t, bw);
-    }
-    /* NOTE: TTF_SetTextColor (and Float) on the 3.2.2 prebuilt break
-     * TTF_DrawSurfaceText (draws nothing, no error). Instead we render with
-     * the default color and tint during blending. */
-    int tw = 0, th = 0;
-    TTF_GetTextSize(t, &tw, &th);
+    TextMeasureCtx mc = { r, fs, family, bold };
+    TextLayout L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh,
+                               glyph_ttf, &mc);
+    int tw = L.tw, th = L.th;
     if (tw > 0 && th > 0) {
         int tx = bx;
         if (align == 1) {
@@ -698,11 +843,43 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * function has no global side effects on other text. Wrapped text
          * taller than the box stays top-aligned (no negative centering). */
         int ty = th <= bh ? by + (bh - th) / 2 : by;
+        std::string cache_key;
+        if (ckey) {
+            /* cache key keeps the wrap width so different soft-wraps
+             * never share a raster */
+            char key[96];
+            std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d",
+                          static_cast<void*>(ckey), fs, style,
+                          family.c_str(), wrap ? bw : -1);
+            cache_key = key;
+        }
+        /* rasterize the layout line by line into the cached surface */
+        auto rasterize = [&](SDL_Surface* s) {
+            for (size_t li = 0; li < L.lines.size(); ++li) {
+                const TextLayoutLine& ln = L.lines[li];
+                int xacc = 0;
+                for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+                    unsigned int cp = disp_cp_at(L, ci);
+                    int w = glyph_ttf(cp, &mc);
+                    if (w <= 0) {
+                        continue;
+                    }
+                    char buf[5];
+                    size_t bn = utf8_encode_cp(cp, buf);
+                    TTF_Text* ct = TTF_CreateText(engine, font, buf, bn);
+                    if (ct) {
+                        TTF_DrawSurfaceText(ct, xacc,
+                                            static_cast<int>(li) * lh, s);
+                        TTF_DestroyText(ct);
+                    }
+                    xacc += w;
+                }
+            }
+        };
         SDL_Surface* surf = nullptr;
         if (!cache_key.empty()) {
             /* reuse the rasterized surface; recreate on size change */
-            whaleui_render_t::TextCacheEntry& e =
-                r->text_cache[cache_key];
+            whaleui_render_t::TextCacheEntry& e = r->text_cache[cache_key];
             surf = e.surf;
             if (!surf || surf->w != tw || surf->h != th) {
                 if (surf) {
@@ -711,7 +888,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
                 if (surf) {
                     SDL_FillSurfaceRect(surf, nullptr, 0);
-                    TTF_DrawSurfaceText(t, 0, 0, surf);
+                    rasterize(surf);
                 }
                 e.surf = surf;
                 e.ax = -1; /* atlas slot is stale after a re-rasterize */
@@ -720,7 +897,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA8888);
             if (surf) {
                 SDL_FillSurfaceRect(surf, nullptr, 0);
-                TTF_DrawSurfaceText(t, 0, 0, surf);
+                rasterize(surf);
             }
         }
         if (surf) {
@@ -739,156 +916,24 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             SDL_DestroySurface(surf);
         }
     }
-    if (owned) {
-        TTF_DestroyText(t);
-    }
 #else /* !WHALEUI_BUILD_FULL: stb_truetype text (lite/minimal) */
     (void)ckey;
     if (fs <= 0) {
         fs = 16;
     }
-    whaleui_font_registry* reg = whaleui_font_registry_get();
-    if (!reg || reg->count == 0) {
+    StbFonts stb(family, fs);
+    if (stb.pref == static_cast<size_t>(-1)) {
         return;
     }
-    /* init every registered font once; each gets its own pixel-height scale
-     * so fallback glyphs (CJK/emoji) keep the same visual size */
-    struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
-    std::vector<F> fonts;
-    for (size_t fi = 0; fi < reg->count; ++fi) {
-        F f;
-        f.ok = false;
-        f.scale = 1.0f;
-        f.asc = 0;
-        f.line_h = fs;
-        const unsigned char* d = reg->fonts[fi].data;
-        size_t l = reg->fonts[fi].len;
-        if (!d || l < 4) {
-            fonts.push_back(f);
-            continue;
-        }
-        int off = stbtt_GetFontOffsetForIndex(d, 0);
-        if (off < 0 || !stbtt_InitFont(&f.info, d, off)) {
-            fonts.push_back(f);
-            continue;
-        }
-        f.scale = stbtt_ScaleForPixelHeight(&f.info, static_cast<float>(fs));
-        int desc = 0, linegap = 0;
-        stbtt_GetFontVMetrics(&f.info, &f.asc, &desc, &linegap);
-        f.line_h = static_cast<int>((f.asc - desc + linegap) * f.scale + 0.5f);
-        f.ok = true;
-        fonts.push_back(f);
-    }
-    /* preferred font: first CSS family match, else the first font that
-     * initialized (mirrors the full build's family matching) */
-    size_t pref = static_cast<size_t>(-1);
-    std::vector<std::string> fams = split_families(family);
-    for (const std::string& fam : fams) {
-        if (fam.empty()) {
-            continue;
-        }
-        bool generic = fam == "sans-serif" || fam == "serif" ||
-                       fam == "monospace";
-        if (generic) {
-            continue;
-        }
-        for (size_t fi = 0; fi < fonts.size(); ++fi) {
-            if (fonts[fi].ok && reg->fonts[fi].family &&
-                std::strcmp(reg->fonts[fi].family, fam.c_str()) == 0) {
-                pref = fi;
-                break;
-            }
-        }
-        if (pref != static_cast<size_t>(-1)) {
-            break;
-        }
-    }
-    if (pref == static_cast<size_t>(-1)) {
-        for (size_t fi = 0; fi < fonts.size(); ++fi) {
-            if (fonts[fi].ok) {
-                pref = fi;
-                break;
-            }
-        }
-    }
-    if (pref == static_cast<size_t>(-1)) {
+    /* 同一份程序内排版:控制字符 + soft-wrap 与 full 完全一致 */
+    const int lh = stb.line_h;
+    TextLayout L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh,
+                               glyph_stb, &stb);
+    if (L.lines.empty()) {
         return;
     }
-    /* pick a font that actually has `cp`; fall back across the registry so
-     * CJK/emoji glyphs resolve even when the preferred font lacks them */
-    auto pick_font = [&](size_t start, unsigned int cp) -> size_t {
-        if (stbtt_FindGlyphIndex(&fonts[start].info, cp) != 0) {
-            return start;
-        }
-        for (size_t fi = 0; fi < fonts.size(); ++fi) {
-            if (fi == start || !fonts[fi].ok) {
-                continue;
-            }
-            if (stbtt_FindGlyphIndex(&fonts[fi].info, cp) != 0) {
-                return fi;
-            }
-        }
-        return static_cast<size_t>(-1);
-    };
-    /* decode UTF-8 into per-line codepoints; control chars are skipped
-     * entirely (a stray byte or control code in a long string must not
-     * draw tofu or crash), '\n' starts a new line, '\r' is dropped so
-     * CRLF counts once */
-    struct TLine { std::vector<unsigned int> cps; int w; };
-    std::vector<TLine> lines;
-    lines.push_back(TLine());
-    const unsigned char* sb = reinterpret_cast<const unsigned char*>(text.c_str());
-    size_t i = 0;
-    while (i < text.size()) {
-        unsigned char c = sb[i];
-        unsigned int cp = c;
-        int len = 1;
-        if (c >= 0x80) {
-            if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
-                cp = ((c & 0x1F) << 6) | (sb[i + 1] & 0x3F);
-                len = 2;
-            } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
-                cp = ((c & 0x0F) << 12) | ((sb[i + 1] & 0x3F) << 6) |
-                     (sb[i + 2] & 0x3F);
-                len = 3;
-            } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
-                cp = ((c & 0x07) << 18) | ((sb[i + 1] & 0x3F) << 12) |
-                     ((sb[i + 2] & 0x3F) << 6) | (sb[i + 3] & 0x3F);
-                len = 4;
-            } else {
-                cp = 0; /* malformed byte: skip it entirely */
-            }
-        }
-        i += len;
-        if (cp == '\n') {
-            lines.push_back(TLine());
-            continue;
-        }
-        if (cp < 0x20 || cp == 0x7F) {
-            continue; /* C0/DEL control chars: no advance, no glyph */
-        }
-        lines.back().cps.push_back(cp);
-    }
-    /* measure each line: per-glyph font fallback, advances accumulate */
-    const int line_h = fonts[pref].line_h;
-    for (size_t li = 0; li < lines.size(); ++li) {
-        TLine& ln = lines[li];
-        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
-            size_t fi = pick_font(pref, ln.cps[gi]);
-            if (fi == static_cast<size_t>(-1)) {
-                continue; /* no registered font has this glyph */
-            }
-            int adv = 0, lsb = 0;
-            stbtt_GetCodepointHMetrics(&fonts[fi].info, ln.cps[gi], &adv, &lsb);
-            ln.w += static_cast<int>(adv * fonts[fi].scale + 0.5f);
-        }
-    }
-    int total_w = 0, total_h = static_cast<int>(lines.size()) * line_h;
-    for (size_t li = 0; li < lines.size(); ++li) {
-        if (lines[li].w > total_w) {
-            total_w = lines[li].w;
-        }
-    }
+    int total_w = L.tw;
+    int total_h = L.th;
     if (total_w <= 0 || total_h <= 0) {
         return;
     }
@@ -896,23 +941,24 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
      * bold is a fake bold: the glyph bitmap is blitted once more 1px to the
      * right (alpha max), since stb_truetype has no style synthesis. */
     std::vector<unsigned int> buf(static_cast<size_t>(total_w) * total_h, 0);
-    const float baseline_off = fonts[pref].asc * fonts[pref].scale;
-    for (size_t li = 0; li < lines.size(); ++li) {
-        const TLine& ln = lines[li];
-        const int baseline = static_cast<int>(li * line_h + baseline_off + 0.5f);
+    const float baseline_off =
+        stb.fonts[stb.pref].asc * stb.fonts[stb.pref].scale;
+    for (size_t li = 0; li < L.lines.size(); ++li) {
+        const TextLayoutLine& ln = L.lines[li];
+        const int baseline = static_cast<int>(li * lh + baseline_off + 0.5f);
         float px = 0;
-        for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
-            unsigned int cp = ln.cps[gi];
-            size_t fi = pick_font(pref, cp);
+        for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+            unsigned int cp = disp_cp_at(L, ci);
+            size_t fi = stb.pick(stb.pref, cp);
             if (fi == static_cast<size_t>(-1)) {
                 continue;
             }
             int adv = 0, lsb = 0;
-            stbtt_GetCodepointHMetrics(&fonts[fi].info, cp, &adv, &lsb);
+            stbtt_GetCodepointHMetrics(&stb.fonts[fi].info, cp, &adv, &lsb);
             int gw = 0, gh = 0, xoff = 0, yoff = 0;
             unsigned char* bmp = stbtt_GetCodepointBitmap(
-                &fonts[fi].info, fonts[fi].scale, fonts[fi].scale,
-                cp, &gw, &gh, &xoff, &yoff);
+                &stb.fonts[fi].info, stb.fonts[fi].scale,
+                stb.fonts[fi].scale, cp, &gw, &gh, &xoff, &yoff);
             if (bmp && gw > 0 && gh > 0) {
                 const int dy = baseline + yoff;
                 for (int pass = 0;
@@ -941,7 +987,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 }
                 stbtt_FreeBitmap(bmp, nullptr);
             }
-            px += adv * fonts[fi].scale;
+            px += adv * stb.fonts[fi].scale;
         }
     }
     /* place + blend (single pass, tinted by `color`) */
@@ -951,7 +997,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     } else if (align == 2) {
         tx = bx + bw - total_w;
     }
-    int ty = by + (bh - fonts[pref].line_h) / 2;
+    int ty = total_h <= bh ? by + (bh - total_h) / 2 : by;
     const unsigned int tr = (color >> 16) & 0xFF;
     const unsigned int tg = (color >> 8) & 0xFF;
     const unsigned int tb = color & 0xFF;
@@ -1408,7 +1454,9 @@ int run_wrap_w(whaleui_layout_node_t* n)
     return w > 0 ? w : 0;
 }
 
-/* byte offset of the text under (px,py), relative to the text top-left */
+/* byte offset of the text under (px,py), relative to the text top-left.
+ * Uses the shared program-side layout, so wrapped lines, control
+ * characters and both renderers (full/stb) behave identically. */
 size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
                     const std::string& family, bool bold, int px, int py,
                     int wrap_w)
@@ -1416,106 +1464,43 @@ size_t byte_at_text(whaleui_render_t* r, const std::string& text, int fs,
     if (text.empty()) {
         return 0;
     }
+    int lh = text_line_h(r, fs, family, bold);
+    if (lh <= 0) {
+        lh = fs > 0 ? fs : 16;
+    }
 #ifdef WHALEUI_BUILD_FULL
-    TTF_Text* t = text_obj(r, text, fs, family, bold);
-    if (!t) {
+    TextMeasureCtx mc = { r, fs, family, bold };
+    TextGlyphFn gw = glyph_ttf;
+    void* st = &mc;
+#else
+    StbFonts stb(family, fs);
+    TextGlyphFn gw = glyph_stb;
+    void* st = &stb;
+#endif
+    TextLayout L = layout_text(text, wrap_w, lh, gw, st);
+    if (L.lines.empty()) {
         return 0;
     }
-    if (wrap_w > 0) {
-        TTF_SetTextWrapWidth(t, wrap_w);
-    }
-    int tw = 0, th = 0;
-    TTF_GetTextSize(t, &tw, &th);
     if (px < 0) {
         px = 0;
     }
     if (py < 0) {
         py = 0;
     }
-    /* at/past the right edge: clamp to the text width so the substring
-     * lookup still lands on THIS line (SDL_ttf returns that line's end for
-     * an over-wide x) instead of jumping to the very end of the whole text */
-    if (px >= tw) {
-        px = tw > 0 ? tw - 1 : 0;
+    size_t li = static_cast<size_t>(py / lh);
+    if (li >= L.lines.size()) {
+        li = L.lines.size() - 1;
     }
-    if (py >= th) {
-        py = th > 0 ? th - 1 : 0;
-    }
-    if (wrap_w > 0) {
-        /* wrapped layout: find the line under py; a click past the line's
-         * real width lands on the line END (SDL_ttf's point hit would
-         * otherwise advance past the newline into the next line). The line
-         * substrings carry each wrapped line's rect and byte range. */
-        int cnt = 0;
-        TTF_SubString** subs = TTF_GetTextSubStringsForRange(
-            t, 0, static_cast<int>(text.size()), &cnt);
-        if (subs) {
-            for (int i = 0; i < cnt; ++i) {
-                if (py >= subs[i]->rect.y &&
-                    py < subs[i]->rect.y + subs[i]->rect.h) {
-                    if (px >= subs[i]->rect.x + subs[i]->rect.w) {
-                        int l2 = subs[i]->length;
-                        bool ends_nl =
-                            l2 > 0 && text[static_cast<size_t>(
-                                              subs[i]->offset + l2 - 1)] == '\n';
-                        size_t line_off = static_cast<size_t>(subs[i]->offset +
-                                                              l2 - (ends_nl ? 1 : 0));
-                        SDL_free(subs);
-                        TTF_DestroyText(t);
-                        return line_off;
-                    }
-                    break;
-                }
-            }
-            SDL_free(subs);
-        }
-    }
-    TTF_SubString sub;
-    size_t off = text.size();
-    if (TTF_GetTextSubStringForPoint(t, static_cast<float>(px),
-                                     static_cast<float>(py), &sub)) {
-        off = static_cast<size_t>(sub.offset);
-        /* clicking the right half of a character (or beyond it) places the
-         * caret AFTER that character instead of before it */
-        if (px >= sub.rect.x + sub.rect.w / 2) {
-            off = static_cast<size_t>(sub.offset + sub.length);
-        }
-    }
-    TTF_DestroyText(t);
-    return off;
-#else
-    StbFonts stb(family, fs);
-    std::vector<StbFonts::TLine> ls = stb.lines(text);
-    if (ls.empty()) {
-        return 0;
-    }
-    int lh = stb.line_h;
-    int line = lh > 0 ? py / lh : 0;
-    if (line < 0) {
-        line = 0;
-    }
-    if (line >= static_cast<int>(ls.size())) {
-        line = static_cast<int>(ls.size()) - 1;
-    }
-    const StbFonts::TLine& ln = ls[static_cast<size_t>(line)];
+    const TextLayoutLine& ln = L.lines[li];
+    const size_t nc = L.map.size();
     int xacc = 0;
-    size_t last_end = text.size();
-    for (size_t gi = 0; gi < ln.cps.size(); ++gi) {
-        size_t fi = stb.pick(stb.pref, ln.cps[gi]);
-        int adv = 0, lsb = 0;
-        if (fi != static_cast<size_t>(-1)) {
-            stbtt_GetCodepointHMetrics(&stb.fonts[fi].info, ln.cps[gi], &adv, &lsb);
-        }
-        int w = static_cast<int>(adv * (fi == static_cast<size_t>(-1) ? 0.5f : stb.fonts[fi].scale) + 0.5f);
+    for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+        int w = gw(disp_cp_at(L, ci), st);
         if (px < xacc + w / 2) {
-            return ln.starts[gi];
+            return L.map[ci];
         }
         xacc += w;
-        size_t cl = utf8_char_len(static_cast<unsigned char>(
-            text[ln.starts[gi]]));
-        last_end = ln.starts[gi] + cl; /* past the line's last char */
     }
-    return last_end; /* over the line's right edge: the LINE end, not the
-                      * whole text end (matches the full-build fix) */
-#endif
+    /* past the line's right edge: the LINE end (not the whole text end) */
+    return (ln.cend < nc) ? L.map[ln.cend] : text.size();
 }
