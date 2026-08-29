@@ -2751,7 +2751,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                              nd == r->tree->root;
             }
             int child_comp = scomp + (scrollable ? nd->scroll_y : 0);
-            int inner_bottom = nd->border.y + nd->border.h + scomp;
+            /* a scrollable box's own border box is the VIEWPORT, not
+             * content: its range is child-bottom minus content.h. Starting
+             * from the border box added (border.h - content.h) of phantom
+             * scroll (2 lines that fit reported a 6px range). */
+            int inner_bottom = scrollable
+                                   ? 0
+                                   : nd->border.y + nd->border.h + scomp;
             for (whaleui_layout_node_t* c = nd->first_child; c;
                  c = c->next) {
                 int cb = fix_sm(c, child_comp);
@@ -2918,8 +2924,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * side + memmove of the text layer) and only repaint the exposed strip.
      * Any other dirty/animations fall back to a full repaint (dy=0). */
     int scroll_dy = 0;
-    if (!r->has_dirty && !r->scroll_dirty && !animating && !r->edit_el &&
-        r->tree) {
+    if (!r->has_dirty && !r->scroll_dirty && !animating && r->tree) {
         std::map<lxb_dom_element*, int> cur;
         std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
