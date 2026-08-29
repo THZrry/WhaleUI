@@ -111,6 +111,35 @@ float render_line_height(float font_px, bool bold, const char* family)
     int h = TTF_GetFontHeight(font);
     return h > 0 ? static_cast<float>(h) : 0;
 }
+
+/* exact wrapped line count for the layout pass: the same per-glyph wrap
+ * the paint pass uses (via text_size), so run heights/positions and the
+ * page bottom agree to the pixel instead of drifting by an estimated
+ * line. Runs only while g_metric_render is set (render layout). */
+static size_t render_wrap_lines(const char* utf8, size_t len, int avail,
+                                int font_px, bool bold, const char* family,
+                                float letter_spacing_px)
+{
+    whaleui_render_t* r = g_metric_render;
+    (void)letter_spacing_px;
+    if (!r || !utf8 || len == 0) {
+        return 0;
+    }
+    std::string text(utf8, len);
+    int fs = font_px > 0 ? font_px : 16;
+    std::string fam = family ? family : "";
+    int lh = text_line_h(r, fs, fam, bold);
+    if (lh <= 0) {
+        return 0;
+    }
+    int tw = 0, th = 0;
+    text_size(r, text, fs, fam, bold, &tw, &th, avail);
+    if (th <= 0) {
+        return 0;
+    }
+    /* L.th accumulates lh per line (including a trailing empty line) */
+    return static_cast<size_t>((th + lh - 1) / lh);
+}
 #endif
 
 /* --- color --- */
@@ -1594,6 +1623,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);
     whaleui_layout_set_line_height_metric(render_line_height);
+    whaleui_layout_set_wrap_lines_metric(render_wrap_lines);
 #endif
     r->cursor_arrow = nullptr;
     r->cursor_text = nullptr;

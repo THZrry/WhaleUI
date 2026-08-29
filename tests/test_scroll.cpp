@@ -196,6 +196,52 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* a long real-world page (q21k-style): scroll_max must reach the true
+     * content bottom - the last run's bottom (corrected line height) must
+     * fit inside max + viewport, with no missing ~line at the end */
+    {
+        const char* path = WHALEUI_TEST_ROOT
+            "/temp/Qwen_html_20260814_oeem340or.html";
+        FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            std::printf("[scroll] q21k file missing, skipping\n");
+            std::fflush(stdout);
+        } else {
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            std::string html(static_cast<size_t>(sz), '\0');
+            std::fread(&html[0], 1, static_cast<size_t>(sz), f);
+            std::fclose(f);
+            whaleui_window_t* w =
+                whaleui_window_create(app, "q21k", 500, 400);
+            assert(w != nullptr);
+            assert(whaleui_window_load_html(w, html.c_str()) == 0);
+            assert(whaleui_window_show(w) == 0);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            whaleui_layout_node_t* root = w->render->tree->root;
+            whaleui_layout_node_t* last_run = nullptr;
+            for (auto& n : w->render->tree->arena) {
+                if (n.visible && n.is_text) {
+                    last_run = &n;
+                }
+            }
+            assert(root->scroll_max > 0);
+            assert(last_run != nullptr);
+            int content_bottom = root->scroll_max + root->content.h;
+            int run_bottom = last_run->border.y + last_run->border.h;
+            std::printf("[scroll] q21k scroll_max=%d viewport=%d "
+                        "content_bottom=%d run_bottom=%d\n",
+                        root->scroll_max, root->content.h, content_bottom,
+                        run_bottom);
+            std::fflush(stdout);
+            /* the page scroll range reaches the real content bottom */
+            assert(run_bottom <= content_bottom + 2);
+            assert(run_bottom > content_bottom - 40);
+            whaleui_window_destroy(w);
+        }
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

@@ -164,6 +164,17 @@ typedef float (*whaleui_line_height_fn)(float font_px, bool bold,
                                         const char* family);
 void whaleui_layout_set_line_height_metric(whaleui_line_height_fn fn);
 
+/* EXACT wrapped line count for a run: the renderer's per-glyph wrap.
+ * When installed, the layout sizes text runs with the same line count the
+ * renderer will paint, so run positions / box heights / scroll_max agree
+ * to the pixel instead of drifting by an estimated line. NULL keeps the
+ * estimate. */
+typedef size_t (*whaleui_wrap_lines_fn)(const char* utf8, size_t len,
+                                        int avail, int font_px, bool bold,
+                                        const char* family,
+                                        float letter_spacing_px);
+void whaleui_layout_set_wrap_lines_metric(whaleui_wrap_lines_fn fn);
+
 /* wrapped line count of `s` at `avail` px (per-line, real pixel widths);
  * C wrapper of the anonymous-namespace helper (not linkable directly).
  * Exported for tests; the renderer installs the real text metric. */

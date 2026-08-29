@@ -320,6 +320,8 @@ float text_est_width(const std::string& s, float fs)
 static whaleui_text_metric_fn g_text_metric = nullptr;
 /* renderer-installed real line height (NULL uses fs*1.2) */
 static whaleui_line_height_fn g_line_height = nullptr;
+/* exact wrapped-line-count hook (renderer's per-glyph wrap) */
+static whaleui_wrap_lines_fn g_wrap_lines = nullptr;
 
 /* UTF-8 character count */
 size_t utf8_count(const std::string& s)
@@ -444,6 +446,18 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
 {
     if (s.empty() || avail <= 0) {
         return 1;
+    }
+    /* the renderer's exact per-glyph wrap (installed during render
+     * layout): same line count the paint pass will use, so run heights
+     * and positions agree to the pixel. Without it, the estimate can be
+     * one line short and the page bottom unreachable by ~a line. */
+    if (g_wrap_lines) {
+        size_t exact = g_wrap_lines(s.c_str(), s.size(), avail,
+                                    static_cast<int>(fs), bold,
+                                    family.c_str(), lsp_px);
+        if (exact > 0) {
+            return exact;
+        }
     }
     size_t lines = 0;
     size_t p = 0;
@@ -2333,4 +2347,9 @@ extern "C" void whaleui_layout_set_text_metric(whaleui_text_metric_fn fn)
 extern "C" void whaleui_layout_set_line_height_metric(whaleui_line_height_fn fn)
 {
     g_line_height = fn;
+}
+
+extern "C" void whaleui_layout_set_wrap_lines_metric(whaleui_wrap_lines_fn fn)
+{
+    g_wrap_lines = fn;
 }
