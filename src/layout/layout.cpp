@@ -487,11 +487,29 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
-            if (inline_box) {
-                w += text_measure(c->text, fs, fam, bold, lsp);
-            } else {
-                w += text_measure_est(c->text, fs, lsp);
+            /* width = the LONGEST line, not the whole run: measuring the
+             * whole text (with \n) sums every line's width, so a pile of
+             * short lines blew the box up to "the width of all lines". */
+            size_t p0 = 0;
+            float best = 0;
+            while (p0 < c->text.size()) {
+                size_t q0 = c->text.find('\n', p0);
+                if (q0 == std::string::npos) {
+                    q0 = c->text.size();
+                }
+                std::string seg = c->text.substr(p0, q0 - p0);
+                float lw = inline_box
+                               ? text_measure(seg, fs, fam, bold, lsp)
+                               : text_measure_est(seg, fs, lsp);
+                if (lw > best) {
+                    best = lw;
+                }
+                if (q0 == c->text.size()) {
+                    break;
+                }
+                p0 = q0 + 1;
             }
+            w += best;
         } else {
             w += estimate_content_width(c, em);
         }

@@ -283,9 +283,21 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (sit != r->scrolls.end()) {
         sy = sit->second;
     }
+    /* thumb position in float and clamped to the track: integer division
+     * truncation plus an out-of-range live scroll made the thumb jump
+     * around on tall pages */
+    float frac = n->scroll_max > 0
+                     ? static_cast<float>(sy) /
+                           static_cast<float>(n->scroll_max)
+                     : 0.0f;
+    if (frac < 0.0f) {
+        frac = 0.0f;
+    }
+    if (frac > 1.0f) {
+        frac = 1.0f;
+    }
     int thumb_y = track_y +
-                  (track_h - thumb_h) * sy /
-                      (n->scroll_max > 0 ? n->scroll_max : 1);
+                  static_cast<int>((track_h - thumb_h) * frac);
     unsigned int track = 0x10000000;
     unsigned int thumb = 0x50000000;
     auto it = r->theme_vars.find("--border");

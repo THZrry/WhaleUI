@@ -1172,5 +1172,44 @@ int main(void)
         assert(ms < 500.0); /* estimate path must stay fast */
     }
 
+    /* many short lines: an auto-width box follows the LONGEST line, not
+     * the sum of every line (regression: a pile of "a\n" lines blew the
+     * box up to the width of all lines combined) */
+    {
+        auto w_of = [](const char* body) {
+            std::string html = "<html><body><span "
+                               "style=\"display:inline-block\">" +
+                               std::string(body) + "</span></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html.c_str(), html.size());
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            int w = -1;
+            for (auto& n : t->arena) {
+                if (!n.visible || !n.el || n.is_text) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* nm = lxb_dom_element_local_name(n.el, &len);
+                if (nm && len == 4 && std::memcmp(nm, "span", 4) == 0) {
+                    w = n.border.w;
+                    break;
+                }
+            }
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+            return w;
+        };
+        int one = w_of("a");
+        int many = w_of("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np");
+        assert(one > 0);
+        assert(many == one); /* longest line, not the sum of all lines */
+        int longline = w_of("a\nbbbbbbbbbbbbbbbbbbbbbb\nc");
+        assert(longline > one); /* the wide line sets the width */
+    }
+
     return 0;
 }
