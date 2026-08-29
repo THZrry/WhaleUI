@@ -1298,6 +1298,49 @@ int main(void)
         }
     }
 
+    /* FSR (half-resolution render): a re-layout at the scaled fb size must
+     * not inflate the textarea's range - the demo runs with FSR and is
+     * where the ~70-line range appears */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "ta-fsr", 700, 500);
+        assert(w != nullptr);
+        const char* path = WHALEUI_TEST_ROOT "/temp/demo_full.html";
+        FILE* f = std::fopen(path, "rb");
+        assert(f != nullptr);
+        std::fseek(f, 0, SEEK_END);
+        long sz = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        std::string html(static_cast<size_t>(sz), '\0');
+        std::fread(&html[0], 1, static_cast<size_t>(sz), f);
+        std::fclose(f);
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_app_set_theme(app, WHALEUI_THEME_LIGHT) == 0);
+        assert(whaleui_window_show(w) == 0);
+        /* force FSR on: frame will relayout at the scaled fb size */
+        w->render->fsr_mode = 1;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        std::printf("[scroll] ta-fsr fb=%dx%d ta_smax=%d ch=%d run_bs=%d\n",
+                    w->render->fb_w, w->render->fb_h, ta->scroll_max,
+                    ta->content.h, ta->border.h);
+        std::fflush(stdout);
+        assert(ta->scroll_max == 0); /* FSR must not inflate it */
+        whaleui_window_destroy(w);
+    }
+
     /* even if the textarea has a stale/large live scroll (e.g. after a
      * scroll or an FSR relayout), a relayout must NOT inflate its range -
      * the range depends only on content, never on scroll_y */

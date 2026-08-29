@@ -2928,7 +2928,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * side + memmove of the text layer) and only repaint the exposed strip.
      * Any other dirty/animations fall back to a full repaint (dy=0). */
     int scroll_dy = 0;
-    if (!r->has_dirty && !r->scroll_dirty && !animating && r->tree) {
+    /* scroll-shift also runs while an animation is playing: a scroll must
+     * move the previous image + repaint the strip, not do a full repaint.
+     * Animating elements inside the strip repaint with their current frame;
+     * a full repaint every scroll frame is what made sliding feel like a
+     * crawl (the demo's idle animations). */
+    if (!r->has_dirty && !r->scroll_dirty && r->tree) {
         std::map<lxb_dom_element*, int> cur;
         std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
