@@ -134,6 +134,70 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* dragging the scrollbar must NOT be yanked back by the relayout the
+     * press triggers: the press sets has_dirty -> relayout -> fix_sm
+     * clamps scrolls to its recomputed scroll_max, and if that differs
+     * from the layout estimate the thumb snaps back. The dragged position
+     * must survive the frame. */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "drag-stable", 300, 200);
+        assert(w != nullptr);
+        std::string val;
+        for (int i = 0; i < 60; ++i) {
+            val += 'a';
+        }
+        std::string html = "<html><body><textarea id=\"t\" "
+                           "style=\"width:200px;height:40px\">" + val +
+                           "</textarea></body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* ta = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 8 &&
+                    std::memcmp(name, "textarea", 8) == 0) {
+                    ta = &n;
+                    break;
+                }
+            }
+        }
+        assert(ta != nullptr);
+        assert(ta->scroll_max > 0);
+        lxb_dom_element* el = ta->el;
+        const int bx = ta->border.x + ta->border.w - 4;
+        /* drag to ~60% down the track */
+        int y1 = ta->border.y + ta->border.h * 3 / 5;
+        whaleui_render_set_pressed(w->render, bx, ta->border.y + 10, 1);
+        assert(w->render->drag_scroll_el == el);
+        whaleui_render_set_hover(w->render, bx, y1);
+        int s_drag = w->render->scrolls[el];
+        assert(s_drag > 0);
+        /* the next frame (which runs the relayout + fix_sm) must keep it */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* re-locate the textarea: nodes were rebuilt by the relayout */
+        whaleui_layout_node_t* ta2 = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el == el && !n.is_text) {
+                ta2 = &n;
+                break;
+            }
+        }
+        assert(ta2 != nullptr);
+        /* the drag may have overshot the TRUE range - clamp is fine, but
+         * the position must be stable afterwards (no snap to 0, no bounce
+         * between frames) */
+        int expect = s_drag > ta2->scroll_max ? ta2->scroll_max : s_drag;
+        assert(w->render->scrolls[el] == expect);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->scrolls[el] == expect); /* stable next frame */
+        whaleui_render_set_pressed(w->render, bx, y1, 0);
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
