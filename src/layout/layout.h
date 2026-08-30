@@ -145,6 +145,17 @@ int whaleui_layout_relayout(whaleui_layout_tree_t* tree,
                             struct whaleui_anim* anim,
                             float text_scale);
 
+/* Batch relayout for a layout-affecting animation: ~same as relayout but
+ * rebuilds several animated subtrees before a single whole-tree box pass
+ * (per-element relayout would box-pass the whole tree per element). */
+int whaleui_layout_relayout_multi(
+    whaleui_layout_tree_t* tree, struct lxb_dom_element* const* els,
+    size_t nel, const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<struct lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale);
+
 /* Text-width metric hook: the renderer installs this so layout measures
  * REAL glyph widths (inline-line x positions, wrap points, flex sizing)
  * instead of the built-in estimate. letter_spacing_px is the resolved

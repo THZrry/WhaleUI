@@ -55,6 +55,32 @@ whaleui_render_t* g_metric_render = nullptr;
 /* real text width for the layout pass: measure with the actual TTF font
  * (fallback chain included) so inline-line x positions and wrap points
  * match the painted glyphs. Returns 0 to fall back to the estimate. */
+/* 64-bit FNV-1a key for the whole-string width cache (text + size +
+ * family + weight + letter-spacing). Hashed so the lookup never copies
+ * the UTF-8 string, which is O(len) per call on a text-heavy page. */
+static uint64_t textw_key(const char* utf8, size_t len, int fs,
+                          const char* family, bool bold, float lsp)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= static_cast<unsigned char>(utf8[i]);
+        h *= 1099511628211ULL;
+    }
+    if (family) {
+        for (const char* s = family; *s; ++s) {
+            h ^= static_cast<unsigned char>(*s);
+            h *= 1099511628211ULL;
+        }
+    }
+    h ^= static_cast<uint64_t>(static_cast<uint32_t>(fs));
+    h *= 1099511628211ULL;
+    h ^= bold ? 1ULL : 0ULL;
+    h *= 1099511628211ULL;
+    h ^= static_cast<uint64_t>(static_cast<uint32_t>(lsp * 16.0f));
+    h *= 1099511628211ULL;
+    return h;
+}
+
 float render_text_metric(const char* utf8, size_t len, float font_px,
                          bool bold, const char* family, float lsp_px)
 {
@@ -70,6 +96,16 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
                                      bold ? kFontBold : 0);
     if (!font) {
         return 0;
+    }
+    /* whole-string cache: the box pass and fix_run_heights re-measure the
+     * SAME stable text every frame (an animation only repositions), so the
+     * per-char glyph loop below is the hot cost. A hit returns in O(1). */
+    uint64_t tkey = textw_key(utf8, len, fs, family, bold, lsp_px);
+    {
+        auto it = r->text_w_cache.find(tkey);
+        if (it != r->text_w_cache.end()) {
+            return it->second;
+        }
     }
     /* measure per glyph (advance) instead of TTF_MeasureString: the layout
      * pass calls this for EVERY run EVERY frame (a layout animation), and
@@ -140,6 +176,7 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
             total += lsp_px * static_cast<float>(ch - 1);
         }
     }
+    r->text_w_cache[tkey] = total;
     return total;
 }
 
@@ -3089,15 +3126,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             };
         collect(r->tree->root);
-        bool ok = true;
-        for (lxb_dom_element* el : anim_els) {
-            if (whaleui_layout_relayout(r->tree, el, r->rules,
-                                        r->rule_count, &r->theme_vars,
-                                        &st, &r->scrolls, r->anim,
-                                        r->text_scale) < 0) {
-                ok = false;
-                break;
-            }
+        bool ok = false;
+        int m_ok = whaleui_layout_relayout_multi(
+            r->tree, anim_els.data(), anim_els.size(), r->rules,
+            r->rule_count, &r->theme_vars, &st, &r->scrolls, r->anim,
+            r->text_scale);
+        if (m_ok == 0) {
+            ok = true;
+        } else if (m_ok < 0) {
+            ok = false; /* builder failed; full rebuild below */
+        } else {
+            ok = true;  /* every element already mapped to nothing: nothing
+                         * changed, stay on the current tree */
         }
         if (ok) {
             g_last_tree = r->tree;

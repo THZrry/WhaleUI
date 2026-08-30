@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -73,6 +74,14 @@ struct whaleui_render
      * its size with TTF_SetFontSize - a size-less key would return a stale
      * advance after a size change (and re-layout the whole page wrong). */
     std::map<std::tuple<TTF_Font*, int, unsigned int>, int> glyph_w_cache;
+
+    /* whole-string width cache for the layout metric hook: the box pass
+     * and fix_run_heights re-measure the same stable text every frame
+     * (an animation only repositions, it does not change the glyphs), so
+     * they are the hot cost. Keyed by a 64-bit FNV hash of the text+size+
+     * family+weight so the lookup does not copy the whole UTF-8 string.
+     * A stable run hits and returns in O(1). */
+    std::unordered_map<uint64_t, float> text_w_cache;
 
     /* text cache: one rasterized RGBA buffer per element+style, reused
      * across frames. Rebuilding text objects AND re-rasterizing every run

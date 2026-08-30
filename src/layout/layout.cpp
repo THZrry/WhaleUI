@@ -1873,6 +1873,12 @@ struct Builder
             if (fs <= 0) {
                 fs = em;
             }
+            /* box pass: the width was already laid out by build (real
+             * measure), so return it instead of re-measuring the string -
+             * text-alignment re-reads every inline run here every frame. */
+            if (c->border.w > 0) {
+                return c->border.w;
+            }
             return static_cast<int>(text_measure(
                 c->text, fs, get(c->style, "font-family"),
                 font_weight_bold(c->style),
@@ -3389,6 +3395,89 @@ extern "C" int whaleui_layout_relayout(
 
     /* re-run the box pass; untouched branches keep their computed styles
      * and are only re-positioned. Same tail as whaleui_layout_compute. */
+    int cursor = 0;
+    b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
+             &cursor);
+    tree->root->border.h = tree->viewport_h;
+    tree->root->content.h = tree->viewport_h;
+    {
+        int cmax = cursor - tree->viewport_h;
+        tree->root->scroll_max = cmax > 0 ? cmax : 0;
+    }
+    return 0;
+}
+
+/* batch relayout for a layout-affecting animation: rebuild each animated
+ * element's subtree with the tick's styles, but run the box pass ONCE for
+ * all of them. Per-element relayout ran the whole-tree box pass per element
+ * (the demo's bar anim has 6 animated elements -> 6 full box passes a
+ * frame); one pass keeps an animation frame proportional to a single
+ * box pass instead of N. */
+int whaleui_layout_relayout_multi(
+    whaleui_layout_tree_t* tree, lxb_dom_element* const* els, size_t nel,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale)
+{
+    if (!tree || !els || nel == 0) {
+        return 1;
+    }
+    Builder b;
+    b.tree = tree;
+    b.rules = rules;
+    b.rule_count = count;
+    b.st = st ? *st : whaleui_style_state();
+    b.scrolls = scrolls;
+    b.anim = anim;
+    b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    if (theme_vars) {
+        b.vars = *theme_vars;
+    }
+    if (tree->root && tree->root->el) {
+        whaleui_style_collect_vars_full(tree->root->el, rules, count, b.vars);
+    }
+    for (size_t e = 0; e < nel; ++e) {
+        lxb_dom_element* el = els[e];
+        auto found = tree->by_el.find(el);
+        if (found == tree->by_el.end()) {
+            return 1;
+        }
+        whaleui_layout_node_t* old = found->second;
+        whaleui_layout_node_t* parent = old->parent;
+        std::function<void(whaleui_layout_node_t*)> unmap =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el) {
+                    auto m = tree->by_el.find(nd->el);
+                    if (m != tree->by_el.end() && m->second == nd) {
+                        tree->by_el.erase(m);
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    unmap(c);
+                }
+            };
+        unmap(old);
+        whaleui_layout_node_t* fresh = b.build(el, parent);
+        if (!fresh) {
+            return -1;
+        }
+        fresh->next = old->next;
+        if (parent) {
+            whaleui_layout_node_t** link = &parent->first_child;
+            while (*link && *link != old) {
+                link = &(*link)->next;
+            }
+            if (*link != old) {
+                return -1;
+            }
+            *link = fresh;
+        } else {
+            tree->root = fresh;
+        }
+    }
     int cursor = 0;
     b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
              &cursor);
