@@ -3439,6 +3439,7 @@ int whaleui_layout_relayout_multi(
     if (tree->root && tree->root->el) {
         whaleui_style_collect_vars_full(tree->root->el, rules, count, b.vars);
     }
+    std::vector<whaleui_layout_node_t*> freshNodes;
     for (size_t e = 0; e < nel; ++e) {
         lxb_dom_element* el = els[e];
         auto found = tree->by_el.find(el);
@@ -3465,6 +3466,7 @@ int whaleui_layout_relayout_multi(
         if (!fresh) {
             return -1;
         }
+        freshNodes.push_back(fresh);
         fresh->next = old->next;
         if (parent) {
             whaleui_layout_node_t** link = &parent->first_child;
@@ -3479,14 +3481,65 @@ int whaleui_layout_relayout_multi(
             tree->root = fresh;
         }
     }
-    int cursor = 0;
-    b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
-             &cursor);
+    /* localize the box pass: a layout animation (bar width) reflows the
+     * animated subtree but the sibling flex rows do not move, so re-running
+     * the whole-tree box pass every frame is the cost. Re-layout only the
+     * topmost flex/grid ancestor (deduped) of each animated element,
+     * positioned inside its parent's content box (NOT its own border - the
+     * ancestor chain sets that, and using the element's own border double-
+     * applies margins and collapses it to the top). */
+    std::vector<whaleui_layout_node_t*> rroots;
+    for (whaleui_layout_node_t* fn : freshNodes) {
+        whaleui_layout_node_t* a = fn->parent;
+        while (a && a != tree->root) {
+            int adk = display_kind(get(a->style, "display"));
+            if (adk == 1 || adk == 4) {
+                break;
+            }
+            a = a->parent;
+        }
+        if (!a) {
+            a = tree->root;
+        }
+        if (std::find(rroots.begin(), rroots.end(), a) == rroots.end()) {
+            rroots.push_back(a);
+        }
+    }
+    for (whaleui_layout_node_t* rr : rroots) {
+        int cx = 0, cy = 0, cw = tree->viewport_w, ch = tree->viewport_h;
+        int cursor = 0;
+        if (rr->parent) {
+            cx = rr->parent->content.x;
+            cy = rr->parent->content.y;
+            cw = rr->parent->content.w;
+            ch = rr->parent->content.h;
+            /* static (in-flow) position: b.layout advances cursor_y to place
+             * children, so seed it with the element's existing flow offset
+             * (border.y minus its own margin-top) instead of 0 - 0 would
+             * rebuild the subtree at the page top instead of in flow after
+             * the header. */
+            cursor = rr->border.y - rr->margin[0];
+        }
+        b.layout(rr, cx, cy, cw, ch, 16, &cursor);
+    }
     tree->root->border.h = tree->viewport_h;
     tree->root->content.h = tree->viewport_h;
     {
-        int cmax = cursor - tree->viewport_h;
-        tree->root->scroll_max = cmax > 0 ? cmax : 0;
+        int cmax = 0;
+        std::function<void(whaleui_layout_node_t*)> deep =
+            [&](whaleui_layout_node_t* nd) {
+                int bot = nd->border.y + nd->border.h;
+                if (bot > cmax) {
+                    cmax = bot;
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    deep(c);
+                }
+            };
+        deep(tree->root);
+        tree->root->scroll_max =
+            cmax > tree->viewport_h ? cmax - tree->viewport_h : 0;
     }
     return 0;
 }
