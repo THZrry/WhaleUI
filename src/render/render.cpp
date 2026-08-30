@@ -1735,6 +1735,8 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->layout_thread = nullptr;
     r->layout_done.store(0, std::memory_order_relaxed);
     r->layout_pending = nullptr;
+    r->tc_tick = 0;
+    r->tc_bytes = 0;
 #ifdef WHALEUI_BUILD_FULL
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);

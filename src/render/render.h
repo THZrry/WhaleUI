@@ -73,13 +73,17 @@ struct whaleui_render
      * across frames. Rebuilding text objects AND re-rasterizing every run
      * per frame was the dominant paint cost on text-heavy pages (~13fps);
      * cached frames are millisecond cheap. The key includes the text so
-     * edits recreate the buffer. */
+     * edits recreate the buffer. Bounded (LRU by tc_bytes) so a huge page
+     * (qwen 21k, hundreds of runs) cannot grow it unbounded. */
     struct TextCacheEntry
     {
         std::vector<unsigned int> px; /* 0xAARRGGBB,已含前景色/彩色字形色 */
         int w, h;
+        uint64_t last_use;            /* LRU tick (r->tc_tick) */
     };
     std::map<std::string, TextCacheEntry> text_cache;
+    uint64_t tc_tick;      /* monotonic use counter for LRU */
+    size_t tc_bytes;       /* total raster bytes in the cache */
 
     /* decoded <img> bitmaps by src (owned; freed in destroy). Only local
      * file:// / relative URIs are loadable; remote or missing sources fall

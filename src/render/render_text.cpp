@@ -1153,9 +1153,31 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                       static_cast<unsigned long long>(h));
         whaleui_render_t::TextCacheEntry& e = r->text_cache[key];
         if (e.px.empty() || e.w != tw || e.h != th) {
+            /* account the old raster bytes before replacing */
+            r->tc_bytes -= e.px.size() * sizeof(unsigned int);
             e.px = std::move(buf);
             e.w = tw;
             e.h = th;
+            r->tc_bytes += e.px.size() * sizeof(unsigned int);
+        }
+        e.last_use = ++r->tc_tick;
+        /* bounded cache: a large page (qwen 21k) has hundreds of runs; cap
+         * the total raster bytes and evict the least-recently-used entries
+         * so it cannot grow unbounded. */
+        const size_t kMaxBytes = 16 * 1024 * 1024; /* 16MB */
+        while (r->tc_bytes > kMaxBytes) {
+            auto victim = r->text_cache.begin();
+            for (auto it = r->text_cache.begin(); it != r->text_cache.end();
+                 ++it) {
+                if (it->second.last_use < victim->second.last_use) {
+                    victim = it;
+                }
+            }
+            if (victim == r->text_cache.end()) {
+                break;
+            }
+            r->tc_bytes -= victim->second.px.size() * sizeof(unsigned int);
+            r->text_cache.erase(victim);
         }
         src = &e.px;
     }
