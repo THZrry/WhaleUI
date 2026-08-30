@@ -342,13 +342,13 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
     if (size <= 0) {
         size = 16;
     }
-    /* one TTF_Font per (family, style), size set dynamically: a page with
-     * many font-sizes (e.g. the qwen footer uses several, a 200px glyph)
-     * otherwise opens a fresh TTF_Font PER SIZE - 90 fonts on the 21k page,
-     * each re-parsing the font (CJK glyph tables are large), the biggest
-     * chunk of the ~330MB there. TTF_SetFontSize is cheap (pixel size). */
-    std::string key = family + "|" + std::to_string(size) + "|" +
-                      std::to_string(style);
+    /* one TTF_Font per (family, style), size scaled on demand. Re-parsing
+     * the font per size was the biggest chunk of the 21k page's memory (90
+     * fonts). The font's current size is set only when a glyph actually
+     * needs rasterization (glyph_img_ttf) or a one-off measure misses the
+     * size-keyed cache - the layout/ad-advance hot path reuses the cache so
+     * it does not toggle the size every run every frame. */
+    std::string key = family + "|" + std::to_string(style);
     for (auto& f : r->fonts) {
         if (f.first == key) {
             return f.second;
@@ -403,6 +403,7 @@ static int glyph_ttf(unsigned int cp, void* st)
         if (c->r->ascii_font != font || c->r->ascii_fs != c->fs) {
             c->r->ascii_font = font;
             c->r->ascii_fs = c->fs;
+            TTF_SetFontSize(font, static_cast<float>(c->fs));
             for (int i = 0; i < 128; ++i) {
                 int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
                 TTF_GetGlyphMetrics(font, static_cast<Uint32>(i),
@@ -419,6 +420,9 @@ static int glyph_ttf(unsigned int cp, void* st)
         return it->second;
     }
     int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
+    /* cache miss: the font's current size may be another run's - set it so
+     * the measure is for THIS size, then cache the per-size advance. */
+    TTF_SetFontSize(font, static_cast<float>(c->fs));
     TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv);
     c->r->glyph_w_cache[key] = adv;
     return adv;
@@ -438,6 +442,10 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     if (!font) {
         return false;
     }
+    /* rasterization needs THIS size: the shared font's current size may be
+     * another run's. Set it once per call (text_cache hits skip this whole
+     * glyph path, so it is not per-frame for cached runs). */
+    TTF_SetFontSize(font, static_cast<float>(fs));
     int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
     if (!TTF_GetGlyphMetrics(font, cp, &minx, &maxx, &miny, &maxy, &adv)) {
         return false;

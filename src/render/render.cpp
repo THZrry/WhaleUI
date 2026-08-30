@@ -102,6 +102,7 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
             if (r->ascii_font != font || r->ascii_fs != fs) {
                 r->ascii_font = font;
                 r->ascii_fs = fs;
+                TTF_SetFontSize(font, static_cast<float>(fs));
                 for (int a = 0; a < 128; ++a) {
                     int m0 = 0, m1 = 0, m2 = 0, m3 = 0, aw = 0;
                     TTF_GetGlyphMetrics(font, static_cast<Uint32>(a),
@@ -116,6 +117,7 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
             if (it != r->glyph_w_cache.end()) {
                 adv = it->second;
             } else {
+                TTF_SetFontSize(font, static_cast<float>(fs));
                 int m0 = 0, m1 = 0, m2 = 0, m3 = 0;
                 if (TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv)) {
                     r->glyph_w_cache[key] = adv;
