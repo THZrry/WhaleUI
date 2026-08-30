@@ -1336,6 +1336,10 @@ struct Builder
                 parent->style.find("letter-spacing") != parent->style.end()) {
                 n->style["letter-spacing"] = parent->style["letter-spacing"];
             }
+            if (n->style.find("cursor") == n->style.end() &&
+                parent->style.find("cursor") != parent->style.end()) {
+                n->style["cursor"] = parent->style["cursor"];
+            }
         }
 
         std::string disp = get(n->style, "display");
@@ -3217,6 +3221,48 @@ struct Builder
             if (t == 1) {
                 col_w[static_cast<size_t>(i)] = static_cast<int>(
                     ctracks[static_cast<size_t>(i)].len * fr_unit);
+            }
+        }
+        /* a <table> with a definite width and no fr columns: the browser
+         * stretches the auto columns to fill the table (a 3-col name
+         * table would otherwise keep its content-width cells and leave
+         * the rest of the 100% width empty - "格子有点小"). Distribute
+         * the free space over the AUTO tracks (those without an explicit
+         * cell width - a th width:80px column must stay 80px) by their
+         * content share. */
+        if (is_table && fr_sum <= 0 && free > 0) {
+            std::vector<bool> fixed_col(static_cast<size_t>(ncols), false);
+            for (size_t j = 0; j < cells.size(); ++j) {
+                std::string wv = get(cells[j].node->style, "width");
+                if (!wv.empty() && wv != "auto" &&
+                    cells[j].cs >= 1 && cells[j].cs <= ncols) {
+                    fixed_col[static_cast<size_t>(cells[j].cs - 1)] = true;
+                }
+            }
+            float auto_sum = 0;
+            int n_auto = 0;
+            for (int i = 0; i < ncols; ++i) {
+                if (!fixed_col[static_cast<size_t>(i)]) {
+                    auto_sum += static_cast<float>(col_w[static_cast<size_t>(i)]);
+                    ++n_auto;
+                }
+            }
+            if (auto_sum > 0) {
+                for (int i = 0; i < ncols; ++i) {
+                    if (!fixed_col[static_cast<size_t>(i)] &&
+                        col_w[static_cast<size_t>(i)] > 0) {
+                        col_w[static_cast<size_t>(i)] += static_cast<int>(
+                            free * static_cast<float>(col_w[static_cast<size_t>(i)]) /
+                            auto_sum);
+                    }
+                }
+            } else if (n_auto > 0) {
+                int share = static_cast<int>(free / n_auto);
+                for (int i = 0; i < ncols; ++i) {
+                    if (!fixed_col[static_cast<size_t>(i)]) {
+                        col_w[static_cast<size_t>(i)] += share;
+                    }
+                }
             }
         }
 

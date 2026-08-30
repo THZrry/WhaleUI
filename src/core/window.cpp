@@ -131,7 +131,13 @@ void window_reveal_apply(whaleui_dom_document_t* doc)
                 lxb_dom_element_get_attribute(el, cls, 5, &clen);
             if (c && clen) {
                 std::string cv(reinterpret_cast<const char*>(c), clen);
-                if (cv.find("reveal") != std::string::npos &&
+                /* simulate the page JS: the IntersectionObserver adds
+                 * .in to .reveal AND .lines elements (a .lines mask
+                 * whose i never leaves translateY(112%) slides the h1
+                 * out of its overflow:hidden span - "the title text is
+                 * clipped"). */
+                if ((cv.find("reveal") != std::string::npos ||
+                     cv.find("lines") != std::string::npos) &&
                     cv.find(" in") == std::string::npos) {
                     std::string nc = cv + " in";
                     lxb_dom_element_set_attribute(

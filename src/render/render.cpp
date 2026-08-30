@@ -3160,6 +3160,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::function<void(whaleui_layout_node_t*, float)> apply_op =
             [&](whaleui_layout_node_t* nd, float po) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                    /* apply the tick's interpolated values (keyframes +
+                     * transition progress land in the ov table; apply_ov
+                     * copies them into the style for paint). */
                     whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
                 }
                 if (nd->is_text) {

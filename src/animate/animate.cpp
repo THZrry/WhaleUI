@@ -1182,7 +1182,8 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
 
 /* Transition: interpolate changed properties toward their new values. */
 void apply_transition(whaleui_anim_t* a, const std::string& elkey,
-                      WhaleUIComputedStyle& style, uint64_t now)
+                      WhaleUIComputedStyle& style, uint64_t now,
+                      bool allow_retarget)
 {
     TransSpec ts;
     build_trans_spec(style, ts);
@@ -1210,7 +1211,13 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
                 if (p < 0.0f) {
                     p = 0.0f; /* delay period: hold the old value */
                 }
-                if (kv->second != tr->second.to) {
+                /* retarget only when the style holds a FRESH CSS value
+                 * (layout rebuild). On paint-only animation frames the
+                 * style already holds the last interpolated value, which
+                 * differs from `to` - retargeting on it re-anchors start
+                 * every frame and the transition never finishes (the
+                 * "hover color freezes mid-fade" report). */
+                if (allow_retarget && kv->second != tr->second.to) {
                     std::string cur;
                     if (any_lerp(kv->first, tr->second.from, tr->second.to, p, cur)) {
                         tr->second.from = cur;
@@ -1283,7 +1290,7 @@ extern "C" int whaleui_anim_apply(whaleui_anim_t* a, struct lxb_dom_element* el,
             return 1;
         }
     }
-    apply_transition(a, elkey, style, now);
+    apply_transition(a, elkey, style, now, true);
     return a->active;
 }
 
@@ -1416,9 +1423,20 @@ extern "C" int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now)
         if (p >= 1.0f) {
             if (el) {
                 a->ov[el][prop] = tr.to;
+                /* keep the element in the act table so the frame loop's
+                 * apply_ov (gated on anim_has_el -> act) applies the
+                 * completed value - otherwise the style stays at the last
+                 * interpolated color ("hover freezes mid-fade"). */
+                act_prop(a, el, prop);
             }
             a->prev[it->first] = tr.to;
             it = a->trans.erase(it);
+            /* keep active for one more frame so the frame loop's
+             * apply_ov applies the completed value (ov=to) to the style.
+             * Without this, animating turns false the frame the
+             * transition finishes and the style is left at its last
+             * interpolated value - "hover color freezes mid-fade". */
+            a->active = 1;
             continue;
         }
         if (p < 0.0f) {
