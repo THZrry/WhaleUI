@@ -1705,6 +1705,14 @@ struct Builder
         /* children */
         int inner_w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
         int inner_h = static_cast<int>(hpx);
+        if (border_box) {
+            /* border-box: hpx includes padding/border - children lay out
+             * inside them */
+            inner_h -= p[0] + p[2] + n->border_w[0] + n->border_w[2];
+        }
+        if (inner_h < 0) {
+            inner_h = 0;
+        }
         int kid_cursor = 0;
         int dk = display_kind(get(n->style, "display"));
 
@@ -2015,8 +2023,7 @@ struct Builder
                              return order_of(a) < order_of(b);
                          });
 
-        /* per-item flex properties + main-axis size (PureLayout: start from
-         * flex-basis, then grow/shrink the free space) */
+        /* container main size: 0 = indefinite (auto height) */
         int container_main = column ? inner_h : inner_w;
         std::vector<float> grow(kids.size()), shrink(kids.size());
         std::vector<float> main_size(kids.size());
@@ -2456,14 +2463,36 @@ struct Builder
                         k->content.w += extra;
                     } else if (extra > 0) {
                         std::string hs = get(k->style, "height");
+                        int target_h = k->border.h + extra;
+                        /* the temp height is the CONTENT height: a
+                         * content-box element re-adds padding+border on
+                         * layout, so setting the border height directly
+                         * would stretch it past the row */
+                        std::string bs = get(k->style, "box-sizing");
+                        int content_h = target_h;
+                        if (bs != "border-box") {
+                            content_h = target_h - k->padding[0] -
+                                        k->padding[2] - k->border_w[0] -
+                                        k->border_w[2];
+                        }
+                        if (content_h < 0) {
+                            content_h = 0;
+                        }
                         char hbuf[32];
-                        std::snprintf(hbuf, sizeof(hbuf), "%dpx",
-                                      k->border.h + extra);
+                        std::snprintf(hbuf, sizeof(hbuf), "%dpx", content_h);
                         k->style["height"] = hbuf;
                         int c1 = k->border.y - k->margin[0];
+                        /* keep the laid-out width: cw must be the border
+                         * width, not the content width, or a content-box
+                         * item re-measures narrower (366 -> 330) and the
+                         * flex share is lost */
                         layout(k, k->border.x - k->margin[1], c1,
-                               k->content.w, k->border.h + extra, font_px,
-                               &c1);
+                               k->border.w, content_h, font_px, &c1);
+                        /* force the exact border height (int rounding) */
+                        k->border.h = target_h;
+                        k->content.h = target_h - k->padding[0] -
+                                       k->padding[2] - k->border_w[0] -
+                                       k->border_w[2];
                         if (hs.empty()) {
                             k->style.erase("height");
                         } else {
