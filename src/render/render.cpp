@@ -475,32 +475,6 @@ void fix_run_heights(whaleui_render_t* r)
     fix_run_h(r->tree->root);
 }
 
-/* 1 if any element in the tree is position:fixed or position:sticky.
- * Such an element is part of the shifted image during scroll-shift, so
- * shifting smears it over the content; callers fall back to a full
- * repaint when this is set. */
-bool has_fixed_or_sticky(whaleui_render_t* r)
-{
-    bool found = false;
-    std::function<void(whaleui_layout_node_t*)> rec =
-        [&](whaleui_layout_node_t* nd) {
-            if (found || !nd || !nd->el || nd->is_text) {
-                return;
-            }
-            std::string p = sget(nd->style, "position");
-            if (p == "fixed" || p == "sticky") {
-                found = true;
-                return;
-            }
-            for (whaleui_layout_node_t* c = nd->first_child; c;
-                 c = c->next) {
-                rec(c);
-            }
-        };
-    rec(r->tree->root);
-    return found;
-}
-
 /* single post-order pass: compute each subtree's REAL bottom (the run
  * heights were just corrected above, but the ancestor boxes keep their
  * layout-estimated heights). The recursion carries `scomp` = the
@@ -3173,69 +3147,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 
     /* pure scroll: shift the previous image (ping-pong blit on the GPU
      * side + memmove of the text layer) and only repaint the exposed strip.
-     * Any other dirty/animations fall back to a full repaint (dy=0). */
+     * Any other dirty/animations fall back to a full repaint (dy=0).
+     *
+     * VIEWPORT MODEL: the page is laid out once and the viewport shows a
+     * window into it. A scroll only changes the viewport offset - it does
+     * NOT shift (reuse) the previous frame's pixels. Reusing the old frame
+     * plus repainting the exposed strip is what left stale pixels behind
+     * (the smeared fixed header, the giant overlay glyphs, the select
+     * dropdown ghost) whenever the shift and the per-element paint offsets
+     * disagreed. Repainting the whole viewport at the new scroll offset is
+     * the correct, artifact-free model, so scroll_dy is pinned to 0 and
+     * every scroll frame repaints the visible region. */
     int scroll_dy = 0;
-    /* scroll-shift also runs while an animation is playing: a scroll must
-     * move the previous image + repaint the strip, not do a full repaint.
-     * Animating elements inside the strip repaint with their current frame;
-     * a full repaint every scroll frame is what made sliding feel like a
-     * crawl (the demo's idle animations). */
-    if (!r->has_dirty && !r->scroll_dirty && r->tree) {
-        std::map<lxb_dom_element*, int> cur;
-        std::function<void(whaleui_layout_node_t*)> collect =
-            [&](whaleui_layout_node_t* nd) {
-                /* only the PAGE (root) participates in the image shift: an
-                 * embedded scrollable (textarea/overflow:auto box) scrolls
-                 * its own content, which the paint pass re-draws at its own
-                 * scroll offset. Including it in scroll_dy shifted the WHOLE
-                 * image by the textarea's scroll, then the textarea re-scrolled
-                 * on top - the textarea dragged the page along. Scroll-shift
-                 * is a page-level optimization only. */
-                if (nd == r->tree->root && r->tree->root->el) {
-                    auto it = r->scrolls.find(r->tree->root->el);
-                    if (it != r->scrolls.end()) {
-                        cur[r->tree->root->el] = it->second;
-                    }
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    collect(c);
-                }
-            };
-        collect(r->tree->root);
-        for (auto& kv : cur) {
-            auto it = r->last_scrolls.find(kv.first);
-            if (it != r->last_scrolls.end()) {
-                scroll_dy += kv.second - it->second;
-            }
-        }
-        r->last_scrolls = std::move(cur);
-        /* scroll-shift repaints only the exposed strip; scrollbar thumbs
-         * live on the containers' right edges, which are inside the
-         * full-width strip, so paint re-draws them at the NEW scroll
-         * position. No full repaint on scroll: that made large pages
-         * (qwen 21k) crawl while scrolling. */
-    }
-    /* a scroll of more than a screen can't be strip-shifted: the exposed
-     * strip would exceed the framebuffer and underflow the text-layer
-     * fill (scroll_dy > fb_h -> strip.y < 0; scroll_dy < -fb_h ->
-     * strip.h > fb_h). A burst of wheel events landing between frames
-     * hits this. Fall back to a full repaint. */
-    if (scroll_dy >= r->fb_h || scroll_dy <= -r->fb_h) {
-        scroll_dy = 0;
-    } else if (scroll_dy < 0 && r->tree && r->tree->root &&
-               has_fixed_or_sticky(r)) {
-        /* scrolling BACK UP moves a fixed/sticky element down with the
-         * shifted image, smearing it over the content (the fixed header
-         * paints at the viewport position every frame but the shift moves
-         * the OLD copy down the page - the "header covers the whole page"
-         * ghost). Scrolling DOWN is safe: a fixed header moves UP out of
-         * view and the strip repaint redraws it at the viewport position,
-         * so only the up direction falls back to a full repaint.
-         * ponytail: layered rendering (content layer + fixed layer) would
-         * keep the shift in both directions; not worth the rewrite yet. */
-        scroll_dy = 0;
-    }
 
     /* paint: collect batched GPU draw commands. Text goes to the CPU layer
      * (moved on scroll), uploaded + composited by a compute pass. */
@@ -3313,30 +3236,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         acca(r->tree->root);
     }
     bool partial = false; /* load-only repaint of a dirty region */
-    if (scroll_dy != 0) {
-        /* scroll strip handled above */
-    } else if (!animating && !r->edit_el && r->scroll_el &&
-               r->scroll_el != r->tree->root->el) {
-        /* embedded scroll (overflow:auto/scroll box): only that container's
-         * viewport region changed - its content paints at the new scroll
-         * offset, the rest of the window is untouched. The page root scroll
-         * takes the image-shift path above; scroll_el is consumed here. */
-        whaleui_layout_node_t* scn =
-            find_node_by_el(r->tree, r->scroll_el);
-        if (scn && scn->el && !scn->is_text && scn->scroll_max > 0) {
-            int x0 = scn->border.x;
-            int y0 = scn->border.y + node_scroll_off(r, scn);
-            int x1 = x0 + scn->border.w;
-            int y1 = y0 + scn->border.h;
-            if (x0 < 0) x0 = 0;
-            if (y0 < 0) y0 = 0;
-            if (x1 > r->fb_w) x1 = r->fb_w;
-            if (y1 > r->fb_h) y1 = r->fb_h;
-            if (x1 > x0 && y1 > y0) {
-                dirty_rect(x0, y0, x1, y1, &strip);
-                partial = true;
-            }
-        }
+    /* a wheel scroll happened (scroll_el set by the scroll behavior): the
+     * WHOLE viewport repaints at the new scroll offset. Consume it so it
+     * only forces one frame; embedded scroll boxes repaint too (their
+     * content shifts, drawn at the new offset during the full paint). */
+    if (r->scroll_el) {
         r->scroll_el = nullptr;
     } else if (!animating && !r->edit_el && r->hover_old_el) {
         /* hover change: repaint only the previous and current hover

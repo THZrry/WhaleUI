@@ -1076,6 +1076,13 @@ struct Builder
         const lxb_char_t* tname0 = lxb_dom_element_local_name(el, &tlen0);
         bool is_img = tname0 && tlen0 == 3 &&
                       std::memcmp(tname0, "img", 3) == 0;
+        /* <option> is a select's choice, not in-flow content: display:none
+         * so it neither lays out (stacking would blow the <select> up to the
+         * option count) nor paints. The dropdown reads options from the DOM
+         * (select_options) and draws its own list. */
+        if (tname0 && tlen0 == 6 && std::memcmp(tname0, "option", 6) == 0) {
+            n->style["display"] = "none";
+        }
         if (is_img) {
             if (n->style.find("width") == n->style.end()) {
                 n->style["width"] = "300px";
@@ -1163,7 +1170,11 @@ struct Builder
                     n->style["width"] = "12em";
                     n->style["height"] = "60px";
                 } else {
+                    /* select + text input: browser-like field height so the
+                     * control doesn't stretch in a flex row (e.g. the demo
+                     * header) or grow to its option count. */
                     n->style["width"] = "12em";
+                    n->style["height"] = "28px";
                 }
             }
         }
@@ -1741,15 +1752,29 @@ struct Builder
 
         /* position:absolute children search the nearest positioned ancestor;
          * simplified: any positioned ancestor. */
+        bool is_sel = false, is_inp = false;
+        if (n->el) {
+            size_t tlen = 0;
+            const lxb_char_t* tname =
+                lxb_dom_element_local_name(n->el, &tlen);
+            is_sel = tname && tlen == 6 &&
+                     std::memcmp(tname, "select", 6) == 0;
+            is_inp = tname && tlen == 5 && std::memcmp(tname, "input", 5) == 0 &&
+                     input_kind(n->el) == 0;
+        }
         if (dk == 1) {
             layout_flex(n, inner_w, inner_h, font_px, kid_cursor);
         } else if (dk == 4 || dk == 5) {
             /* grid, or table (which is laid out as a grid - see the
              * collect_table_items path in layout_grid) */
             layout_grid(n, inner_w, inner_h, font_px, kid_cursor);
-        } else {
+        } else if (!is_sel && !is_inp) {
             layout_block(n, inner_w, inner_h, font_px, kid_cursor);
         }
+        /* a <select>/<input> renders its value from an attribute, not from
+         * a child text run: do NOT lay out children here (the <option>s
+         * would stack and blow the control up to the option count). The
+         * 28px floor below sets the height; hit-testing/hover use the box. */
 
         n->content.y = saved_cy;
 
@@ -1796,16 +1821,12 @@ struct Builder
          * an attribute), so their height would collapse to padding+border
          * (~12px) and the painted value text would overflow the border:
          * give them the same floor. */
-        if (n->el) {
-            size_t tlen = 0;
-            const lxb_char_t* tname = lxb_dom_element_local_name(n->el, &tlen);
-            bool is_sel = tname && tlen == 6 && std::memcmp(tname, "select", 6) == 0;
-            bool is_inp = tname && tlen == 5 && std::memcmp(tname, "input", 5) == 0 &&
-                          input_kind(n->el) == 0;
-            if ((is_sel || is_inp) && n->border.h < 28) {
-                n->border.h = 28;
-                n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
-            }
+        /* floor the control height (is_sel/is_inp from above): an inline
+         * select/input reserves one value line; the popup text fits 16px
+         * content box + the value-text nudge. */
+        if (n->el && (is_sel || is_inp) && n->border.h < 28) {
+            n->border.h = 28;
+            n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
         }
 
         /* min/max-height (viewport units resolve via len_px_vp) */
