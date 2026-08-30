@@ -3377,13 +3377,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         }
         r->hover_old_el = nullptr;
     } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
-               !whaleui_anim_needs_layout(r->anim)) {
+               !whaleui_anim_needs_layout(r->anim) && !r->open_select) {
         /* paint-only animation: repaint only the animating elements'
          * bounding boxes (dirty-rect, keeps the rest of the frame).
-         * Layout-affecting animation frames skip this: the element's box
-         * GROWS/SHRINKS, so the old box outside the new bounds would keep
-         * a ghost - those frames repaint fully (relayout already made them
-         * cheap). */
+         * An open <select> dropdown is drawn OUTSIDE the tree (last, full
+         * viewport); a dirty-rect frame covers only the animating boxes, so
+         * the dropdown repaints over stale pixels and jitters - repaint
+         * fully while a dropdown is open. */
         const int AM = 160; /* ponytail: anim-travel margin. The strip must
                                cover not just the CURRENT box but anywhere
                                the element has BEEN: a translate animation

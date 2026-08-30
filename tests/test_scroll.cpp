@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 
 /* read one pixel back from the GPU composited target (R8G8B8A8) */
 static unsigned int gpixel(whaleui_render_t* r, int x, int y)
@@ -1567,6 +1568,35 @@ int main(void)
         assert((p_top & 0xFFFFFFu) == 0x333333u);
         /* below the bar is page background (#101010), not the bar (#333) */
         assert((p_below & 0xFFFFFFu) != 0x333333u);
+        whaleui_window_destroy(w);
+    }
+
+    /* animation actually plays in the render frame: a red element with an
+     * opacity animation at a known spot must change pixel over time. If a
+     * future change stops animating, this fails. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "anim-probe", 400, 120);
+        assert(w != nullptr);
+        const char* html =
+            "<html><head><style>"
+            "@keyframes p{0%{opacity:1}50%{opacity:.1}100%{opacity:1}}"
+            "div{width:50px;height:50px;background:red;animation:p 1s linear infinite}"
+            "</style></head><body><div></div></body></html>";
+        assert(whaleui_window_load_html(w, html) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        unsigned int p0 = gpixel(w->render, 25, 25);
+        unsigned int p1 = 0;
+        for (int i = 0; i < 30; ++i) {
+            SDL_Delay(16);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            p1 = gpixel(w->render, 25, 25);
+        }
+        std::printf("[animprobe] p0=%08X p1=%08X\n", p0, p1);
+        std::fflush(stdout);
+        /* the opacity animation must have changed the pixel */
+        assert(p0 != p1);
         whaleui_window_destroy(w);
     }
 

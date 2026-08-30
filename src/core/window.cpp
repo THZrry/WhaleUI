@@ -19,6 +19,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 
 namespace {
@@ -102,6 +103,49 @@ void window_reload_css(whaleui_window_t* win)
     whaleui_render_set_css(win->render, rules, count, &kf, &theme_vars);
     whaleui_css_rules_destroy(rules, count);
     whaleui_css_keyframes_destroy(&kf);
+}
+
+/* no JS engine: a reveal-on-scroll page keeps its content hidden (opacity:0
+ * until JS adds .in). Simulate the JS by adding .in to every element whose
+ * class list contains "reveal", so content shows while decorative
+ * @keyframes animations still play. (app_create defaults to FULL motion, so
+ * prefers-reduced-motion doesn't stop those animations; reduced_motion=1
+ * would surface a reveal page but stop the animations.) */
+void window_reveal_apply(whaleui_dom_document_t* doc)
+{
+    lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+    if (!hd) {
+        return;
+    }
+    lxb_dom_element* root = lxb_dom_document_element(&hd->dom_document);
+    if (!root) {
+        return;
+    }
+    const lxb_char_t* cls = (const lxb_char_t*)"class";
+    const lxb_char_t* in_attr = (const lxb_char_t*)"in";
+    std::function<void(lxb_dom_node*)> walk = [&](lxb_dom_node* n) {
+        if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* el = lxb_dom_interface_element(n);
+            size_t clen = 0;
+            const lxb_char_t* c =
+                lxb_dom_element_get_attribute(el, cls, 5, &clen);
+            if (c && clen) {
+                std::string cv(reinterpret_cast<const char*>(c), clen);
+                if (cv.find("reveal") != std::string::npos &&
+                    cv.find(" in") == std::string::npos) {
+                    std::string nc = cv + " in";
+                    lxb_dom_element_set_attribute(
+                        el, cls, 5,
+                        reinterpret_cast<const lxb_char_t*>(nc.c_str()),
+                        nc.size());
+                }
+            }
+        }
+        for (lxb_dom_node* ch = n->first_child; ch; ch = ch->next) {
+            walk(ch);
+        }
+    };
+    walk(&root->node);
 }
 
 /* public internal: refresh after theme/accent change */
@@ -323,6 +367,8 @@ extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
     if (!win->document) {
         return -2;
     }
+    /* no JS engine: add .in to reveal elements so their content shows */
+    window_reveal_apply(win->document);
     window_reload_css(win);
     return 0;
 }

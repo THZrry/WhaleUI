@@ -1474,14 +1474,18 @@ struct Builder
             }
             n->border.x = cx;
             n->border.y = *cursor_y;
+            /* box width must match the measured (real) glyph width: an
+             * estimate narrower than the real ink (CJK vs latin metrics,
+             * letter-spacing) leaves the tail characters clipped at render
+             * time. Use the real metric hook when installed. */
             float max_w = 0;
             for (size_t i = 0; i <= n->text.size();) {
                 size_t j = n->text.find('\n', i);
                 if (j == std::string::npos) {
                     j = n->text.size();
                 }
-                float lw = text_measure_est(n->text.substr(i, j - i), fs,
-                                            lsp2);
+                float lw = text_measure(n->text.substr(i, j - i), fs, fam2,
+                                        bold2, lsp2);
                 if (lw > max_w) {
                     max_w = lw;
                 }
@@ -1491,7 +1495,13 @@ struct Builder
                 i = j + 1;
             }
             int bw2 = static_cast<int>(max_w);
-            n->border.w = bw2 > avail ? avail : bw2;
+            /* an inline run's content width IS its glyph width - do NOT
+             * clamp to the parent avail, or the tail characters get
+             * clipped when the run box is narrower than the ink. (A block
+             * container still clips its own overflow - that is the parent's
+             * <div>/<p> box, not this run.) Wrapping (est_wrap_lines) keeps
+             * the height right; the run box only gives the text extent. */
+            n->border.w = bw2;
             /* line-height: number/px/em/% replaces the fixed 1.2 factor */
             float lh = line_height_px(n->style, fs);
             n->border.h = static_cast<int>(lh) * static_cast<int>(lines);
