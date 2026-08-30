@@ -355,6 +355,7 @@ extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
     if (!win || !html) {
         return -1;
     }
+    win->base_uri.clear(); /* in-memory html has no base for relative links */
     if (win->document) {
         whaleui_dom_document_destroy(win->document);
     }
@@ -385,6 +386,9 @@ extern "C" int whaleui_window_load_uri(whaleui_window_t* win, const char* uri)
     }
     int rc = whaleui_window_load_html(win, buf);
     std::free(buf);
+    /* load_html clears the base (in-memory html); set it AFTER so the
+     * loaded document keeps its URI for resolving relative <a href> */
+    win->base_uri = uri;
     return rc;
 }
 

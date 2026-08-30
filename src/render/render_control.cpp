@@ -216,15 +216,12 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         draw_text_at(r, val, n->content.x - hx + off_x, n->content.y,
                      n->content.w, n->content.h,
                      fs, family, fg, style, 0, el, ic);
-    } else if (is_editable(el)) {
-        /* textarea / contenteditable: paint the value text here too. The
-         * layout creates a text run for the value, but the box clips it
-         * (overflow) and the run may not paint inside the viewport clip,
-         * so the value is drawn explicitly at the run origin. */
-        unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-        draw_text_at(r, val, tx, ty, n->content.w, n->content.h,
-                     fs, family, fg, style, 0, el, ic, 0, true);
     }
+    /* textarea / contenteditable: the value glyphs come from the layout
+     * text run (paint_text), which already carries the live scroll delta
+     * and the viewport clip - painting the value a second time here
+     * double-rendered it (ghosted text). tx/ty below still anchor the
+     * focused selection/caret geometry. */
     if (focused) {
         size_t a = 0, b = 0;
         if (sel_range_for(r, el, val.size(), &a, &b, -1, -1, -1)) {

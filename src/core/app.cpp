@@ -9,9 +9,12 @@
 #include "render/render.h"
 #include "style/theme.h"
 
+#include <lexbor/dom/dom.h>
+
 #include <SDL3/SDL.h>
 
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -32,6 +35,31 @@ whaleui_theme_t resolved_theme(const whaleui_app_t* app)
         return WHALEUI_THEME_LIGHT;
     }
     return app->theme == WHALEUI_THEME_SYSTEM ? app->system_theme : app->theme;
+}
+
+/* resolve a possibly-relative <a href> against the window's base URI:
+ * absolute URIs/paths pass through, relative names join the base's
+ * directory (the page's own folder, not the process cwd - the demo's
+ * test_html pages link to each other by bare file names). Empty base
+ * falls back to the raw href (cwd-relative, the pre-navigation vfs
+ * behavior). */
+std::string resolve_href(whaleui_window_t* win, const char* href)
+{
+    std::string h = href ? href : "";
+    if (h.empty() || win->base_uri.empty() ||
+        h.rfind("file://", 0) == 0 || h.find(':') != std::string::npos ||
+        h[0] == '/' || h[0] == '\\') {
+        return h;
+    }
+    /* base directory: everything up to the last '/' (keep the slash) */
+    std::string base = win->base_uri;
+    size_t slash = base.find_last_of('/');
+    if (slash == std::string::npos) {
+        return h;
+    }
+    /* strip a trailing file name (base ends in "/index.html") */
+    base = base.substr(0, slash + 1);
+    return base + h;
 }
 
 /* window owning an SDL window id (used by key/text/wheel dispatch) */
@@ -169,6 +197,42 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                     whaleui_dom_element_t* hit = whaleui_render_hit_element(
                         win->render, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y));
+                    /* <a href> navigation: walk up from the hit to the
+                     * nearest anchor, resolve the (possibly relative) href
+                     * against the document's base URI and load it (the
+                     * test_html pages navigate by bare relative names). */
+                    {
+                        lxb_dom_element* ael = hit ? reinterpret_cast<lxb_dom_element*>(hit) : nullptr;
+                        while (ael) {
+                            size_t alen = 0;
+                            const lxb_char_t* aname =
+                                lxb_dom_element_local_name(ael, &alen);
+                            if (aname && alen == 1 && aname[0] == 'a') {
+                                break;
+                            }
+                            lxb_dom_node* ap = ael->node.parent;
+                            if (!ap || ap->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                                ael = nullptr;
+                                break;
+                            }
+                            ael = lxb_dom_interface_element(ap);
+                        }
+                        if (ael) {
+                            size_t hlen = 0;
+                            const lxb_char_t* href = lxb_dom_element_get_attribute(
+                                ael, (const lxb_char_t*)"href", 4, &hlen);
+                            if (href && hlen > 0) {
+                                std::string target = resolve_href(
+                                    win, std::string(
+                                             reinterpret_cast<const char*>(href),
+                                             hlen).c_str());
+                                if (!target.empty()) {
+                                    whaleui_window_load_uri(win, target.c_str());
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     dom_dispatch(hit, "mousedown", 0,
                                  static_cast<int>(e.button.x),
                                  static_cast<int>(e.button.y),

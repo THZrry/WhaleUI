@@ -683,6 +683,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
     bool bold = font_weight_bold(k->style);
     float lsp = letter_spacing_px(k->style, fs);
     float w = 0;
+    size_t n_inline = 0; /* direct inline/flex-row children (for the gap) */
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
             /* width = the LONGEST line, not the whole run: measuring the
@@ -709,6 +710,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
             }
             if (container_inline) {
                 w += best;
+                ++n_inline;
             } else if (best > w) {
                 w = best;
             }
@@ -717,8 +719,26 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
             bool cinline = display_kind(get(c->style, "display")) == 2;
             if (container_inline || cinline) {
                 w += ew;
+                ++n_inline;
             } else if (ew > w) {
                 w = ew;
+            }
+        }
+    }
+    /* flex-row children sit side by side with a gap between them: the
+     * natural width must include it, or the container measures short and
+     * its items overflow the right edge (a <nav> with gap:26px estimated
+     * 126px for 174px of links + gaps - the last link painted past the
+     * header's right edge). */
+    if (flex_row && n_inline > 1) {
+        std::string gapv = get(k->style, "gap");
+        if (gapv.empty()) {
+            gapv = get(k->style, "column-gap");
+        }
+        if (!gapv.empty()) {
+            float g = len_px(gapv, 0, em);
+            if (g > 0) {
+                w += g * static_cast<float>(n_inline - 1);
             }
         }
     }
@@ -1624,7 +1644,19 @@ struct Builder
         /* box width */
         int bw;
         if (w_auto) {
-            if (display_kind(get(n->style, "display")) == 2) {
+            if (pabs && has_left && has_right) {
+                /* absolute + both horizontal offsets: the width is the
+                 * space between them (inset:0 fills the ancestor).
+                 * Checked BEFORE the inline shrink below: an absolute
+                 * inline-block (e.g. a <textarea> or <button> with
+                 * position:absolute;inset:0) must stretch to the offsets,
+                 * not shrink to its content width (a 12em-default
+                 * textarea laid out at 168px inside a 644px editor
+                 * wrapped every line). */
+                int span = avail_w - static_cast<int>(off_left) -
+                           static_cast<int>(off_right) - mx;
+                bw = span > 0 ? span : 0;
+            } else if (display_kind(get(n->style, "display")) == 2) {
                 /* inline / inline-block shrink to content: the preferred
                  * width is the unwrapped content, capped to the available
                  * width so long editable text wraps instead of stretching
@@ -1634,15 +1666,7 @@ struct Builder
                 int cap = avail_w - mx;
                 bw = pref < cap ? pref : cap;
             } else {
-                if (pabs && has_left && has_right) {
-                    /* absolute + both horizontal offsets: the width is the
-                     * space between them (inset:0 fills the ancestor) */
-                    int span = avail_w - static_cast<int>(off_left) -
-                               static_cast<int>(off_right) - mx;
-                    bw = span > 0 ? span : 0;
-                } else {
-                    bw = avail_w - mx;
-                }
+                bw = avail_w - mx;
             }
         } else {
             bw = static_cast<int>(wpx);

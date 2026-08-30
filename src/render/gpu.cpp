@@ -1377,8 +1377,10 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
 
     /* pass C: backdrop-filter. Copy the painted geometry into the blur
      * texture, mip it, then a compute pass replaces each region with the
-     * blurred copy and blends the element's own background on top. */
-    if (!g->backdrops.empty() && scroll_dy == 0 && !load_only) {
+     * blurred copy and blends the element's own background on top. Runs on
+     * partial (animation/hover) frames too, so a fixed translucent header
+     * stays blurred while content animates under it. */
+    if (!g->backdrops.empty() && scroll_dy == 0) {
         SDL_GPUBlitInfo blit;
         std::memset(&blit, 0, sizeof(blit));
         blit.source.texture = g->geom_cur;

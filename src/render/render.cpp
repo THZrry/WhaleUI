@@ -3434,6 +3434,36 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         }
     }
     if (partial) {
+        /* a partial repaint leaves the scrollbar column stale whenever
+         * the strip touches it - the thumb can straddle the strip edge,
+         * and a relayout right before this frame (hover) can have moved
+         * the thumb so the OLD half-cleaned thumb shows through the new
+         * track. Repaint every visible scrollbar column with the strip
+         * (cheap: 8px x the box height), so the column always carries
+         * freshly-painted content + track + thumb. */
+        std::function<void(whaleui_layout_node_t*)> add_bars =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->visible && nd->el && !nd->is_text &&
+                    nd->scroll_max > 0 && nd->border.h >= 24) {
+                    int oy = node_scroll_off(r, nd);
+                    int bx0 = nd->border.x + nd->border.w - 8;
+                    int by0 = nd->border.y + oy;
+                    int bx1 = bx0 + 8;
+                    int by1 = by0 + nd->border.h;
+                    if (bx0 < r->fb_w && bx1 > 0 && by0 < r->fb_h &&
+                        by1 > 0) {
+                        dirty_rect(bx0 < 0 ? 0 : bx0, by0 < 0 ? 0 : by0,
+                                   bx1 > r->fb_w ? r->fb_w : bx1,
+                                   by1 > r->fb_h ? r->fb_h : by1,
+                                   &strip);
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    add_bars(c);
+                }
+            };
+        add_bars(r->tree->root);
         /* clear only the dirty text-layer region */
         for (int yy = strip.y; yy < strip.y + strip.h; ++yy) {
             std::fill(r->text_layer.begin() +
@@ -3446,7 +3476,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::fill(r->text_layer.begin(), r->text_layer.end(), 0);
     }
     g_gpu = r->gpu;
-    g_backdrop_active = (scroll_dy == 0 && !partial) ? 1 : 0;
+    /* backdrop-filter runs on every paint (including animation/hover
+     * partial frames): a fixed translucent header must stay blurred while
+     * content animates under it - gating it on full frames only left the
+     * header sharp/unblurred for the whole duration of a reveal
+     * animation ("topbar blur not applied"). */
+    g_backdrop_active = (scroll_dy == 0) ? 1 : 0;
     int sel_lo = 0, sel_hi = 0;
     if (!r->bounds_valid) {
         compute_paint_bounds(r->tree->root);

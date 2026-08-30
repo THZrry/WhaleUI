@@ -9,6 +9,8 @@
 
 #include "whaleui.h"
 
+#include <string>
+
 /* SDL3 opaque types; never dereferenced in this header. */
 typedef struct SDL_Window SDL_Window;
 
@@ -35,6 +37,12 @@ struct whaleui_window
     int visible;
 
     whaleui_dom_document_t* document;
+
+    /* URI the current document was loaded from ("" for load_html); the
+     * base for resolving relative <a href> navigation (the demo's
+     * test_html pages link to each other by bare relative names, which
+     * must resolve against the page's own directory, not the cwd). */
+    std::string base_uri;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

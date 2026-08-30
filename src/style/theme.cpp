@@ -132,7 +132,7 @@ void base_css(const ThemeDef& d, std::string& css)
         ".center { display: flex; justify-content: center; align-items: center; }\n"
         ".app { display: flex; flex-direction: column; gap: 14px; padding: 24px 28px; }\n"
         ".header { display: flex; justify-content: space-between; align-items: center; }\n"
-        ".badge { background: var(--accent); color: var(--accent-fg); padding: 3px 10px;\n"
+        ".badge { background: var(--accent); color: var(--accent-fg);\n"
         "         border-radius: 999px; font-size: 11px; font-weight: 600;\n"
         "         display: inline-block; }\n"
         ".hidden { display: none; }\n"
