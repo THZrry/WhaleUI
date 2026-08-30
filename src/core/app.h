@@ -9,6 +9,9 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <SDL3/SDL.h>
 
 /* SDL3 opaque types; keep pointers, query/mutate via SDL APIs (wrapped in
  * src/platform/ and src/render/). Never dereference these here. */
@@ -29,7 +32,7 @@ struct whaleui_app
     int max_fps;
     int battery_saver;
     int vsync;
-    int running;
+    std::atomic<int> running; /* cross-thread: worker sets 0 on QUIT/close */
     /* async first layout (WHALEUI_RENDER_ASYNC_LAYOUT): the initial full
      * layout of each window runs on a worker thread so a large page does
      * not freeze the window while it lays out. Off by default - the frame
@@ -58,13 +61,15 @@ struct whaleui_app
 
     /* render worker thread: whaleui_render_frame runs here so a slow frame
      * never blocks the event loop (input stays responsive). The main thread
-     * polls events, mutates render state, and kicks the worker; the worker
-     * renders and presents. state is guarded by render_lock (short locks on
-     * the main thread, the worker takes it for the whole frame). */
+     * polls SDL events and POSTS them to input_queue (no render-state
+     * access); the worker consumes the queue and processes input + renders
+     * serially under render_lock - so input and rendering never race. */
     std::thread render_thread;
     std::atomic<int> frame_request{0}; /* main -> worker: render now */
     std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
-    std::mutex render_lock;
+    std::mutex render_lock;            /* protects input_queue + render state */
+    std::condition_variable frame_cv;  /* worker waits on queue/frame_request */
+    std::deque<SDL_Event> input_queue; /* main posts, worker consumes */
 };
 
 /* resolved theme (SYSTEM -> platform detection); internal, used by window. */

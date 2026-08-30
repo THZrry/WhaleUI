@@ -45,29 +45,204 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
     return nullptr;
 }
 
-/* render worker thread: renders+present all visible windows on a separate
- * thread so a slow frame (27ms) never blocks the event loop - the main
- * thread keeps polling input, so hover/typing stay responsive even while a
- * frame renders. The main thread sets frame_request; the worker takes
- * render_lock for the whole frame (main-thread input mostly mutates state
- * without locking - the worker reads it one frame behind at worst). */
-void render_worker_fn(whaleui_app_t* app)
+/* process one SDL event on the worker thread. Runs under render_lock
+ * (the worker holds it), so it is serialized with rendering - no data
+ * race between input handlers and the render pass. */
+void process_event(whaleui_app_t* app, const SDL_Event& e)
 {
-    while (app->running) {
-        if (app->frame_request.load()) {
-            std::lock_guard<std::mutex> lk(app->render_lock);
+    switch (e.type) {
+    case SDL_EVENT_QUIT:
+        app->running = 0;
+        break;
+    case SDL_EVENT_KEY_DOWN: {
+        whaleui_window_t* w = window_for(app, e.key.windowID);
+        if (w && w->render) {
+            whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
+                                      1, static_cast<int>(e.key.mod));
+            dom_dispatch(whaleui_render_focus_element(w->render),
+                         "keydown", static_cast<int>(e.key.key),
+                         0, 0, 0, 0, 0);
+        }
+        if (app->key_cb) {
+            app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
+        }
+        break;
+    }
+    case SDL_EVENT_KEY_UP: {
+        whaleui_window_t* w = window_for(app, e.key.windowID);
+        if (w && w->render) {
+            whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
+                                      0, static_cast<int>(e.key.mod));
+            dom_dispatch(whaleui_render_focus_element(w->render),
+                         "keyup", static_cast<int>(e.key.key),
+                         0, 0, 0, 0, 0);
+        }
+        if (app->key_cb) {
+            app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
+        }
+        break;
+    }
+    case SDL_EVENT_TEXT_INPUT: {
+        whaleui_window_t* w = window_for(app, e.text.windowID);
+        if (w && w->render) {
+            whaleui_render_handle_text(w->render, e.text.text);
+        }
+        break;
+    }
+    case SDL_EVENT_TEXT_EDITING: {
+        whaleui_window_t* w = window_for(app, e.edit.windowID);
+        if (w && w->render) {
+            whaleui_render_handle_editing(w->render, e.edit.text);
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_WHEEL: {
+        for (whaleui_window_t* win : app->windows) {
+            if (win->render && SDL_GetWindowID(win->sdl) == e.wheel.windowID) {
+                whaleui_render_handle_wheel(win->render,
+                                            static_cast<int>(e.wheel.mouse_x),
+                                            static_cast<int>(e.wheel.mouse_y),
+                                            e.wheel.y);
+                break;
+            }
+        }
+        break;
+    }
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        for (whaleui_window_t* win : app->windows) {
+            if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                win->visible = 0;
+                app->running = 0;
+                break;
+            }
+        }
+        break;
+    case SDL_EVENT_WINDOW_EXPOSED:
+    case SDL_EVENT_WINDOW_RESTORED:
+        for (whaleui_window_t* win : app->windows) {
+            if (win->render && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                whaleui_render_invalidate(win->render);
+                break;
+            }
+        }
+        break;
+    case SDL_EVENT_WINDOW_RESIZED: {
+        for (whaleui_window_t* win : app->windows) {
+            if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                win->width = e.window.data1;
+                win->height = e.window.data2;
+                if (win->render) {
+                    whaleui_render_resize(win->render, win->width, win->height);
+                }
+                break;
+            }
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_MOTION:
+        for (whaleui_window_t* win : app->windows) {
+            if (win->render && SDL_GetWindowID(win->sdl) == e.motion.windowID) {
+                whaleui_render_set_hover(win->render,
+                                         static_cast<int>(e.motion.x),
+                                         static_cast<int>(e.motion.y));
+                break;
+            }
+        }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (e.button.button == SDL_BUTTON_LEFT) {
             for (whaleui_window_t* win : app->windows) {
-                if (win->visible && win->sdl && win->render && win->document) {
-                    if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
-                        continue;
+                if (win->render && win->document &&
+                    SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                    whaleui_render_set_pressed_ex(win->render,
+                                                  static_cast<int>(e.button.x),
+                                                  static_cast<int>(e.button.y),
+                                                  1, static_cast<int>(e.button.clicks),
+                                                  static_cast<int>(SDL_GetModState()));
+                    const char* val = nullptr;
+                    if (whaleui_render_handle_click(win->render,
+                                                    e.button.x, e.button.y,
+                                                    &val) &&
+                        val && app->select_cb) {
+                        app->select_cb(app, val, app->select_ud);
                     }
-                    whaleui_render_frame(win->render, win->document);
+                    whaleui_dom_element_t* hit = whaleui_render_hit_element(
+                        win->render, static_cast<int>(e.button.x),
+                        static_cast<int>(e.button.y));
+                    dom_dispatch(hit, "mousedown", 0,
+                                 static_cast<int>(e.button.x),
+                                 static_cast<int>(e.button.y),
+                                 e.button.button, 0, 0);
+                    dom_dispatch(hit, "click", 0,
+                                 static_cast<int>(e.button.x),
+                                 static_cast<int>(e.button.y),
+                                 e.button.button, 0, 0);
+                    break;
                 }
             }
-            app->frame_done.store(1);
-            app->frame_request.store(0);
-        } else {
-            std::this_thread::yield();
+        }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (e.button.button == SDL_BUTTON_LEFT) {
+            for (whaleui_window_t* win : app->windows) {
+                if (win->render && SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                    whaleui_render_set_pressed_ex(win->render,
+                                                  static_cast<int>(e.button.x),
+                                                  static_cast<int>(e.button.y),
+                                                  0, 1,
+                                                  static_cast<int>(SDL_GetModState()));
+                    dom_dispatch(
+                        whaleui_render_hit_element(
+                            win->render, static_cast<int>(e.button.x),
+                            static_cast<int>(e.button.y)),
+                        "mouseup", 0, static_cast<int>(e.button.x),
+                        static_cast<int>(e.button.y),
+                        e.button.button, 0, 0);
+                    break;
+                }
+            }
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* render worker thread: waits on the input queue, then processes all
+ * queued events and renders, all under render_lock. Input handling and
+ * rendering are serialized on this thread, so they never race - the main
+ * thread only posts events (no render-state access) and stays responsive
+ * even while a frame renders (a slow ~27ms frame no longer blocks the
+ * UI). */
+void render_worker_fn(whaleui_app_t* app)
+{
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(app->render_lock);
+            app->frame_cv.wait(lk, [&] {
+                return !app->input_queue.empty() ||
+                       app->frame_request.load() || !app->running.load();
+            });
+            if (!app->running.load() && app->input_queue.empty()) {
+                return;
+            }
+            while (!app->input_queue.empty()) {
+                SDL_Event e = app->input_queue.front();
+                app->input_queue.pop_front();
+                process_event(app, e);
+            }
+            if (app->frame_request.load()) {
+                for (whaleui_window_t* win : app->windows) {
+                    if (win->visible && win->sdl && win->render && win->document) {
+                        if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
+                            continue;
+                        }
+                        whaleui_render_frame(win->render, win->document);
+                    }
+                }
+                app->frame_done.store(1);
+                app->frame_request.store(0);
+            }
         }
     }
 }
@@ -122,6 +297,7 @@ extern "C" void whaleui_app_destroy(whaleui_app_t* app)
     }
     app->running = 0;
     app->frame_request.store(1);
+    app->frame_cv.notify_one();
     if (app->render_thread.joinable()) {
         app->render_thread.join();
     }
@@ -159,174 +335,23 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
     Uint64 last = SDL_GetTicks();
     app->render_thread = std::thread(render_worker_fn, app);
     while (app->running) {
+        /* post events to the worker; it processes input and renders
+         * serially under render_lock, so input and rendering never
+         * race on the shared render state. */
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            switch (e.type) {
-            case SDL_EVENT_QUIT:
-                app->running = 0;
-                break;
-            case SDL_EVENT_KEY_DOWN: {
-                whaleui_window_t* w = window_for(app, e.key.windowID);
-                if (w && w->render) {
-                    whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
-                                              1, static_cast<int>(e.key.mod));
-                    dom_dispatch(whaleui_render_focus_element(w->render),
-                                 "keydown", static_cast<int>(e.key.key),
-                                 0, 0, 0, 0, 0);
-                }
-                if (app->key_cb) {
-                    app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
-                }
-                break;
+            {
+                std::lock_guard<std::mutex> lk(app->render_lock);
+                app->input_queue.push_back(e);
             }
-            case SDL_EVENT_KEY_UP: {
-                whaleui_window_t* w = window_for(app, e.key.windowID);
-                if (w && w->render) {
-                    whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
-                                              0, static_cast<int>(e.key.mod));
-                    dom_dispatch(whaleui_render_focus_element(w->render),
-                                 "keyup", static_cast<int>(e.key.key),
-                                 0, 0, 0, 0, 0);
-                }
-                if (app->key_cb) {
-                    app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
-                }
-                break;
-            }
-            case SDL_EVENT_TEXT_INPUT: {
-                whaleui_window_t* w = window_for(app, e.text.windowID);
-                if (w && w->render) {
-                    whaleui_render_handle_text(w->render, e.text.text);
-                }
-                break;
-            }
-            case SDL_EVENT_TEXT_EDITING: {
-                whaleui_window_t* w = window_for(app, e.edit.windowID);
-                if (w && w->render) {
-                    whaleui_render_handle_editing(w->render, e.edit.text);
-                }
-                break;
-            }
-            case SDL_EVENT_MOUSE_WHEEL: {
-                for (whaleui_window_t* win : app->windows) {
-                    if (win->render && SDL_GetWindowID(win->sdl) == e.wheel.windowID) {
-                        whaleui_render_handle_wheel(win->render,
-                                                    static_cast<int>(e.wheel.mouse_x),
-                                                    static_cast<int>(e.wheel.mouse_y),
-                                                    e.wheel.y);
-                        break;
-                    }
-                }
-                break;
-            }
-            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                for (whaleui_window_t* win : app->windows) {
-                    if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
-                        win->visible = 0;
-                        app->running = 0;
-                        break;
-                    }
-                }
-                break;
-            case SDL_EVENT_WINDOW_EXPOSED:
-            case SDL_EVENT_WINDOW_RESTORED:
-                /* the window just became visible again (e.g. unminimized):
-                 * force a repaint so it isn't left stale */
-                for (whaleui_window_t* win : app->windows) {
-                    if (win->render &&
-                        SDL_GetWindowID(win->sdl) == e.window.windowID) {
-                        whaleui_render_invalidate(win->render);
-                        break;
-                    }
-                }
-                break;
-            case SDL_EVENT_WINDOW_RESIZED: {
-                for (whaleui_window_t* win : app->windows) {
-                    if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
-                        win->width = e.window.data1;
-                        win->height = e.window.data2;
-                        if (win->render) {
-                            whaleui_render_resize(win->render, win->width, win->height);
-                        }
-                        break;
-                    }
-                }
-                break;
-            }
-            case SDL_EVENT_MOUSE_MOTION:
-                for (whaleui_window_t* win : app->windows) {
-                    if (win->render && SDL_GetWindowID(win->sdl) == e.motion.windowID) {
-                        whaleui_render_set_hover(win->render,
-                                                 static_cast<int>(e.motion.x),
-                                                 static_cast<int>(e.motion.y));
-                        break;
-                    }
-                }
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (e.button.button == SDL_BUTTON_LEFT) {
-                    for (whaleui_window_t* win : app->windows) {
-                        if (win->render && win->document &&
-                            SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                            whaleui_render_set_pressed_ex(win->render,
-                                                          static_cast<int>(e.button.x),
-                                                          static_cast<int>(e.button.y),
-                                                          1, static_cast<int>(e.button.clicks),
-                                                          static_cast<int>(SDL_GetModState()));
-                            const char* val = nullptr;
-                            if (whaleui_render_handle_click(win->render,
-                                                            e.button.x, e.button.y,
-                                                            &val) &&
-                                val && app->select_cb) {
-                                app->select_cb(app, val, app->select_ud);
-                            }
-                            whaleui_dom_element_t* hit = whaleui_render_hit_element(
-                                win->render, static_cast<int>(e.button.x),
-                                static_cast<int>(e.button.y));
-                            dom_dispatch(hit, "mousedown", 0,
-                                         static_cast<int>(e.button.x),
-                                         static_cast<int>(e.button.y),
-                                         e.button.button, 0, 0);
-                            dom_dispatch(hit, "click", 0,
-                                         static_cast<int>(e.button.x),
-                                         static_cast<int>(e.button.y),
-                                         e.button.button, 0, 0);
-                            break;
-                        }
-                    }
-                }
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (e.button.button == SDL_BUTTON_LEFT) {
-                    for (whaleui_window_t* win : app->windows) {
-                        if (win->render &&
-                            SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                            whaleui_render_set_pressed_ex(win->render,
-                                                          static_cast<int>(e.button.x),
-                                                          static_cast<int>(e.button.y),
-                                                          0, 1,
-                                                          static_cast<int>(SDL_GetModState()));
-                            dom_dispatch(
-                                whaleui_render_hit_element(
-                                    win->render, static_cast<int>(e.button.x),
-                                    static_cast<int>(e.button.y)),
-                                "mouseup", 0, static_cast<int>(e.button.x),
-                                static_cast<int>(e.button.y),
-                                e.button.button, 0, 0);
-                            break;
-                        }
-                    }
-                }
-                break;
-            default:
-                break;
-            }
+            app->frame_cv.notify_one();
         }
 
         /* hand rendering to the worker thread: the event loop keeps polling
          * input while a frame renders (a slow ~27ms frame no longer blocks
          * the UI). The worker takes render_lock for the whole frame. */
         app->frame_request.store(1);
+        app->frame_cv.notify_one();
 
         /* power-state poll (~2s): unplugging throttles the loop to the
          * battery-saver cap, plugging back in uncaps it. SDL3 3.4 has no
@@ -354,6 +379,7 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
     }
     app->running = 0;
     app->frame_request.store(1);
+    app->frame_cv.notify_one();
     app->render_thread.join();
     return 0;
 }
