@@ -51,9 +51,16 @@ void base_css(const ThemeDef& d, std::string& css)
         " source, track, param, area, wbr { display: none; }\n"
         "div, section, article, nav, aside, header, footer, main, address,"
         " p, hr, pre, blockquote, ol, ul, menu, li, dl, dt, dd, figure,"
-        " figcaption, table, caption, colgroup, col, thead, tbody, tfoot,"
-        " tr, td, th, form, fieldset, details, dialog, picture, map, iframe,"
-        " embed, object, video, audio, canvas { display: block; }\n"
+        " figcaption, caption, colgroup, col, form, fieldset, details,"
+        " dialog, picture, map, iframe, embed, object, video, audio, canvas"
+        " { display: block; }\n"
+        /* tables map onto the grid engine: table/tr/td/th must NOT be
+         * block or the 2D grid collapses into one vertical stack ("表头和
+         * 内容都往一个方向跑"). thead/tbody/tfoot are row groups. */
+        "table { display: table; }\n"
+        "thead, tbody, tfoot { display: table-row-group; }\n"
+        "tr { display: table-row; }\n"
+        "td, th { display: table-cell; }\n"
         "a, em, strong, small, s, cite, q, dfn, abbr, data, time, code, var,"
         " samp, kbd, sub, sup, i, b, u, mark, ruby, rt, rp, bdi, bdo, span,"
         " label { display: inline; }\n"

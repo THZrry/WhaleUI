@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <algorithm>
@@ -305,6 +306,57 @@ int border_width(const std::string& v, float em_base)
     return static_cast<int>(len_px(v, 0, em_base));
 }
 
+/* resolved per-side border widths: the border-top/right/bottom/left-width
+ * longhands, then the "border-width" and "border" shorthands on top (a
+ * shorthand-only border - "border:1px solid red" - is invisible to the
+ * longhand lookup). Shared by the box layout pass and the grid auto-track
+ * sizing, so a track keeps its cell's content box wide enough for the
+ * text even with a border + margin on the cell. */
+void box_border_widths(const WhaleUIComputedStyle& s, float em_base,
+                       int out[4])
+{
+    static const char* kBorderWidth[] = {
+        "border-top-width", "border-right-width",
+        "border-bottom-width", "border-left-width",
+    };
+    for (int i = 0; i < 4; ++i) {
+        out[i] = border_width(get(s, kBorderWidth[i]), em_base);
+    }
+    std::string all = get(s, "border-width");
+    if (!all.empty()) {
+        int b4[4];
+        sides(all, b4, 0, em_base, 0);
+        for (int i = 0; i < 4; ++i) {
+            out[i] = b4[i];
+        }
+    }
+    std::string border = get(s, "border");
+    if (!border.empty()) {
+        char* end = nullptr;
+        float bw = std::strtof(border.c_str(), &end);
+        if (end != border.c_str()) {
+            for (int i = 0; i < 4; ++i) {
+                out[i] = static_cast<int>(bw);
+            }
+        }
+    }
+}
+
+/* margin + padding + border in one pass (layout.cpp resolves these for
+ * every box; grid auto-tracks only need the horizontal border/margin) */
+struct BoxMetrics
+{
+    int m[4], p[4], b[4];
+};
+BoxMetrics box_metrics(const WhaleUIComputedStyle& s, float cw, float em)
+{
+    BoxMetrics r;
+    sides(get(s, "margin"), r.m, cw, em, 0);
+    sides(get(s, "padding"), r.p, cw, em, 0);
+    box_border_widths(s, em, r.b);
+    return r;
+}
+
 /* --- display / position kinds --- */
 
 int display_kind(const std::string& d)
@@ -432,7 +484,10 @@ float text_est_width(const std::string& s, float fs)
             ++i;
         } else {
             size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-            w += fs * 0.95f;
+            /* CJK glyphs are full-width: 1em, not 0.95em. The 0.95
+             * under-estimate made grid auto-tracks ~a character too
+             * narrow, so "内容自适应" wrapped instead of fitting. */
+            w += fs;
             i += n;
         }
     }
@@ -642,7 +697,8 @@ float line_height_px(const WhaleUIComputedStyle& s, float fs)
 /* rough content width of a node: summed direct text runs + padding,
  * recursively including element children (nested flex rows, grid tracks)
  * so auto-width containers don't collapse to 1px. */
-float estimate_content_width(whaleui_layout_node_t* k, float em)
+float estimate_content_width(whaleui_layout_node_t* k, float em,
+                             bool force_real = false)
 {
     float fs = len_px(get(k->style, "font-size"), 0, em);
     if (fs <= 0) {
@@ -678,7 +734,11 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
      * real measure - the 0.5em estimate runs 10px short on mono labels
      * and the text wraps. */
     bool inline_box = dk == 2;
-    bool measure_real = inline_box || flex_row;
+    /* force_real: flex items and grid auto-track cells measure with the
+     * real glyph width - the 0.6em ASCII estimate runs short on mixed
+     * text (a flex h1 "WhaleUI Demo" at 173px estimate wrapped its
+     * "Demo" onto a second line). */
+    bool measure_real = force_real || inline_box || flex_row;
     std::string fam = get(k->style, "font-family");
     bool bold = font_weight_bold(k->style);
     float lsp = letter_spacing_px(k->style, fs);
@@ -715,7 +775,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
                 w = best;
             }
         } else {
-            float ew = estimate_content_width(c, em);
+            float ew = estimate_content_width(c, em, force_real);
             bool cinline = display_kind(get(c->style, "display")) == 2;
             if (container_inline || cinline) {
                 w += ew;
@@ -1543,40 +1603,18 @@ struct Builder
         }
 
         /* margins/padding/border */
+        BoxMetrics bm = box_metrics(n->style, static_cast<float>(cw), em);
         int m[4], p[4];
-        sides(get(n->style, "margin"), m, static_cast<float>(cw), em, 0);
-        sides(get(n->style, "padding"), p, static_cast<float>(cw), em, 0);
+        for (int i = 0; i < 4; ++i) {
+            m[i] = bm.m[i];
+            p[i] = bm.p[i];
+            n->margin[i] = bm.m[i];
+            n->padding[i] = bm.p[i];
+            n->border_w[i] = bm.b[i];
+        }
         /* margin: X auto centers a fixed-width block ("0 auto" -> centered) */
         bool ml_auto = false, mr_auto = false;
         margin_auto_halves(get(n->style, "margin"), ml_auto, mr_auto);
-        static const char* kBorderWidth[] = {
-            "border-top-width", "border-right-width",
-            "border-bottom-width", "border-left-width",
-        };
-        for (int i = 0; i < 4; ++i) {
-            n->margin[i] = m[i];
-            n->padding[i] = p[i];
-            n->border_w[i] = border_width(get(n->style, kBorderWidth[i]), em);
-        }
-        /* border shorthand "border: 1px solid red" / border-width */
-        std::string border = get(n->style, "border");
-        if (!border.empty()) {
-            char* end = nullptr;
-            float bw = std::strtof(border.c_str(), &end);
-            if (end != border.c_str()) {
-                for (int i = 0; i < 4; ++i) {
-                    n->border_w[i] = static_cast<int>(bw);
-                }
-            }
-        }
-        std::string bw_all = get(n->style, "border-width");
-        if (!bw_all.empty()) {
-            int bw4[4];
-            sides(bw_all, bw4, static_cast<float>(cw), em, 0);
-            for (int i = 0; i < 4; ++i) {
-                n->border_w[i] = bw4[i];
-            }
-        }
 
         /* width/height */
         bool w_auto = true, h_auto = true;
@@ -1637,6 +1675,13 @@ struct Builder
                 hpx = span;
                 h_auto = false;
             }
+        } else if (pabs && has_bottom && !has_top && h_auto) {
+            /* absolute + bottom (no top) + auto height: the box sizes to
+             * its content and anchors to the bottom edge. Without this it
+             * kept the in-flow cursor y ("right/bottom" corner badge sat
+             * at the wrong y). */
+            hpx = est_node_height(n, cw, em);
+            h_auto = false;
         }
 
         int my = m[0] + m[2], mx = m[1] + m[3];
@@ -1656,6 +1701,17 @@ struct Builder
                 int span = avail_w - static_cast<int>(off_left) -
                            static_cast<int>(off_right) - mx;
                 bw = span > 0 ? span : 0;
+            } else if (pabs) {
+                /* absolute/fixed with no explicit width and no both-side
+                 * stretch: shrink to fit the content (browser behavior).
+                 * Previously these took the whole available width, so a
+                 * "left:10px; top:10px" badge stretched across the parent
+                 * and a fixed corner badge spanned the whole viewport. */
+                int pref = static_cast<int>(std::ceil(
+                               estimate_content_width(n, em))) +
+                           mx;
+                int cap = avail_w - mx;
+                bw = pref < cap ? pref : cap;
             } else if (display_kind(get(n->style, "display")) == 2) {
                 /* inline / inline-block shrink to content: the preferred
                  * width is the unwrapped content, capped to the available
@@ -2107,8 +2163,8 @@ struct Builder
                            : (column
                                   ? static_cast<int>(
                                         est_node_height(k, inner_w, em))
-                                  : static_cast<int>(
-                                        estimate_content_width(k, em)));
+                                  : static_cast<int>(std::ceil(
+                                        estimate_content_width(k, em, true))));
             std::string mn = get(k->style, column ? "min-height" : "min-width");
             if (!mn.empty()) {
                 /* an explicit min-* (including min-height:0) replaces the
@@ -2353,7 +2409,10 @@ struct Builder
             float pos = lead;
             for (size_t i = 0; i < row.items.size(); ++i) {
                 whaleui_layout_node_t* k = row.items[i];
-                int sz = static_cast<int>(row.sizes[i]);
+                /* round UP: a fractional main size truncating down leaves
+                 * the content box 1px narrower than the text ("一" in a
+                 * gap test wrapped/clipped its last pixel) */
+                int sz = static_cast<int>(std::ceil(row.sizes[i]));
                 int cy = row.y;
                 if (column) {
                     /* column items flow down the main axis (row.y is the
@@ -2409,11 +2468,17 @@ struct Builder
                     pos = (k->border.x + k->border.w) - n->content.x +
                           between;
                     if (reverse) { /* row-reverse: mirror horizontally */
-                        int dx = inner_w - (k->border.x - n->content.x) -
-                                 k->border.w;
+                        /* the item was laid out left-to-right at offset
+                         * off = (border.x - content.x); mirror it to
+                         * offset (inner_w - off - w). shift = new - old =
+                         * inner_w - 2*off - w. (The old formula dropped
+                         * the second off, so every item mirrored onto the
+                         * same right-edge position.) pos keeps the
+                         * PRE-mirror advance so the next item lands to
+                         * the left. */
+                        int off = k->border.x - n->content.x;
+                        int dx = inner_w - 2 * off - k->border.w;
                         shift_subtree(k, dx, 0);
-                        pos = (k->border.x + k->border.w) - n->content.x +
-                              between;
                     }
                 }
                 /* track the row's real cross size (border + margins);
@@ -2783,11 +2848,15 @@ struct Builder
     }
     static bool is_table_row(whaleui_layout_node_t* k)
     {
-        return k && k->tag_id == WUI_TAG_TR;
+        /* tr tag, or a div/span with display:table-row (the .divtable
+         * pattern - table rows built out of divs) */
+        return k && (k->tag_id == WUI_TAG_TR ||
+                     display_kind(get(k->style, "display")) == 6);
     }
     static bool is_table_cell(whaleui_layout_node_t* k)
     {
-        return k && (k->tag_id == WUI_TAG_TD || k->tag_id == WUI_TAG_TH);
+        return k && (k->tag_id == WUI_TAG_TD || k->tag_id == WUI_TAG_TH ||
+                     display_kind(get(k->style, "display")) == 7);
     }
 
     /* grid-column / grid-row shorthand, falling back to the start/end
@@ -3104,8 +3173,17 @@ struct Builder
             int mx = 0;
             for (size_t j = 0; j < cells.size(); ++j) {
                 if (cells[j].cs <= i + 1 && cells[j].ce > i + 1) {
-                    int w = static_cast<int>(
-                        estimate_content_width(cells[j].node, em));
+                    int w = static_cast<int>(std::ceil(
+                        estimate_content_width(cells[j].node, em, true)));
+                    /* the auto track is the cell's margin box: content +
+                     * padding (already in the estimate) + border + margin.
+                     * Without the border/margin the laid-out content box
+                     * comes out narrower than the text and wraps
+                     * ("内容自适应" in a 2px-border 4px-margin cell). */
+                    int b4[4], m4[4];
+                    box_border_widths(cells[j].node->style, em, b4);
+                    sides(get(cells[j].node->style, "margin"), m4, 0, em, 0);
+                    w += b4[1] + b4[3] + m4[1] + m4[3];
                     /* an explicit width on a cell caps the auto track
                      * (a <th style="width:80px"> column is 80px wide) */
                     std::string wv = get(cells[j].node->style, "width");
@@ -3208,6 +3286,7 @@ struct Builder
 
         /* place cells; a row box (table) spans the full grid width */
         int y = n->content.y;
+        int max_cell_bottom = 0; /* real laid-out bottom, not the est rows */
         for (int r = 0; r < nrows; ++r) {
             for (size_t i = 0; i < cells.size(); ++i) {
                 if (cells[i].rs - 1 != r) {
@@ -3241,10 +3320,19 @@ struct Builder
                 int cy = n->content.y + oy;
                 layout(cells[i].node, n->content.x + ox, cy, w, h, font_px,
                        &cy);
-                /* stretch: auto-height cells fill the row (default) */
+                /* stretch: auto-height cells fill the row (default).
+                 * Cells with an explicit align-self (center/start/end)
+                 * keep their content height - the align block below
+                 * positions them (previously the stretch ran first and
+                 * "align-self: center" cells filled the whole row). */
+                std::string aself =
+                    get(cells[i].node->style, "align-self");
+                bool no_stretch = aself == "center" || aself == "start" ||
+                                  aself == "end" || aself == "flex-start" ||
+                                  aself == "flex-end";
                 bool h_auto = get(cells[i].node->style, "height").empty() ||
                               get(cells[i].node->style, "height") == "auto";
-                if (h_auto && h > cells[i].node->border.h) {
+                if (h_auto && !no_stretch && h > cells[i].node->border.h) {
                     cells[i].node->border.h = h;
                     cells[i].node->content.h =
                         h - cells[i].node->padding[0] -
@@ -3252,12 +3340,15 @@ struct Builder
                         cells[i].node->border_w[0] - cells[i].node->border_w[2];
                 }
                 /* align-items: center / flex-end vertically center shorter
-                 * cells (stretch already filled the row) */
-                if (align == "center" || align == "flex-end" ||
-                    align == "end") {
+                 * cells (stretch already filled the row). align-self on
+                 * the cell wins over the container's align-items. */
+                std::string ca = (aself.empty() || aself == "auto")
+                                     ? align
+                                     : aself;
+                if (ca == "center" || ca == "flex-end" || ca == "end") {
                     int extra = h - cells[i].node->border.h;
                     if (extra > 0) {
-                        int dy = align == "center" ? extra / 2 : extra;
+                        int dy = ca == "center" ? extra / 2 : extra;
                         shift_subtree(cells[i].node, 0, dy);
                     }
                 }
@@ -3268,10 +3359,21 @@ struct Builder
                     cells[i].row_node->border.h = h;
                     cells[i].row_node->content = cells[i].row_node->border;
                 }
+                /* track the REAL bottom: an auto row estimated shorter
+                 * than the laid-out cell (a 2-line cell whose est height
+                 * came out 3px short) would otherwise size the container
+                 * smaller than its content - the "grid content runs past
+                 * the bottom" reports. */
+                int cb = cells[i].node->border.y + cells[i].node->border.h;
+                if (cb > max_cell_bottom) {
+                    max_cell_bottom = cb;
+                }
             }
             y += row_h[static_cast<size_t>(r)] + static_cast<int>(row_gap);
         }
-        kid_cursor = y - n->content.y - static_cast<int>(row_gap);
+        kid_cursor = max_cell_bottom > 0
+                         ? max_cell_bottom - n->content.y
+                         : y - n->content.y - static_cast<int>(row_gap);
         if (kid_cursor < 0) {
             kid_cursor = 0;
         }
