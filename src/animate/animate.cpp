@@ -817,13 +817,43 @@ void interp_frames(const whaleui_keyframes_t* kf, float p, WhaleUIComputedStyle&
             break;
         }
     }
-    if (!lo) {
-        lo = hi;
+    if (!lo && !hi) {
+        return;
     }
+    /* a keyframes block may omit 0% and/or 100%: the spec implies those
+     * endpoints are the element's base style. "rise{from{opacity:0}}" thus
+     * animates opacity 0 -> base (1), not 0 forever. The `style` argument
+     * carries the pre-animation values, so lerp toward/away from them. */
     if (!hi) {
-        hi = lo;
+        float t = 1.0f - lo->pct > 0.0f
+                      ? (p - lo->pct) / (1.0f - lo->pct)
+                      : 0.0f;
+        for (size_t i = 0; i < lo->decls.size(); ++i) {
+            const std::string& prop = lo->decls[i].first;
+            WhaleUIComputedStyle::iterator bi = style.find(prop);
+            if (bi == style.end()) {
+                continue; /* no base value: leave the default */
+            }
+            std::string v;
+            if (any_lerp(prop, lo->decls[i].second, bi->second, t, v)) {
+                style[prop] = v;
+            }
+        }
+        return;
     }
-    if (!lo || !hi) {
+    if (!lo) {
+        float t = hi->pct > 0.0f ? p / hi->pct : 0.0f;
+        for (size_t i = 0; i < hi->decls.size(); ++i) {
+            const std::string& prop = hi->decls[i].first;
+            WhaleUIComputedStyle::iterator bi = style.find(prop);
+            if (bi == style.end()) {
+                continue;
+            }
+            std::string v;
+            if (any_lerp(prop, bi->second, hi->decls[i].second, t, v)) {
+                style[prop] = v;
+            }
+        }
         return;
     }
     float t = hi->pct == lo->pct ? 0.0f : (p - lo->pct) / (hi->pct - lo->pct);
@@ -898,6 +928,11 @@ struct whaleui_anim
     /* current animated values per element (paint-only fast path) */
     std::map<lxb_dom_element*, std::map<std::string, std::string> > ov;
 
+    /* base (pre-animation) values of the animated properties, snapped at
+     * registration: a keyframes block that omits 0%/100% interpolates
+     * toward/from these (spec: implied endpoints = the element's style) */
+    std::map<lxb_dom_element*, WhaleUIComputedStyle> base;
+
     /* elements with running animations -> animated properties */
     std::map<lxb_dom_element*, std::set<std::string> > act;
 };
@@ -930,6 +965,7 @@ extern "C" void whaleui_anim_reset(whaleui_anim_t* a)
         a->kf.clear();
         a->trans.clear();
         a->prev.clear();
+        a->base.clear();
         a->active = 0;
     }
 }
@@ -973,6 +1009,7 @@ namespace {
 
 /* direction handling for keyframe progress. dir: 0=normal, 1=reverse,
  * 2=alternate, 3=alternate-reverse. cycle = zero-based iteration index. */
+lxb_dom_element* el_from_key(const std::string& key); /* defined below */
 float dir_progress(int dir, uint64_t cycle, float p)
 {
     switch (dir) {
@@ -1085,6 +1122,31 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
         st.props.assign(props.begin(), props.end());
         a->kf[kkey] = st;
         it = a->kf.find(kkey);
+        /* snapshot the element's base values of the animated properties:
+         * an implied 0%/100% frame (single-`from`/`to` blocks) lerps
+         * toward/from them */
+        {
+            WhaleUIComputedStyle& b = a->base[el_from_key(kkey)];
+            for (size_t pi = 0; pi < st.props.size(); ++pi) {
+                WhaleUIComputedStyle::iterator si =
+                    style.find(st.props[pi]);
+                if (si != style.end()) {
+                    b[st.props[pi]] = si->second;
+                } else {
+                    b.erase(st.props[pi]);
+                }
+            }
+        }
+    }
+    /* restore the base values before interpolating: on later calls the
+     * style holds the last animated value, but an implied endpoint must
+     * lerp toward the PRE-animation value */
+    {
+        WhaleUIComputedStyle& b = a->base[el_from_key(kkey)];
+        for (WhaleUIComputedStyle::iterator bi = b.begin();
+             bi != b.end(); ++bi) {
+            style[bi->first] = bi->second;
+        }
     }
     uint64_t t = now - it->second.start;
     if (t < spec.delay) {
@@ -1325,15 +1387,19 @@ extern "C" int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now)
         }
         if (p >= 0.0f) {
             WhaleUIComputedStyle tmp;
-            interp_frames(kf, ease_value(st.timing, p), tmp);
+            auto bi = a->base.find(el);
+            if (bi != a->base.end()) {
+                tmp = bi->second; /* implied 0%/100% frames need the base */
+            }
+            float ev = ease_value(st.timing, p);
+            interp_frames(kf, ev, tmp);
             std::map<std::string, std::string>& target = a->ov[el];
             for (WhaleUIComputedStyle::iterator kv = tmp.begin();
                  kv != tmp.end(); ++kv) {
                 target[kv->first] = kv->second;
                 act_prop(a, el, kv->first);
             }
-        }
-        if (running) {
+        }        if (running) {
             a->active = 1;
         }
     }

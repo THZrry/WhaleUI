@@ -106,6 +106,27 @@ int main(void)
         whaleui_css_keyframes_destroy(&kf);
     }
 
+    /* single-`from` keyframes imply 100% = the element's base style
+     * ("rise{from{opacity:0}}" animates 0 -> base 1, not 0 forever) */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes rise { from { opacity: 0; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "rise 1000ms linear";
+        s["opacity"] = "1"; /* base */
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(num(s["opacity"]) < 0.01f); /* from frame: 0 */
+        assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        assert(whaleui_anim_apply(a, nullptr, s, 999) == 1);
+        assert(num(s["opacity"]) > 0.99f); /* toward base 1 */
+        assert(whaleui_anim_apply(a, nullptr, s, 1000) == 0); /* done */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
     /* transition: interpolate a changed opacity toward the new value */
     {
         whaleui_anim_t* a = whaleui_anim_create();
