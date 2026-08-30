@@ -342,10 +342,15 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
     if (size <= 0) {
         size = 16;
     }
-    std::string key = family + "|" + std::to_string(size) + "|" +
-                      std::to_string(style);
+    /* one TTF_Font per (family, style), size set dynamically: a page with
+     * many font-sizes (e.g. the qwen footer uses several, a 200px glyph)
+     * otherwise opens a fresh TTF_Font PER SIZE - 90 fonts on the 21k page,
+     * each re-parsing the font (CJK glyph tables are large), the biggest
+     * chunk of the ~330MB there. TTF_SetFontSize is cheap (pixel size). */
+    std::string key = family + "|" + std::to_string(style);
     for (auto& f : r->fonts) {
         if (f.first == key) {
+            TTF_SetFontSize(f.second, static_cast<float>(size));
             return f.second;
         }
     }
@@ -369,6 +374,7 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
         font = r->font_default;
     }
     if (font) {
+        TTF_SetFontSize(font, static_cast<float>(size));
         render_build_fallback(r, font, size, style);
         r->fonts.emplace_back(key, font);
     }
