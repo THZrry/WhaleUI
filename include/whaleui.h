@@ -157,7 +157,10 @@ enum {
 typedef enum whaleui_render_option {
     WHALEUI_RENDER_MAX_FPS = 0,  /* int: fps cap, 0 = unlimited */
     WHALEUI_RENDER_BATTERY_SAVER,/* int: 1 = battery saver (default 60fps) */
-    WHALEUI_RENDER_VSYNC         /* int: 1 = vsync on, 0 = off */
+    WHALEUI_RENDER_VSYNC,        /* int: 1 = vsync on, 0 = off */
+    WHALEUI_RENDER_ASYNC_LAYOUT  /* int: 1 = first layout on a worker thread
+                                    (window stays responsive while a large
+                                    page lays out; opt-in) */
 } whaleui_render_option_t;
 
 int whaleui_app_set_render_option(whaleui_app_t* app,

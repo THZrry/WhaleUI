@@ -27,6 +27,11 @@ struct whaleui_app
     int battery_saver;
     int vsync;
     int running;
+    /* async first layout (WHALEUI_RENDER_ASYNC_LAYOUT): the initial full
+     * layout of each window runs on a worker thread so a large page does
+     * not freeze the window while it lays out. Off by default - the frame
+     * contract is synchronous. */
+    int async_layout;
     int reduced_motion; /* prefers-reduced-motion: reduce */
     /* system power state (refreshed from SDL_GetPowerInfo in the event
      * loop): drives the battery-saver default - 60fps + FSR on battery,

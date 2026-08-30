@@ -448,6 +448,114 @@ int node_scroll_off(whaleui_render_t* r, whaleui_layout_node_t* n)
     return off;
 }
 
+/* the layout estimated wrapped lines; the per-glyph render layout can
+ * differ. Correct every text run's height to text_size so the caret,
+ * selection, scrolling and the painted glyphs all agree. */
+void fix_run_heights(whaleui_render_t* r)
+{
+    std::function<void(whaleui_layout_node_t*)> fix_run_h =
+        [&](whaleui_layout_node_t* nd) {
+            if (nd->is_text && !nd->text.empty()) {
+                int fs;
+                std::string fam;
+                bool bold;
+                node_font(nd, &fs, &fam, &bold);
+                int tw = 0, th = 0;
+                text_size(r, nd->text, fs, fam, bold, &tw, &th,
+                          run_wrap_w(nd));
+                if (th > 0) {
+                    nd->border.h = th;
+                }
+            }
+            for (whaleui_layout_node_t* c = nd->first_child; c;
+                 c = c->next) {
+                fix_run_h(c);
+            }
+        };
+    fix_run_h(r->tree->root);
+}
+
+/* single post-order pass: compute each subtree's REAL bottom (the run
+ * heights were just corrected above, but the ancestor boxes keep their
+ * layout-estimated heights). The recursion carries `scomp` = the
+ * accumulated scroll_y of every scrollable ancestor: descendants are laid
+ * out against baked content.y (shifted up by -scroll_y), so adding the
+ * compensation back yields UNBAKED coordinates. Every result - scroll_max,
+ * grown auto-height boxes, the returned bottom - must be independent of
+ * the live scroll, otherwise a mid-scroll relayout (hover) shrinks the
+ * range, the thumb grows and the wheel stops early. */
+void fix_scroll_max(whaleui_render_t* r)
+{
+    std::function<int(whaleui_layout_node_t*, int)> fix_sm =
+        [&](whaleui_layout_node_t* nd, int scomp) -> int {
+        bool scrollable = false;
+        if (nd->el && !nd->is_text) {
+            std::string ov = sget(nd->style, "overflow");
+            scrollable = ov == "auto" || ov == "scroll" ||
+                         nd == r->tree->root;
+        }
+        int child_comp = scomp + (scrollable ? nd->scroll_y : 0);
+        /* a scrollable box's own border box is the VIEWPORT, not content:
+         * its range is child-bottom minus content.h. Starting from the
+         * border box added (border.h - content.h) of phantom scroll
+         * (2 lines that fit reported a 6px range). */
+        int inner_bottom = scrollable
+                               ? 0
+                               : nd->border.y + nd->border.h + scomp;
+        for (whaleui_layout_node_t* c = nd->first_child; c;
+             c = c->next) {
+            int cb = fix_sm(c, child_comp);
+            if (cb > inner_bottom) {
+                inner_bottom = cb;
+            }
+        }
+        if (scrollable) {
+            /* inner_bottom is unbaked (children got child_comp): the range
+             * is the true content height, independent of the live scroll.
+             * The earlier max-with-cmax2 double-counted scroll_y when the
+             * box had scroll_y > 0 (or a scrolled ancestor), inflating the
+             * range (a 2-line textarea that reported ~70 lines after a
+             * scroll/FSR relayout). */
+            int cmax = (inner_bottom - nd->content.y) - nd->content.h;
+            if (cmax < 0) {
+                cmax = 0;
+            }
+            nd->scroll_max = cmax;
+            auto it = r->scrolls.find(nd->el);
+            if (it != r->scrolls.end()) {
+                if (it->second > nd->scroll_max) {
+                    it->second = nd->scroll_max;
+                }
+                if (it->second < 0) {
+                    it->second = 0;
+                }
+            }
+            return nd->border.y + nd->border.h;
+        }
+        if (nd->el && !nd->is_text &&
+            inner_bottom > nd->border.y + nd->border.h + scomp) {
+            /* auto-height box whose content (run heights corrected to the
+             * real line height) is taller than the layout estimate: grow it
+             * with the UNBAKED height (stable across scrolls). Explicit
+             * heights stay fixed. */
+            std::string hh = sget(nd->style, "height");
+            bool h_auto = hh.empty() || hh == "auto";
+            if (h_auto) {
+                nd->border.h = inner_bottom - nd->border.y - scomp;
+                int ch = nd->border.h - nd->padding[0] -
+                         nd->padding[2] - nd->border_w[0] -
+                         nd->border_w[2];
+                if (ch < 0) {
+                    ch = 0;
+                }
+                nd->content.h = ch;
+            }
+        }
+        return inner_bottom;
+    };
+    fix_sm(r->tree->root, 0);
+}
+
 /* grow glyph-level highlight rects up to the line box so the selection wash
  * covers ascenders/descenders with a bit of padding (TTF substring rects
  * only bound the glyphs) */
@@ -1623,6 +1731,10 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->fsr_sharpness = 0.4f;
     r->scroll_fn = scroll_default;
     r->scroll_ud = nullptr;
+    r->async_layout = 0;
+    r->layout_thread = nullptr;
+    r->layout_done.store(0, std::memory_order_relaxed);
+    r->layout_pending = nullptr;
 #ifdef WHALEUI_BUILD_FULL
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);
@@ -1675,6 +1787,17 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
 {
     if (!r) {
         return;
+    }
+    /* join a running async layout worker before freeing anything it reads
+     * (rules, DOM, vars). The worker only reads; join is safe. */
+    if (r->layout_thread) {
+        r->layout_thread->join();
+        delete r->layout_thread;
+        r->layout_thread = nullptr;
+    }
+    if (r->layout_pending) {
+        whaleui_layout_destroy(r->layout_pending);
+        r->layout_pending = nullptr;
     }
     whaleui_layout_destroy(r->tree);
     if (g_last_tree == r->tree) {
@@ -2494,6 +2617,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
          * to [0, scroll_max]); a custom hook may animate instead */
         if (r->scroll_fn(r, sc->el, delta, r->scroll_ud)) {
             r->scroll_dirty = 1;
+            r->scroll_el = sc->el; /* embedded scroll: partial repaint */
         }
     };
 
@@ -2610,6 +2734,34 @@ static int scroll_default(whaleui_render_t* r, lxb_dom_element* el,
     return 0;
 }
 
+extern "C" int whaleui_scroll_smooth_fn(whaleui_render_t* r,
+                                        lxb_dom_element* el, int delta,
+                                        void* userdata)
+{
+    (void)userdata;
+    if (!el || !r->tree) {
+        return 0;
+    }
+    whaleui_layout_node_t* n = find_node_by_el(r->tree, el);
+    if (!n) {
+        return 0;
+    }
+    int max = n->scroll_max > 0 ? n->scroll_max : 0;
+    int& tgt = r->scroll_tgt[el];
+    int nv = tgt + delta;
+    if (nv > max) {
+        nv = max;
+    }
+    if (nv < 0) {
+        nv = 0;
+    }
+    if (nv != tgt) {
+        tgt = nv;
+        return 1; /* the frame loop eases scrolls toward tgt */
+    }
+    return 0;
+}
+
 extern "C" int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
                                                   whaleui_scroll_behavior_fn fn,
                                                   void* userdata)
@@ -2675,10 +2827,105 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * paint-only fast path below applies them without relaying out) */
     const uint64_t now = SDL_GetTicks();
     const bool animating = r->anim && whaleui_anim_tick(r->anim, now) != 0;
+    /* smooth scroll easing: move each live position toward its wheel
+     * target in small per-frame steps. This is what decouples wheel
+     * events from frame rendering - the event only accumulates the target
+     * (whaleui_scroll_smooth_fn), the position here glides toward it, so
+     * discrete mouse-wheel notches render like touchpad deltas. */
+    if (!r->scroll_tgt.empty() && r->tree) {
+        for (auto it = r->scroll_tgt.begin(); it != r->scroll_tgt.end();) {
+            lxb_dom_element* el = it->first;
+            whaleui_layout_node_t* scn = find_node_by_el(r->tree, el);
+            if (!scn) {
+                it = r->scroll_tgt.erase(it);
+                continue;
+            }
+            int max = scn->scroll_max > 0 ? scn->scroll_max : 0;
+            int tgt = it->second;
+            if (tgt > max) {
+                tgt = max;
+            }
+            if (tgt < 0) {
+                tgt = 0;
+            }
+            int& cur = r->scrolls[el];
+            if (cur > max) {
+                cur = max;
+            }
+            if (cur < 0) {
+                cur = 0;
+            }
+            int diff = tgt - cur;
+            if (diff == 0) {
+                it = r->scroll_tgt.erase(it);
+                continue;
+            }
+            /* exponential approach: 40% of the gap per frame (~40ms time
+             * constant at 60fps) - fast enough to feel immediate, smooth
+             * enough to hide the notch quantization */
+            int step = static_cast<int>(diff * 0.4f);
+            if (step == 0) {
+                step = diff > 0 ? 1 : -1;
+            }
+            cur += step;
+            it->second = tgt; /* persist the clamped target */
+            r->scroll_dirty = 1;
+            r->scroll_el = el; /* embedded containers repaint partially */
+            ++it;
+        }
+    }
     /* consume this document's pending DOM mutations up front: a non-empty
      * set must keep the frame alive so the incremental relayout below runs */
     std::vector<lxb_dom_element*> dom_dirty;
     whaleui_dom_take_dirty(doc, dom_dirty);
+
+    /* async first layout (opt-in): no tree yet -> build on a worker so a
+     * large page does not freeze the window while it lays out; the frame
+     * loop picks up the finished tree. Only the FIRST layout is async -
+     * later full rebuilds stay synchronous. The worker reads the DOM
+     * (no user interaction exists before the first paint, so no concurrent
+     * DOM write) and an anim=NULL layout (animation state is created by
+     * the following synchronous frames). */
+    if (r->async_layout && !r->tree && !r->layout_thread && doc) {
+        r->layout_done.store(0, std::memory_order_relaxed);
+        r->layout_pending = nullptr;
+        r->layout_w = r->fb_w;
+        r->layout_h = r->fb_h;
+        r->layout_text_scale = r->text_scale;
+        r->layout_vars = r->theme_vars;
+        r->layout_thread = new std::thread([r, doc]() {
+            whaleui_style_state st0;
+            r->layout_pending = whaleui_layout_compute(
+                doc, r->rules, r->rule_count, &r->layout_vars,
+                r->layout_w, r->layout_h, &st0, nullptr, nullptr,
+                r->layout_text_scale);
+            r->layout_done.store(1, std::memory_order_release);
+        });
+    }
+    /* worker finished: take the tree (the worker has exited, join is
+     * immediate) and force a full first paint. scroll_dirty keeps the
+     * frame alive WITHOUT the relayout pass - the tree is already built. */
+    if (r->layout_thread &&
+        r->layout_done.load(std::memory_order_acquire)) {
+        r->tree = r->layout_pending;
+        r->layout_pending = nullptr;
+        r->layout_thread->join();
+        delete r->layout_thread;
+        r->layout_thread = nullptr;
+        r->layout_done.store(0, std::memory_order_relaxed);
+        if (r->tree) {
+            g_last_tree = r->tree;
+            r->bounds_valid = 0;
+            r->scroll_dirty = 1;
+            fix_run_heights(r);  /* real glyph heights + ranges */
+            fix_scroll_max(r);
+        }
+    }
+    if (r->layout_thread) {
+        /* worker still running: keep the event loop responsive; there is
+         * no tree to paint yet, the window keeps its clear color */
+        return 0;
+    }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
      * animation/transition is running, an editable caret is blinking, or
@@ -2713,14 +2960,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->has_dirty = 1;
         }
     }
-    /* layout rebuild needed when the document is dirty OR an animation
-     * touches a layout-affecting property (width/margin/font-size/...).
-     * Paint-only animations (opacity/transform/colors) skip the rebuild:
-     * the tick's values are applied straight onto the tree and only the
+    /* layout rebuild needed when the document is dirty (or no tree yet).
+     * Layout-affecting animations rebuild only the animated elements'
+     * subtrees (incremental relayout below), NOT the whole tree - a width
+     * animation previously rebuilt every box every frame. Paint-only
+     * animations (opacity/transform/colors) skip layout entirely: the
+     * tick's values are applied straight onto the tree and only the
      * opacity chain is recomputed - the bulk of the per-frame cost
      * (style cascade + box layout) is gone. */
-    const bool need_layout = r->has_dirty || !r->tree ||
-                             (animating && whaleui_anim_needs_layout(r->anim));
+    const bool need_layout = r->has_dirty || !r->tree;
     if (need_layout) {
         whaleui_layout_destroy(r->tree);
         whaleui_style_state st;
@@ -2745,105 +2993,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * can differ. Correct every text run's height to text_size and
          * recompute scroll ranges, so the caret, selection, scrolling and
          * the painted glyphs all agree. */
-        std::function<void(whaleui_layout_node_t*)> fix_run_h =
-            [&](whaleui_layout_node_t* nd) {
-                if (nd->is_text && !nd->text.empty()) {
-                    int fs;
-                    std::string fam;
-                    bool bold;
-                    node_font(nd, &fs, &fam, &bold);
-                    int tw = 0, th = 0;
-                    text_size(r, nd->text, fs, fam, bold, &tw, &th,
-                              run_wrap_w(nd));
-                    if (th > 0) {
-                        nd->border.h = th;
-                    }
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    fix_run_h(c);
-                }
-            };
-        fix_run_h(r->tree->root);
-        /* single post-order pass: compute each subtree's REAL bottom (the
-         * run heights were just corrected above, but the ancestor boxes
-         * keep their layout-estimated heights). The recursion carries
-         * `scomp` = the accumulated scroll_y of every scrollable ancestor:
-         * descendants are laid out against baked content.y (shifted up by
-         * -scroll_y), so adding the compensation back yields UNBAKED
-         * coordinates. Every result - scroll_max, grown auto-height boxes,
-         * the returned bottom - must be independent of the live scroll,
-         * otherwise a mid-scroll relayout (hover) shrinks the range, the
-         * thumb grows and the wheel stops early. */
-        std::function<int(whaleui_layout_node_t*, int)> fix_sm =
-            [&](whaleui_layout_node_t* nd, int scomp) -> int {
-            bool scrollable = false;
-            if (nd->el && !nd->is_text) {
-                std::string ov = sget(nd->style, "overflow");
-                scrollable = ov == "auto" || ov == "scroll" ||
-                             nd == r->tree->root;
-            }
-            int child_comp = scomp + (scrollable ? nd->scroll_y : 0);
-            /* a scrollable box's own border box is the VIEWPORT, not
-             * content: its range is child-bottom minus content.h. Starting
-             * from the border box added (border.h - content.h) of phantom
-             * scroll (2 lines that fit reported a 6px range). */
-            int inner_bottom = scrollable
-                                   ? 0
-                                   : nd->border.y + nd->border.h + scomp;
-            for (whaleui_layout_node_t* c = nd->first_child; c;
-                 c = c->next) {
-                int cb = fix_sm(c, child_comp);
-                if (cb > inner_bottom) {
-                    inner_bottom = cb;
-                }
-            }
-            if (scrollable) {
-                /* inner_bottom is unbaked (children got child_comp): the
-                 * range is the true content height, independent of the
-                 * live scroll. The earlier max-with-cmax2 double-counted
-                 * scroll_y when the box had scroll_y > 0 (or a scrolled
-                 * ancestor), inflating the range (a 2-line textarea that
-                 * reported ~70 lines after a scroll/FSR relayout). */
-                int cmax =
-                    (inner_bottom - nd->content.y) - nd->content.h;
-                if (cmax < 0) {
-                    cmax = 0;
-                }
-                nd->scroll_max = cmax;
-                auto it = r->scrolls.find(nd->el);
-                if (it != r->scrolls.end()) {
-                    if (it->second > nd->scroll_max) {
-                        it->second = nd->scroll_max;
-                    }
-                    if (it->second < 0) {
-                        it->second = 0;
-                    }
-                }
-                return nd->border.y + nd->border.h;
-            }
-            if (nd->el && !nd->is_text &&
-                inner_bottom > nd->border.y + nd->border.h + scomp) {
-                /* auto-height box whose content (run heights corrected to
-                 * the real line height) is taller than the layout
-                 * estimate: grow it with the UNBAKED height (stable
-                 * across scrolls). Explicit heights stay fixed. */
-                std::string hh = sget(nd->style, "height");
-                bool h_auto = hh.empty() || hh == "auto";
-                if (h_auto) {
-                    nd->border.h = inner_bottom - nd->border.y - scomp;
-                    int ch = nd->border.h - nd->padding[0] -
-                             nd->padding[2] - nd->border_w[0] -
-                             nd->border_w[2];
-                    if (ch < 0) {
-                        ch = 0;
-                    }
-                    nd->content.h = ch;
-                }
-            }
-            return inner_bottom;
-        };
-        fix_sm(r->tree->root, 0);        /* after a DOM edit the layout tree is fresh here: re-run the
+        fix_run_heights(r);
+        /* corrected scroll ranges + grown auto-height boxes (see
+         * fix_scroll_max above; shared with the animation relayout path) */
+        fix_scroll_max(r);        /* after a DOM edit the layout tree is fresh here: re-run the
          * caret-visible scroll so a caret just typed past the visible
          * area (or on a wrapped line) scrolls the box. edit_replace's
          * earlier call ran against the stale tree (scroll_max was 0),
@@ -2857,22 +3010,63 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 #ifdef WHALEUI_BUILD_FULL
         g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
-    } else if (animating) {
-        /* paint-only animation: apply the tick's values to the tree styles
-         * and refresh the cascaded opacity (children inherit it) */
-        std::function<void(whaleui_layout_node_t*)> apply_ov =
+    } else if (animating && whaleui_anim_needs_layout(r->anim)) {
+        /* layout-affecting animation (width/margin/...): rebuild only the
+         * animated elements' subtrees with the tick's values, re-position
+         * the rest (box pass). A width bar previously rebuilt the WHOLE
+         * tree every frame - the demo's bar animation is what made any
+         * concurrent scrolling/animating feel like a crawl. relayout's
+         * build applies the animated styles itself, so the apply_ov pass
+         * below is skipped on these frames. */
+        whaleui_style_state st;
+        st.hover = r->hover_el;
+        st.focus = r->focus_el;
+        st.pressed = r->pressed_el;
+        std::vector<lxb_dom_element*> anim_els;
+        std::function<void(whaleui_layout_node_t*)> collect =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
-                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
+                    anim_els.push_back(nd->el);
                 }
                 for (whaleui_layout_node_t* c = nd->first_child; c;
                      c = c->next) {
-                    apply_ov(c);
+                    collect(c);
                 }
             };
-        apply_ov(r->tree->root);
-        std::function<void(whaleui_layout_node_t*, float)> re_op =
+        collect(r->tree->root);
+        bool ok = true;
+        for (lxb_dom_element* el : anim_els) {
+            if (whaleui_layout_relayout(r->tree, el, r->rules,
+                                        r->rule_count, &r->theme_vars,
+                                        &st, &r->scrolls, r->anim,
+                                        r->text_scale) < 0) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            g_last_tree = r->tree;
+            r->bounds_valid = 0; /* subtree paint bounds are stale */
+            r->drag_scroll_node = nullptr; /* nodes were recreated */
+            r->scroll_max_el = nullptr;    /* scroll_max may have changed */
+            r->wheel_node = nullptr;       /* hit cache is stale */
+            fix_scroll_max(r); /* embedded scroll ranges may have moved */
+        } else {
+            r->has_dirty = 1; /* tree inconsistent: full rebuild */
+        }
+#ifdef WHALEUI_BUILD_FULL
+        g_metric_render = nullptr; /* layout done; paint re-rasterizes */
+#endif
+    } else if (animating) {
+        /* paint-only animation: apply the tick's values to the tree styles
+         * and refresh the cascaded opacity (children inherit it) - one
+         * pre-order pass does both (apply_ov + re_op were two full-tree
+         * recursions per frame). */
+        std::function<void(whaleui_layout_node_t*, float)> apply_op =
             [&](whaleui_layout_node_t* nd, float po) {
+                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
+                }
                 if (nd->is_text) {
                     nd->opacity = po;
                     return;
@@ -2891,10 +3085,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 nd->opacity = o * po;
                 for (whaleui_layout_node_t* c = nd->first_child; c;
                      c = c->next) {
-                    re_op(c, nd->opacity);
+                    apply_op(c, nd->opacity);
                 }
             };
-        re_op(r->tree->root, 1.0f);
+        apply_op(r->tree->root, 1.0f);
     }
     /* DOM mutations: incremental relayout. Only the affected subtrees get
      * a fresh style cascade + build; the box pass re-positions the tree
@@ -3000,8 +3194,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* paint: collect batched GPU draw commands. Text goes to the CPU layer
      * (moved on scroll), uploaded + composited by a compute pass. */
     Clip full = {0, 0, r->fb_w, r->fb_h};
-    Clip strip = full;
+    /* empty strip: dirty_rect GROWS it, so partial branches (hover /
+     * animation / embedded scroll) shrink the repaint to their boxes. A
+     * strip starting at `full` never shrinks - dirty_rect only unions -
+     * and every "partial" frame repainted the whole window (the animation
+     * frame-drop report). */
+    Clip strip = {0, 0, 0, 0};
     if (scroll_dy != 0) {
+        /* the scroll strip spans the full width */
+        strip.x = 0;
+        strip.w = full.w;
         /* shift the existing text layer rows FIRST (opposite of the
          * scroll): the shift copies from [dy, fb_h) into [0, fb_h-dy), so
          * the old bottom-strip content lands above the strip. Clearing the
@@ -3036,6 +3238,29 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     bool partial = false; /* load-only repaint of a dirty region */
     if (scroll_dy != 0) {
         /* scroll strip handled above */
+    } else if (!animating && !r->edit_el && r->scroll_el &&
+               r->scroll_el != r->tree->root->el) {
+        /* embedded scroll (overflow:auto/scroll box): only that container's
+         * viewport region changed - its content paints at the new scroll
+         * offset, the rest of the window is untouched. The page root scroll
+         * takes the image-shift path above; scroll_el is consumed here. */
+        whaleui_layout_node_t* scn =
+            find_node_by_el(r->tree, r->scroll_el);
+        if (scn && scn->el && !scn->is_text && scn->scroll_max > 0) {
+            int x0 = scn->border.x;
+            int y0 = scn->border.y + node_scroll_off(r, scn);
+            int x1 = x0 + scn->border.w;
+            int y1 = y0 + scn->border.h;
+            if (x0 < 0) x0 = 0;
+            if (y0 < 0) y0 = 0;
+            if (x1 > r->fb_w) x1 = r->fb_w;
+            if (y1 > r->fb_h) y1 = r->fb_h;
+            if (x1 > x0 && y1 > y0) {
+                dirty_rect(x0, y0, x1, y1, &strip);
+                partial = true;
+            }
+        }
+        r->scroll_el = nullptr;
     } else if (!animating && !r->edit_el && r->hover_old_el) {
         /* hover change: repaint only the previous and current hover
          * targets (their :hover style changed). The relayout already
@@ -3074,9 +3299,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             partial = true;
         }
         r->hover_old_el = nullptr;
-    } else if (animating && !need_layout && !r->has_dirty && !r->edit_el) {
+    } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
+               !whaleui_anim_needs_layout(r->anim)) {
         /* paint-only animation: repaint only the animating elements'
-         * bounding boxes (dirty-rect, keeps the rest of the frame) */
+         * bounding boxes (dirty-rect, keeps the rest of the frame).
+         * Layout-affecting animation frames skip this: the element's box
+         * GROWS/SHRINKS, so the old box outside the new bounds would keep
+         * a ghost - those frames repaint fully (relayout already made them
+         * cheap). */
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
@@ -3137,6 +3367,32 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     int seq = 0;
     paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi, paint_clip,
                false);
+
+    /* scroll-shift frames: repaint every visible scrollbar column. The
+     * image shift moves the OLD thumb with the content; a strip-only
+     * repaint only redraws the thumb when it sits inside the strip, so a
+     * thumb above the strip keeps the shifted ghost ("scrollbar rendering
+     * wrong" after restoring scroll-shift). The 8px column is cheap. */
+    if (scroll_dy != 0) {
+        std::function<void(whaleui_layout_node_t*, int)> repaint_bars =
+            [&](whaleui_layout_node_t* nd, int oy) {
+                if (!nd->visible) {
+                    return;
+                }
+                if (nd->el && !nd->is_text && nd->scroll_max > 0) {
+                    int by = nd->border.y + oy;
+                    if (by < r->fb_h && by + nd->border.h > 0) {
+                        paint_scrollbar(r, nd, 0, oy, &full);
+                    }
+                }
+                int noy = oy + scroll_delta(r, nd);
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    repaint_bars(c, noy);
+                }
+            };
+        repaint_bars(r->tree->root, 0);
+    }
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's

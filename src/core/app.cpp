@@ -64,6 +64,7 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     std::strcpy(app->theme_style, "fluent");
     std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
     app->max_fps = 0;
+    app->async_layout = 0; /* async first layout: opt-in only */
     /* battery saver is a *default*, gated on the actual system power state:
      * 60fps (and FSR, see fsr_want_active) while on battery, uncapped while
      * plugged in. The state is re-polled in the event loop, so unplugging
@@ -423,6 +424,10 @@ extern "C" int whaleui_app_set_render_option(whaleui_app_t* app,
     case WHALEUI_RENDER_MAX_FPS:       app->max_fps = value; break;
     case WHALEUI_RENDER_BATTERY_SAVER: app->battery_saver = value; break;
     case WHALEUI_RENDER_VSYNC:         app->vsync = value; break;
+    case WHALEUI_RENDER_ASYNC_LAYOUT:
+        app->async_layout = value ? 1 : 0;
+        /* nothing to re-apply: each window reads it on its first frame */
+        break;
     default: return -1;
     }
     return 0;

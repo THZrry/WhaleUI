@@ -1435,6 +1435,47 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* async first layout (opt-in, WHALEUI_RENDER_ASYNC_LAYOUT): the first
+     * frame hands the layout to a worker thread and returns without a tree;
+     * a later frame picks the finished tree up. This test must NOT block
+     * inside the first whaleui_render_frame - the whole point is that the
+     * window stays responsive while a large page lays out. */
+    {
+        assert(whaleui_app_set_render_option(
+                   app, WHALEUI_RENDER_ASYNC_LAYOUT, 1) == 0);
+        whaleui_window_t* w =
+            whaleui_window_create(app, "async-layout", 300, 200);
+        assert(w != nullptr);
+        std::string html = "<html><body><p>async first layout</p>";
+        for (int i = 0; i < 50; ++i) {
+            html += "<div>line " + std::to_string(i) + "</div>";
+        }
+        html += "</body></html>";
+        assert(whaleui_window_load_html(w, html.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        int frames = 0;
+        /* the first frame starts the worker and must NOT block: the tree
+         * is still null right after it (bounded loop guards a worker bug).
+         * A short frame delay models the real event loop - the worker
+         * needs a few ms to start + lay out. */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->tree == nullptr); /* worker still running */
+        while (w->render->tree == nullptr && frames < 500) {
+            SDL_Delay(5); /* ~vsync frame time */
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+            ++frames;
+        }
+        assert(w->render->tree != nullptr);
+        assert(w->render->tree->root != nullptr);
+        std::printf("[scroll] async layout ready after %d frames\n", frames);
+        std::fflush(stdout);
+        /* the finished tree renders like a synchronous one */
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_window_destroy(w);
+        assert(whaleui_app_set_render_option(
+                   app, WHALEUI_RENDER_ASYNC_LAYOUT, 0) == 0);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

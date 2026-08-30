@@ -212,6 +212,7 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
         if (!win->render) {
             return -5;
         }
+        win->render->async_layout = win->app->async_layout;
         window_reload_css(win);
     }
     /* pre-render the first frame before the window becomes visible, so it

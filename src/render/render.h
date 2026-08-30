@@ -18,6 +18,9 @@
 #include <string>
 #include <vector>
 
+#include <atomic>
+#include <thread>
+
 /* SDL3 opaque types; never dereferenced in this header. */
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_GPUDevice SDL_GPUDevice;
@@ -117,6 +120,12 @@ struct whaleui_render
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);
     void* scroll_ud;
+    /* smooth scrolling (opt-in: set scroll_fn to whaleui_scroll_smooth_fn):
+     * wheel deltas accumulate into these TARGET positions and the frame
+     * loop eases the live scrolls toward them in small per-frame steps -
+     * discrete mouse-wheel notches move like touchpad deltas instead of
+     * jumping a full notch per event */
+    std::map<struct lxb_dom_element*, int> scroll_tgt;
     /* cached scroll_max for the last wheel-scrolled element (wheel events
      * arrive in bursts) */
     struct lxb_dom_element* scroll_max_el;
@@ -126,6 +135,11 @@ struct whaleui_render
      * skipped on repeated coordinates (invalidated on layout rebuild) */
     struct whaleui_layout_node* wheel_node;
     int wheel_x, wheel_y;
+    /* the element the last wheel scroll actually moved (set by the scroll
+     * behavior); the frame uses it to repaint only that container's region
+     * (embedded overflow boxes), while the page root keeps the image-shift
+     * path */
+    struct lxb_dom_element* scroll_el;
     /* scrollbar being dragged (element owning the scrollable box) */
     struct lxb_dom_element* drag_scroll_el;
     /* cached layout node of drag_scroll_el (drag frames do not rebuild the
@@ -235,6 +249,23 @@ struct whaleui_render
     int partial;
     int dirty_x, dirty_y, dirty_w, dirty_h;
 
+    /* async first layout (WHALEUI_RENDER_ASYNC_LAYOUT): the first full
+     * layout (no tree yet) runs on a worker thread so a large page does
+     * not freeze the window while it lays out; the frame loop picks up the
+     * finished tree. Only the FIRST layout is async - later full rebuilds
+     * stay synchronous. The worker reads the DOM/rules/vars copy; the
+     * first frame has no user interaction yet, so there is no concurrent
+     * DOM write. ponytail: single-window assumption - the worker writes
+     * the global text-metric context, a second window laying out
+     * simultaneously would race on it. */
+    int async_layout;
+    std::thread* layout_thread; /* nullptr when no worker is running */
+    std::atomic<int> layout_done; /* release/acquire hand-off */
+    whaleui_layout_tree_t* layout_pending;
+    std::map<std::string, std::string> layout_vars;
+    int layout_w, layout_h;
+    float layout_text_scale;
+
     /* subtree paint bounds are computed once per layout pass and reused by
      * every paint (and the selection sequence walk); invalidated whenever
      * the layout tree is rebuilt */
@@ -283,6 +314,14 @@ typedef int (*whaleui_scroll_behavior_fn)(whaleui_render_t* r,
 int whaleui_render_set_scroll_behavior(whaleui_render_t* r,
                                        whaleui_scroll_behavior_fn fn,
                                        void* userdata);
+
+/* Built-in smooth scroll behavior for whaleui_render_set_scroll_behavior:
+ * the wheel delta accumulates into the element's target position and the
+ * frame loop eases the live position toward it (opt-in; the default
+ * behavior keeps the immediate wheel -> position contract). */
+int whaleui_scroll_smooth_fn(whaleui_render_t* r,
+                             struct lxb_dom_element* el, int delta,
+                             void* userdata);
 
 /* Keyboard: editing keys (arrows/backspace/delete/enter) on the focused
  * editable element. mods: SDL_Keymod bitmask (for ctrl shortcuts). */
