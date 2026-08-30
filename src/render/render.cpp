@@ -475,6 +475,32 @@ void fix_run_heights(whaleui_render_t* r)
     fix_run_h(r->tree->root);
 }
 
+/* 1 if any element in the tree is position:fixed or position:sticky.
+ * Such an element is part of the shifted image during scroll-shift, so
+ * shifting smears it over the content; callers fall back to a full
+ * repaint when this is set. */
+bool has_fixed_or_sticky(whaleui_render_t* r)
+{
+    bool found = false;
+    std::function<void(whaleui_layout_node_t*)> rec =
+        [&](whaleui_layout_node_t* nd) {
+            if (found || !nd || !nd->el || nd->is_text) {
+                return;
+            }
+            std::string p = sget(nd->style, "position");
+            if (p == "fixed" || p == "sticky") {
+                found = true;
+                return;
+            }
+            for (whaleui_layout_node_t* c = nd->first_child; c;
+                 c = c->next) {
+                rec(c);
+            }
+        };
+    rec(r->tree->root);
+    return found;
+}
+
 /* single post-order pass: compute each subtree's REAL bottom (the run
  * heights were just corrected above, but the ancestor boxes keep their
  * layout-estimated heights). The recursion carries `scomp` = the
@@ -3189,6 +3215,26 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * full-width strip, so paint re-draws them at the NEW scroll
          * position. No full repaint on scroll: that made large pages
          * (qwen 21k) crawl while scrolling. */
+    }
+    /* a scroll of more than a screen can't be strip-shifted: the exposed
+     * strip would exceed the framebuffer and underflow the text-layer
+     * fill (scroll_dy > fb_h -> strip.y < 0; scroll_dy < -fb_h ->
+     * strip.h > fb_h). A burst of wheel events landing between frames
+     * hits this. Fall back to a full repaint. */
+    if (scroll_dy >= r->fb_h || scroll_dy <= -r->fb_h) {
+        scroll_dy = 0;
+    } else if (scroll_dy < 0 && r->tree && r->tree->root &&
+               has_fixed_or_sticky(r)) {
+        /* scrolling BACK UP moves a fixed/sticky element down with the
+         * shifted image, smearing it over the content (the fixed header
+         * paints at the viewport position every frame but the shift moves
+         * the OLD copy down the page - the "header covers the whole page"
+         * ghost). Scrolling DOWN is safe: a fixed header moves UP out of
+         * view and the strip repaint redraws it at the viewport position,
+         * so only the up direction falls back to a full repaint.
+         * ponytail: layered rendering (content layer + fixed layer) would
+         * keep the shift in both directions; not worth the rewrite yet. */
+        scroll_dy = 0;
     }
 
     /* paint: collect batched GPU draw commands. Text goes to the CPU layer

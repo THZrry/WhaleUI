@@ -1101,7 +1101,9 @@ int main(void)
         whaleui_render_handle_wheel(w->render, ta->border.x + 10,
                                     ta->border.y + 10, -1.0f);
         int s1 = w->render->scrolls[tel];
-        assert(s1 > s_after_edit);
+        /* a user wheel must move it (or stay, if the caret scroll already
+         * put it at the bottom - then there is nowhere to go down) */
+        assert(s1 >= s_after_edit);
         assert(whaleui_render_frame(w->render, w->document) == 0);
         /* no edit since: the frame must NOT pull it back to the caret */
         std::printf("[scroll] caret-scroll edit=%d wheel=%d after=%d\n",
@@ -1523,6 +1525,49 @@ int main(void)
         assert(p_anim == p_ctrl);
         whaleui_window_destroy(w);
         whaleui_window_destroy(wc);
+    }
+
+    /* fixed/sticky header scroll-shift ghost regression: a fixed top bar
+     * must NOT be shifted by the scroll image (it stays pinned to the
+     * viewport); scrolling back up must not smear it over the content. */
+    {
+        const char* html =
+            "<html><head><style>"
+            "body{background:#101010}"
+            "#bar{position:fixed;top:0;left:0;right:0;height:40px;"
+            "background:#333;color:#fff}"
+            "</style></head><body>"
+            "<div id=\"bar\">FIXEDBAR</div>"
+            "<div><div>content row</div>"
+            "<div style=\"height:3000px\">tall spacer</div></div>"
+            "</body></html>";
+        whaleui_window_t* w =
+            whaleui_window_create(app, "fixed-scroll-ghost", 320, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w, html) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* scroll down to the bottom, then back up 20 steps */
+        for (int i = 0; i < 200; ++i) {
+            whaleui_render_handle_wheel(w->render, 160, 100, -1.0f);
+        }
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        for (int i = 0; i < 20; ++i) {
+            whaleui_render_handle_wheel(w->render, 160, 100, 1.0f);
+        }
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* the fixed bar should still be exactly at the top (y<40 = #333),
+         * and just below it (y=55) must be page content, NOT a smeared
+         * copy of the bar */
+        unsigned int p_top = gpixel(w->render, 10, 10);
+        unsigned int p_below = gpixel(w->render, 10, 55);
+        std::printf("[fixed-ghost] top=%08X below=%08X\n", p_top, p_below);
+        std::fflush(stdout);
+        /* top = bar (#333 -> 0xFF333333) */
+        assert((p_top & 0xFFFFFFu) == 0x333333u);
+        /* below the bar is page background (#101010), not the bar (#333) */
+        assert((p_below & 0xFFFFFFu) != 0x333333u);
+        whaleui_window_destroy(w);
     }
 
     whaleui_app_destroy(app);
