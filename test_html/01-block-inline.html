@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>01 · Block + Inline 布局</title>
+<style>
+  body { max-width: 680px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
+  .sec { margin: 18px 0; }
+  .sec h2 { margin: 0 0 8px; font-size: 18px; }
+
+  /* --- block flow --- */
+  .stack { border: 1px dashed #aaa; padding: 10px; }
+  .box-a { width: 60%; height: 40px; margin: 8px 0; background: #cfe8ff; }
+  .box-b { width: 40%; height: 40px; margin: 8px 0; background: #ffe0c0; }
+  .box-c { width: 80%; height: 40px; margin: 8px auto; background: #d8f8d8; } /* 居中 */
+
+  /* --- box model --- */
+  .bm {
+    margin: 20px;
+    padding: 16px;
+    border: 4px solid #d07000;
+    background: #fff3e0;
+  }
+  .bm2 {
+    box-sizing: border-box;
+    width: 300px;
+    height: 60px;
+    margin: 12px auto;
+    padding: 10px;
+    border: 2px solid #3060c0;
+    background: #e8f0ff;
+  }
+
+  /* --- inline --- */
+  .line { border: 1px solid #ccc; padding: 8px; }
+  .ta-center { text-align: center; }
+  .ta-right { text-align: right; }
+  .em { font-style: italic; }
+  .hl { background: #fff3b0; }
+
+  /* --- lists / details --- */
+  ul, ol { margin: 6px 0 6px 24px; }
+  details { margin: 8px 0; border: 1px solid #ccc; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<p><a href="index.html">← 返回总览</a></p>
+<h1>Block + Inline 布局</h1>
+
+<div class="sec">
+  <h2>Block 文档流（自上而下堆叠，margin 生效）</h2>
+  <div class="stack">
+    <div class="box-a">width 60%</div>
+    <div class="box-b">width 40%</div>
+    <div class="box-c">width 80%，margin: 0 auto 居中</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>盒模型（margin / padding / border）</h2>
+  <div class="bm">content-box：外边距 20px，内边距 16px，边框 4px</div>
+  <div class="bm2">border-box：width:300px 包含 padding 和 border</div>
+</div>
+
+<div class="sec">
+  <h2>Inline 行内排版（文本与 span/em/strong 同行流动、自动换行）</h2>
+  <div class="line">
+    这是一段很长的行内文本，包含 <span class="hl">高亮 span</span>、
+    <em class="em">斜体 em</em>、<strong>加粗 strong</strong> 和普通文字，
+    它们都在同一行内流动，超出容器宽度时会在单词边界自动换行，
+    用来验证 inline 排版引擎的换行与基线对齐效果。
+  </div>
+  <div class="line ta-center">text-align: center —— 居中的一行</div>
+  <div class="line ta-right">text-align: right —— 靠右的一行</div>
+</div>
+
+<div class="sec">
+  <h2>列表</h2>
+  <ul>
+    <li>无序列表项一</li>
+    <li>无序列表项二</li>
+  </ul>
+  <ol>
+    <li>有序列表项一</li>
+    <li>有序列表项二</li>
+    <li>有序列表项三</li>
+  </ol>
+</div>
+
+<div class="sec">
+  <h2>details / summary（折叠）</h2>
+  <details>
+    <summary>点击展开</summary>
+    <p>这里是折叠后隐藏的内容，验证 details/summary 的交互。</p>
+  </details>
+  <details open>
+    <summary>默认展开</summary>
+    <p>带有 open 属性，初始就是展开状态。</p>
+  </details>
+</div>
+
+<div class="sec">
+  <h2>hr / 块引用</h2>
+  <p>分隔线：</p>
+  <hr>
+  <blockquote>这是一段 blockquote 块引用文字。</blockquote>
+</div>
+
+</body>
+</html>

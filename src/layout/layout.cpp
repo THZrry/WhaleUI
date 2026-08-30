@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <algorithm>
 #include <vector>
 
 namespace {
@@ -279,21 +280,100 @@ int display_kind(const std::string& d)
     if (d == "grid" || d == "inline-grid") {
         return 4;
     }
+    if (d == "table" || d == "inline-table") {
+        return 5;
+    }
+    if (d == "table-row") {
+        return 6;
+    }
+    if (d == "table-cell") {
+        return 7;
+    }
     return 3; /* block (default) */
 }
 
-/* flex-grow, honoring the "flex: <grow> ..." shorthand */
-float flex_grow(const WhaleUIComputedStyle& s)
+/* "flex: [grow] [shrink] [basis]" shorthand + the three longhands.
+ * PureLayout's flex algorithm starts from flex-basis, so all three must
+ * resolve together. Defaults: grow 0, shrink 1, basis auto (-1).
+ * One number ("flex: 1") = grow, basis 0% (0) - standard behavior. */
+static void flex_shorthand(const WhaleUIComputedStyle& s,
+                           float& grow, float& shrink, float& basis)
 {
+    grow = 0;
+    shrink = 1;
+    basis = -1; /* -1 = auto (use width/height/content) */
     std::string g = get(s, "flex-grow");
     if (!g.empty()) {
-        return std::strtof(g.c_str(), nullptr);
+        grow = std::strtof(g.c_str(), nullptr);
+    }
+    std::string sh = get(s, "flex-shrink");
+    if (!sh.empty()) {
+        shrink = std::strtof(sh.c_str(), nullptr);
+    }
+    std::string b = get(s, "flex-basis");
+    if (!b.empty() && b != "auto" && b != "content") {
+        basis = len_px(b, 0, 16);
     }
     std::string f = get(s, "flex");
-    if (!f.empty()) {
-        return std::strtof(f.c_str(), nullptr);
+    if (f.empty() || f == "none") {
+        if (f == "none") {
+            grow = 0;
+            shrink = 0;
+            basis = -1;
+        }
+        return;
     }
-    return 0;
+    if (f == "auto") { /* 1 1 auto */
+        grow = 1;
+        shrink = 1;
+        basis = -1;
+        return;
+    }
+    /* tokenize the shorthand */
+    std::vector<std::string> toks;
+    const char* p = f.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s2 = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        toks.push_back(std::string(s2, static_cast<size_t>(p - s2)));
+    }
+    if (toks.empty()) {
+        return;
+    }
+    auto is_num = [](const std::string& t) {
+        char* e = nullptr;
+        std::strtof(t.c_str(), &e);
+        return e != t.c_str() && *e == '\0';
+    };
+    auto is_basis = [&](const std::string& t) {
+        return t == "auto" || t == "content" || !is_num(t);
+    };
+    grow = std::strtof(toks[0].c_str(), nullptr);
+    if (toks.size() >= 2) {
+        if (is_basis(toks[1])) {
+            basis = toks[1] == "auto" || toks[1] == "content"
+                        ? -1
+                        : len_px(toks[1], 0, 16);
+        } else {
+            shrink = std::strtof(toks[1].c_str(), nullptr);
+        }
+    }
+    if (toks.size() >= 3) {
+        basis = toks[2] == "auto" || toks[2] == "content"
+                    ? -1
+                    : len_px(toks[2], 0, 16);
+    }
+    if (toks.size() == 1) {
+        basis = 0; /* flex: <number> -> basis 0% */
+    }
 }
 
 /* estimated pixel width of a UTF-8 string: ASCII ~0.5em, CJK/fullwidth
@@ -955,6 +1035,19 @@ struct Builder
                 n->style["display"] = "inline-block";
             }
         }
+        /* tables: UA default display maps them onto the grid engine
+         * (table-row = a grid row, table-cell = a grid cell) */
+        if (tname0 && n->style.find("display") == n->style.end()) {
+            if (tlen0 == 5 && std::memcmp(tname0, "table", 5) == 0) {
+                n->style["display"] = "table";
+            } else if (tlen0 == 2 && std::memcmp(tname0, "tr", 2) == 0) {
+                n->style["display"] = "table-row";
+            } else if (tlen0 == 2 &&
+                       (std::memcmp(tname0, "td", 2) == 0 ||
+                        std::memcmp(tname0, "th", 2) == 0)) {
+                n->style["display"] = "table-cell";
+            }
+        }
         /* form controls get the browser-default inline size (~20ch): as
          * inline-blocks their content estimate is 0 (option/value text is
          * not a text run), which would collapse them to zero width.
@@ -1499,7 +1592,9 @@ struct Builder
          * simplified: any positioned ancestor. */
         if (dk == 1) {
             layout_flex(n, inner_w, inner_h, font_px, kid_cursor);
-        } else if (dk == 4) {
+        } else if (dk == 4 || dk == 5) {
+            /* grid, or table (which is laid out as a grid - see the
+             * collect_table_items path in layout_grid) */
             layout_grid(n, inner_w, inner_h, font_px, kid_cursor);
         } else {
             layout_block(n, inner_w, inner_h, font_px, kid_cursor);
@@ -1732,6 +1827,19 @@ struct Builder
         kid_cursor = cursor - n->content.y;
     }
 
+    /* shift a node and its whole subtree by (dx, dy) - used by flex/grid
+     * cross-axis alignment and direction reversal after layout */
+    void shift_subtree(whaleui_layout_node_t* k, int dx, int dy)
+    {
+        k->border.x += dx;
+        k->border.y += dy;
+        k->content.x += dx;
+        k->content.y += dy;
+        for (whaleui_layout_node_t* cc = k->first_child; cc; cc = cc->next) {
+            shift_subtree(cc, dx, dy);
+        }
+    }
+
     void layout_flex(whaleui_layout_node_t* n, int inner_w, int inner_h,
                      int font_px, int& kid_cursor)
     {
@@ -1747,186 +1855,462 @@ struct Builder
         if (kids.empty()) {
             return;
         }
+        float em = font_px > 0 ? static_cast<float>(font_px) : 16;
         std::string dir = get(n->style, "flex-direction");
         bool column = dir == "column" || dir == "column-reverse";
+        bool reverse = dir == "row-reverse" || dir == "column-reverse";
         std::string justify = get(n->style, "justify-content");
         std::string align = get(n->style, "align-items");
-        float gap = len_px(get(n->style, "gap"), static_cast<float>(inner_w), font_px > 0 ? font_px : 16);
-        float em = font_px > 0 ? static_cast<float>(font_px) : 16;
+        std::string align_c = get(n->style, "align-content");
+        float gap = len_px(get(n->style, "gap"), static_cast<float>(inner_w), em);
+        std::string rg = get(n->style, "row-gap");
+        std::string cg = get(n->style, "column-gap");
+        float gap_main = column
+                             ? (rg.empty() ? gap : len_px(rg, static_cast<float>(inner_w), em))
+                             : (cg.empty() ? gap : len_px(cg, static_cast<float>(inner_w), em));
+        float gap_cross = column
+                              ? (cg.empty() ? gap : len_px(cg, static_cast<float>(inner_w), em))
+                              : (rg.empty() ? gap : len_px(rg, static_cast<float>(inner_w), em));
 
-        /* measure each child's main-axis size (min: content) */
-        std::vector<int> main_size(kids.size(), 0);
-        /* min-content floor for flex-basis:0 items (see flex shorthand) */
-        std::vector<int> flex_min0(kids.size(), -1);
+        /* order: stable sort keeps DOM order among equal orders */
+        auto order_of = [](whaleui_layout_node_t* k) {
+            std::string o = get(k->style, "order");
+            return o.empty() ? 0 : std::atoi(o.c_str());
+        };
+        std::stable_sort(kids.begin(), kids.end(),
+                         [&](whaleui_layout_node_t* a,
+                             whaleui_layout_node_t* b) {
+                             return order_of(a) < order_of(b);
+                         });
+
+        /* per-item flex properties + main-axis size (PureLayout: start from
+         * flex-basis, then grow/shrink the free space) */
+        std::vector<float> grow(kids.size()), shrink(kids.size());
+        std::vector<float> main_size(kids.size());
+        std::vector<int> min_main(kids.size(), 0); /* min-content floor */
+        bool any_shrink = false;
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
+            float basis = 0;
+            flex_shorthand(k->style, grow[i], shrink[i], basis);
+            if (shrink[i] > 0) {
+                any_shrink = true;
+            }
             float fs = len_px(get(k->style, "font-size"), 0, em);
             if (fs <= 0) {
                 fs = font_px > 0 ? font_px : 16;
             }
-            bool is_auto = true;
-            if (column) {
-                float h = len_or_auto(get(k->style, "height"), static_cast<float>(inner_h), em, &is_auto);
-                if (is_auto) {
-                    h = estimate_content_width(k, em); /* rough height proxy */
+            int minc = k->is_text
+                           ? static_cast<int>(text_measure_est(
+                                 k->text, fs,
+                                 letter_spacing_px(k->style, fs)))
+                           : static_cast<int>(estimate_content_width(k, em));
+            std::string mn = get(k->style, column ? "min-height" : "min-width");
+            if (!mn.empty()) {
+                float m = len_px(mn, static_cast<float>(inner_w), em);
+                if (m > minc) {
+                    minc = static_cast<int>(m);
                 }
-                main_size[i] = k->is_text
-                                   ? static_cast<int>(text_measure_est(k->text, fs, letter_spacing_px(k->style, fs)))
-                                   : static_cast<int>(h);
+            }
+            min_main[i] = minc;
+            if (basis >= 0) {
+                main_size[i] = basis; /* "flex: 1" -> basis 0, grows fully */
             } else {
-                float w = len_or_auto(get(k->style, "width"), static_cast<float>(inner_w), em, &is_auto);
-                float minc = 0;
+                bool is_auto = true;
+                float sz = len_or_auto(get(k->style, column ? "height" : "width"),
+                                       static_cast<float>(inner_w), em,
+                                       &is_auto);
                 if (is_auto) {
-                    minc = w = estimate_content_width(k, em);
+                    sz = static_cast<float>(minc);
                 }
-                /* "flex: <grow>" shorthand means flex-basis: 0% - the item
-                 * sizes purely by grow. Without this a flex:1 card holding a
-                 * textarea grows with every typed char (min-content = the
-                 * longest line). "flex: ... auto" keeps the content basis. */
-                bool basis0 = false;
-                std::string flex_s = get(k->style, "flex");
-                if (!flex_s.empty() &&
-                    flex_s.find("auto") == std::string::npos) {
-                    w = 0;
-                    basis0 = true;
+                main_size[i] = sz;
+            }
+            if (main_size[i] < 1 && grow[i] <= 0) {
+                main_size[i] = 1; /* avoid zero-size main-axis items */
+            }
+        }
+
+        int container_main = column ? inner_h : inner_w;
+
+        /* split into rows by the hypothetical sizes first (wrap decides on
+         * the un-shrunk sizes), then grow/shrink per row below */
+        struct FlexRow
+        {
+            std::vector<whaleui_layout_node_t*> items;
+            std::vector<float> sizes;
+            int y; /* cross start */
+            int est_h;
+            int real_h;
+        };
+        std::vector<FlexRow> rows;
+        {
+            FlexRow cur;
+            float pos = 0;
+            bool flex_wrap = get(n->style, "flex-wrap") == "wrap" ||
+                             get(n->style, "flex-wrap") == "wrap-reverse";
+            for (size_t i = 0; i < kids.size(); ++i) {
+                float sz = main_size[i];
+                if (flex_wrap && pos > 0 &&
+                    pos + sz > static_cast<float>(container_main)) {
+                    rows.push_back(cur);
+                    cur = FlexRow();
+                    pos = 0;
                 }
-                /* min-width caps the measurement so space-between doesn't
-                 * push items past the container edge */
-                std::string mnw = get(k->style, "min-width");
-                if (!mnw.empty()) {
-                    float m = len_px(mnw, static_cast<float>(inner_w), em);
-                    if (w < m) {
-                        w = m;
+                cur.items.push_back(kids[i]);
+                cur.sizes.push_back(sz);
+                pos += sz + gap_main;
+            }
+            rows.push_back(cur);
+        }
+
+        /* estimate each row's cross size to place row starts */
+        for (size_t r = 0; r < rows.size(); ++r) {
+            int est = 1;
+            for (size_t i = 0; i < rows[r].items.size(); ++i) {
+                int h = static_cast<int>(est_node_height(
+                    rows[r].items[i], inner_w, em));
+                if (h > est) {
+                    est = h;
+                }
+            }
+            rows[r].est_h = est;
+            rows[r].real_h = 0;
+        }
+        /* row start y: wrap-reverse lays the first row at the bottom */
+        {
+            std::string wrev = get(n->style, "flex-wrap");
+            bool wrap_reverse = wrev == "wrap-reverse";
+            int y = n->content.y;
+            if (wrap_reverse) {
+                int total = 0;
+                for (size_t r = 0; r < rows.size(); ++r) {
+                    total += rows[r].est_h;
+                }
+                total += static_cast<int>(gap_cross) *
+                         (rows.size() > 1
+                              ? static_cast<int>(rows.size() - 1)
+                              : 0);
+                for (size_t r = 0; r < rows.size(); ++r) {
+                    rows[r].y = n->content.y + inner_h - total;
+                    total -= rows[r].est_h + static_cast<int>(gap_cross);
+                }
+            } else {
+                for (size_t r = 0; r < rows.size(); ++r) {
+                    rows[r].y = y;
+                    y += rows[r].est_h + static_cast<int>(gap_cross);
+                }
+            }
+        }
+
+        /* layout each item; main pos per row from justify-content */
+        int column_total = 0;
+        for (size_t r = 0; r < rows.size(); ++r) {
+            FlexRow& row = rows[r];
+            /* per-row grow/shrink: the row's own free space decides
+             * (PureLayout resolveFlexibleLengths, single pass) */
+            auto kid_idx = [&](whaleui_layout_node_t* k) -> size_t {
+                for (size_t i = 0; i < kids.size(); ++i) {
+                    if (kids[i] == k) {
+                        return i;
                     }
                 }
-                main_size[i] = k->is_text
-                                   ? static_cast<int>(text_measure_est(k->text, fs, letter_spacing_px(k->style, fs)))
-                                   : static_cast<int>(w);
-                if (basis0) {
-                    flex_min0[i] = static_cast<int>(minc);
+                return 0;
+            };
+            float row_free = static_cast<float>(container_main);
+            for (size_t i = 0; i < row.sizes.size(); ++i) {
+                row_free -= row.sizes[i];
+            }
+            row_free -= gap_main *
+                        (row.sizes.size() > 1
+                             ? static_cast<float>(row.sizes.size() - 1)
+                             : 0);
+            if (row_free > 0) {
+                float gsum = 0;
+                for (size_t i = 0; i < row.sizes.size(); ++i) {
+                    gsum += grow[kid_idx(row.items[i])];
+                }
+                if (gsum > 0) {
+                    float extra = row_free / gsum;
+                    for (size_t i = 0; i < row.sizes.size(); ++i) {
+                        size_t gi = kid_idx(row.items[i]);
+                        if (grow[gi] > 0) {
+                            row.sizes[i] += extra * grow[gi];
+                        }
+                    }
+                }
+            } else if (row_free < 0 && any_shrink) {
+                float ssum = 0;
+                for (size_t i = 0; i < row.sizes.size(); ++i) {
+                    size_t gi = kid_idx(row.items[i]);
+                    ssum += shrink[gi] * row.sizes[i];
+                }
+                if (ssum > 0) {
+                    float overflow = -row_free;
+                    for (size_t i = 0; i < row.sizes.size(); ++i) {
+                        size_t gi = kid_idx(row.items[i]);
+                        if (shrink[gi] > 0) {
+                            float cut = overflow * shrink[gi] * row.sizes[i] /
+                                        ssum;
+                            float sz = row.sizes[i] - cut;
+                            if (sz < min_main[gi]) {
+                                sz = static_cast<float>(min_main[gi]);
+                            }
+                            row.sizes[i] = sz;
+                        }
+                    }
+                }
+            }
+            float lead = 0;
+            float between = gap_main;
+            if (justify == "center") {
+                lead = row_free / 2;
+            } else if (justify == "flex-end" || justify == "end") {
+                lead = row_free;
+            } else if (justify == "space-between") {
+                between = row.sizes.size() > 1
+                              ? row_free / (row.sizes.size() - 1)
+                              : 0;
+            } else if (justify == "space-around") {
+                lead = row_free / (row.sizes.size() * 2);
+                between = row_free / row.sizes.size();
+            } else if (justify == "space-evenly") {
+                lead = row_free / (row.sizes.size() + 1);
+                between = row_free / (row.sizes.size() + 1);
+            }
+            float pos = lead;
+            for (size_t i = 0; i < row.items.size(); ++i) {
+                whaleui_layout_node_t* k = row.items[i];
+                int sz = static_cast<int>(row.sizes[i]);
+                int cy = row.y;
+                if (column) {
+                    /* column items flow down the main axis (row.y is the
+                     * cross start, i.e. the left edge) */
+                    cy = row.y + static_cast<int>(pos);
+                    layout(k, n->content.x, cy, sz, inner_h, font_px, &cy);
+                    pos = (k->border.y + k->border.h) - n->content.y +
+                          between;
+                    column_total = (k->border.y + k->border.h) - n->content.y;
+                    if (reverse) { /* column-reverse: mirror vertically */
+                        int dy = inner_h - (k->border.y - n->content.y) -
+                                 k->border.h;
+                        shift_subtree(k, 0, dy);
+                        pos = (k->border.y + k->border.h) - n->content.y +
+                              between;
+                        column_total = (k->border.y + k->border.h) -
+                                       n->content.y;
+                    }
                 } else {
-                    flex_min0[i] = -1;
+                    layout(k, n->content.x + static_cast<int>(pos), row.y,
+                           sz, inner_h, font_px, &cy);
+                    pos = (k->border.x + k->border.w) - n->content.x +
+                          between;
+                    if (reverse) { /* row-reverse: mirror horizontally */
+                        int dx = inner_w - (k->border.x - n->content.x) -
+                                 k->border.w;
+                        shift_subtree(k, dx, 0);
+                        pos = (k->border.x + k->border.w) - n->content.x +
+                              between;
+                    }
+                }
+                /* track the row's real cross size (border + margins) */
+                int outer = k->border.h +
+                            (column ? k->margin[1] + k->margin[3]
+                                    : k->margin[0] + k->margin[2]);
+                if (outer > row.real_h) {
+                    row.real_h = outer;
                 }
             }
-            if (is_auto && main_size[i] == 0) {
-                main_size[i] = 1; /* avoid zero-size main axis items */
-            }
         }
 
-        /* gap spacing */
-        float total_gap = gap * (kids.size() > 0 ? kids.size() - 1 : 0);
-        float total_main = 0;
-        for (size_t i = 0; i < kids.size(); ++i) {
-            total_main += main_size[i];
+        /* cross-axis alignment: align-content (between rows) then
+         * align-items/align-self (within a row) */
+        int cross = column ? inner_w : inner_h;
+        int content_cross = 0;
+        for (size_t r = 0; r < rows.size(); ++r) {
+            content_cross += rows[r].real_h;
         }
-        float free = (column ? inner_h : inner_w) - total_main - total_gap;
-        if (free < 0) {
-            free = 0;
+        content_cross += static_cast<int>(gap_cross) *
+                         (rows.size() > 1 ? static_cast<int>(rows.size() - 1)
+                                          : 0);
+        int free_cross = cross - content_cross;
+        if (free_cross < 0) {
+            free_cross = 0;
         }
-        /* flex-grow distributes free space */
-        float grow_sum = 0;
-        for (size_t i = 0; i < kids.size(); ++i) {
-            float g = flex_grow(kids[i]->style);
-            if (g > 0) {
-                grow_sum += g;
+        float lead_c = 0, between_c = gap_cross;
+        if (align_c == "center") {
+            lead_c = free_cross / 2;
+        } else if (align_c == "flex-end" || align_c == "end") {
+            lead_c = static_cast<float>(free_cross);
+        } else if (align_c == "space-between") {
+            between_c = rows.size() > 1
+                            ? static_cast<float>(free_cross) /
+                                  (rows.size() - 1)
+                            : gap_cross;
+        } else if (align_c == "space-around") {
+            lead_c = free_cross / (rows.size() * 2);
+            between_c = free_cross / rows.size();
+        } else if (align_c == "space-evenly") {
+            lead_c = free_cross / (rows.size() + 1);
+            between_c = free_cross / (rows.size() + 1);
+        }
+        /* shift each row into place (est vs real height drift + align-content) */
+        {
+            int acc = n->content.y + static_cast<int>(lead_c);
+            bool first = true;
+            for (size_t r = 0; r < rows.size(); ++r) {
+                int target = acc;
+                int drift = target - rows[r].y;
+                if (!first && drift != 0) {
+                    for (size_t i = 0; i < rows[r].items.size(); ++i) {
+                        shift_subtree(rows[r].items[i], 0, drift);
+                    }
+                }
+                first = false;
+                acc += rows[r].real_h + static_cast<int>(between_c);
             }
-        }
-        float extra = 0;
-        if (grow_sum > 0 && free > 0) {
-            extra = free / grow_sum;
-        }
-
-        /* leading space from justify-content */
-        float lead = 0;
-        float between = gap; /* spacing between items (space-between) */
-        if (justify == "center") {
-            lead = free / 2;
-        } else if (justify == "flex-end" || justify == "end") {
-            lead = free;
-        } else if (justify == "space-between") {
-            lead = 0;
-            between = kids.size() > 1 ? free / (kids.size() - 1) : 0;
-        } else if (justify == "space-around") {
-            lead = kids.size() ? free / (kids.size() * 2) : 0;
-        }
-
-        float pos = lead;
-        bool flex_wrap = get(n->style, "flex-wrap") == "wrap";
-        float row_cursor = 0;
-        int row_h = 0;
-        for (size_t i = 0; i < kids.size(); ++i) {
-            whaleui_layout_node_t* k = kids[i];
-            float grow = flex_grow(k->style);
-            int sz = main_size[i] + (grow > 0 ? static_cast<int>(extra * grow) : 0);
-            if (flex_min0[i] > sz) {
-                sz = flex_min0[i]; /* flex-basis:0 still respects min-content */
-            }
+            /* realigned total height */
+            int bottom = acc - static_cast<int>(between_c);
             if (column) {
-                int c = n->content.y + static_cast<int>(pos);
-                layout(k, n->content.x, n->content.y, inner_w, sz, font_px, &c);
-                /* advance by the item's ACTUAL box (auto-height content grows
-                 * beyond the measured main size) */
-                pos = (k->border.y + k->border.h) - n->content.y + between;
+                /* column: the main axis is vertical, so the container height
+                 * is the last item's bottom (tracked in the layout loop) */
+                kid_cursor = column_total;
             } else {
-                /* flex-wrap: overflow moves to a new row below */
-                float row_y = n->content.y + static_cast<float>(row_cursor);
-                if (flex_wrap && pos > 0 && pos + sz > inner_w) {
-                    row_cursor += row_h + gap;
-                    pos = 0;
-                    row_h = 0;
-                    row_y = n->content.y + static_cast<float>(row_cursor);
-                }
-                int c = static_cast<int>(row_y);
-                layout(k, n->content.x + static_cast<int>(pos),
-                       static_cast<int>(row_y),
-                       sz, inner_h, font_px, &c);
-                pos = (k->border.x + k->border.w) - n->content.x + between;
-                if (k->border.h > row_h) {
-                    row_h = k->border.h;
-                }
-                /* align-items: stretch (default) / center / flex-end */
-                if (align == "center") {
-                    int dy = (row_h - k->border.h) / 2;
-                    k->border.y += dy;
-                    k->content.y += dy; /* keep content box glued to border */
-                } else if (align == "flex-end" || align == "end") {
-                    int dy = row_h - k->border.h;
-                    k->border.y += dy;
-                    k->content.y += dy; /* keep content box glued to border */
-                } else if (inner_h > 0) {
-                    /* stretch: only when the container has a definite height */
-                    k->border.h = inner_h;
-                }
+                kid_cursor = bottom - n->content.y;
             }
         }
-        if (column) {
-            kid_cursor = static_cast<int>(pos - between);
-        } else if (flex_wrap) {
-            /* wrap: total height = last row bottom */
-            kid_cursor = static_cast<int>(row_cursor + row_h);
-        } else {
-            /* row: the container height is the tallest item */
-            int maxh = 0;
-            for (size_t i = 0; i < kids.size(); ++i) {
-                if (kids[i]->border.h > maxh) {
-                    maxh = kids[i]->border.h;
+
+        /* within-row alignment: align-self wins over align-items */
+        for (size_t r = 0; r < rows.size(); ++r) {
+            FlexRow& row = rows[r];
+            for (size_t i = 0; i < row.items.size(); ++i) {
+                whaleui_layout_node_t* k = row.items[i];
+                std::string as = get(k->style, "align-self");
+                std::string a = as.empty() || as == "auto" ? align : as;
+                int outer = k->border.h +
+                            (column ? k->margin[1] + k->margin[3]
+                                    : k->margin[0] + k->margin[2]);
+                int extra = row.real_h - outer;
+                if (extra <= 0) {
+                    continue;
+                }
+                if (a == "center") {
+                    shift_subtree(k, column ? extra / 2 : 0,
+                                  column ? 0 : extra / 2);
+                } else if (a == "flex-end" || a == "end") {
+                    shift_subtree(k, column ? extra : 0,
+                                  column ? 0 : extra);
+                } else if (a == "stretch" || a.empty()) {
+                    /* stretch: grow the border box, content stays top-left */
+                    if (column) {
+                        k->border.w += extra;
+                        k->content.w += extra;
+                    } else {
+                        k->border.h += extra;
+                        k->content.h += extra;
+                    }
                 }
             }
-            kid_cursor = maxh;
         }
     }
 
-    /* --- CSS Grid subset ---
-     * grid-template-columns: px / fr / auto / repeat(N, ...) tracks;
-     * auto-placement fills rows; "grid-column: 1/-1" spans a full row.
-     * No explicit row tracks / named areas / dense packing (ponytail:
-     * add when a page needs them). */
+    /* --- CSS Grid layout ---
+     * PureLayout algorithm port: tracks (px/%/fr/auto with repeat()),
+     * explicit grid-column/grid-row placement (N, "N / M", "span N",
+     * negative lines) with auto-placement filling the gaps, row tracks
+     * and stretch/center alignment. Tables (display:table) run through
+     * the same engine: tr rows become grid rows, td/th cells become grid
+     * items placed in reading order (colspan -> a column span). */
 
     struct GridTrack
     {
-        float len; /* px or fr number */
-        int type;  /* 0=px, 1=fr, 2=auto */
+        float len; /* px / fr number / percent number */
+        int type;  /* 0=px 1=fr 2=auto 3=percent */
     };
+
+    /* grid item placement: final grid lines (1-based, end exclusive) */
+    struct GridCell
+    {
+        whaleui_layout_node_t* node;
+        whaleui_layout_node_t* row_node; /* table: the tr (row background) */
+        int cs, ce, rs, re;
+    };
+
+    /* parsed "grid-column"/"grid-row" value: start line (0 = auto,
+     * negative = line counted from the end) + span (negative = the end is
+     * a negative line, e.g. "1 / -1") */
+    struct GridPlace
+    {
+        int start;
+        int span;
+    };
+
+    static void parse_grid_place(const std::string& v, GridPlace& out)
+    {
+        out.start = 0;
+        out.span = 1;
+        if (v.empty() || v == "auto") {
+            return;
+        }
+        size_t slash = v.find('/');
+        std::string t1 = slash == std::string::npos ? v : v.substr(0, slash);
+        std::string t2 = slash == std::string::npos
+                             ? std::string()
+                             : v.substr(slash + 1);
+        auto trim = [](std::string s) {
+            size_t b = s.find_first_not_of(" \t");
+            size_t e = s.find_last_not_of(" \t");
+            return b == std::string::npos ? std::string()
+                                          : s.substr(b, e - b + 1);
+        };
+        t1 = trim(t1);
+        t2 = trim(t2);
+        if (t1.compare(0, 4, "span") == 0) {
+            out.span = std::atoi(t1.c_str() + 4);
+            if (out.span < 1) {
+                out.span = 1;
+            }
+        } else if (!t1.empty() && t1 != "auto") {
+            out.start = std::atoi(t1.c_str());
+        }
+        if (!t2.empty() && t2 != "auto") {
+            if (t2.compare(0, 4, "span") == 0) {
+                out.span = std::atoi(t2.c_str() + 4);
+                if (out.span < 1) {
+                    out.span = 1;
+                }
+            } else {
+                int end = std::atoi(t2.c_str());
+                if (out.start == 0) {
+                    out.start = 1; /* "auto / M" anchors at line 1 */
+                }
+                if (end > out.start) {
+                    out.span = end - out.start;
+                } else if (end < 0) {
+                    out.span = end; /* negative end line, resolved later */
+                }
+            }
+        }
+    }
+
+    /* resolve a placement against a known line count into (start, end) */
+    static void resolve_place(const GridPlace& p, int nlines, int& s, int& e)
+    {
+        s = p.start;
+        if (s < 0) {
+            s = nlines + 1 + s; /* -1 -> the last line */
+        }
+        if (s < 1) {
+            s = 1;
+        }
+        if (p.span < 0) {
+            e = nlines + 1 + p.span; /* -1 -> line nlines */
+        } else {
+            e = s + p.span;
+        }
+        if (e <= s) {
+            e = s + 1;
+        }
+    }
 
     void parse_grid_tracks(const std::string& v, std::vector<GridTrack>& out)
     {
@@ -1977,19 +2361,14 @@ struct Builder
             float num = std::strtof(tok.c_str(), &end);
             if (end != tok.c_str() && end[0] == 'f' && end[1] == 'r') {
                 out.push_back(GridTrack{num, 1});
+            } else if (end != tok.c_str() && *end == '%') {
+                out.push_back(GridTrack{num, 3});
             } else if (end != tok.c_str()) {
                 out.push_back(GridTrack{len_px(tok, 0, 16), 0});
             } else {
                 out.push_back(GridTrack{0, 2}); /* auto / unknown */
             }
         }
-    }
-
-    /* does the item span the whole row? (grid-column: 1/-1 or equivalents) */
-    static bool grid_span_row(const whaleui_layout_node_t* k)
-    {
-        std::string g = get(k->style, "grid-column");
-        return g == "1/-1" || g == "1 / -1" || g == "span all";
     }
 
     int est_node_height(whaleui_layout_node_t* k, int inner_w, float em)
@@ -2037,26 +2416,299 @@ struct Builder
         return ih > 0 ? ih : 1;
     }
 
+    /* table helpers: row-group (thead/tbody/tfoot) and row/cell tags */
+    static bool is_row_group(whaleui_layout_node_t* k)
+    {
+        if (!k || !k->el) {
+            return false;
+        }
+        size_t len = 0;
+        const lxb_char_t* name = lxb_dom_element_local_name(k->el, &len);
+        return (len == 5 && std::memcmp(name, "thead", 5) == 0) ||
+               (len == 5 && std::memcmp(name, "tbody", 5) == 0) ||
+               (len == 5 && std::memcmp(name, "tfoot", 5) == 0);
+    }
+    static bool is_table_row(whaleui_layout_node_t* k)
+    {
+        return k && k->tag_id == WUI_TAG_TR;
+    }
+    static bool is_table_cell(whaleui_layout_node_t* k)
+    {
+        return k && (k->tag_id == WUI_TAG_TD || k->tag_id == WUI_TAG_TH);
+    }
+
+    /* grid-column / grid-row shorthand, falling back to the start/end
+     * longhands ("grid-column-start: 2; grid-column-end: 4") */
+    GridPlace grid_place_of(const WhaleUIComputedStyle& s, bool column_axis)
+    {
+        GridPlace p;
+        std::string v = column_axis ? get(s, "grid-column")
+                                    : get(s, "grid-row");
+        if (v.empty()) {
+            std::string st = column_axis ? get(s, "grid-column-start")
+                                         : get(s, "grid-row-start");
+            std::string en = column_axis ? get(s, "grid-column-end")
+                                         : get(s, "grid-row-end");
+            v = st.empty() ? std::string() : st;
+            if (!en.empty() && en != "auto") {
+                v = v.empty() ? en : v + " / " + en;
+            }
+        }
+        parse_grid_place(v, p);
+        return p;
+    }
+
     void layout_grid(whaleui_layout_node_t* n, int inner_w, int inner_h,
                      int font_px, int& kid_cursor)
     {
-        std::vector<whaleui_layout_node_t*> kids;
-        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
-            if (c->visible) {
-                kids.push_back(c);
+        float em = font_px > 0 ? static_cast<float>(font_px) : 16;
+        bool is_table = display_kind(get(n->style, "display")) == 5;
+
+        /* collect grid items (table: tr rows -> reading-order cells) */
+        std::vector<GridCell> cells;
+        if (is_table) {
+            int r = 1;
+            for (whaleui_layout_node_t* rc = n->first_child; rc;
+                 rc = rc->next) {
+                if (!rc->visible) {
+                    continue;
+                }
+                std::vector<whaleui_layout_node_t*> row;
+                if (is_table_row(rc)) {
+                    row.push_back(rc);
+                } else if (is_row_group(rc)) {
+                    for (whaleui_layout_node_t* tc = rc->first_child; tc;
+                         tc = tc->next) {
+                        if (tc->visible && is_table_row(tc)) {
+                            row.push_back(tc);
+                        }
+                    }
+                }
+                if (row.empty()) {
+                    continue;
+                }
+                for (size_t ri = 0; ri < row.size(); ++ri) {
+                    whaleui_layout_node_t* tr = row[ri];
+                    int col = 1; /* each row restarts at column 1 */
+                    for (whaleui_layout_node_t* cc = tr->first_child; cc;
+                         cc = cc->next) {
+                        if (!cc->visible || !is_table_cell(cc)) {
+                            continue;
+                        }
+                        GridPlace p = grid_place_of(cc->style, true);
+                        int span = p.span;
+                        if (span < 0) {
+                            span = 1; /* negative end resolved later */
+                        }
+                        int cs2 = p.start > 0 ? p.start : col;
+                        if (p.start == 0) {
+                            size_t alen = 0;
+                            const lxb_char_t* csattr = lxb_dom_element_get_attribute(
+                                cc->el, (const lxb_char_t*)"colspan", 7,
+                                &alen);
+                            if (csattr && alen > 0) {
+                                int s2 = std::atoi(
+                                    reinterpret_cast<const char*>(csattr));
+                                if (s2 > 1) {
+                                    span = s2;
+                                }
+                            }
+                        }
+                        GridCell cell;
+                        cell.node = cc;
+                        cell.row_node = tr;
+                        cell.cs = cs2;
+                        cell.ce = span;
+                        cell.rs = r;
+                        cell.re = 1;
+                        cells.push_back(cell);
+                        col = cs2 + (span > 0 ? span : 1);
+                    }
+                    ++r;
+                }
+            }
+        } else {
+            for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+                if (!c->visible) {
+                    continue;
+                }
+                GridPlace pc = grid_place_of(c->style, true);
+                GridPlace pr = grid_place_of(c->style, false);
+                GridCell cell;
+                cell.node = c;
+                cell.row_node = nullptr;
+                cell.cs = pc.start; /* 0 = auto placement */
+                cell.ce = pc.span;  /* span; < 0 = negative end line */
+                cell.rs = pr.start;
+                cell.re = pr.span;
+                cells.push_back(cell);
             }
         }
-        if (kids.empty()) {
+        if (cells.empty()) {
             return;
         }
-        float em = font_px > 0 ? static_cast<float>(font_px) : 16;
-        std::vector<GridTrack> tracks;
-        parse_grid_tracks(get(n->style, "grid-template-columns"), tracks);
-        if (tracks.empty()) {
-            layout_block(n, inner_w, inner_h, font_px, kid_cursor);
-            return;
+
+        std::vector<GridTrack> ctracks;
+        if (is_table) {
+            /* table: one auto column per cell column */
+            int ncol = 0;
+            for (size_t i = 0; i < cells.size(); ++i) {
+                if (cells[i].ce - 1 > ncol) {
+                    ncol = cells[i].ce - 1;
+                }
+            }
+            ctracks.assign(static_cast<size_t>(ncol > 0 ? ncol : 1),
+                           GridTrack{0, 2});
+        } else {
+            parse_grid_tracks(get(n->style, "grid-template-columns"), ctracks);
         }
-        const size_t ncols = tracks.size();
+        std::vector<GridTrack> rtracks;
+        parse_grid_tracks(get(n->style, "grid-template-rows"), rtracks);
+
+        /* resolve explicit placements; count the grid columns */
+        int ncols = static_cast<int>(ctracks.size());
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (cells[i].cs > 0) {
+                if (cells[i].ce > 0) {
+                    int e = cells[i].cs + cells[i].ce;
+                    if (e - 1 > ncols) {
+                        ncols = e - 1;
+                    }
+                } else if (cells[i].cs > ncols) {
+                    ncols = cells[i].cs;
+                }
+            }
+        }
+        if (ncols < 1) {
+            ncols = 1;
+        }
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (cells[i].cs > 0) {
+                int s = cells[i].cs;
+                if (s < 0) {
+                    s = ncols + 1 + s; /* -1 -> the last column */
+                }
+                if (s < 1) {
+                    s = 1;
+                }
+                int e;
+                if (cells[i].ce < 0) {
+                    /* negative end line: there are ncols+1 lines, so
+                     * line = (ncols+1) + 1 + e  (e = -1 -> the last) */
+                    e = ncols + 2 + cells[i].ce;
+                } else {
+                    e = s + cells[i].ce; /* ce holds the span */
+                }
+                if (e <= s) {
+                    e = s + 1;
+                }
+                cells[i].cs = s;
+                cells[i].ce = e;
+                if (e - 1 > ncols) {
+                    ncols = e - 1;
+                }
+            }
+        }
+        /* resolve explicit rows (a negative row line is treated as auto -
+         * ponytail: rare, needs the final row count) */
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (cells[i].rs > 0) {
+                int s = cells[i].rs;
+                int e = s + (cells[i].re > 0 ? cells[i].re : 1);
+                cells[i].rs = s;
+                cells[i].re = e;
+            }
+        }
+
+        /* auto placement: cursor scans rows for a free slot (sparse grid) */
+        std::vector<std::vector<int> > taken; /* [row-1][col-1] occupied */
+        auto taken_at = [&](int r, int c) -> int {
+            if (r < 1 || c < 1 ||
+                static_cast<size_t>(r) > taken.size() ||
+                static_cast<size_t>(c) > taken[static_cast<size_t>(r - 1)].size()) {
+                return 0;
+            }
+            return taken[static_cast<size_t>(r - 1)][static_cast<size_t>(c - 1)];
+        };
+        auto mark_taken = [&](int r, int c) {
+            while (static_cast<int>(taken.size()) < r) {
+                taken.push_back(std::vector<int>(static_cast<size_t>(ncols), 0));
+            }
+            while (static_cast<int>(taken[static_cast<size_t>(r - 1)].size()) < c) {
+                taken[static_cast<size_t>(r - 1)].push_back(0);
+            }
+            taken[static_cast<size_t>(r - 1)][static_cast<size_t>(c - 1)] = 1;
+        };
+        int cursor_r = 1, cursor_c = 1;
+        for (size_t i = 0; i < cells.size(); ++i) {
+            int cs = cells[i].cs;
+            int rs = cells[i].rs;
+            int cspan = cs > 0 ? cells[i].ce - cs : cells[i].ce;
+            int rspan = rs > 0 ? cells[i].re - rs
+                               : (cells[i].re > 1 ? cells[i].re : 1);
+            if (cspan < 1) {
+                cspan = 1;
+            }
+            if (rspan < 1) {
+                rspan = 1;
+            }
+            if (cs > 0 && rs > 0) {
+                /* fully explicit: occupy its cells */
+                for (int r = rs; r < rs + rspan; ++r) {
+                    for (int c = cs; c < cs + cspan; ++c) {
+                        mark_taken(r, c);
+                    }
+                }
+                continue;
+            }
+            /* scan for a free slot */
+            int r = rs > 0 ? rs : cursor_r;
+            int c = cs > 0 ? cs : cursor_c;
+            for (;;) {
+                if (c + cspan - 1 > ncols) {
+                    c = 1;
+                    ++r;
+                    continue;
+                }
+                bool free = true;
+                for (int rr = r; rr < r + rspan; ++rr) {
+                    for (int cc = c; cc < c + cspan; ++cc) {
+                        if (taken_at(rr, cc)) {
+                            free = false;
+                            break;
+                        }
+                    }
+                }
+                if (free) {
+                    break;
+                }
+                ++c;
+            }
+            cells[i].cs = c;
+            cells[i].ce = c + cspan;
+            cells[i].rs = r;
+            cells[i].re = r + rspan;
+            for (int rr = r; rr < r + rspan; ++rr) {
+                for (int cc = c; cc < c + cspan; ++cc) {
+                    mark_taken(rr, cc);
+                }
+            }
+            cursor_r = r;
+            cursor_c = c + cspan;
+            if (c + cspan - 1 > ncols) {
+                ncols = c + cspan - 1; /* grow the implicit grid */
+            }
+        }
+        int nrows = 1;
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (cells[i].re - 1 > nrows) {
+                nrows = cells[i].re - 1;
+            }
+        }
+        if (static_cast<int>(rtracks.size()) > nrows) {
+            nrows = static_cast<int>(rtracks.size());
+        }
+
         std::string gapv = get(n->style, "gap");
         if (gapv.empty()) {
             gapv = get(n->style, "column-gap");
@@ -2067,116 +2719,200 @@ struct Builder
                                     : len_px(rgv, static_cast<float>(inner_w), em);
         std::string align = get(n->style, "align-items");
 
-        /* column widths: fixed px / auto = content / fr = share of free */
-        std::vector<int> col_w(ncols, 0);
+        /* column widths: px/% fixed, auto = content, fr = free share */
+        std::vector<int> col_w(static_cast<size_t>(ncols), 0);
         float fr_sum = 0;
-        for (size_t i = 0; i < ncols; ++i) {
-            if (tracks[i].type == 0) {
-                col_w[i] = static_cast<int>(tracks[i].len);
-            } else if (tracks[i].type == 1) {
-                fr_sum += tracks[i].len;
+        for (int i = 0; i < ncols; ++i) {
+            int t = i < static_cast<int>(ctracks.size())
+                        ? ctracks[static_cast<size_t>(i)].type
+                        : 2;
+            if (t == 0) {
+                col_w[static_cast<size_t>(i)] =
+                    static_cast<int>(ctracks[static_cast<size_t>(i)].len);
+            } else if (t == 3) {
+                col_w[static_cast<size_t>(i)] = static_cast<int>(
+                    ctracks[static_cast<size_t>(i)].len *
+                    static_cast<float>(inner_w) / 100.0f);
+            } else if (t == 1) {
+                fr_sum += ctracks[static_cast<size_t>(i)].len;
             }
         }
-        for (size_t i = 0; i < ncols; ++i) {
-            if (tracks[i].type == 2) {
-                int mx = 0;
-                for (size_t j = 0; j < kids.size(); ++j) {
-                    if (!grid_span_row(kids[j]) && j % ncols == i) {
-                        int w = static_cast<int>(estimate_content_width(kids[j], em));
-                        if (w > mx) {
-                            mx = w;
+        for (int i = 0; i < ncols; ++i) {
+            int t = i < static_cast<int>(ctracks.size())
+                        ? ctracks[static_cast<size_t>(i)].type
+                        : 2;
+            if (t != 2) {
+                continue;
+            }
+            int mx = 0;
+            for (size_t j = 0; j < cells.size(); ++j) {
+                if (cells[j].cs <= i + 1 && cells[j].ce > i + 1) {
+                    int w = static_cast<int>(
+                        estimate_content_width(cells[j].node, em));
+                    /* an explicit width on a cell caps the auto track
+                     * (a <th style="width:80px"> column is 80px wide) */
+                    std::string wv = get(cells[j].node->style, "width");
+                    if (!wv.empty() && wv != "auto") {
+                        float wpx = len_px(wv, static_cast<float>(inner_w), em);
+                        if (wpx > w) {
+                            w = static_cast<int>(wpx);
                         }
                     }
+                    if (w > mx) {
+                        mx = w;
+                    }
                 }
-                col_w[i] = mx;
             }
+            col_w[static_cast<size_t>(i)] = mx;
         }
         float gap_sum = col_gap * (ncols > 1 ? static_cast<float>(ncols - 1) : 0);
         float fixed_sum = 0;
-        for (size_t i = 0; i < ncols; ++i) {
-            fixed_sum += static_cast<float>(col_w[i]);
+        for (int i = 0; i < ncols; ++i) {
+            fixed_sum += static_cast<float>(col_w[static_cast<size_t>(i)]);
         }
         float free = static_cast<float>(inner_w) - fixed_sum - gap_sum;
         if (free < 0) {
             free = 0;
         }
         float fr_unit = fr_sum > 0 ? free / fr_sum : 0;
-        for (size_t i = 0; i < ncols; ++i) {
-            if (tracks[i].type == 1) {
-                col_w[i] = static_cast<int>(tracks[i].len * fr_unit);
+        for (int i = 0; i < ncols; ++i) {
+            int t = i < static_cast<int>(ctracks.size())
+                        ? ctracks[static_cast<size_t>(i)].type
+                        : 2;
+            if (t == 1) {
+                col_w[static_cast<size_t>(i)] = static_cast<int>(
+                    ctracks[static_cast<size_t>(i)].len * fr_unit);
             }
         }
 
-        /* auto-placement: fill rows left to right; whole-row items start a
-         * new row and occupy it alone */
-        std::vector<std::vector<whaleui_layout_node_t*> > rows;
-        rows.push_back(std::vector<whaleui_layout_node_t*>());
-        size_t col = 0;
-        for (size_t i = 0; i < kids.size(); ++i) {
-            if (grid_span_row(kids[i])) {
-                if (!rows.back().empty()) {
-                    rows.push_back(std::vector<whaleui_layout_node_t*>());
-                    col = 0;
-                }
-                rows.back().push_back(kids[i]);
-                rows.push_back(std::vector<whaleui_layout_node_t*>());
-                col = 0;
+        /* row heights: explicit tracks, auto rows = tallest cell */
+        std::vector<int> row_h(static_cast<size_t>(nrows), 0);
+        float fr_row_sum = 0;
+        for (int i = 0; i < nrows; ++i) {
+            int t = i < static_cast<int>(rtracks.size())
+                        ? rtracks[static_cast<size_t>(i)].type
+                        : 2;
+            if (t == 0) {
+                row_h[static_cast<size_t>(i)] =
+                    static_cast<int>(rtracks[static_cast<size_t>(i)].len);
+            } else if (t == 3) {
+                row_h[static_cast<size_t>(i)] = static_cast<int>(
+                    rtracks[static_cast<size_t>(i)].len *
+                    static_cast<float>(inner_h) / 100.0f);
+            } else if (t == 1) {
+                fr_row_sum += rtracks[static_cast<size_t>(i)].len;
+            }
+        }
+        for (int i = 0; i < nrows; ++i) {
+            int t = i < static_cast<int>(rtracks.size())
+                        ? rtracks[static_cast<size_t>(i)].type
+                        : 2;
+            if (t != 2) {
                 continue;
             }
-            if (col >= ncols) {
-                rows.push_back(std::vector<whaleui_layout_node_t*>());
-                col = 0;
-            }
-            rows.back().push_back(kids[i]);
-            ++col;
-        }
-        if (rows.back().empty()) {
-            rows.pop_back();
-        }
-
-        /* row height = tallest item (estimated) */
-        std::vector<int> row_h(rows.size(), 0);
-        for (size_t r = 0; r < rows.size(); ++r) {
-            for (size_t i = 0; i < rows[r].size(); ++i) {
-                int h = est_node_height(rows[r][i], inner_w, em);
-                if (h > row_h[r]) {
-                    row_h[r] = h;
-                }
-            }
-            if (row_h[r] <= 0) {
-                row_h[r] = 1;
-            }
-        }
-
-        int y = n->content.y;
-        for (size_t r = 0; r < rows.size(); ++r) {
-            int x = n->content.x;
-            bool whole = rows[r].size() == 1 && grid_span_row(rows[r][0]);
-            for (size_t i = 0; i < rows[r].size(); ++i) {
-                whaleui_layout_node_t* k = rows[r][i];
-                int w = whole ? inner_w : col_w[i];
-                if (w < 0) {
-                    w = 0;
-                }
-                int cy = y;
-                layout(k, x, y, w, row_h[r], font_px, &cy);
-                /* align-items: center vertically centers shorter items */
-                if (align == "center") {
-                    int dy = (row_h[r] - k->border.h) / 2;
-                    if (dy > 0) {
-                        k->border.y += dy;
-                        k->content.y += dy;
-                        /* move the item's subtree down with it */
-                        for (whaleui_layout_node_t* cc = k->first_child; cc;
-                             cc = cc->next) {
-                            cc->border.y += dy;
-                            cc->content.y += dy;
-                        }
+            int mx = 1;
+            for (size_t j = 0; j < cells.size(); ++j) {
+                if (cells[j].rs <= i + 1 && cells[j].re > i + 1) {
+                    int h = est_node_height(cells[j].node, inner_w, em);
+                    if (h > mx) {
+                        mx = h;
                     }
                 }
-                x += w + static_cast<int>(col_gap);
             }
-            y += row_h[r] + static_cast<int>(row_gap);
+            row_h[static_cast<size_t>(i)] = mx;
+        }
+        if (fr_row_sum > 0 && inner_h > 0) {
+            float hgap = row_gap * (nrows > 1 ? static_cast<float>(nrows - 1) : 0);
+            float hfixed = 0;
+            for (int i = 0; i < nrows; ++i) {
+                int t = i < static_cast<int>(rtracks.size())
+                            ? rtracks[static_cast<size_t>(i)].type
+                            : 2;
+                if (t != 1) {
+                    hfixed += static_cast<float>(row_h[static_cast<size_t>(i)]);
+                }
+            }
+            float hfree = static_cast<float>(inner_h) - hfixed - hgap;
+            if (hfree < 0) {
+                hfree = 0;
+            }
+            float hunit = hfree / fr_row_sum;
+            for (int i = 0; i < nrows; ++i) {
+                int t = i < static_cast<int>(rtracks.size())
+                            ? rtracks[static_cast<size_t>(i)].type
+                            : 2;
+                if (t == 1) {
+                    row_h[static_cast<size_t>(i)] =
+                        static_cast<int>(rtracks[static_cast<size_t>(i)].len *
+                                         hunit);
+                }
+            }
+        }
+
+        /* place cells; a row box (table) spans the full grid width */
+        int y = n->content.y;
+        for (int r = 0; r < nrows; ++r) {
+            for (size_t i = 0; i < cells.size(); ++i) {
+                if (cells[i].rs - 1 != r) {
+                    continue;
+                }
+                /* offsets from the grid origin */
+                int ox = 0;
+                for (int c = 1; c < cells[i].cs; ++c) {
+                    ox += col_w[static_cast<size_t>(c - 1)] +
+                          static_cast<int>(col_gap);
+                }
+                int oy = 0;
+                for (int rr = 1; rr < cells[i].rs; ++rr) {
+                    oy += row_h[static_cast<size_t>(rr - 1)] +
+                          static_cast<int>(row_gap);
+                }
+                int w = 0;
+                for (int c = cells[i].cs; c < cells[i].ce; ++c) {
+                    w += col_w[static_cast<size_t>(c - 1)];
+                    if (c > cells[i].cs) {
+                        w += static_cast<int>(col_gap);
+                    }
+                }
+                int h = 0;
+                for (int rr = cells[i].rs; rr < cells[i].re; ++rr) {
+                    h += row_h[static_cast<size_t>(rr - 1)];
+                    if (rr > cells[i].rs) {
+                        h += static_cast<int>(row_gap);
+                    }
+                }
+                int cy = n->content.y + oy;
+                layout(cells[i].node, n->content.x + ox, cy, w, h, font_px,
+                       &cy);
+                /* stretch: auto-height cells fill the row (default) */
+                bool h_auto = get(cells[i].node->style, "height").empty() ||
+                              get(cells[i].node->style, "height") == "auto";
+                if (h_auto && h > cells[i].node->border.h) {
+                    cells[i].node->border.h = h;
+                    cells[i].node->content.h =
+                        h - cells[i].node->padding[0] -
+                        cells[i].node->padding[2] -
+                        cells[i].node->border_w[0] - cells[i].node->border_w[2];
+                }
+                /* align-items: center / flex-end vertically center shorter
+                 * cells (stretch already filled the row) */
+                if (align == "center" || align == "flex-end" ||
+                    align == "end") {
+                    int extra = h - cells[i].node->border.h;
+                    if (extra > 0) {
+                        int dy = align == "center" ? extra / 2 : extra;
+                        shift_subtree(cells[i].node, 0, dy);
+                    }
+                }
+                if (cells[i].row_node) {
+                    cells[i].row_node->border.x = n->content.x;
+                    cells[i].row_node->border.y = n->content.y + oy;
+                    cells[i].row_node->border.w = inner_w;
+                    cells[i].row_node->border.h = h;
+                    cells[i].row_node->content = cells[i].row_node->border;
+                }
+            }
+            y += row_h[static_cast<size_t>(r)] + static_cast<int>(row_gap);
         }
         kid_cursor = y - n->content.y - static_cast<int>(row_gap);
         if (kid_cursor < 0) {

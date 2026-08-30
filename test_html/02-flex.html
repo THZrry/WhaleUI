@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>02 · Flex 布局</title>
+<style>
+  body { max-width: 720px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
+  .sec { margin: 20px 0; }
+  .sec h2 { margin: 0 0 8px; font-size: 18px; }
+  .bar { display: flex; border: 1px dashed #999; padding: 6px; background: #fafafa; }
+  .bar > div { margin: 4px; padding: 8px 12px; background: #cfe8ff; border: 1px solid #7fb0e0; }
+  .tag { font-size: 13px; color: #666; margin-top: 4px; }
+
+  /* grow */
+  .g1 { flex: 1; }
+  .g2 { flex: 2; }
+  .g3 { flex: 3; }
+
+  /* column / reverse */
+  .col { display: flex; flex-direction: column; border: 1px dashed #999; padding: 6px; }
+  .col > div { margin: 4px; padding: 6px 10px; background: #ffe0c0; }
+  .rev { display: flex; flex-direction: row-reverse; border: 1px dashed #999; padding: 6px; }
+  .rev > div { margin: 4px; padding: 6px 10px; background: #d8f8d8; }
+
+  /* wrap */
+  .wrap { display: flex; flex-wrap: wrap; width: 320px; border: 1px dashed #999; padding: 6px; }
+  .wrap > div { width: 90px; margin: 4px; padding: 6px 0; text-align: center; background: #f0d0f0; }
+
+  /* justify */
+  .jcenter { display: flex; justify-content: center; border: 1px dashed #999; padding: 6px; }
+  .jbetween { display: flex; justify-content: space-between; border: 1px dashed #999; padding: 6px; }
+  .jaround { display: flex; justify-content: space-around; border: 1px dashed #999; padding: 6px; }
+  .jevenly { display: flex; justify-content: space-evenly; border: 1px dashed #999; padding: 6px; }
+  .jend { display: flex; justify-content: flex-end; border: 1px dashed #999; padding: 6px; }
+
+  /* align */
+  .acenter { display: flex; align-items: center; height: 90px; border: 1px dashed #999; padding: 6px; }
+  .aend { display: flex; align-items: flex-end; height: 90px; border: 1px dashed #999; padding: 6px; }
+  .acenter > div, .aend > div { margin: 4px; padding: 6px 10px; background: #d0f0e8; }
+
+  /* align-self + order */
+  .self { display: flex; align-items: center; height: 80px; border: 1px dashed #999; padding: 6px; }
+  .self > div { margin: 4px; padding: 6px 10px; background: #ffe8e8; }
+  .self > .s-end { align-self: flex-end; }
+  .self > .s-start { align-self: flex-start; height: 30px; }
+  .o1 { order: 1; }
+  .o2 { order: 2; }
+
+  /* shrink */
+  .shrink { display: flex; width: 240px; border: 1px dashed #999; padding: 6px; }
+  .shrink > div { width: 120px; margin: 4px; padding: 6px 0; text-align: center; background: #e8e0ff; }
+  .shrink > .no-shrink { flex-shrink: 0; }
+
+  /* gap */
+  .gap { display: flex; gap: 16px; border: 1px dashed #999; padding: 6px; }
+  .gap > div { padding: 6px 10px; background: #e0f0ff; }
+</style>
+</head>
+<body>
+<p><a href="index.html">← 返回总览</a></p>
+<h1>Flex 布局</h1>
+
+<div class="sec">
+  <h2>flex-grow（flex: 1 / 2 / 3 分配剩余空间）</h2>
+  <div class="bar">
+    <div class="g1">flex:1</div>
+    <div class="g2">flex:2</div>
+    <div class="g3">flex:3</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>flex-direction: column（主轴竖直）</h2>
+  <div class="col">
+    <div>第一项</div>
+    <div>第二项</div>
+    <div>第三项</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>flex-direction: row-reverse（从右到左）</h2>
+  <div class="rev">
+    <div>1</div>
+    <div>2</div>
+    <div>3</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>flex-wrap: wrap（自动换行）</h2>
+  <div class="wrap">
+    <div>A</div><div>B</div><div>C</div><div>D</div>
+  </div>
+  <div class="tag">容器 320px，每项 90px，放不下就换行</div>
+</div>
+
+<div class="sec">
+  <h2>justify-content</h2>
+  <div class="jcenter"><div>center</div><div>center</div></div>
+  <div class="jbetween"><div>space-between</div><div>space-between</div></div>
+  <div class="jaround"><div>space-around</div><div>space-around</div></div>
+  <div class="jevenly"><div>space-evenly</div><div>space-evenly</div></div>
+  <div class="jend"><div>flex-end</div><div>flex-end</div></div>
+</div>
+
+<div class="sec">
+  <h2>align-items（交叉轴对齐）</h2>
+  <div class="acenter">
+    <div style="height:30px;">30px</div><div style="height:50px;">50px</div><div style="height:40px;">40px</div>
+  </div>
+  <div class="tag">align-items: center —— 所有项垂直居中</div>
+  <div class="aend">
+    <div style="height:30px;">30px</div><div style="height:50px;">50px</div>
+  </div>
+  <div class="tag">align-items: flex-end —— 底部对齐</div>
+</div>
+
+<div class="sec">
+  <h2>align-self + order</h2>
+  <div class="self">
+    <div class="s-start">flex-start</div>
+    <div>默认（center）</div>
+    <div class="s-end">flex-end</div>
+    <div class="o2">order:2</div>
+    <div class="o1">order:1</div>
+  </div>
+  <div class="tag">order:1 排到 order:2 前面；align-self 覆盖容器 align-items</div>
+</div>
+
+<div class="sec">
+  <h2>flex-shrink（空间不足时收缩）</h2>
+  <div class="shrink">
+    <div>120px 可收缩</div>
+    <div class="no-shrink">flex-shrink:0</div>
+  </div>
+  <div class="tag">容器 240px，两项各 120px + margin：第一项收缩，第二项保持 120px</div>
+</div>
+
+<div class="sec">
+  <h2>gap（间距）</h2>
+  <div class="gap">
+    <div>一</div><div>二</div><div>三</div>
+  </div>
+  <div class="tag">gap: 16px —— 项与项之间 16px 间距</div>
+</div>
+
+</body>
+</html>

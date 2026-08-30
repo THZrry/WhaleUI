@@ -9,6 +9,8 @@
 #include <cassert>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -1302,6 +1304,193 @@ int main(void)
         int w2 = card_w(long_html, 0);
         assert(w1 > 0);
         assert(w2 == w1); /* typing into the textarea does not widen */
+    }
+
+    /* grid: explicit placement + span (PureLayout port) */
+    {
+        /* grid-column: 2 / 4 spans columns 2-3 of a 3-col grid */
+        const char* html = "<body><div style=\"display:grid;"
+            "grid-template-columns:100px 100px 100px;width:300px;\">"
+            "<div style=\"grid-column:2/4;height:10px;\"></div>"
+            "<div></div><div></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        whaleui_layout_node_t* span = g->first_child;
+        assert(span != nullptr);
+        assert(span->border.x == g->content.x + 100);
+        assert(span->border.w == 200); /* columns 2+3 */
+        /* the two auto items flow into columns 1 and 2 of row 2 */
+        whaleui_layout_node_t* a1 = span->next;
+        assert(a1 != nullptr);
+        assert(a1->border.x == g->content.x);
+        assert(a1->border.y > span->border.y);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* grid: grid-template-rows + grid-row placement */
+    {
+        const char* html = "<body><div style=\"display:grid;"
+            "grid-template-columns:80px 80px;grid-template-rows:40px 40px;"
+            "width:160px;\">"
+            "<div style=\"grid-row:2;height:10px;\"></div>"
+            "<div></div><div></div><div></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        whaleui_layout_node_t* r2 = g->first_child;
+        assert(r2 != nullptr);
+        assert(r2->border.y == g->content.y + 40); /* row 2 */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* table: tr/td laid out as a grid, cells stretch to the row height */
+    {
+        const char* html = "<body><table style=\"border-collapse:collapse;"
+            "width:200px;\">"
+            "<tr><th style=\"width:80px;\">h</th><th>h</th></tr>"
+            "<tr><td style=\"height:50px;\">a</td><td>b</td></tr>"
+            "</table></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* tab = find_tag(t->root, "table");
+        assert(tab != nullptr);
+        whaleui_layout_node_t* tr1 = find_tag(t->root, "tr");
+        assert(tr1 != nullptr && tr1->tag_id == WUI_TAG_TR);
+        whaleui_layout_node_t* th = tr1->first_child;
+        assert(th != nullptr && th->tag_id == WUI_TAG_TH);
+        assert(th->border.x == tab->content.x);
+        whaleui_layout_node_t* th2 = th->next;
+        assert(th2 != nullptr);
+        assert(th2->border.x == th->border.x + th->border.w);
+        /* header row height: th cells stretch to fill it */
+        assert(th->border.h >= th2->border.h);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* table: colspan spans grid columns */
+    {
+        const char* html = "<body><table style=\"width:150px;\">"
+            "<tr><td style=\"width:50px;\">a</td><td style=\"width:50px;\">"
+            "b</td></tr>"
+            "<tr><td colspan=\"2\">wide</td></tr></table></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* tab = find_tag(t->root, "table");
+        assert(tab != nullptr);
+        whaleui_layout_node_t* tr1 = find_tag(t->root, "tr");
+        assert(tr1 != nullptr);
+        whaleui_layout_node_t* tr2 = tr1->next;
+        assert(tr2 != nullptr && tr2->tag_id == WUI_TAG_TR);
+        whaleui_layout_node_t* wide = tr2->first_child;
+        assert(wide != nullptr);
+        /* 50 + gap 0 + 50: the colspan cell spans both columns */
+        assert(wide->border.w >= 100);
+        assert(wide->border.x == tab->content.x);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* flex-shrink: overflow shrinks items to the min-content floor */
+    {
+        const char* html = "<body><div style=\"display:flex;width:120px;\">"
+            "<div style=\"width:60px;height:20px;\"></div>"
+            "<div style=\"width:60px;height:20px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        /* 60+60 = 120, no overflow: nothing shrinks */
+        whaleui_layout_node_t* c0 = g->first_child;
+        assert(c0 != nullptr && c0->border.w == 60);
+        /* second item starts right after the first */
+        whaleui_layout_node_t* c1 = c0->next;
+        assert(c1 != nullptr && c1->border.x == c0->border.x + 60);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* flex: grow distributes free space by the grow factor */
+    {
+        const char* html = "<body><div style=\"display:flex;width:300px;\">"
+            "<div style=\"flex:1;height:20px;\"></div>"
+            "<div style=\"flex:2;height:20px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        whaleui_layout_node_t* c0 = g->first_child;
+        assert(c0 != nullptr);
+        whaleui_layout_node_t* c1 = c0->next;
+        assert(c1 != nullptr);
+        /* 300px shared 1:2 */
+        assert(c0->border.w == 100 && c1->border.w == 200);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* smoke: every test_html example parses and lays out without crashing */
+    {
+        const char* files[] = {
+            "test_html/index.html",
+            "test_html/01-block-inline.html",
+            "test_html/02-flex.html",
+            "test_html/03-grid.html",
+            "test_html/04-table.html",
+            "test_html/05-position.html",
+        };
+        for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+            std::string path = std::string(WHALEUI_TEST_ROOT) + "/" + files[f];
+            std::ifstream in(path.c_str());
+            assert(in.good());
+            std::stringstream ss;
+            ss << in.rdbuf();
+            std::string html = ss.str();
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html.c_str(), html.size());
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr && t->root != nullptr);
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        }
     }
 
     return 0;

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WhaleUI 布局测试 - 总览</title>
+<style>
+  body { max-width: 720px; margin: 0 auto; padding: 24px; font-family: sans-serif; }
+  h1 { border-bottom: 2px solid #888; padding-bottom: 8px; }
+  .card {
+    display: block;
+    margin: 12px 0;
+    padding: 16px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    text-decoration: none;
+    color: #222;
+  }
+  .card:hover { background: #f0f4ff; }
+  .card b { font-size: 18px; }
+  .card span { display: block; margin-top: 4px; color: #666; }
+</style>
+</head>
+<body>
+<h1>WhaleUI 布局测试</h1>
+<p>用 <code>demo test_html/xx.html</code> 打开任意页面。共 5 个布局示例，覆盖本项目支持的
+block / inline / flex / grid / table / position 全部布局方式。</p>
+
+<a class="card" href="01-block-inline.html">
+  <b>01 · Block + Inline 布局</b>
+  <span>文档流、margin/padding/border、盒模型、行内排版、text-align、列表、details</span>
+</a>
+
+<a class="card" href="02-flex.html">
+  <b>02 · Flex 布局</b>
+  <span>row/column/reverse、wrap、grow/shrink/basis、justify-content、align-items/self/content、order、gap</span>
+</a>
+
+<a class="card" href="03-grid.html">
+  <b>03 · Grid 布局</b>
+  <span>fr/%/px/auto 轨道、repeat()、显式 grid-column/row 定位、span、grid-template-rows、gap</span>
+</a>
+
+<a class="card" href="04-table.html">
+  <b>04 · Table 布局</b>
+  <span>table/tr/td/th、thead/tbody、colspan、表格用 grid 引擎布局</span>
+</a>
+
+<a class="card" href="05-position.html">
+  <b>05 · Position 定位</b>
+  <span>relative / absolute / fixed / z-index 叠放</span>
+</a>
+
+</body>
+</html>

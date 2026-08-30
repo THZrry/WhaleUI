@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>04 · Table 布局</title>
+<style>
+  body { max-width: 760px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
+  .sec { margin: 20px 0; }
+  .sec h2 { margin: 0 0 8px; font-size: 18px; }
+  .tag { font-size: 13px; color: #666; margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #888; padding: 8px 12px; text-align: left; }
+  th { background: #e8f0ff; }
+  thead tr { background: #dde8ff; }
+
+  .t2 { border-collapse: separate; border-spacing: 0; }
+  .t2 th, .t2 td { border: 1px solid #b0b0b0; }
+
+  /* display:table 的 div 网格（div 配 table/table-row/table-cell） */
+  .divtable { display: table; width: 100%; border-collapse: collapse; }
+  .divrow { display: table-row; }
+  .divrow > div { display: table-cell; border: 1px solid #7fb0e0; padding: 8px 12px; background: #eef6ff; }
+  .divrow:first-child > div { background: #d8ecff; font-weight: bold; }
+</style>
+</head>
+<body>
+<p><a href="index.html">← 返回总览</a></p>
+<h1>Table 布局</h1>
+<p>表格由 grid 引擎布局：tr 是一行，td/th 是单元格，colspan 跨列。</p>
+
+<div class="sec">
+  <h2>基础表格（thead / tbody / th / td）</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>姓名</th>
+        <th>部门</th>
+        <th>城市</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>张三</td>
+        <td>研发</td>
+        <td>北京</td>
+      </tr>
+      <tr>
+        <td>李四</td>
+        <td>设计</td>
+        <td>上海</td>
+      </tr>
+      <tr>
+        <td>王五</td>
+        <td>市场</td>
+        <td>广州</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="tag">列宽按内容自适应，表头 th 有背景色，单元格等高拉伸</div>
+</div>
+
+<div class="sec">
+  <h2>colspan 跨列</h2>
+  <table>
+    <tr>
+      <th>项目</th>
+      <th>第一季度</th>
+      <th>第二季度</th>
+    </tr>
+    <tr>
+      <td>营收</td>
+      <td>120 万</td>
+      <td>150 万</td>
+    </tr>
+    <tr>
+      <td colspan="2">年度合计（跨两列）</td>
+      <td>270 万</td>
+    </tr>
+  </table>
+  <div class="tag">colspan="2" 的单元格横跨前两列</div>
+</div>
+
+<div class="sec">
+  <h2>指定列宽</h2>
+  <table>
+    <colgroup></colgroup>
+    <tr>
+      <th style="width:120px;">宽列</th>
+      <th style="width:80px;">窄列</th>
+      <th>自适应</th>
+    </tr>
+    <tr>
+      <td>120px</td>
+      <td>80px</td>
+      <td>占剩余空间</td>
+    </tr>
+  </table>
+</div>
+
+<div class="sec">
+  <h2>div + display:table 模拟表格</h2>
+  <div class="divtable">
+    <div class="divrow">
+      <div>标题一</div>
+      <div>标题二</div>
+      <div>标题三</div>
+    </div>
+    <div class="divrow">
+      <div>内容 A</div>
+      <div>内容 B</div>
+      <div>内容 C</div>
+    </div>
+    <div class="divrow">
+      <div>内容 D</div>
+      <div>内容 E</div>
+      <div>内容 F</div>
+    </div>
+  </div>
+  <div class="tag">display: table / table-row / table-cell 作用于 div</div>
+</div>
+
+</body>
+</html>

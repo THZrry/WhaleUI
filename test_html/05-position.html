@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>05 · Position 定位</title>
+<style>
+  body { max-width: 680px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
+  .sec { margin: 20px 0; }
+  .sec h2 { margin: 0 0 8px; font-size: 18px; }
+  .tag { font-size: 13px; color: #666; margin-top: 4px; }
+
+  /* relative */
+  .rel { position: relative; left: 40px; top: 10px; background: #cfe8ff; border: 1px solid #7fb0e0; padding: 10px; }
+
+  /* absolute inside a positioned parent */
+  .parent { position: relative; height: 160px; border: 1px dashed #999; padding: 10px; background: #fafafa; }
+  .abs-tl { position: absolute; left: 10px; top: 10px; background: #ffe0c0; padding: 8px 12px; border: 1px solid #d09050; }
+  .abs-br { position: absolute; right: 10px; bottom: 10px; background: #d8f8d8; padding: 8px 12px; border: 1px solid #60a060; }
+  .abs-center { position: absolute; left: 40%; top: 40%; background: #f0d0f0; padding: 8px 12px; border: 1px solid #a060a0; }
+
+  /* fixed */
+  .fix { position: fixed; right: 16px; top: 16px; background: #fff3b0; padding: 8px 12px; border: 1px solid #c0a030; z-index: 10; }
+
+  /* z-index stacking */
+  .stack { position: relative; height: 120px; }
+  .z1 { position: absolute; left: 40px; top: 20px; width: 200px; height: 60px; background: #cfe8ff; z-index: 1; padding: 6px; }
+  .z2 { position: absolute; left: 100px; top: 40px; width: 200px; height: 60px; background: #ffe0c0; z-index: 2; padding: 6px; }
+  .z3 { position: absolute; left: 160px; top: 60px; width: 200px; height: 60px; background: #d8f8d8; z-index: 3; padding: 6px; }
+</style>
+</head>
+<body>
+<p><a href="index.html">← 返回总览</a></p>
+<h1>Position 定位</h1>
+
+<div class="sec">
+  <h2>position: relative（相对自身偏移）</h2>
+  <div class="rel">left: 40px; top: 10px —— 相对原位右移 40px、下移 10px</div>
+</div>
+
+<div class="sec">
+  <h2>position: absolute（相对最近的定位祖先）</h2>
+  <div class="parent">
+    容器（position: relative）
+    <div class="abs-tl">left:10px; top:10px</div>
+    <div class="abs-br">right:10px; bottom:10px</div>
+    <div class="abs-center">left:40%; top:40%</div>
+  </div>
+  <div class="tag">absolute 相对父容器定位，脱离文档流</div>
+</div>
+
+<div class="sec">
+  <h2>position: fixed（相对视口）</h2>
+  <div class="fix">fixed 角标：滚动页面时保持不动</div>
+  <div class="tag">右上角的黄色块固定在窗口右上角，与页面滚动无关</div>
+</div>
+
+<div class="sec">
+  <h2>z-index 叠放</h2>
+  <div class="stack">
+    <div class="z1">z-index: 1</div>
+    <div class="z2">z-index: 2</div>
+    <div class="z3">z-index: 3</div>
+  </div>
+  <div class="tag">三个 absolute 块重叠，z-index 越大越靠上</div>
+</div>
+
+</body>
+</html>

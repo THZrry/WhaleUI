@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>03 · Grid 布局</title>
+<style>
+  body { max-width: 760px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
+  .sec { margin: 20px 0; }
+  .sec h2 { margin: 0 0 8px; font-size: 18px; }
+  .tag { font-size: 13px; color: #666; margin-top: 4px; }
+  .grid { display: grid; border: 1px dashed #999; padding: 6px; background: #fafafa; }
+  .grid > div { margin: 4px; padding: 10px; background: #cfe8ff; border: 1px solid #7fb0e0; text-align: center; }
+
+  /* fr + repeat */
+  .g-fr { grid-template-columns: 1fr 2fr 1fr; }
+  .g-repeat { grid-template-columns: repeat(3, 1fr); }
+
+  /* fixed + percent */
+  .g-fixed { grid-template-columns: 120px 1fr 25%; }
+
+  /* auto track + gap */
+  .g-auto { grid-template-columns: auto auto 1fr; gap: 12px; }
+
+  /* explicit placement + span */
+  .g-span { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .g-span .full { grid-column: 1 / -1; background: #ffe0c0; }
+  .g-span .wide { grid-column: span 2; background: #d8f8d8; }
+  .g-span .right { grid-column: 3; background: #f0d0f0; }
+
+  /* rows + placement */
+  .g-rows { grid-template-columns: 1fr 1fr; grid-template-rows: 50px 80px; gap: 8px; }
+  .g-rows .r2 { grid-row: 2; grid-column: 2; background: #fff3b0; }
+
+  /* align-items */
+  .g-align { grid-template-columns: 1fr 1fr; grid-template-rows: 90px; }
+  .g-align .c { align-self: center; }
+  .g-align .e { align-self: end; }
+</style>
+</head>
+<body>
+<p><a href="index.html">← 返回总览</a></p>
+<h1>Grid 布局</h1>
+
+<div class="sec">
+  <h2>fr 轨道（1fr 2fr 1fr）</h2>
+  <div class="grid g-fr">
+    <div>1fr</div><div>2fr</div><div>1fr</div>
+  </div>
+  <div class="tag">中间的 2fr 是两侧的 2 倍宽</div>
+</div>
+
+<div class="sec">
+  <h2>repeat()（repeat(3, 1fr) 三等分）</h2>
+  <div class="grid g-repeat">
+    <div>A</div><div>B</div><div>C</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>固定 + fr + 百分比轨道</h2>
+  <div class="grid g-fixed">
+    <div>120px</div><div>1fr 占剩余</div><div>25%</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>auto 轨道 + gap</h2>
+  <div class="grid g-auto">
+    <div>内容自适应</div><div>也自适应</div><div>1fr 吃掉剩余</div>
+  </div>
+  <div class="tag">gap: 12px；前两列按内容宽度，第三列占剩余空间</div>
+</div>
+
+<div class="sec">
+  <h2>显式定位 + span</h2>
+  <div class="grid g-span">
+    <div class="full">grid-column: 1 / -1 占满整行</div>
+    <div class="wide">grid-column: span 2 跨两列</div>
+    <div class="right">grid-column: 3 显式第 3 列</div>
+    <div>自动放置</div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>grid-template-rows + grid-row</h2>
+  <div class="grid g-rows">
+    <div>第 1 行第 1 列</div>
+    <div>第 1 行第 2 列</div>
+    <div>第 2 行第 1 列</div>
+    <div class="r2">grid-row:2; grid-column:2（50px 行高）</div>
+  </div>
+  <div class="tag">grid-template-rows: 50px 80px —— 两行高度不同</div>
+</div>
+
+<div class="sec">
+  <h2>align-self（单元格内对齐）</h2>
+  <div class="grid g-align">
+    <div>默认 stretch</div>
+    <div class="c">align-self: center</div>
+    <div class="e">align-self: end</div>
+    <div>默认 stretch</div>
+  </div>
+</div>
+
+</body>
+</html>
