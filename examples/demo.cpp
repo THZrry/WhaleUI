@@ -57,6 +57,7 @@ static const char* kHtml =
     "<option value=\"aero\">Windows 7 Aero</option>"
     "<option value=\"gtk\">GTK (Adwaita)</option>"
     "<option value=\"macos\">macOS</option>"
+    "<option value=\"browser\">Browser (UA)</option>"
     "</select>"
     "</div>"
     "<p class=\"muted\">下拉选择主题 · T 深浅色 · +/- 文字缩放 · ESC 退出</p>"

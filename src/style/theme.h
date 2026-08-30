@@ -2,10 +2,13 @@
 #define WHALEUI_STYLE_THEME_H
 
 /* Theme styles: built-in design presets (Fluent / Metro / Material /
- * Classic / Aero / GTK / macOS), each with a default stylesheet + light/dark
- * variable tables. Themes are global: every element that uses var(--*) or
- * inherits body color/font follows the current style, including tags the
- * user's HTML does not style. */
+ * Classic / Aero / GTK / macOS / Browser-UA), each with a default
+ * stylesheet + light/dark variable tables. Stylesheets are translations of
+ * the referenced design systems (fluent-css, 7.css, mdui, photon,
+ * adwaita-web, Fabric Core 9.6.1 - sources marked inline in theme.cpp).
+ * Themes are global: every element that uses var(--*) or inherits body
+ * color/font follows the current style, including tags the user's HTML does
+ * not style. */
 
 #include "whaleui.h"
 

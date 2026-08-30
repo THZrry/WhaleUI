@@ -1,8 +1,29 @@
 # Theme CSS gaps (backlog)
 
-The theme stylesheets (`src/style/theme.cpp`) follow real design systems:
-fluent-css, MetroUI, mdui (Material 3 tokens), and the GNOME Adwaita theme.
-Reference sources are documented inline in `fill_vars()`.
+The theme stylesheets (`src/style/theme.cpp`) are translations of real,
+verified design systems into this engine's CSS subset:
+
+| theme   | source                                                                 |
+|---------|------------------------------------------------------------------------|
+| browser | hand-written UA default stylesheet (WHATWG HTML standard)              |
+| fluent  | https://github.com/aipx-proto/fluent-css                               |
+| metro   | Office UI Fabric Core 9.6.1 (Microsoft CDN, `ms-bgColor-*` palette)    |
+| classic | hand-written Windows Classic translation                               |
+| aero    | https://github.com/khang-nd/7.css                                      |
+| material| https://github.com/zdhxiong/mdui (Material 3 tokens)                   |
+| gtk     | https://github.com/mclellac/adwaita-web                                |
+| macos   | https://github.com/connors/photon                                      |
+
+Structure: a shared UA baseline (every tag gets a default display/typography,
+WHATWG-style) + shared component classes (`.card`, `.btn-*`, `.tabs`,
+`.toolbar`, `.pane`, `.anim-*` keyframes, opt-in per `class=`) + a per-theme
+overlay for the recognizable control chrome (buttons/inputs/links/focus),
+all driven by `var(--*)` from the light/dark variable tables. The renderer's
+native controls (checkbox/radio/progress/select-popup/scrollbar) read
+`--accent`/`--field`/`--border`/`--card` from the same tables.
+
+Reference source archives used during the translation are kept out of git
+(`temp/ref/`, gitignored).
 
 Status legend: `[x]` implemented, `[ ]` not yet.
 

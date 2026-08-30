@@ -2,6 +2,7 @@
 #include "whaleui.h"
 #include "style/css.h"  /* rule struct for element access in this white-box test */
 #include "style/style.h" /* selector matching + cascade + var resolution */
+#include "style/theme.h" /* built-in theme stylesheets + variable tables */
 #include "test_util.h"
 
 #include <lexbor/dom/dom.h>
@@ -9,6 +10,7 @@
 #include <cassert>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 
 int main(void)
@@ -278,6 +280,87 @@ int main(void)
         assert(cs["selection-bg"] == "#ff0000");
         whaleui_css_rules_destroy(rules, count);
         whaleui_dom_document_destroy(doc);
+    }
+
+    /* built-in theme stylesheets: every theme parses cleanly, covers the
+     * renderer's native-control vars, and the var tables define every
+     * var() the stylesheet references (light + dark, default + custom
+     * accent) */
+    {
+        int n = whaleui_theme_count();
+        assert(n >= 8); /* fluent metro material classic aero gtk macos browser */
+        for (int i = 0; i < n; ++i) {
+            const char* name = whaleui_theme_name(i);
+            assert(name && *name);
+            assert(whaleui_theme_label(i) && *whaleui_theme_label(i));
+            assert(std::strcmp(whaleui_theme_resolve(name), name) == 0);
+            assert(std::strcmp(whaleui_theme_resolve("no-such-theme"),
+                               "fluent") == 0);
+
+            const char* css = whaleui_theme_default_css(name);
+            assert(css && std::strlen(css) > 500);
+            whaleui_css_rule_t* rules = nullptr;
+            size_t count = 0;
+            whaleui_css_keyframes_t kf = {nullptr, 0};
+            assert(whaleui_css_parse_full(css, std::strlen(css), &rules,
+                                          &count, &kf) == 0);
+            assert(count > 40);
+            assert(kf.count >= 4); /* wui-fade-in/rise/pulse/spin */
+
+            /* UA baseline: block/inline/table/form-control defaults present */
+            std::set<std::string> sels;
+            for (size_t j = 0; j < count; ++j) {
+                const char* s = whaleui_css_selector(&rules[j]);
+                if (s) {
+                    sels.insert(s);
+                }
+            }
+            assert(sels.count("button"));
+            assert(sels.count("input, select, textarea") ||
+                   sels.count("input"));
+            assert(sels.count("table"));
+            assert(sels.count(".card"));
+            assert(sels.count(".btn-primary"));
+
+            /* var tables: renderer's native-control keys + every var()
+             * referenced by the stylesheet resolve */
+            for (int mode = 0; mode < 2; ++mode) {
+                std::map<std::string, std::string> vars;
+                whaleui_theme_vars(name,
+                                   mode == 0 ? WHALEUI_THEME_LIGHT
+                                             : WHALEUI_THEME_DARK,
+                                   nullptr, vars);
+                for (const char* k : {"--accent", "--field", "--border",
+                                      "--card", "--bg", "--fg", "--btn-bg"}) {
+                    assert(vars.count(k));
+                }
+                /* scan var(--x) references */
+                const char* p = css;
+                while ((p = std::strstr(p, "var(--")) != nullptr) {
+                    p += 4; /* skip "var(", keep "--name" */
+                    const char* e = std::strchr(p, ')');
+                    assert(e && e - p < 64);
+                    std::string key(p, static_cast<size_t>(e - p));
+                    if (!vars.count(key) || vars[key].empty()) {
+                        std::fprintf(stderr, "theme=%s mode=%d missing var %s\n",
+                                     name, mode, key.c_str());
+                    }
+                    assert(vars.count(key) &&
+                           !vars[key].empty()); /* defined + non-empty */
+                    p = e;
+                }
+            }
+
+            /* custom accent propagates to the accent family */
+            std::map<std::string, std::string> vars;
+            whaleui_theme_vars(name, WHALEUI_THEME_LIGHT, "#ff8800", vars);
+            assert(vars["--accent"] == "#ff8800");
+
+            whaleui_css_rules_destroy(rules, count);
+            whaleui_css_keyframes_destroy(&kf);
+        }
+        /* theme ids are stable, index 0 = fluent */
+        assert(std::strcmp(whaleui_theme_name(0), "fluent") == 0);
     }
 
     return 0;
