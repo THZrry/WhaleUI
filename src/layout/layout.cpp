@@ -26,10 +26,11 @@ namespace {
 /* --- tiny value helpers (kept local so minimal target builds without
  *      style.cpp) --- */
 
-std::string get(const WhaleUIComputedStyle& s, const char* k)
+const std::string& get(const WhaleUIComputedStyle& s, const char* k)
 {
     auto it = s.find(k);
-    return it == s.end() ? std::string() : it->second;
+    static const std::string kEmpty;
+    return it == s.end() ? kEmpty : it->second;
 }
 
 /* split "clamp(a,b,c)" / "min(a,b)" inner args on top-level commas
@@ -1439,6 +1440,15 @@ struct Builder
         float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
 
         if (text_run) {
+            /* box pass: build already laid out this run (real width/height
+             * from fill_text_box). Re-measuring every run every frame
+             * (the animation's box pass walks the whole tree) is the
+             * single biggest cost of an animation frame on a text-heavy
+             * page - reuse the laid-out box instead. */
+            if (n->border.w > 0 && n->border.h > 0) {
+                *cursor_y += n->border.h;
+                return;
+            }
             /* inline text: width approximated, real metrics at render time */
             int fs = static_cast<int>(len_px_vp(get(n->style, "font-size"), 0, em,
                                                static_cast<float>(tree->viewport_w),
