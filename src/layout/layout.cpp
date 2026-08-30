@@ -113,6 +113,43 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
         float b = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
         return a > b ? a : b;
     }
+    if (v.compare(0, 5, "calc(") == 0) {
+        /* calc(expr): a +/- b chains of the units above ("calc(3ch + 30px)").
+         * Split on +/- outside parens and sum; each term resolves like a
+         * plain length. */
+        std::vector<std::string> args;
+        split_len_args(v, 5, args);
+        if (args.size() != 1) {
+            return 0;
+        }
+        const std::string& expr = args[0];
+        float acc = 0;
+        size_t i = 0;
+        int sign = 1;
+        while (i < expr.size()) {
+            while (i < expr.size() &&
+                   (expr[i] == ' ' || expr[i] == '\t')) {
+                ++i;
+            }
+            if (i < expr.size() && (expr[i] == '+' || expr[i] == '-')) {
+                sign = expr[i] == '+' ? 1 : -1;
+                ++i;
+            }
+            size_t start = i;
+            while (i < expr.size() && expr[i] != '+' && expr[i] != '-') {
+                ++i;
+            }
+            std::string term = expr.substr(start, i - start);
+            size_t b2 = term.find_first_not_of(" \t");
+            size_t e2 = term.find_last_not_of(" \t");
+            if (b2 != std::string::npos) {
+                term = term.substr(b2, e2 - b2 + 1);
+                acc += sign * len_px_impl(term, base_px, em_base, vp_w, vp_h);
+            }
+            sign = 1;
+        }
+        return acc;
+    }
     char* end = nullptr;
     float n = std::strtof(v.c_str(), &end);
     if (end == v.c_str()) {
@@ -129,6 +166,9 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
     }
     if (end[0] == 'v' && end[1] == 'h') {
         return n * vp_h / 100.0f;
+    }
+    if (end[0] == 'c' && end[1] == 'h') {
+        return n * em_base * 0.5f; /* 1ch ~ half an em (zero width) */
     }
     return n; /* px or unitless */
 }
@@ -1048,6 +1088,22 @@ struct Builder
                 n->style["display"] = "table-cell";
             }
         }
+        /* document plumbing never renders: <head> and its children (style,
+         * title, meta, link) plus <script> bodies would otherwise lay out
+         * their raw text and inflate the page height by thousands of px */
+        if (tname0 && n->style.find("display") == n->style.end()) {
+            bool doc_meta =
+                (tlen0 == 4 && std::memcmp(tname0, "head", 4) == 0) ||
+                (tlen0 == 5 && std::memcmp(tname0, "style", 5) == 0) ||
+                (tlen0 == 5 && std::memcmp(tname0, "title", 5) == 0) ||
+                (tlen0 == 4 && std::memcmp(tname0, "meta", 4) == 0) ||
+                (tlen0 == 4 && std::memcmp(tname0, "link", 4) == 0) ||
+                (tlen0 == 6 && std::memcmp(tname0, "script", 6) == 0) ||
+                (tlen0 == 4 && std::memcmp(tname0, "base", 4) == 0);
+            if (doc_meta) {
+                n->style["display"] = "none";
+            }
+        }
         /* form controls get the browser-default inline size (~20ch): as
          * inline-blocks their content estimate is 0 (option/value text is
          * not a text run), which would collapse them to zero width.
@@ -1055,7 +1111,11 @@ struct Builder
          * and drop the field border/padding. */
         std::string cw0 = get(n->style, "width");
         bool cw_missing = cw0.empty() || cw0 == "auto";
-        if (tname0 && cw_missing) {
+        /* absolute/fixed controls are sized by their offsets (inset:0
+         * fills the positioned ancestor), not by the UA default size */
+        std::string ppos = get(n->style, "position");
+        bool positioned = ppos == "absolute" || ppos == "fixed";
+        if (tname0 && cw_missing && !positioned) {
             bool ctrl = (tlen0 == 6 && std::memcmp(tname0, "select", 6) == 0) ||
                         (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0) ||
                         (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0) ||
@@ -1098,7 +1158,7 @@ struct Builder
         /* textarea default height must apply regardless of the width check
          * above (an explicit width skips that block entirely) */
         if (tname0 && tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
-            input_kind(n->el) == 0) {
+            input_kind(n->el) == 0 && !positioned) {
             if (n->style.find("height") == n->style.end()) {
                 n->style["height"] = "60px";
             }
@@ -1114,7 +1174,7 @@ struct Builder
          * demo's editable span grew sideways while typing). Give them the
          * form-control treatment - inline-block + a fixed default width -
          * so typing wraps instead. */
-        if (tname0 && cw_missing) {
+        if (tname0 && cw_missing && !positioned) {
             size_t alen = 0;
             const lxb_char_t* ce = lxb_dom_element_get_attribute(
                 n->el, (const lxb_char_t*)"contenteditable", 15, &alen);
@@ -1384,8 +1444,10 @@ struct Builder
                 max_line = cur;
             }
             int avail = cw > 0 ? cw : 0x7FFFFFFF;
-            /* white-space: nowrap -> no wrapping (ticker tracks etc.) */
-            if (get(n->style, "white-space") == "nowrap") {
+            /* white-space: nowrap/pre -> no soft wrapping (ticker tracks,
+             * code panes); <pre> keeps its \n line breaks */
+            std::string ws = get(n->style, "white-space");
+            if (ws == "nowrap" || ws == "pre") {
                 avail = 0x7FFFFFFF;
             }
             std::string fam2 = get(n->style, "font-family");
@@ -1474,14 +1536,35 @@ struct Builder
         /* position */
         int pkind = position_kind(get(n->style, "position"));
         std::string pos_v = get(n->style, "position");
-        float off_top = len_px_vp(get(n->style, "top"), static_cast<float>(ch), em, vw, vh);
-        float off_left = len_px_vp(get(n->style, "left"), static_cast<float>(cw), em, vw, vh);
-        float off_right = len_px_vp(get(n->style, "right"), static_cast<float>(cw), em, vw, vh);
-        float off_bottom = len_px_vp(get(n->style, "bottom"), static_cast<float>(ch), em, vw, vh);
-        bool has_left = !get(n->style, "left").empty();
-        bool has_right = !get(n->style, "right").empty();
-        bool has_top = !get(n->style, "top").empty();
-        bool has_bottom = !get(n->style, "bottom").empty();
+        /* inset: top/right/bottom/left shorthand ("inset:0" fills a
+         * positioned ancestor); longhands win when both are present */
+        std::string ins = get(n->style, "inset");
+        bool has_inset = !ins.empty();
+        float off_top = has_inset
+                            ? len_px(ins, static_cast<float>(ch), em)
+                            : len_px_vp(get(n->style, "top"), static_cast<float>(ch), em, vw, vh);
+        float off_left = has_inset
+                             ? len_px(ins, static_cast<float>(cw), em)
+                             : len_px_vp(get(n->style, "left"), static_cast<float>(cw), em, vw, vh);
+        float off_right = has_inset
+                              ? len_px(ins, static_cast<float>(cw), em)
+                              : len_px_vp(get(n->style, "right"), static_cast<float>(cw), em, vw, vh);
+        float off_bottom = has_inset
+                               ? len_px(ins, static_cast<float>(ch), em)
+                               : len_px_vp(get(n->style, "bottom"), static_cast<float>(ch), em, vw, vh);
+        /* "inset: a b c d" expands like margin */
+        if (has_inset) {
+            int iv[4] = {0, 0, 0, 0};
+            sides(ins, iv, static_cast<float>(cw), em, 0);
+            off_top = static_cast<float>(iv[0]);
+            off_right = static_cast<float>(iv[1]);
+            off_bottom = static_cast<float>(iv[2]);
+            off_left = static_cast<float>(iv[3]);
+        }
+        bool has_left = has_inset || !get(n->style, "left").empty();
+        bool has_right = has_inset || !get(n->style, "right").empty();
+        bool has_top = has_inset || !get(n->style, "top").empty();
+        bool has_bottom = has_inset || !get(n->style, "bottom").empty();
 
         int x = cx, y = *cursor_y;
         int avail_w = cw;
@@ -1489,6 +1572,17 @@ struct Builder
             /* fixed: laid out against the viewport (immune to ancestor
              * scroll); the renderer zeroes ancestor offsets when painting */
             avail_w = tree->viewport_w;
+        }
+        /* absolute/fixed with both offsets stretch between them (inset:0
+         * fills the positioned ancestor / viewport) */
+        bool pabs = pkind == 1 || pkind == 2;
+        if (pabs && has_top && has_bottom && h_auto) {
+            int pbase_h = pkind == 2 ? tree->viewport_h : ch;
+            float span = static_cast<float>(pbase_h) - off_top - off_bottom;
+            if (span > 0) {
+                hpx = span;
+                h_auto = false;
+            }
         }
 
         int my = m[0] + m[2], mx = m[1] + m[3];
@@ -1506,7 +1600,15 @@ struct Builder
                 int cap = avail_w - mx;
                 bw = pref < cap ? pref : cap;
             } else {
-                bw = avail_w - mx;
+                if (pabs && has_left && has_right) {
+                    /* absolute + both horizontal offsets: the width is the
+                     * space between them (inset:0 fills the ancestor) */
+                    int span = avail_w - static_cast<int>(off_left) -
+                               static_cast<int>(off_right) - mx;
+                    bw = span > 0 ? span : 0;
+                } else {
+                    bw = avail_w - mx;
+                }
             }
         } else {
             bw = static_cast<int>(wpx);
@@ -1569,8 +1671,27 @@ struct Builder
         n->content.x = n->border.x + p[1] + n->border_w[1];
         n->content.y = n->border.y + p[0] + n->border_w[0];
 
+        /* min/max-width clamp the box BEFORE children are laid out: a
+         * max-width container must not hand its pre-clamp width to them
+         * (a .app{max-width:1120px} inside a 1280 viewport would otherwise
+         * lay every child out at 1260px and overflow) */
+        std::string mnw = get(n->style, "min-width");
+        std::string mxw = get(n->style, "max-width");
+        if (!mnw.empty() &&
+            n->border.w < static_cast<int>(
+                              len_px_vp(mnw, static_cast<float>(cw), em, vw, vh))) {
+            n->border.w = static_cast<int>(
+                len_px_vp(mnw, static_cast<float>(cw), em, vw, vh));
+        }
+        if (!mxw.empty() &&
+            n->border.w > static_cast<int>(
+                              len_px_vp(mxw, static_cast<float>(cw), em, vw, vh))) {
+            n->border.w = static_cast<int>(
+                len_px_vp(mxw, static_cast<float>(cw), em, vw, vh));
+        }
+
         /* children */
-        int inner_w = bw - p[1] - p[3] - n->border_w[1] - n->border_w[3];
+        int inner_w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
         int inner_h = static_cast<int>(hpx);
         int kid_cursor = 0;
         int dk = display_kind(get(n->style, "display"));
@@ -1611,7 +1732,14 @@ struct Builder
                 bh += p[0] + p[2] + n->border_w[0] + n->border_w[2];
             }
             if (bh < kid_cursor && !scrollable) {
-                bh = kid_cursor; /* content can overflow; keep explicit h */
+                /* content taller than an explicit height: overflow:visible
+                 * keeps the content reachable (page height covers it),
+                 * but overflow:hidden clips instead of stretching (a
+                 * height:100% app pane must stay at its viewport share) */
+                std::string ov2 = get(n->style, "overflow");
+                if (ov2 != "hidden") {
+                    bh = kid_cursor;
+                }
             }
         } else {
             bh = kid_cursor + p[0] + p[2] + n->border_w[0] + n->border_w[2];
@@ -1650,15 +1778,7 @@ struct Builder
             }
         }
 
-        /* min/max (viewport units resolve via len_px_vp) */
-        std::string mn = get(n->style, "min-width");
-        std::string mw = get(n->style, "max-width");
-        if (!mn.empty() && n->border.w < static_cast<int>(len_px_vp(mn, static_cast<float>(cw), em, vw, vh))) {
-            n->border.w = static_cast<int>(len_px_vp(mn, static_cast<float>(cw), em, vw, vh));
-        }
-        if (!mw.empty() && n->border.w > static_cast<int>(len_px_vp(mw, static_cast<float>(cw), em, vw, vh))) {
-            n->border.w = static_cast<int>(len_px_vp(mw, static_cast<float>(cw), em, vw, vh));
-        }
+        /* min/max-height (viewport units resolve via len_px_vp) */
         std::string mnh = get(n->style, "min-height");
         std::string mxh = get(n->style, "max-height");
         if (!mnh.empty() && n->border.h < static_cast<int>(len_px_vp(mnh, static_cast<float>(ch), em, vw, vh))) {
@@ -1885,6 +2005,7 @@ struct Builder
 
         /* per-item flex properties + main-axis size (PureLayout: start from
          * flex-basis, then grow/shrink the free space) */
+        int container_main = column ? inner_h : inner_w;
         std::vector<float> grow(kids.size()), shrink(kids.size());
         std::vector<float> main_size(kids.size());
         std::vector<int> min_main(kids.size(), 0); /* min-content floor */
@@ -1904,24 +2025,79 @@ struct Builder
                            ? static_cast<int>(text_measure_est(
                                  k->text, fs,
                                  letter_spacing_px(k->style, fs)))
-                           : static_cast<int>(estimate_content_width(k, em));
+                           : (column
+                                  ? static_cast<int>(
+                                        est_node_height(k, inner_w, em))
+                                  : static_cast<int>(
+                                        estimate_content_width(k, em)));
             std::string mn = get(k->style, column ? "min-height" : "min-width");
             if (!mn.empty()) {
-                float m = len_px(mn, static_cast<float>(inner_w), em);
-                if (m > minc) {
-                    minc = static_cast<int>(m);
+                /* an explicit min-* (including min-height:0) replaces the
+                 * content floor: "min-height:0" lets a flex:1 sibling
+                 * shrink instead of keeping its content height */
+                minc = static_cast<int>(
+                    len_px(mn, static_cast<float>(inner_w), em));
+            }
+            std::string ovf = get(k->style, "overflow");
+            if (ovf == "auto" || ovf == "scroll" || ovf == "hidden") {
+                /* overflow clips/scolls: the min-content floor drops to 0
+                 * (a flex:1 scroll pane must not be pushed by its content,
+                 * matching the spec's min-height:auto rule) */
+                if (mn.empty()) {
+                    minc = 0;
                 }
             }
             min_main[i] = minc;
             if (basis >= 0) {
                 main_size[i] = basis; /* "flex: 1" -> basis 0, grows fully */
+                if (container_main <= 0 && main_size[i] < min_main[i]) {
+                    /* indefinite container: no free space to grow into,
+                     * a basis:0 item sizes to its content instead */
+                    main_size[i] = static_cast<float>(min_main[i]);
+                }
             } else {
                 bool is_auto = true;
                 float sz = len_or_auto(get(k->style, column ? "height" : "width"),
                                        static_cast<float>(inner_w), em,
                                        &is_auto);
                 if (is_auto) {
-                    sz = static_cast<float>(minc);
+                    if (column) {
+                        /* measure the REAL content height. A column flex
+                         * container lays out like a block flow (stacked),
+                         * so measuring it as block makes its flex:1
+                         * children size to their content instead of 0
+                         * (a definite-height flex column would grow them
+                         * to the measurement box). Row containers keep
+                         * their own display: the natural content height. */
+                        std::string kd = get(k->style, "display");
+                        std::string kdir = get(k->style, "flex-direction");
+                        bool k_col =
+                            (kd == "flex" || kd == "inline-flex") &&
+                            (kdir == "column" || kdir == "column-reverse");
+                        std::string saved_disp;
+                        bool had_disp = k->style.count("display") != 0;
+                        if (k_col) {
+                            if (had_disp) {
+                                saved_disp = k->style["display"];
+                            }
+                            k->style["display"] = "block";
+                        }
+                        int c0 = 0;
+                        layout(k, 0, 0, inner_w, 0x7FFFFFFF, font_px, &c0);
+                        sz = static_cast<float>(k->border.h);
+                        if (k_col) {
+                            if (had_disp) {
+                                k->style["display"] = saved_disp;
+                            } else {
+                                k->style.erase("display");
+                            }
+                        }
+                        if (sz < 1) {
+                            sz = static_cast<float>(minc);
+                        }
+                    } else {
+                        sz = static_cast<float>(minc);
+                    }
                 }
                 main_size[i] = sz;
             }
@@ -1929,8 +2105,6 @@ struct Builder
                 main_size[i] = 1; /* avoid zero-size main-axis items */
             }
         }
-
-        int container_main = column ? inner_h : inner_w;
 
         /* split into rows by the hypothetical sizes first (wrap decides on
          * the un-shrunk sizes), then grow/shrink per row below */
@@ -2001,7 +2175,6 @@ struct Builder
                 }
             }
         }
-
         /* layout each item; main pos per row from justify-content */
         int column_total = 0;
         for (size_t r = 0; r < rows.size(); ++r) {
@@ -2024,7 +2197,10 @@ struct Builder
                         (row.sizes.size() > 1
                              ? static_cast<float>(row.sizes.size() - 1)
                              : 0);
-            if (row_free > 0) {
+            /* an indefinite container (auto height column) has no free
+             * space: items keep their hypothetical size, no grow/shrink */
+            bool definite = container_main > 0;
+            if (definite && row_free > 0) {
                 float gsum = 0;
                 for (size_t i = 0; i < row.sizes.size(); ++i) {
                     gsum += grow[kid_idx(row.items[i])];
@@ -2035,10 +2211,16 @@ struct Builder
                         size_t gi = kid_idx(row.items[i]);
                         if (grow[gi] > 0) {
                             row.sizes[i] += extra * grow[gi];
+                            /* a flex item never shrinks below its
+                             * min-content floor ("flex: 1" cards keep their
+                             * content width even when the share is smaller) */
+                            if (row.sizes[i] < min_main[gi]) {
+                                row.sizes[i] = static_cast<float>(min_main[gi]);
+                            }
                         }
                     }
                 }
-            } else if (row_free < 0 && any_shrink) {
+            } else if (definite && row_free < 0 && any_shrink) {
                 float ssum = 0;
                 for (size_t i = 0; i < row.sizes.size(); ++i) {
                     size_t gi = kid_idx(row.items[i]);
@@ -2060,22 +2242,34 @@ struct Builder
                     }
                 }
             }
+            /* justify-content works on the space left after grow/shrink */
+            float free_left = static_cast<float>(container_main);
+            for (size_t i = 0; i < row.sizes.size(); ++i) {
+                free_left -= row.sizes[i];
+            }
+            free_left -= gap_main *
+                         (row.sizes.size() > 1
+                              ? static_cast<float>(row.sizes.size() - 1)
+                              : 0);
+            if (free_left < 0) {
+                free_left = 0;
+            }
             float lead = 0;
             float between = gap_main;
             if (justify == "center") {
-                lead = row_free / 2;
+                lead = free_left / 2;
             } else if (justify == "flex-end" || justify == "end") {
-                lead = row_free;
+                lead = free_left;
             } else if (justify == "space-between") {
                 between = row.sizes.size() > 1
-                              ? row_free / (row.sizes.size() - 1)
+                              ? free_left / (row.sizes.size() - 1)
                               : 0;
             } else if (justify == "space-around") {
-                lead = row_free / (row.sizes.size() * 2);
-                between = row_free / row.sizes.size();
+                lead = free_left / (row.sizes.size() * 2);
+                between = free_left / row.sizes.size();
             } else if (justify == "space-evenly") {
-                lead = row_free / (row.sizes.size() + 1);
-                between = row_free / (row.sizes.size() + 1);
+                lead = free_left / (row.sizes.size() + 1);
+                between = free_left / (row.sizes.size() + 1);
             }
             float pos = lead;
             for (size_t i = 0; i < row.items.size(); ++i) {
@@ -2084,9 +2278,37 @@ struct Builder
                 int cy = row.y;
                 if (column) {
                     /* column items flow down the main axis (row.y is the
-                     * cross start, i.e. the left edge) */
-                    cy = row.y + static_cast<int>(pos);
-                    layout(k, n->content.x, cy, sz, inner_h, font_px, &cy);
+                     * cross start, i.e. the left edge); the width handed to
+                     * the child is the cross size (inner_w), the height is
+                     * the main-axis share */
+                    const int item_y = row.y + static_cast<int>(pos);
+                    cy = item_y;
+                    layout(k, n->content.x, item_y, inner_w, sz, font_px,
+                           &cy);
+                    /* the resolved main size is authoritative: a flex:1 pane
+                     * takes its share even when the content is shorter (or
+                     * taller - it then overflows/scrolls like a browser) */
+                    if (k->border.h != sz) {
+                        /* nested flex: re-lay with the resolved height as an
+                         * explicit height so inner flex:1 panes grow to it
+                         * (auto height laid them out at inner_h 0). Uses the
+                         * same item_y - cy was advanced by the first pass. */
+                        std::string hs = get(k->style, "height");
+                        char hbuf[32];
+                        std::snprintf(hbuf, sizeof(hbuf), "%dpx", sz);
+                        k->style["height"] = hbuf;
+                        cy = item_y;
+                        layout(k, n->content.x, item_y, inner_w, sz, font_px,
+                               &cy);
+                        if (hs.empty()) {
+                            k->style.erase("height");
+                        } else {
+                            k->style["height"] = hs;
+                        }
+                    }
+                    k->border.h = sz;
+                    k->content.h = sz - k->padding[0] - k->padding[2] -
+                                   k->border_w[0] - k->border_w[2];
                     pos = (k->border.y + k->border.h) - n->content.y +
                           between;
                     column_total = (k->border.y + k->border.h) - n->content.y;
@@ -2102,6 +2324,9 @@ struct Builder
                 } else {
                     layout(k, n->content.x + static_cast<int>(pos), row.y,
                            sz, inner_h, font_px, &cy);
+                    k->border.w = sz;
+                    k->content.w = sz - k->padding[1] - k->padding[3] -
+                                   k->border_w[1] - k->border_w[3];
                     pos = (k->border.x + k->border.w) - n->content.x +
                           between;
                     if (reverse) { /* row-reverse: mirror horizontally */
@@ -2112,14 +2337,24 @@ struct Builder
                               between;
                     }
                 }
-                /* track the row's real cross size (border + margins) */
-                int outer = k->border.h +
-                            (column ? k->margin[1] + k->margin[3]
-                                    : k->margin[0] + k->margin[2]);
+                /* track the row's real cross size (border + margins);
+                 * for column the cross axis is horizontal (width) */
+                int outer = (column ? k->border.w + k->margin[1] + k->margin[3]
+                                    : k->border.h + k->margin[0] + k->margin[2]);
                 if (outer > row.real_h) {
                     row.real_h = outer;
                 }
             }
+        }
+
+        /* a single unwrapped row stretches to the container's definite
+         * cross size: align-items:stretch then fills a flex:1 child whose
+         * content is empty (an editor pane with only absolute children).
+         * After the real heights are known, so the estimate cannot fight
+         * the measured row height. */
+        if (!column && rows.size() == 1 && inner_h > 0 &&
+            rows[0].real_h < inner_h) {
+            rows[0].real_h = inner_h;
         }
 
         /* cross-axis alignment: align-content (between rows) then
@@ -2186,9 +2421,8 @@ struct Builder
                 whaleui_layout_node_t* k = row.items[i];
                 std::string as = get(k->style, "align-self");
                 std::string a = as.empty() || as == "auto" ? align : as;
-                int outer = k->border.h +
-                            (column ? k->margin[1] + k->margin[3]
-                                    : k->margin[0] + k->margin[2]);
+                int outer = (column ? k->border.w + k->margin[1] + k->margin[3]
+                                    : k->border.h + k->margin[0] + k->margin[2]);
                 int extra = row.real_h - outer;
                 if (extra <= 0) {
                     continue;
@@ -2200,10 +2434,28 @@ struct Builder
                     shift_subtree(k, column ? extra : 0,
                                   column ? 0 : extra);
                 } else if (a == "stretch" || a.empty()) {
-                    /* stretch: grow the border box, content stays top-left */
+                    /* stretch: grow the border box, content stays top-left.
+                     * Re-lay with the resolved height so absolute children
+                     * (inset:0 panes) fill the new size - the first pass
+                     * laid them out at inner_h 0. */
                     if (column) {
                         k->border.w += extra;
                         k->content.w += extra;
+                    } else if (extra > 0) {
+                        std::string hs = get(k->style, "height");
+                        char hbuf[32];
+                        std::snprintf(hbuf, sizeof(hbuf), "%dpx",
+                                      k->border.h + extra);
+                        k->style["height"] = hbuf;
+                        int c1 = k->border.y - k->margin[0];
+                        layout(k, k->border.x - k->margin[1], c1,
+                               k->content.w, k->border.h + extra, font_px,
+                               &c1);
+                        if (hs.empty()) {
+                            k->style.erase("height");
+                        } else {
+                            k->style["height"] = hs;
+                        }
                     } else {
                         k->border.h += extra;
                         k->content.h += extra;
@@ -2718,6 +2970,10 @@ struct Builder
         float row_gap = rgv.empty() ? col_gap
                                     : len_px(rgv, static_cast<float>(inner_w), em);
         std::string align = get(n->style, "align-items");
+        if (align.empty()) {
+            /* place-items: <align> <justify> - first value is align */
+            align = get(n->style, "place-items");
+        }
 
         /* column widths: px/% fixed, auto = content, fr = free share */
         std::vector<int> col_w(static_cast<size_t>(ncols), 0);

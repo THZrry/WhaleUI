@@ -5,11 +5,13 @@
 #include "style/theme.h"
 
 #include <lexbor/dom/dom.h>
+#include <lexbor/html/html.h>
 
 #include <cassert>
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <vector>
 
@@ -1460,6 +1462,116 @@ int main(void)
         assert(c1 != nullptr);
         /* 300px shared 1:2 */
         assert(c0->border.w == 100 && c1->border.w == 200);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* multi-class selector ".a.b" requires BOTH classes (a lone "a" must
+     * not match) */
+    {
+        const char* html = "<head><style>"
+            ".a.b { width: 80px; }"
+            ".a { width: 40px; }"
+            "</style></head>"
+            "<body><div class=\"a\" id=\"one\"></div>"
+            "<div class=\"a b\" id=\"two\"></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        /* parse the <style> and lay out with rules */
+        lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+        lxb_dom_element* r = lxb_dom_document_element(&hd->dom_document);
+        std::string css;
+        std::function<void(lxb_dom_node*)> collect_style =
+            [&](lxb_dom_node* p) {
+                for (lxb_dom_node* c = p->first_child; c; c = c->next) {
+                    if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                        continue;
+                    }
+                    lxb_dom_element* e = lxb_dom_interface_element(c);
+                    size_t nlen = 0;
+                    const lxb_char_t* nm =
+                        lxb_dom_element_local_name(e, &nlen);
+                    if (nm && nlen == 5 && std::memcmp(nm, "style", 5) == 0) {
+                        for (lxb_dom_node* t = c->first_child; t;
+                             t = t->next) {
+                            if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
+                                const lexbor_str_t* s =
+                                    &lxb_dom_interface_text(t)->char_data.data;
+                                css.append(
+                                    reinterpret_cast<const char*>(s->data),
+                                    s->length);
+                            }
+                        }
+                    }
+                    collect_style(c);
+                }
+            };
+        if (r) {
+            collect_style(&r->node);
+        }
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        std::memset(&kf, 0, sizeof(kf));
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* one = find_tag(t->root, "div");
+        assert(one != nullptr);
+        whaleui_layout_node_t* two = one->next;
+        assert(two != nullptr);
+        assert(one->border.w == 40); /* only .a matches */
+        assert(two->border.w == 80); /* .a.b matches both */
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* <script> bodies never lay out (page height stays sane) */
+    {
+        const char* html =
+            "<body><div style=\"height:50px;\"></div>"
+            "<script>var huge = 'x'.repeat(100000);</script></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        /* body height ~ the 50px div + padding, not the script text */
+        whaleui_layout_node_t* body = t->root->first_child;
+        while (body && body->is_text) {
+            body = body->next;
+        }
+        assert(body != nullptr);
+        assert(body->border.h < 300);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* max-width clamps the box BEFORE children lay out */
+    {
+        const char* html =
+            "<body><div style=\"max-width:200px;\">"
+            "<div style=\"height:10px;\"></div></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* g = find_tag(t->root, "div");
+        assert(g != nullptr);
+        assert(g->border.w == 200);
+        whaleui_layout_node_t* c = g->first_child;
+        assert(c != nullptr);
+        assert(c->border.w == 200); /* child got the clamped width */
         whaleui_layout_destroy(t);
         whaleui_dom_document_destroy(doc);
     }

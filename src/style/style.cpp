@@ -145,8 +145,13 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
         if (kind == '#') {
             out.id = v;
         } else if (kind == '.') {
+            /* multiple classes ("a.b") all have to match; keep them
+             * space-separated so el_has_class checks every one */
             if (out.cls.empty()) {
                 out.cls = v;
+            } else {
+                out.cls += ' ';
+                out.cls += v;
             }
         }
     }
@@ -162,21 +167,43 @@ bool el_has_class(lxb_dom_element* el, const std::string& cls)
     if (!a) {
         return false;
     }
-    const lxb_char_t* c = a;
-    const lxb_char_t* e = a + alen;
-    while (c < e) {
-        while (c < e && (*c == ' ' || *c == '\t')) {
-            ++c;
+    /* cls may hold several classes ("panel collapsed"): EVERY one must be
+     * present on the element */
+    const char* cp = cls.c_str();
+    while (*cp) {
+        while (*cp == ' ' || *cp == '\t') {
+            ++cp;
         }
-        const lxb_char_t* tok = c;
-        while (c < e && *c != ' ' && *c != '\t') {
-            ++c;
+        if (!*cp) {
+            break;
         }
-        if (static_cast<size_t>(c - tok) == cls.size() && std::memcmp(tok, cls.data(), cls.size()) == 0) {
-            return true;
+        const char* cs = cp;
+        while (*cp && *cp != ' ' && *cp != '\t') {
+            ++cp;
+        }
+        std::string want(cs, static_cast<size_t>(cp - cs));
+        bool found = false;
+        const lxb_char_t* c = a;
+        const lxb_char_t* e = a + alen;
+        while (c < e) {
+            while (c < e && (*c == ' ' || *c == '\t')) {
+                ++c;
+            }
+            const lxb_char_t* tok = c;
+            while (c < e && *c != ' ' && *c != '\t') {
+                ++c;
+            }
+            if (static_cast<size_t>(c - tok) == want.size() &&
+                std::memcmp(tok, want.data(), want.size()) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
         }
     }
-    return false;
+    return true;
 }
 
 bool part_match(const SelPart& p, lxb_dom_element* el)
