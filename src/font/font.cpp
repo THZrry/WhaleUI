@@ -154,21 +154,24 @@ extern "C" const char* whaleui_font_list(void)
 extern "C" int whaleui_font_register_system_defaults(void)
 {
     /* candidate files (lowercased base names) tried in order; the first that
-     * loads becomes the fallback chain for CJK + emoji on Windows. */
+     * loads becomes the fallback chain for CJK + emoji on Windows.
+     * Keep it lean: loading every Windows UI font at startup is a big chunk
+     * of the ~50MB render-side memory. segoui (Latin) + msyh (CJK) +
+     * seguiemj (emoji) cover the vast majority of pages; simsun/simhei/arial
+     * are fallback redundancy (msyh covers CJK, a page pinning a specific
+     * Latin family can register it explicitly). */
     static const char* kFiles[] = {
         "segoeui.ttf",   /* Segoe UI */
         "seguiemj.ttf",  /* Segoe UI Emoji */
         "msyh.ttc",      /* Microsoft YaHei */
-        "simhei.ttf",    /* SimHei */
-        "simsun.ttc",    /* SimSun */
-        "arial.ttf",     /* Arial */
     };
     const char* dirs[4];
     int ndirs = whaleui_platform_system_font_dirs(dirs, 4);
     int added = 0;
-    for (int d = 0; d < ndirs && added < 6; ++d) {
-        for (size_t i = 0; i < sizeof(kFiles) / sizeof(kFiles[0]); ++i) {
-            if (added >= 6) {
+    const int kN = static_cast<int>(sizeof(kFiles) / sizeof(kFiles[0]));
+    for (int d = 0; d < ndirs && added < kN; ++d) {
+        for (size_t i = 0; i < static_cast<size_t>(kN); ++i) {
+            if (added >= kN) {
                 break;
             }
             char path[1024];

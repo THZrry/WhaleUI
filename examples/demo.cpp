@@ -198,9 +198,10 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "app create failed\n");
         return 1;
     }
-    /* register system fonts so text can render (Segoe UI is the Win11 font) */
+    /* register system fonts so text can render (Segoe UI is the Win11 font).
+     * Only the two the demo actually uses: Segoe UI (Latin) + Microsoft YaHei
+     * (CJK). Fewer loaded fonts = less memory (see font.cpp). */
     whaleui_font_register("C:/Windows/Fonts/segoeui.ttf");
-    whaleui_font_register("C:/Windows/Fonts/arial.ttf");
     whaleui_font_register("C:/Windows/Fonts/msyh.ttc");
 
     /* the theme dropdown switches the whole UI style; keys are the app's job */
