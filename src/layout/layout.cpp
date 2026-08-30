@@ -416,16 +416,18 @@ static void flex_shorthand(const WhaleUIComputedStyle& s,
     }
 }
 
-/* estimated pixel width of a UTF-8 string: ASCII ~0.5em, CJK/fullwidth
- * glyphs ~1em (half-width estimate under-counts CJK, causing wrapped text
- * to overflow its box) */
+/* estimated pixel width of a UTF-8 string: ASCII ~0.6em (average of
+ * proportional + monospace, where mono runs ~0.6em), CJK/fullwidth ~1em.
+ * The old 0.5em under-counted mono labels ("Ctrl+Enter" in a <kbd>), so
+ * their min-content estimate fell short of the painted width and the text
+ * wrapped inside a button. */
 float text_est_width(const std::string& s, float fs)
 {
     float w = 0;
     for (size_t i = 0; i < s.size();) {
         unsigned char c = static_cast<unsigned char>(s[i]);
         if (c < 0x80) {
-            w += fs * 0.5f;
+            w += fs * 0.6f;
             ++i;
         } else {
             size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
@@ -656,20 +658,30 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
             return fs * 12.0f; /* 12em default */
         }
     }
-    /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
-     * painted wrap width follows the box, so an under-sized estimate
-     * splits short text mid-word ("01", "V3", "推理能力强") */
-    bool inline_box = display_kind(get(k->style, "display")) == 2;
-    std::string fam = get(k->style, "font-family");
-    bool bold = font_weight_bold(k->style);
-    float lsp = letter_spacing_px(k->style, fs);
-    float w = 0;
     /* a block container's natural width is the widest child, not the sum:
      * summing every child made a card's "content width" include hidden
      * placeholders (h2 + input + textarea + contenteditable), so the
      * flex min-content floor grew with typed text before it was needed.
-     * Only inline content (text runs / inline boxes on one line) sums. */
-    bool container_inline = display_kind(get(k->style, "display")) == 2;
+     * Only inline content (text runs / inline boxes on one line) sums -
+     * and a flex ROW, whose items sit side by side (an inline-flex
+     * button or a tab must be at least badge+label+padding wide, or its
+     * text wraps). */
+    int dk = display_kind(get(k->style, "display"));
+    std::string fdir = get(k->style, "flex-direction");
+    bool flex_row = dk == 1 && fdir != "column" && fdir != "column-reverse";
+    bool container_inline = dk == 2 || flex_row;
+    /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
+     * painted wrap width follows the box, so an under-sized estimate
+     * splits short text mid-word ("01", "V3", "推理能力强").
+     * Flex-row children (a button's label next to its kbd) need the same
+     * real measure - the 0.5em estimate runs 10px short on mono labels
+     * and the text wraps. */
+    bool inline_box = dk == 2;
+    bool measure_real = inline_box || flex_row;
+    std::string fam = get(k->style, "font-family");
+    bool bold = font_weight_bold(k->style);
+    float lsp = letter_spacing_px(k->style, fs);
+    float w = 0;
     for (whaleui_layout_node_t* c = k->first_child; c; c = c->next) {
         if (c->is_text) {
             /* width = the LONGEST line, not the whole run: measuring the
@@ -683,7 +695,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
                     q0 = c->text.size();
                 }
                 std::string seg = c->text.substr(p0, q0 - p0);
-                float lw = inline_box
+                float lw = measure_real
                                ? text_measure(seg, fs, fam, bold, lsp)
                                : text_measure_est(seg, fs, lsp);
                 if (lw > best) {
@@ -709,14 +721,14 @@ float estimate_content_width(whaleui_layout_node_t* k, float em)
             }
         }
     }
-    /* padding left/right */
+    /* padding left/right (full shorthand: "7px 12px" adds 12 each side) */
     std::string p = get(k->style, "padding");
     if (!p.empty()) {
-        float base = 0;
-        float l = len_px(p, base, em);
-        w += l * 2;
+        int pad4[4] = {0, 0, 0, 0};
+        sides(p, pad4, 0, em, 0);
+        w += pad4[1] + pad4[3];
     }
-    if (inline_box) {
+    if (inline_box || flex_row) {
         /* 2px safety margin: the painted wrap uses the box width, and a
          * 1px sub-pixel difference would split the last glyph */
         w += 2;
@@ -2024,7 +2036,8 @@ struct Builder
             int minc = k->is_text
                            ? static_cast<int>(text_measure_est(
                                  k->text, fs,
-                                 letter_spacing_px(k->style, fs)))
+                                 letter_spacing_px(k->style, fs))) +
+                                 1
                            : (column
                                   ? static_cast<int>(
                                         est_node_height(k, inner_w, em))

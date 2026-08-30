@@ -392,9 +392,10 @@ void expand_font(WhaleUIComputedStyle& s)
     if (it == s.end() || it->second.empty()) {
         return;
     }
-    if (s.find("font-size") != s.end()) {
-        return; /* longhand wins */
-    }
+    /* No "longhand wins" early-out: a `font` shorthand with an explicit
+     * size must apply it even when a LOWER-specificity rule set font-size
+     * (theme kbd{font-size:.9em} vs .btn kbd{font:600 10px mono} - the
+     * shorthand's specificity is higher, so its size must win). */
     std::vector<std::string> toks = split_space(it->second);
     std::string weight, style, size, lh, family;
     size_t size_idx = std::string::npos;

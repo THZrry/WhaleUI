@@ -74,7 +74,12 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->power_check_ticks = 0;
     app->vsync = 1;
     app->running = 0;
-    app->reduced_motion = 0;
+    /* no JS engine: reveal-on-scroll / entrance-animation pages would keep
+     * their content hidden (opacity:0 until JS adds .in). Defaulting to
+     * reduced motion applies the pages' prefers-reduced-motion fallbacks
+     * (reveal elements become visible, background animations stop) - a
+     * static, complete page beats a half-animated invisible one. */
+    app->reduced_motion = 1;
     app->gpu = nullptr;
     app->select_cb = nullptr;
     app->select_ud = nullptr;

@@ -1576,6 +1576,91 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* font shorthand: ".x kbd{font:600 10px mono}" beats a lower
+     * specificity "kbd{font-size:.9em}" (theme default) - the shorthand's
+     * size must win or buttons size their text at the inherited size */
+    {
+        const char* html = "<head><style>"
+            "kbd { font-size: 0.9em; }"
+            ".x kbd { font: 600 10px monospace; }"
+            "</style></head>"
+            "<body><div class=\"x\"><kbd>Ctrl+Enter</kbd></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+        lxb_dom_element* r = lxb_dom_document_element(&hd->dom_document);
+        std::string css;
+        std::function<void(lxb_dom_node*)> collect_style =
+            [&](lxb_dom_node* p) {
+                for (lxb_dom_node* c = p->first_child; c; c = c->next) {
+                    if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                        continue;
+                    }
+                    lxb_dom_element* e = lxb_dom_interface_element(c);
+                    size_t nlen = 0;
+                    const lxb_char_t* nm =
+                        lxb_dom_element_local_name(e, &nlen);
+                    if (nm && nlen == 5 && std::memcmp(nm, "style", 5) == 0) {
+                        for (lxb_dom_node* t = c->first_child; t;
+                             t = t->next) {
+                            if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
+                                const lexbor_str_t* s =
+                                    &lxb_dom_interface_text(t)->char_data.data;
+                                css.append(
+                                    reinterpret_cast<const char*>(s->data),
+                                    s->length);
+                            }
+                        }
+                    }
+                    collect_style(c);
+                }
+            };
+        if (r) {
+            collect_style(&r->node);
+        }
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        std::memset(&kf, 0, sizeof(kf));
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* kbd = find_tag(t->root, "kbd");
+        assert(kbd != nullptr);
+        assert(kbd->style.count("font-size") != 0);
+        assert(kbd->style["font-size"] == "10px");
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* flex ROW min-content sums its children: an inline-flex button with a
+     * label + kbd must be wide enough that neither wraps */
+    {
+        const char* html = "<body><div style=\"display:flex;\">"
+            "<button style=\"display:inline-flex;padding:7px 12px;\">"
+            "run <kbd>Ctrl+Enter</kbd></button></div></body>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(html, std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* btn = find_tag(t->root, "button");
+        assert(btn != nullptr);
+        whaleui_layout_node_t* kbd = find_tag(t->root, "kbd");
+        assert(kbd != nullptr);
+        /* button fits label + kbd side by side on one line */
+        assert(btn->border.h <= 40);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* smoke: every test_html example parses and lays out without crashing */
     {
         const char* files[] = {
