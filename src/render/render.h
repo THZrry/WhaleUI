@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <atomic>
@@ -62,12 +63,16 @@ struct whaleui_render
     /* ASCII glyph-advance cache (layout hot path): rebuilt when the font
      * changes. Full build only; stb measures directly from its font table. */
     TTF_Font* ascii_font;
+    int ascii_fs; /* size ascii_font was cached at (SetFontSize reuses it) */
     int ascii_w[128];
     /* non-ASCII glyph-advance cache (full build): measuring CJK/emoji via a
      * per-char TTF_Text was the dominant cost on large CJK pages (every
-     * char created + destroyed a TTF_Text); caching per (font, codepoint)
-     * keeps layout linear. */
-    std::map<std::pair<TTF_Font*, unsigned int>, int> glyph_w_cache;
+     * char created + destroyed a TTF_Text); caching per (font, size,
+     * codepoint) keeps layout linear. The size is part of the key because
+     * render_get_font reuses one TTF_Font per (family,style) and switches
+     * its size with TTF_SetFontSize - a size-less key would return a stale
+     * advance after a size change (and re-layout the whole page wrong). */
+    std::map<std::tuple<TTF_Font*, int, unsigned int>, int> glyph_w_cache;
 
     /* text cache: one rasterized RGBA buffer per element+style, reused
      * across frames. Rebuilding text objects AND re-rasterizing every run

@@ -347,10 +347,10 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
      * otherwise opens a fresh TTF_Font PER SIZE - 90 fonts on the 21k page,
      * each re-parsing the font (CJK glyph tables are large), the biggest
      * chunk of the ~330MB there. TTF_SetFontSize is cheap (pixel size). */
-    std::string key = family + "|" + std::to_string(style);
+    std::string key = family + "|" + std::to_string(size) + "|" +
+                      std::to_string(style);
     for (auto& f : r->fonts) {
         if (f.first == key) {
-            TTF_SetFontSize(f.second, static_cast<float>(size));
             return f.second;
         }
     }
@@ -400,8 +400,9 @@ static int glyph_ttf(unsigned int cp, void* st)
         return 0;
     }
     if (cp < 0x80) {
-        if (c->r->ascii_font != font) {
+        if (c->r->ascii_font != font || c->r->ascii_fs != c->fs) {
             c->r->ascii_font = font;
+            c->r->ascii_fs = c->fs;
             for (int i = 0; i < 128; ++i) {
                 int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
                 TTF_GetGlyphMetrics(font, static_cast<Uint32>(i),
@@ -411,8 +412,8 @@ static int glyph_ttf(unsigned int cp, void* st)
         }
         return c->r->ascii_w[cp];
     }
-    /* non-ASCII: cached per (font, codepoint); fallback chain included */
-    std::pair<TTF_Font*, unsigned int> key(font, cp);
+    /* non-ASCII: cached per (font, size, codepoint); fallback chain included */
+    std::tuple<TTF_Font*, int, unsigned int> key(font, static_cast<int>(c->fs), cp);
     auto it = c->r->glyph_w_cache.find(key);
     if (it != c->r->glyph_w_cache.end()) {
         return it->second;
@@ -1215,6 +1216,12 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 continue;
             }
             unsigned int& d = fb[static_cast<size_t>(fy) * fw + fx];
+            if (sa == 255) {
+                /* opaque: direct copy, no src-over math (the common case
+                 * for CJK/body glyph centers) */
+                d = sp;
+                continue;
+            }
             const unsigned int da = (d >> 24) & 0xFF;
             const unsigned int oa = sa + da * (255 - sa) / 255;
             if (oa == 0) {

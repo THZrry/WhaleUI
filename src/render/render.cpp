@@ -71,21 +71,71 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
     if (!font) {
         return 0;
     }
-    int w = 0;
-    size_t ml = 0;
-    if (!TTF_MeasureString(font, utf8, len, 0, &w, &ml)) {
-        return 0;
-    }
-    float total = static_cast<float>(w);
-    if (lsp_px > 0) {
-        size_t chars = 0;
-        for (size_t i = 0; i < len; ++i) {
-            if ((static_cast<unsigned char>(utf8[i]) & 0xC0) != 0x80) {
-                ++chars;
+    /* measure per glyph (advance) instead of TTF_MeasureString: the layout
+     * pass calls this for EVERY run EVERY frame (a layout animation), and
+     * TTF_MeasureString re-measures the whole string with no cache - a big
+     * chunk of the demo's per-frame cost. Per-glyph advances hit the
+     * size-keyed glyph_w_cache / ascii_w, matching the paint path. */
+    float total = 0;
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = static_cast<unsigned char>(utf8[i]);
+        size_t clen = 1;
+        unsigned int cp = c;
+        if (c >= 0x80) {
+            if ((c & 0xE0) == 0xC0) {
+                clen = 2;
+                cp = c & 0x1F;
+            } else if ((c & 0xF0) == 0xE0) {
+                clen = 3;
+                cp = c & 0x0F;
+            } else {
+                clen = 4;
+                cp = c & 0x07;
+            }
+            for (size_t k = 1; k < clen && i + k < len; ++k) {
+                cp = (cp << 6) | (static_cast<unsigned char>(utf8[i + k]) & 0x3F);
             }
         }
-        if (chars > 1) {
-            total += lsp_px * static_cast<float>(chars - 1);
+        int adv = 0;
+        if (cp < 0x80) {
+            if (r->ascii_font != font || r->ascii_fs != fs) {
+                r->ascii_font = font;
+                r->ascii_fs = fs;
+                for (int a = 0; a < 128; ++a) {
+                    int m0 = 0, m1 = 0, m2 = 0, m3 = 0, aw = 0;
+                    TTF_GetGlyphMetrics(font, static_cast<Uint32>(a),
+                                        &m0, &m1, &m2, &m3, &aw);
+                    r->ascii_w[a] = aw;
+                }
+            }
+            adv = r->ascii_w[cp];
+        } else {
+            std::tuple<TTF_Font*, int, unsigned int> key(font, fs, cp);
+            auto it = r->glyph_w_cache.find(key);
+            if (it != r->glyph_w_cache.end()) {
+                adv = it->second;
+            } else {
+                int m0 = 0, m1 = 0, m2 = 0, m3 = 0;
+                if (TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv)) {
+                    r->glyph_w_cache[key] = adv;
+                } else {
+                    adv = 0;
+                }
+            }
+        }
+        total += static_cast<float>(adv);
+        i += clen;
+    }
+    if (lsp_px > 0) {
+        size_t ch = 0;
+        for (size_t k = 0; k < len; ++k) {
+            if ((static_cast<unsigned char>(utf8[k]) & 0xC0) != 0x80) {
+                ++ch;
+            }
+        }
+        if (ch > 1) {
+            total += lsp_px * static_cast<float>(ch - 1);
         }
     }
     return total;
@@ -1747,6 +1797,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->cursor_text = nullptr;
     r->cursor_pointer = nullptr;
     r->ascii_font = nullptr;
+    r->ascii_fs = 0;
     r->anim = whaleui_anim_create();
     r->text_scale = 1.0f;
     r->nav_col = -1;
