@@ -3235,6 +3235,37 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                   r->text_layer.begin() + static_cast<size_t>(strip.h) * r->fb_w,
                   0);
     }
+    /* scroll + paint-only animation: an animating element inside the
+     * viewport but OUTSIDE the strip moves (translate), and the strip-only
+     * repaint leaves its PREVIOUS position as a ghost (same root cause as
+     * the animation partial branch, applied to the scroll strip). Widen the
+     * strip to cover every visible animating element. */
+    if (scroll_dy != 0 && animating && !whaleui_anim_needs_layout(r->anim)) {
+        const int AM = 160; /* ponytail: anim-travel margin (see above) */
+        std::function<void(whaleui_layout_node_t*)> acca =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el && !nd->is_text &&
+                    whaleui_anim_has_el(r->anim, nd->el)) {
+                    int oy = node_scroll_off(r, nd);
+                    int x0 = nd->border.x - AM;
+                    int y0 = nd->border.y + oy - AM;
+                    int x1 = x0 + nd->border.w + AM + AM;
+                    int y1 = y0 + nd->border.h + AM + AM;
+                    if (x0 < 0) x0 = 0;
+                    if (y0 < 0) y0 = 0;
+                    if (x1 > r->fb_w) x1 = r->fb_w;
+                    if (y1 > r->fb_h) y1 = r->fb_h;
+                    if (x1 > x0 && y1 > y0) {
+                        dirty_rect(x0, y0, x1, y1, &strip);
+                    }
+                }
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    acca(c);
+                }
+            };
+        acca(r->tree->root);
+    }
     bool partial = false; /* load-only repaint of a dirty region */
     if (scroll_dy != 0) {
         /* scroll strip handled above */
@@ -3307,6 +3338,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * GROWS/SHRINKS, so the old box outside the new bounds would keep
          * a ghost - those frames repaint fully (relayout already made them
          * cheap). */
+        const int AM = 160; /* ponytail: anim-travel margin. The strip must
+                               cover not just the CURRENT box but anywhere
+                               the element has BEEN: a translate animation
+                               leaves a ghost at the previous position, and
+                               a strip that covers only the current box
+                               never repaints it (animation end skips the
+                               frame, so the ghost is permanent). A fixed
+                               margin covers common translate/travel
+                               animations (<=160px); a full trajectory
+                               tracker would be exact but not worth it. */
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
@@ -3325,6 +3366,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             y1 += static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
                         }
                     }
+                    x0 -= AM;
+                    y0 -= AM;
+                    x1 += AM;
+                    y1 += AM;
                     if (x0 < 0) x0 = 0;
                     if (y0 < 0) y0 = 0;
                     if (x1 > r->fb_w) x1 = r->fb_w;
@@ -3363,6 +3408,20 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->bounds_valid = 1;
     }
     const Clip* paint_clip = (partial || scroll_dy != 0) ? &strip : &full;
+    /* load-only frames (scroll strip / hover / animation, GPU LOADOP_LOAD)
+     * keep stale pixels in areas nothing repaints: the html/body background
+     * is usually transparent, so a translated animation leaves the OLD
+     * box behind at its previous position. Paint the strip's base color
+     * first - every layer (bg, gradients, box shadows, element bodies)
+     * draws over it, and transparent areas show the clean window color
+     * instead of a ghost. */
+    if (partial || scroll_dy != 0) {
+        int c[4] = {strip.x, strip.y, strip.w, strip.h};
+        whaleui_gpu_rect(g_gpu, static_cast<float>(strip.x),
+                         static_cast<float>(strip.y),
+                         static_cast<float>(strip.w),
+                         static_cast<float>(strip.h), 0.0f, r->bg_color, c);
+    }
     sel_seq(r, &sel_lo, &sel_hi, paint_clip);
     int seq = 0;
     paint_node(r, r->tree->root, 0, 0, seq, sel_lo, sel_hi, paint_clip,

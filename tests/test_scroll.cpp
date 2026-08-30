@@ -1476,6 +1476,55 @@ int main(void)
                    app, WHALEUI_RENDER_ASYNC_LAYOUT, 0) == 0);
     }
 
+    /* transform-animation ghost regression: a white element animates
+     * translateY(60px)->0. After it settles, the strip-only repaint must
+     * NOT leave the OLD position as a residue - compare against a clean
+     * (no-animation) page at the same pixel. */
+    {
+        const char* base =
+            "<html><head><style>"
+            "@keyframes m { from { transform: translateY(60px); }"
+            "  to { transform: translateY(0); } }"
+            "#a { %s }"
+            "</style></head><body style=\"background:#000\">"
+            "<div id=\"a\" style=\"background:#fff;color:#000;"
+            "font-size:16px\">HELLO</div></body></html>";
+        /* animated page */
+        whaleui_window_t* w =
+            whaleui_window_create(app, "anim-ghost-anim", 200, 200);
+        assert(w != nullptr);
+        std::string h1 = std::string(base);
+        {
+            size_t p = h1.find("%s");
+            h1.replace(p, 2, "animation: m 1s linear both");
+        }
+        assert(whaleui_window_load_html(w, h1.c_str()) == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        for (int i = 0; i < 90; ++i) {
+            SDL_Delay(12);
+            assert(whaleui_render_frame(w->render, w->document) == 0);
+        }
+        unsigned int p_anim = gpixel(w->render, 10, 60);
+        /* control page: no animation, element sits at y=0 */
+        whaleui_window_t* wc =
+            whaleui_window_create(app, "anim-ghost-ctrl", 200, 200);
+        assert(wc != nullptr);
+        std::string h2 = std::string(base);
+        {
+            size_t p = h2.find("%s");
+            h2.replace(p, 2, "background:#0f0"); /* no animation */
+        }
+        assert(whaleui_window_load_html(wc, h2.c_str()) == 0);
+        assert(whaleui_window_show(wc) == 0);
+        assert(whaleui_render_frame(wc->render, wc->document) == 0);
+        unsigned int p_ctrl = gpixel(wc->render, 10, 60);
+        /* a ghost differs from the clean (no-animation) page at y=60 */
+        assert(p_anim == p_ctrl);
+        whaleui_window_destroy(w);
+        whaleui_window_destroy(wc);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
