@@ -6,6 +6,9 @@
 #include "whaleui.h"
 
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 /* SDL3 opaque types; keep pointers, query/mutate via SDL APIs (wrapped in
  * src/platform/ and src/render/). Never dereference these here. */
@@ -52,6 +55,16 @@ struct whaleui_app
     void* key_ud;
 
     std::vector<whaleui_window_t*> windows;
+
+    /* render worker thread: whaleui_render_frame runs here so a slow frame
+     * never blocks the event loop (input stays responsive). The main thread
+     * polls events, mutates render state, and kicks the worker; the worker
+     * renders and presents. state is guarded by render_lock (short locks on
+     * the main thread, the worker takes it for the whole frame). */
+    std::thread render_thread;
+    std::atomic<int> frame_request{0}; /* main -> worker: render now */
+    std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
+    std::mutex render_lock;
 };
 
 /* resolved theme (SYSTEM -> platform detection); internal, used by window. */

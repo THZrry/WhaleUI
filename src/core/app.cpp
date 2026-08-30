@@ -44,6 +44,33 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
     }
     return nullptr;
 }
+
+/* render worker thread: renders+present all visible windows on a separate
+ * thread so a slow frame (27ms) never blocks the event loop - the main
+ * thread keeps polling input, so hover/typing stay responsive even while a
+ * frame renders. The main thread sets frame_request; the worker takes
+ * render_lock for the whole frame (main-thread input mostly mutates state
+ * without locking - the worker reads it one frame behind at worst). */
+void render_worker_fn(whaleui_app_t* app)
+{
+    while (app->running) {
+        if (app->frame_request.load()) {
+            std::lock_guard<std::mutex> lk(app->render_lock);
+            for (whaleui_window_t* win : app->windows) {
+                if (win->visible && win->sdl && win->render && win->document) {
+                    if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
+                        continue;
+                    }
+                    whaleui_render_frame(win->render, win->document);
+                }
+            }
+            app->frame_done.store(1);
+            app->frame_request.store(0);
+        } else {
+            std::this_thread::yield();
+        }
+    }
+}
 } // namespace
 
 whaleui_theme_t whaleui_app_resolved_theme(const whaleui_app_t* app)
@@ -93,6 +120,11 @@ extern "C" void whaleui_app_destroy(whaleui_app_t* app)
     if (!app) {
         return;
     }
+    app->running = 0;
+    app->frame_request.store(1);
+    if (app->render_thread.joinable()) {
+        app->render_thread.join();
+    }
     for (whaleui_window_t* win : app->windows) {
         whaleui_window_destroy(win);
     }
@@ -125,6 +157,7 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
     }
 
     Uint64 last = SDL_GetTicks();
+    app->render_thread = std::thread(render_worker_fn, app);
     while (app->running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -290,17 +323,10 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
             }
         }
 
-        /* paint all visible windows. Minimized windows are skipped entirely:
-         * they consume GPU work and upload bandwidth for pixels nobody sees
-         * (the biggest GPU-saving win on low-end machines). */
-        for (whaleui_window_t* win : app->windows) {
-            if (win->visible && win->sdl && win->render && win->document) {
-                if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
-                    continue;
-                }
-                whaleui_render_frame(win->render, win->document);
-            }
-        }
+        /* hand rendering to the worker thread: the event loop keeps polling
+         * input while a frame renders (a slow ~27ms frame no longer blocks
+         * the UI). The worker takes render_lock for the whole frame. */
+        app->frame_request.store(1);
 
         /* power-state poll (~2s): unplugging throttles the loop to the
          * battery-saver cap, plugging back in uncaps it. SDL3 3.4 has no
@@ -326,6 +352,9 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         }
         last = now;
     }
+    app->running = 0;
+    app->frame_request.store(1);
+    app->render_thread.join();
     return 0;
 }
 
