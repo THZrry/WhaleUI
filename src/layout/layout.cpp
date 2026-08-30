@@ -1859,10 +1859,12 @@ struct Builder
     }
 
     /* estimated inline width of a line-flow node (text run or inline
-     * element). Real glyph widths (metric hook) only for runs that join an
-     * inline line next to another member - their x advances against the
-     * painted glyphs. An isolated run (nothing inline after it) uses the
-     * fast estimate: its own width is a layout hint only. */
+     * element). Real glyph widths (metric hook) for EVERY text run: the
+     * cheap estimate is narrower than the real ink (CJK/latin metrics) and
+     * an isolated run (nothing inline after it) computed at the estimate
+     * left the tail glyphs clipped by an overflow ancestor - measured for
+     * the qwen 21k page ('深' at font 200: 190px estimate vs 220px ink).
+     * The measure is cached (glyph_w_cache), so the per-run cost is low. */
     int inline_est_w(whaleui_layout_node_t* c, int font_px)
     {
         float em = font_px > 0 ? static_cast<float>(font_px) : 16.0f;
@@ -1871,15 +1873,10 @@ struct Builder
             if (fs <= 0) {
                 fs = em;
             }
-            bool joins = c->next && inline_member(c->next);
-            if (joins) {
-                return static_cast<int>(text_measure(
-                    c->text, fs, get(c->style, "font-family"),
-                    font_weight_bold(c->style),
-                    letter_spacing_px(c->style, fs)));
-            }
-            return static_cast<int>(text_measure_est(
-                c->text, fs, letter_spacing_px(c->style, fs)));
+            return static_cast<int>(text_measure(
+                c->text, fs, get(c->style, "font-family"),
+                font_weight_bold(c->style),
+                letter_spacing_px(c->style, fs)));
         }
         return static_cast<int>(estimate_content_width(c, em));
     }
