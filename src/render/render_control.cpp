@@ -25,7 +25,13 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
         el, (const lxb_char_t*)"checked", 7);
     int bx = n->border.x + off_x;
     int by = n->border.y + off_y;
-    int bw = n->border.w, bh = n->border.h;
+    /* native control size 16x16, regardless of the layout box: flex/inline
+     * flows can mis-size an unchecked checkbox (11px wide, 32px tall - the
+     * inline-block height takes the line box), which painted a squashed
+     * sliver instead of a checkbox. The position still comes from the box.
+     * needs: layout fix - inline/flex children with an explicit height
+     * must keep it (the 32px line-box height); [type=...] selectors. */
+    const int bw = 16, bh = 16;
     if (bw <= 0 || bh <= 0) {
         return;
     }

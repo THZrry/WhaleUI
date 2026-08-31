@@ -328,7 +328,10 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
      * platform cannot report one, e.g. older systems) */
     app->system_theme = whaleui_platform_system_theme();
     std::strcpy(app->theme_style, "fluent");
-    std::strcpy(app->accent, "#0067c0"); /* default accent (Win11 Fluent blue) */
+    /* no default accent: an empty accent means each theme uses its own
+     * default (material #6750a4, aero #0078d7, ...). Only an explicit
+     * whaleui_app_set_accent_color call feeds --accent. */
+    app->accent[0] = '\0';
     app->max_fps = 0;
     app->async_layout = 0; /* async first layout: opt-in only */
     /* battery saver is a *default*, gated on the actual system power state:

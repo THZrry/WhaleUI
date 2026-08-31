@@ -499,7 +499,8 @@ a { color: var(--link); text-decoration: none; transition: color 0.15s; }
 a:hover { text-decoration: underline; }
 button {
     background: var(--btn-bg); color: var(--btn-fg);
-    border: none; border-radius: var(--radius-btn);
+    border: none;
+    border-radius: 18px; /* ½ºÄÒ = min-height/2£¨999px ´¥·¢ÒıÇæ½ºÄÒäÖÈ¾ bug£© */
     min-height: 36px; padding: 0 22px; font-size: var(--text-base);
     font-weight: 600; cursor: pointer; text-transform: none;
     box-shadow: var(--shadow-sm);

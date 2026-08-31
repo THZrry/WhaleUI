@@ -63,6 +63,30 @@ kept (commented with `needs:`) so nothing is lost:
   shows nothing; placeholder text must be painted by the engine.
 - [ ] `transform: rotate` (and other rotation functions) - `spin`-style
   keyframes have no effect; translate/scale work.
+- [ ] `[type="..."]` attribute selectors - CSS cannot size style controls by
+  input type (checkbox/radio rely on the UA default sizes).
+- [ ] inline/flex children with an explicit `height` keep it - a
+  checkbox/radio in a line box is sized 32px tall (line-height) instead of
+  its 16px; in a flex row it can also shrink to ~11px wide (the UA default
+  width is applied after the flex main-size pass). `paint_checkbox` now
+  forces 16x16 as a stopgap.
+- [ ] hover interaction in a real window - the render-layer hover
+  background change works (test_scroll), but mouse-move -> hover state ->
+  repaint does not fire in the app event loop (buttons/links/cards show no
+  hover feedback).
+
+## Fixed
+
+- [x] `is_editable` accepted only `type="text"` - password/number/email
+  values never painted. Now any non-special input type is editable.
+- [x] app default accent `#0067c0` overrode every theme's default (material
+  should be #6750a4). The app accent now starts empty; each theme's own
+  default applies until the user sets one.
+- [x] material capsule buttons: `border-radius: 999px` painted no
+  background inside a flex container (engine capsule bug). CSS uses
+  18px (= min-height/2) for now.
+- [x] checkbox/radio paint box: layout 11x32 sliver -> forced 16x16
+  (position still from the layout box).
 
 ## Fixed in this round
 

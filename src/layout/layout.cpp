@@ -2150,6 +2150,22 @@ struct Builder
         bool any_shrink = false;
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
+            /* checkbox/radio UA default 16x16 must be visible BEFORE the
+             * flex main-size pass reads width: the per-node default lives
+             * in layout() (1228), which runs AFTER flex sizes the items -
+             * an unchecked checkbox then sized as an empty inline-block
+             * (11px wide) instead of 16px and painted squashed. */
+            if (k->el && input_kind(k->el) == 2) {
+                if (k->style.find("width") == k->style.end()) {
+                    k->style["width"] = "16px";
+                }
+                if (k->style.find("height") == k->style.end()) {
+                    k->style["height"] = "16px";
+                }
+                if (k->style.find("padding") == k->style.end()) {
+                    k->style["padding"] = "0";
+                }
+            }
             float basis = 0;
             flex_shorthand(k->style, grow[i], shrink[i], basis);
             if (shrink[i] > 0) {

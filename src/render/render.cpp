@@ -298,8 +298,25 @@ bool is_check_radio(lxb_dom_element* el)
                  (alen == 5 && std::memcmp(t, "radio", 5) == 0));
 }
 
-/* is this element a text-editing target? input(type=text)/textarea, or any
- * element with contenteditable != "false" */
+/* is this element a text-editing target? text-ish input/textarea, or any
+ * element with contenteditable != "false". text-ish = any input type that
+ * holds text: text, password, number, email, search, tel, url, ... (not
+ * button/checkbox/radio/file/color/submit/reset/hidden/image/range) */
+bool is_non_text_input(const lxb_char_t* t, size_t alen)
+{
+    static const char* kSpecial[] = {
+        "button", "checkbox", "radio", "file", "color", "submit",
+        "reset", "hidden", "image", "range", "select",
+    };
+    for (size_t i = 0; i < sizeof(kSpecial) / sizeof(kSpecial[0]); ++i) {
+        size_t n = std::strlen(kSpecial[i]);
+        if (alen == n && std::memcmp(t, kSpecial[i], n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool is_editable(lxb_dom_element* el)
 {
     if (!el) {
@@ -310,10 +327,8 @@ bool is_editable(lxb_dom_element* el)
             size_t alen = 0;
             const lxb_char_t* t = lxb_dom_element_get_attribute(
                 el, (const lxb_char_t*)"type", 4, &alen);
-            /* non-text input types (button/checkbox/radio/...) are not
-             * text-editable */
-            if (t && alen > 0 &&
-                !(alen == 4 && std::memcmp(t, "text", 4) == 0)) {
+            /* button/checkbox/radio/... are not text-editable */
+            if (t && alen > 0 && is_non_text_input(t, alen)) {
                 return false;
             }
         }
@@ -342,8 +357,7 @@ bool is_editable_node(whaleui_layout_node_t* n)
                 n->el, (const lxb_char_t*)"type", 4, &alen);
             /* non-text input types (button/checkbox/radio/...) are not
              * text-editable */
-            if (t && alen > 0 &&
-                !(alen == 4 && std::memcmp(t, "text", 4) == 0)) {
+            if (t && alen > 0 && is_non_text_input(t, alen)) {
                 return false;
             }
         }
