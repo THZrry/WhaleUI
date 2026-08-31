@@ -217,11 +217,57 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     const Clip* ic = clip_input ? &iclip : clip;
 
     if (tag_eq(el, "input")) {
-        /* input has no text children: paint the value here, always */
+        /* input has no text children: paint the value here, always.
+         * The y MUST carry the scroll offset (off_y + own scroll_delta)
+         * like iclip does - the layout tree keeps the pre-scroll position,
+         * and painting at the raw content.y puts the glyphs outside iclip
+         * (a scrolled page left the input text blank until a hover
+         * relayout re-baked the position). draw_text_at re-centers
+         * vertically itself, so pass the uncentered content top. */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-        draw_text_at(r, val, n->content.x - hx + off_x, n->content.y,
-                     n->content.w, n->content.h,
-                     fs, family, fg, style, 0, el, ic);
+        std::string shown = val;
+        unsigned int pc = fg;
+        if (shown.empty()) {
+            /* placeholder: shown only while the value is empty (browser
+             * behavior); the muted theme color keeps it visually secondary */
+            size_t plen = 0;
+            const lxb_char_t* ph = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"placeholder", 11, &plen);
+            if (ph && plen > 0) {
+                shown.assign(reinterpret_cast<const char*>(ph), plen);
+                auto mi = r->theme_vars.find("--muted");
+                if (mi != r->theme_vars.end()) {
+                    whaleui_render_parse_color(mi->second.c_str(), &pc);
+                } else {
+                    pc = 0x99808080;
+                }
+            }
+        }
+        if (!shown.empty()) {
+            draw_text_at(r, shown, n->content.x - hx + off_x,
+                         n->content.y + off_y + scroll_delta(r, n),
+                         n->content.w, n->content.h,
+                         fs, family, pc, style, 0, el, ic);
+        }
+    } else if (tag_eq(el, "textarea") && val.empty()) {
+        /* empty textarea: its value glyphs normally come from the layout
+         * text run (paint_text), which does not exist for an empty value -
+         * paint the placeholder here instead. */
+        size_t plen = 0;
+        const lxb_char_t* ph = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"placeholder", 11, &plen);
+        if (ph && plen > 0) {
+            unsigned int pc = 0x99808080;
+            auto mi = r->theme_vars.find("--muted");
+            if (mi != r->theme_vars.end()) {
+                whaleui_render_parse_color(mi->second.c_str(), &pc);
+            }
+            std::string phs(reinterpret_cast<const char*>(ph), plen);
+            draw_text_at(r, phs, n->content.x + off_x,
+                         n->content.y + off_y + scroll_delta(r, n),
+                         n->content.w, n->content.h, fs, family, pc, style,
+                         0, el, ic);
+        }
     }
     /* textarea / contenteditable: the value glyphs come from the layout
      * text run (paint_text), which already carries the live scroll delta

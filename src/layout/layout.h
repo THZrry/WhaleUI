@@ -70,6 +70,10 @@ struct whaleui_layout_node
     unsigned in_inline : 1;  /* laid out on an inline line (mixed with
                                 siblings): wraps to the line remainder,
                                 never centers, top-aligned with the line */
+    unsigned pseudo : 2;     /* 0 = element/run, 1 = ::before box, 2 = ::after
+                                box (a pseudo-element with box properties
+                                such as background/position/transform).
+                                pointer-events:none: hit-testing skips them */
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 

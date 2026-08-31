@@ -35,6 +35,9 @@ struct SelPart
     bool nth;           /* ":nth-child(An+B)" present */
     int nth_a, nth_b;   /* position p matches when p = A*n + B, n >= 0 */
     bool pseudo_el;     /* "::before"/"::after" suffix: never matches el */
+    bool has_attr;      /* "[name]" / "[name=value]" present */
+    std::string attr;   /* attribute name */
+    std::string attr_val; /* expected value ("" = presence only) */
 };
 
 /* parse ":nth-child(odd|even|N|n|n+B|An+B)" into a/b. Returns false on
@@ -101,7 +104,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     const char* end = sel + len;
     if (p < end && *p != '#' && *p != '.') {
         const char* t = p;
-        while (p < end && *p != '#' && *p != '.' && *p != ':') {
+        while (p < end && *p != '#' && *p != '.' && *p != ':' &&
+               *p != '[') {
             ++p;
         }
         out.tag.assign(t, static_cast<size_t>(p - t));
@@ -110,6 +114,65 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
         }
     }
     while (p < end) {
+        if (*p == '[') {
+            /* attribute selector: [name] presence, [name="value"] equality.
+             * Quotes inside the value are handled so "=" within them is not
+             * mistaken for the operator. */
+            ++p;
+            const char* as = p;
+            while (p < end && *p != ']' && *p != '=') {
+                if (*p == '"' || *p == '\'') {
+                    char q = *p++;
+                    while (p < end && *p != q) {
+                        ++p;
+                    }
+                    if (p < end) {
+                        ++p;
+                    }
+                    continue;
+                }
+                ++p;
+            }
+            std::string aname(as, static_cast<size_t>(p - as));
+            size_t ab = aname.find_first_not_of(" \t");
+            size_t ae = aname.find_last_not_of(" \t");
+            if (ab != std::string::npos) {
+                out.attr = aname.substr(ab, ae - ab + 1);
+                out.has_attr = true;
+            }
+            if (p < end && *p == '=') {
+                ++p;
+                const char* vs = p;
+                if (p < end && (*p == '"' || *p == '\'')) {
+                    char q = *p++;
+                    const char* v0 = p;
+                    while (p < end && *p != q) {
+                        ++p;
+                    }
+                    out.attr_val.assign(v0, static_cast<size_t>(p - v0));
+                    if (p < end) {
+                        ++p;
+                    }
+                } else {
+                    while (p < end && *p != ']') {
+                        ++p;
+                    }
+                    out.attr_val.assign(vs, static_cast<size_t>(p - vs));
+                    size_t vb = out.attr_val.find_first_not_of(" \t");
+                    size_t ve = out.attr_val.find_last_not_of(" \t");
+                    if (vb != std::string::npos) {
+                        out.attr_val = out.attr_val.substr(vb, ve - vb + 1);
+                    }
+                }
+            }
+            while (p < end && *p != ']') {
+                ++p;
+            }
+            if (p < end) {
+                ++p; /* skip ']' */
+            }
+            continue;
+        }
         if (*p == ':') {
             ++p;
             /* "::after"/"::before" pseudo-element: never matches the
@@ -118,13 +181,15 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             if (p < end && *p == ':') {
                 out.pseudo_el = true;
                 ++p;
-                while (p < end && *p != '#' && *p != '.' && *p != ':') {
+                while (p < end && *p != '#' && *p != '.' && *p != ':' &&
+                       *p != '[') {
                     ++p;
                 }
                 continue;
             }
             const char* s = p;
-            while (p < end && *p != '#' && *p != '.' && *p != ':') {
+            while (p < end && *p != '#' && *p != '.' && *p != ':' &&
+                   *p != '[') {
                 ++p;
             }
             std::string v(s, static_cast<size_t>(p - s));
@@ -151,7 +216,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
         }
         char kind = *p++;
         const char* s = p;
-        while (p < end && *p != '#' && *p != '.' && *p != ':') {
+        while (p < end && *p != '#' && *p != '.' && *p != ':' &&
+               *p != '[') {
             ++p;
         }
         std::string v(s, static_cast<size_t>(p - s));
@@ -171,7 +237,7 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     return !out.pseudo_el &&
            (!out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
             out.hover || out.active || out.focus || out.disabled ||
-            out.last_child || out.first_child || out.nth);
+            out.last_child || out.first_child || out.nth || out.has_attr);
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -245,6 +311,20 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
                                                             (const lxb_char_t*)"disabled", 8, &alen);
         if (!d || alen == 0) {
             return false;
+        }
+    }
+    if (p.has_attr) {
+        size_t alen = 0;
+        const lxb_char_t* a = lxb_dom_element_get_attribute(
+            el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
+            p.attr.size(), &alen);
+        if (!a) {
+            return false; /* [name]: the attribute must exist */
+        }
+        if (!p.attr_val.empty() &&
+            (alen != p.attr_val.size() ||
+             std::memcmp(a, p.attr_val.data(), p.attr_val.size()) != 0)) {
+            return false; /* [name="value"]: exact match */
         }
     }
     if (p.last_child) {
@@ -969,7 +1049,8 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
                 }
                 const char* t = seg_start;
                 while (t < seg_end && *t != '#' && *t != '.' && *t != ':' &&
-                       *t != ' ' && *t != '\t' && *t != '>' && *t != '+') {
+                       *t != '[' && *t != ' ' && *t != '\t' && *t != '>' &&
+                       *t != '+') {
                     ++t;
                 }
                 if (t > seg_start &&

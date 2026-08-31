@@ -726,7 +726,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * off_x/off_y carry the translation into the subtree. Child coordinates
      * are NOT scaled. ponytail: scale is visual on this box; true 2D
      * transform stacks + hit-testing are a later step. */
-    float tdx = 0.0f, tdy = 0.0f, ts = 1.0f;
+    float tdx = 0.0f, tdy = 0.0f, tsx = 1.0f, tsy = 1.0f;
     if (has_xf) {
         whaleui_transform_t tf;
         if (whaleui_transform_eval(ntv.c_str(),
@@ -734,14 +734,17 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                                    static_cast<float>(n->border.h), &tf) == 0) {
             tdx = tf.tx;
             tdy = tf.ty;
-            ts = tf.sx;
+            tsx = tf.sx;
+            tsy = tf.sy;
         }
     }
     int bw = n->border.w;
     int bh = n->border.h;
-    if (ts != 1.0f) {
-        bw = static_cast<int>(n->border.w * ts);
-        bh = static_cast<int>(n->border.h * ts);
+    if (tsx != 1.0f || tsy != 1.0f) {
+        /* non-uniform scale (scaleX/scaleY): the box shrinks per axis,
+         * anchored at the center like the uniform path */
+        bw = static_cast<int>(n->border.w * tsx);
+        bh = static_cast<int>(n->border.h * tsy);
     }
     int nox = off_x + static_cast<int>(tdx) + (n->border.w - bw) / 2;
     int noy = off_y + static_cast<int>(tdy) + (n->border.h - bh) / 2;
@@ -892,14 +895,16 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* native controls drawn by the engine (not editable): checkbox/radio
      * boxes and progress/meter tracks. tag_id pre-filters before the
-     * attribute checks. */
+     * attribute checks. Pseudo-element boxes share el with their owner but
+     * must not trigger the owner's control painting (an input's ::after
+     * focus underline is a plain painted box). */
     const int tid = n->tag_id;
-    if (n->el && tid == WUI_TAG_INPUT && is_check_radio(n->el)) {
+    if (!n->pseudo && n->el && tid == WUI_TAG_INPUT && is_check_radio(n->el)) {
         paint_checkbox(r, n, nox, noy, eff);
-    } else if (n->el &&
+    } else if (!n->pseudo && n->el &&
                (tid == WUI_TAG_PROGRESS || tid == WUI_TAG_METER)) {
         paint_progress(r, n, nox, noy, eff);
-    } else if (n->el && is_editable_node(n)) {
+    } else if (!n->pseudo && n->el && is_editable_node(n)) {
         paint_editable(r, n, nox, noy, eff);
     }
     /* <select> control: value + arrow painted here; the expanded list is

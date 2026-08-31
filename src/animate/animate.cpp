@@ -523,7 +523,7 @@ bool trans_in_props(const TransSpec& ts, const std::string& prop)
 
 struct TransformOp
 {
-    int op;     /* 0=translate, 1=scale */
+    int op;     /* 0=translate, 1=scale, 2=scaleX, 3=scaleY */
     float a, b; /* translate: x,y; scale: sx,sy */
     int au, bu; /* 0=px/number, 1=% (translate only) */
 };
@@ -635,6 +635,26 @@ bool transform_parse(const char* v, std::vector<TransformOp>& out)
             skip_to_close(p);
             TransformOp op = {1, a, b, 0, 0};
             out.push_back(op);
+        } else if (std::strncmp(p, "scaleX(", 7) == 0) {
+            p += 7;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            skip_to_close(p);
+            TransformOp op = {2, a, 1.0f, 0, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "scaleY(", 7) == 0) {
+            p += 7;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            skip_to_close(p);
+            TransformOp op = {3, a, 1.0f, 0, 0};
+            out.push_back(op);
         } else {
             return false; /* unsupported function */
         }
@@ -649,8 +669,8 @@ std::vector<TransformOp> initial_ops(const std::vector<TransformOp>& ref)
     v.reserve(ref.size());
     for (size_t i = 0; i < ref.size(); ++i) {
         TransformOp z = ref[i];
-        z.a = ref[i].op == 1 ? 1.0f : 0.0f;
-        z.b = ref[i].op == 1 ? 1.0f : 0.0f;
+        z.a = ref[i].op == 0 ? 0.0f : 1.0f;
+        z.b = ref[i].op == 0 ? 0.0f : 1.0f;
         v.push_back(z);
     }
     return v;
@@ -690,8 +710,12 @@ bool transform_lerp(const std::string& from, const std::string& to, float t,
         if (a[i].op == 0) {
             std::snprintf(buf, sizeof(buf), "translate(%g%s, %g%s)", av,
                           a[i].au ? "%" : "px", bv, a[i].bu ? "%" : "px");
-        } else {
+        } else if (a[i].op == 1) {
             std::snprintf(buf, sizeof(buf), "scale(%g, %g)", av, bv);
+        } else if (a[i].op == 2) {
+            std::snprintf(buf, sizeof(buf), "scaleX(%g)", av);
+        } else {
+            std::snprintf(buf, sizeof(buf), "scaleY(%g)", av);
         }
         res += buf;
         if (i + 1 < a.size()) {
@@ -997,9 +1021,13 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
         if (op.op == 0) {
             out->tx += op.au ? op.a * self_w / 100.0f : op.a;
             out->ty += op.bu ? op.b * self_h / 100.0f : op.b;
-        } else {
+        } else if (op.op == 1) {
             out->sx *= op.a;
             out->sy *= op.b;
+        } else if (op.op == 2) {
+            out->sx *= op.a;
+        } else {
+            out->sy *= op.a;
         }
     }
     return 0;
@@ -1181,6 +1209,7 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
 }
 
 /* Transition: interpolate changed properties toward their new values. */
+static std::string prop_from_key(const std::string& key); /* defined below */
 void apply_transition(whaleui_anim_t* a, const std::string& elkey,
                       WhaleUIComputedStyle& style, uint64_t now,
                       bool allow_retarget)
@@ -1234,7 +1263,31 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
         }
         std::map<std::string, std::string>::iterator pv = a->prev.find(key);
         if (pv == a->prev.end()) {
-            a->prev[key] = kv->second;
+            /* the property appeared with a pseudo-class (the cascade is
+             * static between relayouts, so a property that was never in
+             * the style before can only have arrived via :hover/:active).
+             * Its previous value is the property's neutral value: animate
+             * from it so entering the state transitions instead of
+             * snapping - without this a hover transform had no baseline
+             * (prev was never recorded) and the lift/fade jumped
+             * instantly. Only transform has a known neutral; everything
+             * else falls back to recording the value (snap on change). */
+            std::string tmp;
+            if (ts.dur > 0 && kv->first == "transform" &&
+                any_lerp("transform", "none", kv->second, 0.0f, tmp)) {
+                whaleui_anim::Trans st;
+                st.from = "none";
+                st.to = kv->second;
+                st.start = now + ts.delay;
+                st.dur = ts.dur;
+                st.delay = ts.delay;
+                st.timing = ts.timing;
+                a->trans[key] = st;
+                kv->second = "none"; /* start from the neutral value */
+                a->active = 1;
+            } else {
+                a->prev[key] = kv->second;
+            }
             continue;
         }
         if (pv->second == kv->second) {
@@ -1255,6 +1308,33 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
         } else {
             pv->second = kv->second; /* no transition / not interpolable: snap */
         }
+    }
+    /* a transitioned property that left the style (:hover/:active no
+     * longer matches, so the cascade dropped it) must animate back to its
+     * neutral value - the hover lift/color reverts smoothly instead of
+     * jumping. Only transform has a known neutral ("none"). */
+    for (std::map<std::string, std::string>::iterator it = a->prev.begin();
+         it != a->prev.end();) {
+        std::string prop = prop_from_key(it->first);
+        std::string elk = it->first.substr(it->first.find('@') + 1);
+        if (elk != elkey || !trans_in_props(ts, prop) ||
+            style.find(prop) != style.end() || prop != "transform") {
+            ++it;
+            continue;
+        }
+        std::string tmp;
+        if (ts.dur > 0 && any_lerp("transform", it->second, "none", 0.0f, tmp)) {
+            whaleui_anim::Trans st;
+            st.from = it->second;
+            st.to = "none";
+            st.start = now + ts.delay;
+            st.dur = ts.dur;
+            st.delay = ts.delay;
+            st.timing = ts.timing;
+            a->trans[prop + "@" + elkey] = st;
+            a->active = 1;
+        }
+        it = a->prev.erase(it); /* the property is gone: drop the baseline */
     }
 }
 

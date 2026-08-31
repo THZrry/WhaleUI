@@ -948,6 +948,16 @@ int tag_id_of(lxb_dom_element* el)
     }
 }
 
+/* box properties a ::before/::after can carry (beyond the paint list in
+ * pseudo_style): presence of any of these turns the pseudo-element into
+ * a real box (state layer, focus underline) instead of a text run */
+static const char* const kPseudoBoxProps[] = {
+    "background", "background-color", "background-image", "position",
+    "width", "height", "inset", "left", "right", "top", "bottom",
+    "transform", "opacity", "border", "border-radius", "margin",
+    "padding", "box-shadow", "pointer-events",
+};
+
 struct Builder
 {
     whaleui_layout_tree_t* tree;
@@ -1092,6 +1102,115 @@ struct Builder
         }
     }
 
+    /* does any matching ::before(1)/::after(2) rule for el carry a box
+     * property? A pseudo with only text properties stays a text run; one
+     * with box properties becomes a real painted box. */
+    bool pseudo_has_box(lxb_dom_element* el, int which)
+    {
+        if (!el || !rules) {
+            return false;
+        }
+        for (size_t i = 0; i < rule_count; ++i) {
+            const char* sel = rules[i].selector;
+            if (!sel || (std::strstr(sel, "::before") == nullptr &&
+                         std::strstr(sel, "::after") == nullptr)) {
+                continue;
+            }
+            int pseudo = 0;
+            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+                pseudo != which) {
+                continue;
+            }
+            for (size_t d = 0; d < rules[i].decl_count; ++d) {
+                char* kv = rules[i].decls[d];
+                char* eq = std::strchr(kv, '=');
+                if (!eq) {
+                    continue;
+                }
+                std::string name(kv, static_cast<size_t>(eq - kv));
+                for (size_t p = 0;
+                     p < sizeof(kPseudoBoxProps) / sizeof(kPseudoBoxProps[0]);
+                     ++p) {
+                    if (name == kPseudoBoxProps[p]) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /* computed style for a pseudo-element BOX: the element's style plus
+     * every matching pseudo rule's box + paint properties. The box pins to
+     * the parent's content box (position:absolute + inset:0) unless the
+     * pseudo rule specifies offsets/dimensions itself (the focus underline
+     * sets left/right/bottom/height), and never receives pointer events. */
+    WhaleUIComputedStyle pseudo_box_style(const WhaleUIComputedStyle& base,
+                                          lxb_dom_element* el, int which)
+    {
+        WhaleUIComputedStyle s = base;
+        /* the box sizes itself from its own rules, not from the owner's:
+         * inherit text/font, but drop the owner's box properties (an
+         * input's min-height:32px would otherwise stretch the 2px focus
+         * underline to the full control height). */
+        static const char* kInheritClear[] = {
+            "width", "height", "min-width", "min-height", "max-width",
+            "max-height", "padding", "margin", "border", "border-width",
+            "border-top", "border-bottom", "border-left", "border-right",
+            "display", "position", "box-sizing",
+        };
+        for (size_t i = 0;
+             i < sizeof(kInheritClear) / sizeof(kInheritClear[0]); ++i) {
+            s.erase(kInheritClear[i]);
+        }
+        if (el && rules) {
+            for (size_t i = 0; i < rule_count; ++i) {
+                const char* sel = rules[i].selector;
+                if (!sel || (std::strstr(sel, "::before") == nullptr &&
+                             std::strstr(sel, "::after") == nullptr)) {
+                    continue;
+                }
+                int pseudo = 0;
+                if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+                    pseudo != which) {
+                    continue;
+                }
+                for (size_t d = 0; d < rules[i].decl_count; ++d) {
+                    char* kv = rules[i].decls[d];
+                    char* eq = std::strchr(kv, '=');
+                    if (!eq) {
+                        continue;
+                    }
+                    std::string name(kv, static_cast<size_t>(eq - kv));
+                    bool box = false;
+                    for (size_t p = 0;
+                         p < sizeof(kPseudoBoxProps) /
+                                 sizeof(kPseudoBoxProps[0]);
+                         ++p) {
+                        if (name == kPseudoBoxProps[p]) {
+                            box = true;
+                            break;
+                        }
+                    }
+                    if (box) {
+                        s[name] = resolve_var_in(eq + 1);
+                    }
+                }
+            }
+        }
+        if (s.find("position") == s.end()) {
+            s["position"] = "absolute";
+        }
+        if (s.find("inset") == s.end() && s.find("left") == s.end() &&
+            s.find("right") == s.end() && s.find("top") == s.end() &&
+            s.find("bottom") == s.end() && s.find("width") == s.end() &&
+            s.find("height") == s.end()) {
+            s["inset"] = "0";
+        }
+        s["pointer-events"] = "none";
+        return s;
+    }
+
     /* append a text-run node under n */
     whaleui_layout_node_t* add_run(whaleui_layout_node_t* n,
                                    const std::string& text,
@@ -1104,6 +1223,7 @@ struct Builder
         t->is_text = 1;
         t->visible = 1;
         t->in_inline = 0;
+        t->pseudo = 0;
         t->opacity = n->opacity;
         t->text = tree->text_arena.back();
         t->style = style;
@@ -1134,6 +1254,7 @@ struct Builder
         n->visible = 1;
         n->is_text = 0;
         n->in_inline = 0;
+        n->pseudo = 0;
         n->scroll_y = 0;
         n->scroll_max = 0;
         if (scrolls && el) {
@@ -1507,10 +1628,33 @@ struct Builder
             link = &t->next;
             cur_run.clear();
         };
-        if (n->visible && !pre.empty()) {
-            whaleui_layout_node_t* t =
-                add_run(n, pre, pseudo_style(n->style, el, 1));
-            link = &t->next;
+        if (n->visible && (pseudo_has_box(el, 1) || !pre.empty())) {
+            if (pseudo_has_box(el, 1)) {
+                /* box pseudo-element (::before): a real painted box (state
+                 * layer / gradient overlay) with its content as a text run */
+                whaleui_layout_node_t* pb = new_node();
+                pb->el = el;
+                pb->parent = n;
+                pb->pseudo = 1;
+                pb->visible = 1;
+                pb->is_text = 0;
+                pb->in_inline = 0;
+                pb->opacity = n->opacity;
+                pb->style = pseudo_box_style(n->style, el, 1);
+                if (!*link) {
+                    *link = pb;
+                } else {
+                    (*link)->next = pb;
+                }
+                link = &pb->next;
+                if (!pre.empty()) {
+                    add_run(pb, pre, pb->style);
+                }
+            } else {
+                whaleui_layout_node_t* t =
+                    add_run(n, pre, pseudo_style(n->style, el, 1));
+                link = &t->next;
+            }
         }
         lxb_dom_node* c = el->node.first_child;
         while (c) {
@@ -1577,10 +1721,33 @@ struct Builder
             c = c->next;
         }
         flush_run();
-        if (n->visible && !post.empty()) {
-            whaleui_layout_node_t* t =
-                add_run(n, post, pseudo_style(n->style, el, 2));
-            link = &t->next;
+        if (n->visible && (pseudo_has_box(el, 2) || !post.empty())) {
+            if (pseudo_has_box(el, 2)) {
+                /* box pseudo-element (::after): focus underline / active
+                 * state layer (see ::before above) */
+                whaleui_layout_node_t* pb = new_node();
+                pb->el = el;
+                pb->parent = n;
+                pb->pseudo = 2;
+                pb->visible = 1;
+                pb->is_text = 0;
+                pb->in_inline = 0;
+                pb->opacity = n->opacity;
+                pb->style = pseudo_box_style(n->style, el, 2);
+                if (!*link) {
+                    *link = pb;
+                } else {
+                    (*link)->next = pb;
+                }
+                link = &pb->next;
+                if (!post.empty()) {
+                    add_run(pb, post, pb->style);
+                }
+            } else {
+                whaleui_layout_node_t* t =
+                    add_run(n, post, pseudo_style(n->style, el, 2));
+                link = &t->next;
+            }
         }
         return n;
     }
@@ -1630,6 +1797,28 @@ struct Builder
             std::string ws = get(n->style, "white-space");
             if (ws == "nowrap" || ws == "pre") {
                 avail = 0x7FFFFFFF;
+            }
+            /* an inline element's text flows with the OUTER line box: its
+             * wrap width is the block ancestor's remaining line space, not
+             * the inline box's own content width (~= the text width, at
+             * which a line wrapping exactly at the boundary estimates 2
+             * lines and the paint pass duplicates them - <code> text
+             * overlapped the line below it). Walk up past inline boxes
+             * (code/span/b/em...) to the first block/flex box. */
+            if (avail != 0x7FFFFFFF) {
+                whaleui_layout_node_t* anc = n->parent;
+                while (anc && !anc->is_text &&
+                       display_kind(get(anc->style, "display")) == 2 &&
+                       get(anc->style, "display") == "inline") {
+                    anc = anc->parent;
+                }
+                if (anc && anc->content.w > 0) {
+                    int right = anc->content.x + anc->content.w;
+                    int av2 = right - cx;
+                    if (av2 > 0) {
+                        avail = av2;
+                    }
+                }
             }
             std::string fam2 = get(n->style, "font-family");
             bool bold2 = font_weight_bold(n->style);
@@ -1901,8 +2090,9 @@ struct Builder
          * The root element (html) always scrolls: content taller than the
          * viewport scrolls the page (browser default). */
         std::string ov = get(n->style, "overflow");
-        bool scrollable = ov == "auto" || ov == "scroll" ||
-                          (n == tree->root && tree->root->scroll_y > 0);
+        bool scrollable = !n->pseudo &&
+                          (ov == "auto" || ov == "scroll" ||
+                           (n == tree->root && tree->root->scroll_y > 0));
         int saved_cy = n->content.y;
         if (scrollable && n->scroll_y > 0) {
             n->content.y -= n->scroll_y;
@@ -1928,6 +2118,20 @@ struct Builder
             layout_grid(n, inner_w, inner_h, font_px, kid_cursor);
         } else if (!is_sel && !is_inp) {
             layout_block(n, inner_w, inner_h, font_px, kid_cursor);
+        } else {
+            /* a <select>/<input> renders its value from an attribute, not
+             * from a child text run: do NOT lay out the option/value
+             * children (they would stack and blow the control up to the
+             * option count). Pseudo-element boxes (::before/::after state
+             * layers, focus underline) DO lay out - they are absolutely
+             * positioned against the control's content box. */
+            for (whaleui_layout_node_t* c = n->first_child; c;
+                 c = c->next) {
+                if (c->pseudo) {
+                    layout(c, n->content.x, n->content.y, inner_w, inner_h,
+                           font_px, &kid_cursor);
+                }
+            }
         }
         /* a <select>/<input> renders its value from an attribute, not from
          * a child text run: do NOT lay out children here (the <option>s
@@ -1981,8 +2185,9 @@ struct Builder
          * give them the same floor. */
         /* floor the control height (is_sel/is_inp from above): an inline
          * select/input reserves one value line; the popup text fits 16px
-         * content box + the value-text nudge. */
-        if (n->el && (is_sel || is_inp) && n->border.h < 28) {
+         * content box + the value-text nudge. Pseudo-element boxes keep
+         * their own dimensions (a 2px focus underline must not grow). */
+        if (n->el && !n->pseudo && (is_sel || is_inp) && n->border.h < 28) {
             n->border.h = 28;
             n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
         }
@@ -2037,8 +2242,24 @@ struct Builder
             if (c->border.w > 0) {
                 return c->border.w;
             }
+            /* wrap-decision width: the FIRST \n-free segment only. A run
+             * with embedded newlines (a long <p> that folded onto a second
+             * source line) measured whole is far wider than the line
+             * remainder, so the wrap check below kicked the whole run to a
+             * fresh line even though its first segment fit - the tail
+             * started one line early ("用 <code>..</code> 打开任意页面..."
+             * broke right after the code). The run soft-wraps internally
+             * at paint time; only the first segment decides placement. */
+            std::string seg = c->text;
+            size_t nl = seg.find('\n');
+            if (nl != std::string::npos) {
+                seg = seg.substr(0, nl);
+            }
+            if (seg.empty()) {
+                return 0;
+            }
             return static_cast<int>(text_measure(
-                c->text, fs, get(c->style, "font-family"),
+                seg, fs, get(c->style, "font-family"),
                 font_weight_bold(c->style),
                 letter_spacing_px(c->style, fs)));
         }

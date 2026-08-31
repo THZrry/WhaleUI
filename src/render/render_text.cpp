@@ -1234,6 +1234,24 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         tw = L.tw;
         th = L.th;
+        /* letter-spacing is added to the pen per glyph (px += advance +
+         * lsp) but L.tw is the plain advance sum: a spaced line's last
+         * glyph lands lsp*(chars-1) past tw and the raster clip (tx2 >=
+         * tw) sliced its right side off - small fonts with letter-spacing
+         * visibly lost their tail. Grow the buffer by the widest line's
+         * spacing so every glyph fits. */
+        if (lsp > 0) {
+            size_t max_ch = 0;
+            for (size_t li = 0; li < L.lines.size(); ++li) {
+                size_t ch = L.lines[li].cend - L.lines[li].cstart;
+                if (ch > max_ch) {
+                    max_ch = ch;
+                }
+            }
+            if (max_ch > 1) {
+                tw += lsp * static_cast<int>(max_ch - 1);
+            }
+        }
         if (tw <= 0 || th <= 0) {
             return;
         }
@@ -1691,10 +1709,13 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     bool wrap = sget(n->style, "white-space") != "nowrap";
     /* paint at the run's laid-out position: block runs sit at the parent
      * content origin, inline-line runs at their accumulated x. The wrap
-     * width is the line remainder (parent right edge - run x). */
+     * width is run_wrap_w: the block line-box remainder (inline ancestors
+     * skipped, mirroring the layout pass) - the parent-box estimate here
+     * wrapped an inline <code> run at its own content width (~= the text
+     * width) and painted the second line over the text below. */
     int tx0 = n->border.x + off_x;
     int ty0 = n->border.y + off_y;
-    int avail_w = box->content.x + box->content.w - n->border.x;
+    int avail_w = run_wrap_w(n);
     if (avail_w < 1) {
         avail_w = 1;
     }
@@ -1840,6 +1861,18 @@ int run_wrap_w(whaleui_layout_node_t* n)
     }
     whaleui_layout_node_t* box =
         (n->parent && !n->parent->is_text) ? n->parent : n;
+    /* an inline element's text follows the OUTER line box: its wrap width
+     * is the block ancestor's remaining line space, not the inline box's
+     * own content width (~= the text width - wrapping exactly at it split
+     * a single <code> line into two, the second drawing over the line
+     * below). Only plain inline boxes are skipped; inline-block (button/
+     * input/textarea) wraps at its own content width. Must mirror the
+     * layout pass (layout.cpp, text-run avail walk). */
+    while (box && !box->is_text &&
+           sget(box->style, "display") == "inline" && box->parent &&
+           !box->parent->is_text) {
+        box = box->parent;
+    }
     std::string disp = sget(box->style, "display");
     if (disp == "flex" || disp == "inline-flex") {
         /* a flex item's text does not soft-wrap (browser behavior): it

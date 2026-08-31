@@ -593,7 +593,7 @@ void fix_scroll_max(whaleui_render_t* r)
     std::function<int(whaleui_layout_node_t*, int)> fix_sm =
         [&](whaleui_layout_node_t* nd, int scomp) -> int {
         bool scrollable = false;
-        if (nd->el && !nd->is_text) {
+        if (nd->el && !nd->is_text && !nd->pseudo) {
             std::string ov = sget(nd->style, "overflow");
             scrollable = ov == "auto" || ov == "scroll" ||
                          nd == r->tree->root;
@@ -619,8 +619,13 @@ void fix_scroll_max(whaleui_render_t* r)
              * The earlier max-with-cmax2 double-counted scroll_y when the
              * box had scroll_y > 0 (or a scrolled ancestor), inflating the
              * range (a 2-line textarea that reported ~70 lines after a
-             * scroll/FSR relayout). */
-            int cmax = (inner_bottom - nd->content.y) - nd->content.h;
+             * scroll/FSR relayout). The reference point must be unbaked
+             * TOO: content.y carries the ancestor scrolls (a page scrolled
+             * 200px under a textarea baked its y to 100), so subtracting
+             * it raw added the ancestor scroll to the range (the textarea
+             * reported 217px of scroll for 45px of content). */
+            int cmax = (inner_bottom - (nd->content.y + scomp)) -
+                       nd->content.h;
             if (cmax < 0) {
                 cmax = 0;
             }
@@ -634,7 +639,11 @@ void fix_scroll_max(whaleui_render_t* r)
                     it->second = 0;
                 }
             }
-            return nd->border.y + nd->border.h;
+            /* the scrollable box's subtree bottom in the same unbaked
+             * frame as the parent's inner_bottom (children carry scomp;
+             * without it a scrolled-away scrollable reported a baked
+             * bottom and the parent's auto-height under-counted it) */
+            return nd->border.y + nd->border.h + scomp;
         }
         if (nd->el && !nd->is_text &&
             inner_bottom > nd->border.y + nd->border.h + scomp) {
@@ -707,7 +716,10 @@ unsigned int sel_hl_color(whaleui_render_t* r, whaleui_layout_node_t* n,
 whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
                                 int x, int y, int off_y)
 {
-    if (!n || !n->visible) {
+    /* pseudo-element boxes (::before/::after state layers, focus
+     * underlines) are pointer-events:none: they must not become the
+     * hover/click target, or the button under the layer loses hover */
+    if (!n || !n->visible || n->pseudo) {
         return nullptr;
     }
     int child_off = off_y + scroll_delta(r, n);
