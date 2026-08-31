@@ -1,9 +1,9 @@
--- WhaleUI: xmake build script
+﻿-- WhaleUI: xmake build script
 -- C++14, minimal deps, C API exposed.
 -- Toolchain: MinGW (Windows) / clang (macOS) / gcc (Linux)
 
 set_project("whaleui")
-set_version("0.93")
+set_version("0.95")
 set_languages("c++14")
 
 -- ============================================================
@@ -191,3 +191,4 @@ target("demo")
     on_load(function (target)
         use_sdl3(target)
     end)
+

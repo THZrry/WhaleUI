@@ -1,4 +1,4 @@
-#ifndef WHALEUI_WHALEUI_H
+﻿#ifndef WHALEUI_WHALEUI_H
 #define WHALEUI_WHALEUI_H
 
 /* =========================================================================
@@ -51,7 +51,7 @@ extern "C" {
 /* build variant macros are defined by the build system:
  *   WHALEUI_BUILD_FULL / WHALEUI_BUILD_LITE / WHALEUI_BUILD_MINIMAL */
 
-#define WHALEUI_VERSION "0.93"
+#define WHALEUI_VERSION "0.95"
 
 /* ======================= build info ======================= */
 
@@ -673,3 +673,4 @@ int whaleui_font_register_system_defaults(void);
 #endif
 
 #endif /* WHALEUI_WHALEUI_H */
+
