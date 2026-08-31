@@ -1253,8 +1253,62 @@ struct Builder
                 } else {
                     /* select + text input: browser-like field height so the
                      * control doesn't stretch in a flex row (e.g. the demo
-                     * header) or grow to its option count. */
-                    n->style["width"] = "12em";
+                     * header) or grow to its option count. A select's width
+                     * adapts to its longest option (browser default) - the
+                     * fixed 12em clipped long option labels (the value text
+                     * overflowed the field). */
+                    bool is_sel_tag = tname0 && tlen0 == 6 &&
+                                      std::memcmp(tname0, "select", 6) == 0;
+                    if (is_sel_tag && n->el) {
+                        float fs2 = len_px(get(n->style, "font-size"), 0,
+                                           16.0f);
+                        if (fs2 <= 0) {
+                            fs2 = 16.0f;
+                        }
+                        float maxw = 0;
+                        for (lxb_dom_node* oc = n->el->node.first_child; oc;
+                             oc = oc->next) {
+                            if (oc->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                                continue;
+                            }
+                            lxb_dom_element* oe =
+                                lxb_dom_interface_element(oc);
+                            size_t olen = 0;
+                            const lxb_char_t* on =
+                                lxb_dom_element_local_name(oe, &olen);
+                            if (!on || olen != 6 ||
+                                std::memcmp(on, "option", 6) != 0) {
+                                continue;
+                            }
+                            std::string txt;
+                            for (lxb_dom_node* t = oe->node.first_child; t;
+                                 t = t->next) {
+                                if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
+                                    const lexbor_str_t* s =
+                                        &lxb_dom_interface_text(t)
+                                             ->char_data.data;
+                                    if (s->data) {
+                                        txt.append(
+                                            reinterpret_cast<const char*>(
+                                                s->data),
+                                            s->length);
+                                    }
+                                }
+                            }
+                            float w = text_measure(
+                                txt, fs2, get(n->style, "font-family"),
+                                false, 0);
+                            if (w > maxw) {
+                                maxw = w;
+                            }
+                        }
+                        char wbuf[32];
+                        std::snprintf(wbuf, sizeof(wbuf), "%dpx",
+                                      static_cast<int>(maxw + 26));
+                        n->style["width"] = wbuf;
+                    } else {
+                        n->style["width"] = "12em";
+                    }
                     n->style["height"] = "28px";
                 }
             }
@@ -2480,8 +2534,15 @@ struct Builder
                                        n->content.y;
                     }
                 } else {
+                    /* a text-run item gets unlimited wrap width: the flex
+                     * main size is its own content width, so passing that
+                     * as the wrap width makes est_wrap_lines see a
+                     * boundary case and split the run into multiple lines
+                     * (a 2-char label became 3 lines tall -> the text
+                     * painted below the checkbox). */
+                    int lay_cw = k->is_text ? 0x7FFFFFFF : sz;
                     layout(k, n->content.x + static_cast<int>(pos), row.y,
-                           sz, inner_h, font_px, &cy);
+                           lay_cw, inner_h, font_px, &cy);
                     k->border.w = sz;
                     k->content.w = sz - k->padding[1] - k->padding[3] -
                                    k->border_w[1] - k->border_w[3];
@@ -2597,7 +2658,8 @@ struct Builder
                 } else if (a == "flex-end" || a == "end") {
                     shift_subtree(k, column ? extra : 0,
                                   column ? 0 : extra);
-                } else if (a == "stretch" || a.empty()) {
+                } else if (!k->is_text &&
+                           (a == "stretch" || a.empty())) {
                     /* stretch: grow the border box, content stays top-left.
                      * Re-lay with the resolved height so absolute children
                      * (inset:0 panes) fill the new size - the first pass

@@ -74,6 +74,9 @@ kept (commented with `needs:`) so nothing is lost:
   background change works (test_scroll), but mouse-move -> hover state ->
   repaint does not fire in the app event loop (buttons/links/cards show no
   hover feedback).
+- [ ] `label` click association - clicking a `<label>`'s text toggles its
+  wrapped checkbox/radio (browser behavior). Today only clicking the
+  control itself works.
 
 ## Fixed
 

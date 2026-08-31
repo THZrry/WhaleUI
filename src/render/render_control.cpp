@@ -40,9 +40,16 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (it != r->theme_vars.end()) {
         whaleui_render_parse_color(it->second.c_str(), &bg);
     }
-    auto itb = r->theme_vars.find("--border");
+    auto itb = r->theme_vars.find("--border-strong");
     if (itb != r->theme_vars.end()) {
         whaleui_render_parse_color(itb->second.c_str(), &fg);
+    }
+    if (itb == r->theme_vars.end()) {
+        /* older themes without --border-strong fall back to --border */
+        auto itb2 = r->theme_vars.find("--border");
+        if (itb2 != r->theme_vars.end()) {
+            whaleui_render_parse_color(itb2->second.c_str(), &fg);
+        }
     }
     auto ita = r->theme_vars.find("--accent");
     if (ita != r->theme_vars.end()) {
@@ -51,18 +58,12 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
     int cx = bx + bw / 2, cy = by + bh / 2;
     if (is_radio) {
         int rad = bw / 2;
+        /* solid background + 1px crisp ring (fill_round_border paints the
+         * outline in full-strength color instead of an SDF-faded sliver) */
         fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh, rad,
                         bg, clip);
-        /* ring: 1px dark outline via a smaller inner fill */
-        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
-                        bw - 2, bh - 2, rad - 1, bg, clip);
-        /* outline */
-        for (int k = 0; k < 1; ++k) {
-            fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
-                            bw - 2, bh - 2, rad - 1, fg, clip);
-        }
-        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
-                        bw - 2, bh - 2, rad - 1, bg, clip);
+        fill_round_border(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh,
+                          rad, 1, fg, bg, clip);
         if (checked) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, cx - bw / 4,
                             cy - bh / 4, bw / 2, bh / 2, bw / 4, acc, clip);
@@ -71,10 +72,8 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
         int rad = 3;
         fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh, rad,
                         bg, clip);
-        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
-                        bw - 2, bh - 2, rad, fg, clip);
-        fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + 1, by + 1,
-                        bw - 2, bh - 2, rad, bg, clip);
+        fill_round_border(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh,
+                          rad, 1, fg, bg, clip);
         if (checked) {
             /* check mark: two strokes drawn as thick lines */
             int sw = bw / 5;

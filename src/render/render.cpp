@@ -720,6 +720,15 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
         y >= n->border.y + off_y && y < n->border.y + off_y + n->border.h) {
         return n;
     }
+    /* checkbox/radio: the painted control is 16x16 but the layout box can
+     * be smaller (flex main-size before the UA default -> 11px wide) or
+     * taller (line-box height -> 32px). Hit the 16x16 paint area so the
+     * whole visible control is clickable, not just the narrow layout box. */
+    if (n->el && is_check_radio(n->el) &&
+        x >= n->border.x && x < n->border.x + 16 &&
+        y >= n->border.y + off_y && y < n->border.y + off_y + 16) {
+        return n;
+    }
     return nullptr;
 }
 

@@ -522,7 +522,7 @@ button::after { background: rgba(0,0,0,0.14); }
 .btn-outline:hover { background: var(--btn-bg-hover); }
 input, select, textarea {
     background: var(--field); color: var(--fg);
-    border: 1px solid var(--border); border-radius: var(--radius-btn);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-btn);
     min-height: 36px; padding: 0 12px; font-size: var(--text-base);
     transition: border-color 0.15s, box-shadow 0.15s;
 }

@@ -1668,6 +1668,14 @@ int run_wrap_w(whaleui_layout_node_t* n)
     }
     whaleui_layout_node_t* box =
         (n->parent && !n->parent->is_text) ? n->parent : n;
+    std::string disp = sget(box->style, "display");
+    if (disp == "flex" || disp == "inline-flex") {
+        /* a flex item's text does not soft-wrap (browser behavior): it
+         * paints at its laid-out width. Wrapping against the container's
+         * content edge split a 2-char checkbox label into 3 lines (the
+         * parent box is narrower than the checkbox+label pair). */
+        return n->border.w > 0 ? n->border.w : 0;
+    }
     int w = box->content.x + box->content.w - n->border.x;
     return w > 0 ? w : 0;
 }
