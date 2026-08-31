@@ -1,4 +1,4 @@
-/* Window core: public C API implementation.
+﻿/* Window core: public C API implementation.
  * The native SDL_Window is created lazily on the first show(); CSS from the
  * document (<style>/<link>) plus the built-in default stylesheet is parsed
  * and handed to the render context. */
@@ -261,6 +261,15 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
             win->sdl = nullptr;
             return -4;
         }
+        /* honor the app's vsync preference: SDL3's default is VSYNC, but
+         * setting it explicitly (and re-applying on change) keeps the
+         * worker from rendering faster than the display can present (an
+         * uncapped animation ran at 147fps, ~90% CPU on one core). */
+        if (win->app->vsync) {
+            SDL_SetGPUSwapchainParameters(
+                win->app->gpu, win->sdl, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                SDL_GPU_PRESENTMODE_VSYNC);
+        }
         win->render = whaleui_render_create(win->app->gpu, win->sdl,
                                             win->width, win->height);
         if (!win->render) {
@@ -406,3 +415,5 @@ extern "C" whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t*
 {
     return win ? win->document : nullptr;
 }
+
+

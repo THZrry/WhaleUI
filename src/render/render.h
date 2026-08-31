@@ -106,6 +106,13 @@ struct whaleui_render
      * A stable run hits and returns in O(1). */
     std::unordered_map<uint64_t, float> text_w_cache;
 
+    /* text_size (wrapped measure) cache: the layout pass calls text_size
+     * for every text run on every relayout (a width animation re-lays out
+     * each frame); the layout_text walk is the per-frame cost. Keyed by an
+     * FNV hash of text+size+family+bold+wrap width - content-addressed, so
+     * edits invalidate themselves. */
+    std::unordered_map<uint64_t, std::pair<int, int> > text_size_cache;
+
     /* text cache: one rasterized RGBA buffer per element+style, reused
      * across frames. Rebuilding text objects AND re-rasterizing every run
      * per frame was the dominant paint cost on text-heavy pages (~13fps);

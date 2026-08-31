@@ -1,4 +1,4 @@
-/* Layout: small box/flex engine.
+﻿/* Layout: small box/flex engine.
  *
  * Lexbor parses HTML/CSS but computes no layout, so this module implements
  * the layout pass itself: box model (margin/border/padding/content),
@@ -15,7 +15,6 @@
 #include <lexbor/dom/dom.h>
 
 #include <cstdlib>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -486,7 +485,7 @@ float text_est_width(const std::string& s, float fs)
             size_t n = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
             /* CJK glyphs are full-width: 1em, not 0.95em. The 0.95
              * under-estimate made grid auto-tracks ~a character too
-             * narrow, so "内容自适应" wrapped instead of fitting. */
+             * narrow, so "鍐呭鑷€傚簲" wrapped instead of fitting. */
             w += fs;
             i += n;
         }
@@ -566,7 +565,7 @@ float letter_spacing_px(const WhaleUIComputedStyle& s, float fs)
 /* estimated line count when `text` wraps at `avail` px. Short text that
  * clearly fits one line uses the fast estimate; anything that may wrap is
  * measured with the real glyph width so the laid-out line count matches
- * the painted wrap (an under-estimate left "推理能力强" splitting its last
+ * the painted wrap (an under-estimate left "鎺ㄧ悊鑳藉姏寮? splitting its last
  * character). */
 /* estimated wrapped line count of one segment (no '\n'): greedy per-char
  * accumulation using the cheap per-char estimate, so the structure matches
@@ -656,7 +655,7 @@ size_t est_wrap_lines(const std::string& s, float fs, int avail,
     return lines;
 }
 
-/* line height in px from the style: number (× fs), px, em (× fs) or % */
+/* line height in px from the style: number (脳 fs), px, em (脳 fs) or % */
 float line_height_px(const WhaleUIComputedStyle& s, float fs)
 {
     /* absolute line-height (px/em/%) wins. A unitless value (1.2/1.5/2)
@@ -729,7 +728,7 @@ float estimate_content_width(whaleui_layout_node_t* k, float em,
     bool container_inline = dk == 2 || flex_row;
     /* inline boxes (b/i/span/em...) size by the REAL glyph width: the
      * painted wrap width follows the box, so an under-sized estimate
-     * splits short text mid-word ("01", "V3", "推理能力强").
+     * splits short text mid-word ("01", "V3", "鎺ㄧ悊鑳藉姏寮?).
      * Flex-row children (a button's label next to its kbd) need the same
      * real measure - the 0.5em estimate runs 10px short on mono labels
      * and the text wraps. */
@@ -1444,8 +1443,8 @@ struct Builder
         bool summary_seen = false;
         /* inline markers injected into the first text run (C++ work: the
          * engine has no ::marker or [attr] selector):
-         *   <summary> in <details>  -> ▸▸collapse indicator
-         *   <li> in <ul>/<ol>       -> bullet "•" / ordinal "N. " */
+         *   <summary> in <details>  -> 鈻糕柛collapse indicator
+         *   <li> in <ul>/<ol>       -> bullet "鈥? / ordinal "N. " */
         std::string run_marker;
         bool run_marker_done = false;
         if (n->el && parent && parent->el) {
@@ -2002,7 +2001,7 @@ struct Builder
      * cheap estimate is narrower than the real ink (CJK/latin metrics) and
      * an isolated run (nothing inline after it) computed at the estimate
      * left the tail glyphs clipped by an overflow ancestor - measured for
-     * the qwen 21k page ('深' at font 200: 190px estimate vs 220px ink).
+     * the qwen 21k page ('娣? at font 200: 190px estimate vs 220px ink).
      * The measure is cached (glyph_w_cache), so the per-run cost is low. */
     int inline_est_w(whaleui_layout_node_t* c, int font_px)
     {
@@ -2484,7 +2483,7 @@ struct Builder
             for (size_t i = 0; i < row.items.size(); ++i) {
                 whaleui_layout_node_t* k = row.items[i];
                 /* round UP: a fractional main size truncating down leaves
-                 * the content box 1px narrower than the text ("一" in a
+                 * the content box 1px narrower than the text ("涓€" in a
                  * gap test wrapped/clipped its last pixel) */
                 int sz = static_cast<int>(std::ceil(row.sizes[i]));
                 int cy = row.y;
@@ -3261,7 +3260,7 @@ struct Builder
                      * padding (already in the estimate) + border + margin.
                      * Without the border/margin the laid-out content box
                      * comes out narrower than the text and wraps
-                     * ("内容自适应" in a 2px-border 4px-margin cell). */
+                     * ("鍐呭鑷€傚簲" in a 2px-border 4px-margin cell). */
                     int b4[4], m4[4];
                     box_border_widths(cells[j].node->style, em, b4);
                     sides(get(cells[j].node->style, "margin"), m4, 0, em, 0);
@@ -3304,7 +3303,7 @@ struct Builder
         /* a <table> with a definite width and no fr columns: the browser
          * stretches the auto columns to fill the table (a 3-col name
          * table would otherwise keep its content-width cells and leave
-         * the rest of the 100% width empty - "格子有点小"). Distribute
+         * the rest of the 100% width empty - "鏍煎瓙鏈夌偣灏?). Distribute
          * the free space over the AUTO tracks (those without an explicit
          * cell width - a th width:80px column must stay 80px) by their
          * content share. */
@@ -3548,7 +3547,14 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     if (theme_vars) {
         b.vars = *theme_vars;
     }
-    whaleui_style_collect_vars_full(root, rules, count, b.vars);
+    /* CSS vars collected once per tree; relayout passes reuse them */
+    if (!tree->vars_collected && root) {
+        whaleui_style_collect_vars_full(root, rules, count, tree->vars);
+        tree->vars_collected = true;
+    }
+    for (auto& kv : tree->vars) {
+        b.vars[kv.first] = kv.second;
+    }
 
     whaleui_layout_node_t* n = b.build(root, nullptr);
     tree->root = n;
@@ -3621,8 +3627,13 @@ extern "C" int whaleui_layout_relayout(
     if (theme_vars) {
         b.vars = *theme_vars;
     }
-    if (tree->root && tree->root->el) {
-        whaleui_style_collect_vars_full(tree->root->el, rules, count, b.vars);
+    if (!tree->vars_collected && tree->root && tree->root->el) {
+        whaleui_style_collect_vars_full(tree->root->el, rules, count,
+                                        tree->vars);
+        tree->vars_collected = true;
+    }
+    for (auto& kv : tree->vars) {
+        b.vars[kv.first] = kv.second;
     }
     whaleui_layout_node_t* fresh = b.build(el, parent);
     if (!fresh) {
@@ -3686,8 +3697,16 @@ int whaleui_layout_relayout_multi(
     if (theme_vars) {
         b.vars = *theme_vars;
     }
-    if (tree->root && tree->root->el) {
-        whaleui_style_collect_vars_full(tree->root->el, rules, count, b.vars);
+    /* CSS vars collected once per tree (relayout reuses them - the page's
+     * vars don't change between DOM mutations; render.cpp clears tree->vars
+     * on DOM changes to force a re-collect) */
+    if (!tree->vars_collected && tree->root && tree->root->el) {
+        whaleui_style_collect_vars_full(tree->root->el, rules, count,
+                                        tree->vars);
+        tree->vars_collected = true;
+    }
+    for (auto& kv : tree->vars) {
+        b.vars[kv.first] = kv.second;
     }
     std::vector<whaleui_layout_node_t*> freshNodes;
     for (size_t e = 0; e < nel; ++e) {
@@ -3808,3 +3827,7 @@ extern "C" void whaleui_layout_set_wrap_lines_metric(whaleui_wrap_lines_fn fn)
 {
     g_wrap_lines = fn;
 }
+
+
+
+

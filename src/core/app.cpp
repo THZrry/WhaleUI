@@ -1,4 +1,4 @@
-/* Application core: public C API implementation.
+﻿/* Application core: public C API implementation.
  * Event loop polls SDL events, repaints visible windows, honors the
  * max-fps / battery-saver frame cap. */
 
@@ -12,6 +12,7 @@
 #include <lexbor/dom/dom.h>
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_gpu.h>
 
 #include <cstring>
 #include <string>
@@ -471,11 +472,11 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         }
 
         if (work) {
-            /* frame cap: max_fps wins; otherwise battery saver caps at 60
-             * while on battery, AC power stays uncapped */
-            int fps = app->max_fps > 0
-                          ? app->max_fps
-                          : (app->battery_saver && app->on_battery ? 60 : 0);
+            /* frame cap: max_fps wins; default 60 on battery and AC alike -
+             * the SDL3 D3D12 backend's VSYNC present mode does not throttle
+             * reliably here, and an uncapped animation loop rendered at
+             * ~123fps (~90% of a core). Users raise it via max_fps. */
+            int fps = app->max_fps > 0 ? app->max_fps : 60;
             if (fps > 0) {
                 Uint64 target = last + 1000 / fps;
                 if (now < target) {
@@ -624,7 +625,18 @@ extern "C" int whaleui_app_set_render_option(whaleui_app_t* app,
     switch (opt) {
     case WHALEUI_RENDER_MAX_FPS:       app->max_fps = value; break;
     case WHALEUI_RENDER_BATTERY_SAVER: app->battery_saver = value; break;
-    case WHALEUI_RENDER_VSYNC:         app->vsync = value; break;
+    case WHALEUI_RENDER_VSYNC:
+        app->vsync = value ? 1 : 0;
+        /* re-apply the present mode to every claimed window */
+        for (whaleui_window_t* win : app->windows) {
+            if (win->sdl && app->gpu) {
+                SDL_SetGPUSwapchainParameters(
+                    app->gpu, win->sdl, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                    app->vsync ? SDL_GPU_PRESENTMODE_VSYNC
+                               : SDL_GPU_PRESENTMODE_IMMEDIATE);
+            }
+        }
+        break;
     case WHALEUI_RENDER_ASYNC_LAYOUT:
         app->async_layout = value ? 1 : 0;
         /* nothing to re-apply: each window reads it on its first frame */
@@ -659,3 +671,11 @@ extern "C" int whaleui_app_set_reduced_motion(whaleui_app_t* app, int reduce)
     }
     return 0;
 }
+
+
+
+
+
+
+
+

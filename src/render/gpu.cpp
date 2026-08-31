@@ -525,6 +525,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.format = vulkan_driver(device) ? SDL_GPU_SHADERFORMAT_SPIRV
                                            : SDL_GPU_SHADERFORMAT_DXIL;
         cpi.num_samplers = 2;
+        cpi.num_uniform_buffers = 1; /* composite region offset */
         cpi.num_readwrite_storage_textures = 1;
         cpi.threadcount_x = 16;
         cpi.threadcount_y = 16;
@@ -1556,7 +1557,11 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     }
 
     /* composite the CPU text layer over the geometry (always: without text
-     * it is a straight copy of the geometry into the blit source) */
+     * it is a straight copy of the geometry into the blit source).
+     * Dirty-rect frames only re-upload the painted strip (layer_rx/ry/rw/
+     * rh), so the composite dispatches just that region - the full-screen
+     * composite was the dominant GPU cost at 2k (~14k workgroups per
+     * frame even when only a small box animated). */
     if (g->pipe_text_composite) {
         SDL_GPUStorageTextureReadWriteBinding rw;
         std::memset(&rw, 0, sizeof(rw));
@@ -1575,8 +1580,30 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
             tsb[0].sampler = g->sampler;
             tsb[1].sampler = g->sampler;
             SDL_BindGPUComputeSamplers(cps, 0, tsb, 2);
-            SDL_DispatchGPUCompute(cps, (static_cast<Uint32>(fb_w) + 15) / 16,
-                                   (static_cast<Uint32>(fb_h) + 15) / 16, 1);
+            /* region offset uniform (uint2); the shader adds it to the
+             * dispatch thread id to reach global pixel coordinates */
+            int rx = g->layer_rx < 0 ? 0 : g->layer_rx;
+            int ry = g->layer_ry < 0 ? 0 : g->layer_ry;
+            int rwpx = g->layer_rw > 0 ? g->layer_rw : fb_w;
+            int rhpx = g->layer_rh > 0 ? g->layer_rh : fb_h;
+            if (rwpx > fb_w - rx) {
+                rwpx = fb_w - rx;
+            }
+            if (rhpx > fb_h - ry) {
+                rhpx = fb_h - ry;
+            }
+            if (rwpx < 1) {
+                rwpx = 1;
+            }
+            if (rhpx < 1) {
+                rhpx = 1;
+            }
+            Uint32 off[4] = {static_cast<Uint32>(rx), static_cast<Uint32>(ry),
+                             0, 0};
+            SDL_PushGPUComputeUniformData(cmd, 0, off, sizeof(off));
+            SDL_DispatchGPUCompute(
+                cps, (static_cast<Uint32>(rwpx) + 15) / 16,
+                (static_cast<Uint32>(rhpx) + 15) / 16, 1);
             SDL_EndGPUComputePass(cps);
         }
         g->layer_dirty = 0;

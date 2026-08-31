@@ -95,12 +95,6 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 /* --- text (render_text.cpp) --- */
 
 std::vector<std::string> split_families(const std::string& s);
-#ifdef WHALEUI_BUILD_FULL
-TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family,
-                           int size, int style, bool use_cache);
-void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size,
-                           int style);
-#endif
 TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family,
                           int size, int style);
 size_t utf8_char_len(unsigned char c);
@@ -123,7 +117,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
-                  const Clip* clip, int lsp = 0, bool wrap = false);
+                  const Clip* clip, int lsp = 0, bool wrap = false,
+                  float opacity = 1.0f);
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
                    size_t* a, size_t* b, int seq, int sel_lo, int sel_hi);
 void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip);

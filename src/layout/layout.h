@@ -107,6 +107,14 @@ struct whaleui_layout_tree
 
     std::deque<whaleui_layout_node_t> arena; /* stable node storage */
     std::deque<std::string> text_arena;      /* text-run storage */
+
+    /* CSS custom properties (--var) collected from the document. Collected
+     * once per tree (vars_collected); relayout passes reuse it (the page's
+     * vars do not change between DOM mutations, and the collect walk is
+     * expensive even on var-less pages). render.cpp clears it when the DOM
+     * is mutated so the next pass re-collects. */
+    std::map<std::string, std::string> vars;
+    bool vars_collected;
 };
 
 typedef struct whaleui_layout_tree whaleui_layout_tree_t;

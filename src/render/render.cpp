@@ -3224,6 +3224,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * while untouched branches keep their computed styles. Falls back to a
      * full rebuild (has_dirty) when the tree is inconsistent. */
     if (!need_layout && !dom_dirty.empty()) {
+        /* DOM mutated: CSS custom properties may have changed, so the
+         * cached var collection is stale - force a re-collect */
+        if (r->tree) {
+            r->tree->vars.clear();
+            r->tree->vars_collected = false;
+        }
         bool ok = true;
         whaleui_style_state st;
         st.hover = r->hover_el;
@@ -3339,7 +3345,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * the animation partial branch, applied to the scroll strip). Widen the
      * strip to cover every visible animating element. */
     if (scroll_dy != 0 && animating && !whaleui_anim_needs_layout(r->anim)) {
-        const int AM = 160; /* ponytail: anim-travel margin (see above) */
+        const int AM = 40; /* ponytail: anim-travel margin (see above) */
         std::function<void(whaleui_layout_node_t*)> acca =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && !nd->is_text &&
@@ -3410,14 +3416,20 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         }
         r->hover_old_el = nullptr;
     } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
-               !whaleui_anim_needs_layout(r->anim) && !r->open_select) {
-        /* paint-only animation: repaint only the animating elements'
-         * bounding boxes (dirty-rect, keeps the rest of the frame).
+               !r->open_select) {
+        /* animation: repaint only the animating elements' bounding boxes
+         * (dirty-rect, keeps the rest of the frame). Covers BOTH paint-only
+         * animations (opacity/transform) and layout animations (width/
+         * height): the relayout pass only rebuilds the animated subtrees,
+         * so the damage is limited to the animated element (plus its
+         * parent box, whose interior may re-flow) - a full repaint per
+         * width-animation frame is what dropped the demo to 24fps at 2k.
          * An open <select> dropdown is drawn OUTSIDE the tree (last, full
          * viewport); a dirty-rect frame covers only the animating boxes, so
          * the dropdown repaints over stale pixels and jitters - repaint
          * fully while a dropdown is open. */
-        const int AM = 160; /* ponytail: anim-travel margin. The strip must
+        const bool lay_anim = whaleui_anim_needs_layout(r->anim);
+        const int AM = 40; /* ponytail: anim-travel margin. The strip must
                                cover not just the CURRENT box but anywhere
                                the element has BEEN: a translate animation
                                leaves a ghost at the previous position, and
@@ -3444,6 +3456,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             x1 += static_cast<int>(tf.tx > 0 ? tf.tx : -tf.tx);
                             y1 += static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
                         }
+                    }
+                    if (lay_anim && nd->parent && !nd->parent->is_text) {
+                        /* layout animation: the parent's interior re-flows
+                         * (children move within it), cover the whole box */
+                        whaleui_layout_node_t* p = nd->parent;
+                        x0 = p->border.x < x0 ? p->border.x : x0;
+                        y0 = p->border.y < y0 ? p->border.y : y0;
+                        int px1 = p->border.x + p->border.w;
+                        int py1 = p->border.y + p->border.h;
+                        x1 = px1 > x1 ? px1 : x1;
+                        y1 = py1 > y1 ? py1 : y1;
                     }
                     x0 -= AM;
                     y0 -= AM;
@@ -3478,14 +3501,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::function<void(whaleui_layout_node_t*)> add_bars =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->visible && nd->el && !nd->is_text &&
-                    nd->scroll_max > 0 && nd->border.h >= 24) {
+                    nd != r->tree->root && nd->scroll_max > 0 &&
+                    nd->border.h >= 24) {
                     int oy = node_scroll_off(r, nd);
                     int bx0 = nd->border.x + nd->border.w - 8;
                     int by0 = nd->border.y + oy;
                     int bx1 = bx0 + 8;
                     int by1 = by0 + nd->border.h;
-                    if (bx0 < r->fb_w && bx1 > 0 && by0 < r->fb_h &&
-                        by1 > 0) {
+                    /* only columns the strip already touches: a scrollbar
+                     * far from the animated region must not widen the strip
+                     * to full-screen (that negated the dirty-rect work) */
+                    if (bx1 > strip.x && bx0 < strip.x + strip.w &&
+                        by1 > strip.y && by0 < strip.y + strip.h) {
                         dirty_rect(bx0 < 0 ? 0 : bx0, by0 < 0 ? 0 : by0,
                                    bx1 > r->fb_w ? r->fb_w : bx1,
                                    by1 > r->fb_h ? r->fb_h : by1,
@@ -3665,6 +3692,23 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     r->alive = (animating || r->edit_el) ? 1 : 0;
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

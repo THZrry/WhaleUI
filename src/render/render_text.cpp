@@ -920,7 +920,28 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
                int wrap_w)
 {
     *tw = *th = 0;
-    if (text.empty()) {
+    if (text.empty() || !r) {
+        return;
+    }
+    /* content-addressed cache: the layout pass measures every run every
+     * relayout (a width animation re-lays out each frame) - the layout_text
+     * walk below was the per-frame cost. Text/width/face unchanged -> O(1). */
+    uint64_t key = 1469598103934665603ull;
+    for (size_t i = 0; i < text.size(); ++i) {
+        key ^= static_cast<unsigned char>(text[i]);
+        key *= 1099511628211ull;
+    }
+    key ^= static_cast<uint64_t>(fs) * 0x9E3779B97F4A7C15ull;
+    key ^= static_cast<uint64_t>(bold) * 0xBF58476D1CE4E5B9ull;
+    key ^= static_cast<uint64_t>(wrap_w) * 0x94D049BB133111EBull;
+    for (size_t i = 0; i < family.size(); ++i) {
+        key ^= static_cast<unsigned char>(family[i]);
+        key *= 1099511628211ull;
+    }
+    auto it = r->text_size_cache.find(key);
+    if (it != r->text_size_cache.end()) {
+        *tw = it->second.first;
+        *th = it->second.second;
         return;
     }
     int lh = text_line_h(r, fs, family, bold);
@@ -933,6 +954,7 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
 #endif
     *tw = L.tw;
     *th = L.th;
+    r->text_size_cache[key] = std::make_pair(*tw, *th);
 }
 
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bold)
@@ -1143,68 +1165,101 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
-                  const Clip* clip, int lsp, bool wrap)
+                  const Clip* clip, int lsp, bool wrap, float opacity)
 {
-    if (fs <= 0) {
-        fs = 16;
-    }
-    const bool bold = (style & kFontBold) != 0;
-    int lh = text_line_h(r, fs, family, bold);
-    if (lh <= 0) {
-        lh = fs;
-    }
-    /* 统一字形接口:排版(测宽)与绘制共用同一后端字形来源,advance/偏移
-     * 严格一致,full 与 stb 只有这里不同,渲染循环只有一份 */
-    int baseline_off;
-    TextLayout L;
+    /* 缓存查询先行:text+样式不变时,排版(layout_text)与字形光栅化是
+     * 每帧重复计算 —— 动画帧对每个 run 重新排版曾是 42ms 的大头。
+     * 命中直接用缓存的位图与尺寸,连字体打开/行高测量都跳过。 */
+    std::vector<unsigned int>* src = nullptr;
+    int tw = 0, th = 0;
+    int tx = bx, ty = by; /* paint origin (align/center applied below) */
+    std::string ckey_str; /* cache key to write on miss ("" = no caching) */
 #ifdef WHALEUI_BUILD_FULL
-    TTF_Font* font = render_get_font(r, family, fs, style);
-    if (!font) {
-        return;
+    if (ckey && !text.empty()) {
+        uint64_t h = 1469598103934665603ull;
+        for (size_t i = 0; i < text.size(); ++i) {
+            h ^= static_cast<unsigned char>(text[i]);
+            h *= 1099511628211ull;
+        }
+        char key[160];
+        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu",
+                      static_cast<void*>(ckey), fs, style, family.c_str(),
+                      wrap ? bw : -1, color, lsp,
+                      static_cast<unsigned long long>(h));
+        auto it = r->text_cache.find(key);
+        if (it != r->text_cache.end() && !it->second.px.empty()) {
+            whaleui_render_t::TextCacheEntry& e = it->second;
+            src = &e.px;
+            tw = e.w;
+            th = e.h;
+            e.last_use = ++r->tc_tick;
+        } else {
+            ckey_str = key;
+        }
     }
-    baseline_off = TTF_GetFontAscent(font);
-    TextMeasureCtx mc = { r, fs, family, bold };
-    L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_ttf, &mc);
-#else
-    StbFonts stb(family, fs);
-    if (stb.pref == static_cast<size_t>(-1)) {
-        return;
-    }
-    baseline_off = static_cast<int>(stb.fonts[stb.pref].asc *
-                                    stb.fonts[stb.pref].scale + 0.5f);
-    L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_stb, &stb);
 #endif
-    if (L.lines.empty()) {
-        return;
-    }
-    const int tw = L.tw;
-    const int th = L.th;
-    if (tw <= 0 || th <= 0) {
-        return;
-    }
-    auto glyph_img = [&](unsigned int cp, GlyphImg& g) {
+    if (!src) {
+        /* cache miss: layout + rasterize this run */
+        if (fs <= 0) {
+            fs = 16;
+        }
+        const bool bold = (style & kFontBold) != 0;
+        int lh = text_line_h(r, fs, family, bold);
+        if (lh <= 0) {
+            lh = fs;
+        }
+        /* 统一字形接口:排版(测宽)与绘制共用同一后端字形来源,advance/偏移
+         * 严格一致,full 与 stb 只有这里不同,渲染循环只有一份 */
+        int baseline_off;
+        TextLayout L;
 #ifdef WHALEUI_BUILD_FULL
-        return glyph_img_ttf(r, family, fs, style, cp, color, g);
+        TTF_Font* font = render_get_font(r, family, fs, style);
+        if (!font) {
+            return;
+        }
+        baseline_off = TTF_GetFontAscent(font);
+        TextMeasureCtx mc = { r, fs, family, bold };
+        L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_ttf, &mc);
 #else
-        return glyph_img_stb(stb, cp, color, g);
+        StbFonts stb(family, fs);
+        if (stb.pref == static_cast<size_t>(-1)) {
+            return;
+        }
+        baseline_off = static_cast<int>(stb.fonts[stb.pref].asc *
+                                        stb.fonts[stb.pref].scale + 0.5f);
+        L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_stb, &stb);
 #endif
-    };
-    /* 逐字形渲染(唯一循环):字形位图(RGBA,已含前景色或彩色 emoji 自身
-     * 颜色)src-over 到文本缓冲。stb 无合成粗体:普通字形右移 1px 再画
-     * 一次(fake bold);full 的粗体由 FreeType 在字形内完成。 */
-    std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
-    for (size_t li = 0; li < L.lines.size(); ++li) {
-        const TextLayoutLine& ln = L.lines[li];
-        const int baseline = static_cast<int>(li * lh) + baseline_off;
-        int px = 0;
-        for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
-            GlyphImg g = {};
-            if (glyph_img(disp_cp_at(L, ci), g)) {
-                const int passes =
+        if (L.lines.empty()) {
+            return;
+        }
+        tw = L.tw;
+        th = L.th;
+        if (tw <= 0 || th <= 0) {
+            return;
+        }
+        auto glyph_img = [&](unsigned int cp, GlyphImg& g) {
+#ifdef WHALEUI_BUILD_FULL
+            return glyph_img_ttf(r, family, fs, style, cp, color, g);
+#else
+            return glyph_img_stb(stb, cp, color, g);
+#endif
+        };
+        /* 逐字形渲染(唯一循环):字形位图(RGBA,已含前景色或彩色 emoji
+         * 自身颜色)src-over 到文本缓冲。stb 无合成粗体:普通字形右移
+         * 1px 再画一次(fake bold);full 的粗体由 FreeType 在字形内完成。 */
+        std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
+        for (size_t li = 0; li < L.lines.size(); ++li) {
+            const TextLayoutLine& ln = L.lines[li];
+            const int baseline = static_cast<int>(li * lh) + baseline_off;
+            int px = 0;
+            for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+                GlyphImg g = {};
+                if (glyph_img(disp_cp_at(L, ci), g)) {
+                    const int passes =
 #ifndef WHALEUI_BUILD_FULL
-                    (bold && !g.colored) ? 2 :
+                        (bold && !g.colored) ? 2 :
 #endif
-                    1;
+                        1;
                 for (int pass = 0; pass < passes; ++pass) {
                     const int dx0 = px + g.xoff + pass;
                     const int dy0 = baseline + g.yoff;
@@ -1252,29 +1307,16 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
     }
     /* 对齐(line-box 居中;超出盒子保持顶部对齐,select 值自行微调) */
-    int tx = bx;
+    tx = bx;
     if (align == 1) {
         tx = bx + (bw - tw) / 2;
     } else if (align == 2) {
         tx = bx + bw - tw;
     }
-    const int ty = th <= bh ? by + (bh - th) / 2 : by;
-    /* 缓存(full):同一 ckey+样式+文本复用栅格化缓冲;颜色烘焙进缓冲,
-     * 所以 key 含 color/lsp。stb 分支无缓存(现状)。 */
-    std::vector<unsigned int>* src = &buf;
-#ifdef WHALEUI_BUILD_FULL
-    if (ckey && !text.empty()) {
-        uint64_t h = 1469598103934665603ull;
-        for (size_t i = 0; i < text.size(); ++i) {
-            h ^= static_cast<unsigned char>(text[i]);
-            h *= 1099511628211ull;
-        }
-        char key[160];
-        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu",
-                      static_cast<void*>(ckey), fs, style, family.c_str(),
-                      wrap ? bw : -1, color, lsp,
-                      static_cast<unsigned long long>(h));
-        whaleui_render_t::TextCacheEntry& e = r->text_cache[key];
+    ty = th <= bh ? by + (bh - th) / 2 : by;
+    /* 写缓存(full):miss 时把刚栅格化的位图存入缓存供后续帧复用 */
+    if (!ckey_str.empty()) {
+        whaleui_render_t::TextCacheEntry& e = r->text_cache[ckey_str];
         if (e.px.empty() || e.w != tw || e.h != th) {
             /* account the old raster bytes before replacing */
             r->tc_bytes -= e.px.size() * sizeof(unsigned int);
@@ -1303,13 +1345,18 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             r->text_cache.erase(victim);
         }
         src = &e.px;
+    } else {
+        src = &buf;
     }
-#endif
+    } /* end cache miss: layout + rasterize */
     /* blend:直通 RGBA(不再用前景色染色,彩色 emoji 保留自身颜色)。
+     * opacity 是动态的(动画)且不进缓存 key,所以在这里按像素缩放
+     * alpha —— 缓存按静态颜色复用,opacity 动画不再使缓存逐帧失效。
      * GPU 路径写 text_layer,CPU 路径写 framebuffer。 */
     std::vector<unsigned int>& fb = g_gpu ? r->text_layer : r->pixels;
     const int fw = g_gpu ? r->fb_w : r->width;
     const int fh = g_gpu ? r->fb_h : r->height;
+    const bool fade = opacity < 1.0f;
     for (int yy = 0; yy < th; ++yy) {
         const int fy = ty + yy;
         if (fy < 0 || fy >= fh) {
@@ -1319,10 +1366,17 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             continue;
         }
         for (int xx = 0; xx < tw; ++xx) {
-            const unsigned int sp = (*src)[static_cast<size_t>(yy) * tw + xx];
-            const unsigned int sa = (sp >> 24) & 0xFF;
+            unsigned int sp = (*src)[static_cast<size_t>(yy) * tw + xx];
+            unsigned int sa = (sp >> 24) & 0xFF;
             if (sa == 0) {
                 continue;
+            }
+            if (fade) {
+                sa = static_cast<unsigned int>(sa * opacity);
+                if (sa == 0) {
+                    continue;
+                }
+                sp = (sa << 24) | (sp & 0x00FFFFFF);
             }
             const int fx = tx + xx;
             if (fx < 0 || fx >= fw) {
@@ -1574,9 +1628,10 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         return;
     }
     unsigned int color = color_of(n->style, "color", 0xFF000000);
-    float alpha = (color >> 24) & 0xFF;
-    unsigned int a8 = static_cast<unsigned>(alpha * n->opacity);
-    color = (a8 << 24) | (color & 0x00FFFFFF);
+    /* opacity is applied at blend time (draw_text_at's opacity param), NOT
+     * baked into the color: baking it made the text_cache key change every
+     * animation frame, forcing full text re-rasterization per frame. */
+    (void)0;
 
     int fs = 16;
     std::string fsv = sget(n->style, "font-size");
@@ -1655,12 +1710,13 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                     unsigned int sc = (ka << 24) | (scol & 0x00FFFFFF);
                     draw_text_at(r, shown, tx0 + sox - k, ty0 + soy - k,
                                  avail_w, n->border.h, fs, family, sc,
-                                 style, align, n->el, clip, lsp, wrap);
+                                 style, align, n->el, clip, lsp, wrap,
+                                 n->opacity);
                 }
             }
             draw_text_at(r, shown, tx0 + sox, ty0 + soy, avail_w,
                          n->border.h, fs, family, scol, style, align, n->el,
-                         clip, lsp, wrap);
+                         clip, lsp, wrap, n->opacity);
         }
     }
     /* -webkit-text-stroke: 8-direction outline copies (stroke width is
@@ -1697,7 +1753,8 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 }
                 draw_text_at(r, shown, tx0 + dx * sw, ty0 + dy * sw,
                              avail_w, n->border.h, fs, family, scc,
-                             style, align, n->el, clip, lsp, wrap);
+                             style, align, n->el, clip, lsp, wrap,
+                             n->opacity);
             }
         }
     }
@@ -1705,7 +1762,8 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     /* the run's own box carries the scroll shift; draw_text_at centers the
      * glyphs in it, matching text_origin's hit/highlight geometry */
     draw_text_at(r, shown, tx0, ty0, avail_w, n->border.h,
-                 fs, family, color, style, align, n->el, clip, lsp, wrap);
+                 fs, family, color, style, align, n->el, clip, lsp, wrap,
+                 n->opacity);
 
     /* text-decoration: underline / line-through lines over the box (width
      * = the run's own text extent, clamped to the line remainder) */

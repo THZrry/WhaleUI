@@ -267,13 +267,15 @@ static const char* kTextCompositeCS = R"(
 [[vk::binding(0, 0)]] Texture2D geometry : register(t0);
 [[vk::binding(1, 0)]] Texture2D text_layer : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+cbuffer Params : register(b0, space2) { uint4 offset; };
 [numthreads(16, 16, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float4 t = text_layer.Load(int3(id.xy, 0));
-    float4 g = geometry.Load(int3(id.xy, 0));
+    int2 p = int2(id.xy + offset.xy);
+    float4 t = text_layer.Load(int3(p, 0));
+    float4 g = geometry.Load(int3(p, 0));
     /* text_layer holds straight (non-premultiplied) color + real alpha:
      * glyph edges must blend over the geometry, not replace it */
-    out_tex[id.xy] = float4(t.rgb * t.a + g.rgb * (1.0 - t.a), 1.0);
+    out_tex[p] = float4(t.rgb * t.a + g.rgb * (1.0 - t.a), 1.0);
 }
 )";
 
