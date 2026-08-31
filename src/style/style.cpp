@@ -33,6 +33,7 @@ struct SelPart
     bool first_child;   /* ":first-child" present */
     bool nth;           /* ":nth-child(An+B)" present */
     int nth_a, nth_b;   /* position p matches when p = A*n + B, n >= 0 */
+    bool pseudo_el;     /* "::before"/"::after" suffix: never matches el */
 };
 
 /* parse ":nth-child(odd|even|N|n|n+B|An+B)" into a/b. Returns false on
@@ -110,6 +111,17 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     while (p < end) {
         if (*p == ':') {
             ++p;
+            /* "::after"/"::before" pseudo-element: never matches the
+             * element itself (only ::-rules carry paint; element rules
+             * must not leak position/height/etc. into the element). */
+            if (p < end && *p == ':') {
+                out.pseudo_el = true;
+                ++p;
+                while (p < end && *p != '#' && *p != '.' && *p != ':') {
+                    ++p;
+                }
+                continue;
+            }
             const char* s = p;
             while (p < end && *p != '#' && *p != '.' && *p != ':') {
                 ++p;
@@ -155,9 +167,10 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             }
         }
     }
-    return !out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
-           out.hover || out.active || out.focus || out.disabled ||
-           out.last_child || out.first_child || out.nth;
+    return !out.pseudo_el &&
+           (!out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
+            out.hover || out.active || out.focus || out.disabled ||
+            out.last_child || out.first_child || out.nth);
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -1156,4 +1169,40 @@ extern "C" int whaleui_css_apply(whaleui_dom_document_t* doc,
     };
     walk(root);
     return 0;
+}
+
+/* Merge the declarations of every rule whose selector equals `selector`
+ * (a synthetic element with no DOM node). Used by the renderer for chrome
+ * that has no element - the select dropdown popup (.select-popup /
+ * .select-option-hover). var() values resolve against vars; later rules
+ * win per declaration (cascade order). */
+extern "C" void whaleui_style_virtual(
+    const char* selector, const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>& vars,
+    WhaleUIComputedStyle& out)
+{
+    if (!selector || !rules) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const char* sel = rules[i].selector;
+        if (!sel || std::strcmp(sel, selector) != 0) {
+            continue;
+        }
+        for (size_t d = 0; d < rules[i].decl_count; ++d) {
+            char* kv = rules[i].decls[d];
+            char* eq = std::strchr(kv, '=');
+            if (!eq) {
+                continue;
+            }
+            std::string name(kv, static_cast<size_t>(eq - kv));
+            if (name.empty() ||
+                (name.size() >= 2 && name[0] == '-' && name[1] == '-')) {
+                continue; /* custom properties are not element styles */
+            }
+            std::string val(eq + 1);
+            resolve_var(val, vars);
+            out[name] = val;
+        }
+    }
 }

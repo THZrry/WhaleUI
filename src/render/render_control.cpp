@@ -3,6 +3,7 @@
 // Shared helpers: render_internal.h.
 
 #include "render/render_internal.h"
+#include "style/style.h" /* whaleui_style_virtual: select popup chrome */
 #include <lexbor/dom/dom.h>
 
 #include <cstdlib>
@@ -417,27 +418,47 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (sel < 0 || sel >= static_cast<int>(texts.size())) {
         sel = 0;
     }
+    /* popup chrome comes from the theme stylesheet, not hard-coded colors:
+     * the renderer computes the virtual .select-popup / .select-option
+     * classes (whaleui_style_virtual) and paints from their styles. */
+    WhaleUIComputedStyle popup, opt_hover, opt_sel;
+    whaleui_style_virtual(".select-popup", r->rules, r->rule_count,
+                          r->theme_vars, popup);
+    whaleui_style_virtual(".select-option-hover", r->rules, r->rule_count,
+                          r->theme_vars, opt_hover);
+    whaleui_style_virtual(".select-option-selected", r->rules, r->rule_count,
+                          r->theme_vars, opt_sel);
     int fs = 13;
-    unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
+    unsigned int fg = color_of(popup, "color", 0xFF1a1a1a);
     int list_x = n->border.x;
     int list_y = n->border.y + off_y + n->border.h;
     int list_w = n->border.w;
     int list_h = static_cast<int>(texts.size()) * kSelectItemH;
-    /* the popup follows the select's corner radius (default theme radius),
-     * instead of square corners that clash with the rounded control */
+    /* corner radius + border + background + shadow from .select-popup */
     int radius = 0;
-    std::string br = sget(n->style, "border-radius");
+    std::string br = sget(popup, "border-radius");
     if (!br.empty()) {
         radius = std::atoi(br.c_str());
     }
-    unsigned int bg = 0xFF000000;
-    auto it = r->theme_vars.find("--card");
-    if (it != r->theme_vars.end()) {
-        whaleui_render_parse_color(it->second.c_str(), &bg);
-    }
-    /* soft shadow under the popup (before the card background) */
+    unsigned int bg = color_of(popup, "background", 0xFF000000);
+    unsigned int border_c = color_of(popup, "border", 0xFF000000);
+    unsigned int hover_bg = color_of(opt_hover, "background", 0x00000000);
+    unsigned int sel_bg = color_of(opt_sel, "background", 0xFF0067C0);
+    unsigned int sel_fg = color_of(opt_sel, "color", 0xFFFFFFFF);
+    /* box-shadow: only the first shadow is painted (engine limitation) */
+    int sh_ox = 0, sh_oy = 0, sh_blur = 0;
+    unsigned int sh_col = 0;
     {
-        const int blur = 6;
+        std::string sv = sget(popup, "box-shadow");
+        size_t comma = sv.find(',');
+        if (comma != std::string::npos) {
+            sv = sv.substr(0, comma);
+        }
+        parse_shadow(sv, sh_ox, sh_oy, sh_blur, sh_col);
+    }
+    if (sh_blur > 0) {
+        /* soft shadow under the popup (before the card background) */
+        const int blur = sh_blur;
         for (int k = blur; k >= 1; --k) {
             unsigned int ka = static_cast<unsigned>(0x28 * (blur - k + 1) / (blur + 1));
             unsigned int c = (ka << 24); /* black, alpha faded outwards */
@@ -459,44 +480,27 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
         fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, list_y, list_w,
                   list_h, bg, clip);
     }
-    unsigned int border_c = 0xFF000000;
-    auto itb = r->theme_vars.find("--border");
-    if (itb != r->theme_vars.end()) {
-        whaleui_render_parse_color(itb->second.c_str(), &border_c);
-    }
-    /* selected + hovered rows get a translucent accent wash */
-    unsigned int acc = 0xFF0067C0;
-    auto ita = r->theme_vars.find("--accent");
-    if (ita != r->theme_vars.end()) {
-        whaleui_render_parse_color(ita->second.c_str(), &acc);
-    }
-    unsigned int sel_wash = (0x26 << 24) | (acc & 0x00FFFFFF); /* ~15% accent */
-    unsigned int hover_wash = (0x14 << 24) | (acc & 0x00FFFFFF);
     for (int i = 0; i < static_cast<int>(texts.size()); ++i) {
         int iy = list_y + i * kSelectItemH;
+        unsigned int row_bg = 0x00000000;
         if (i == r->open_select_hover) {
-            if (radius > 0) {
-                fill_round_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
-                                list_w, kSelectItemH, radius, hover_wash, clip);
-            } else {
-                fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
-                          list_w, kSelectItemH, hover_wash, clip);
-            }
+            row_bg = hover_bg;
         }
         if (i == sel) {
+            row_bg = sel_bg;
+        }
+        if (row_bg && ((row_bg >> 24) & 0xFF) != 0) {
             if (radius > 0) {
                 fill_round_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
-                                list_w, kSelectItemH, radius, sel_wash, clip);
+                                list_w, kSelectItemH, radius, row_bg, clip);
             } else {
                 fill_rect(r->pixels, r->fb_w, r->fb_h, list_x, iy,
-                          list_w, kSelectItemH, sel_wash, clip);
+                          list_w, kSelectItemH, row_bg, clip);
             }
-            draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                         kSelectItemH, fs, "", acc, true, 0, n->el, clip);
-        } else {
-            draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                         kSelectItemH, fs, "", fg, 0, 0, n->el, clip);
         }
+        unsigned int row_fg = i == sel ? sel_fg : fg;
+        draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
+                     kSelectItemH, fs, "", row_fg, i == sel, 0, n->el, clip);
     }
     /* border around the list (follows the corner arcs when rounded) */
     fill_round_border(r->pixels, r->fb_w, r->fb_h, list_x, list_y,

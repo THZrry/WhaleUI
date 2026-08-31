@@ -19,13 +19,59 @@ WHATWG-style) + shared component classes (`.card`, `.btn-*`, `.tabs`,
 `.toolbar`, `.pane`, `.anim-*` keyframes, opt-in per `class=`) + a per-theme
 overlay for the recognizable control chrome (buttons/inputs/links/focus),
 all driven by `var(--*)` from the light/dark variable tables. The renderer's
-native controls (checkbox/radio/progress/select-popup/scrollbar) read
-`--accent`/`--field`/`--border`/`--card` from the same tables.
+native controls (checkbox/radio/progress/scrollbar) read
+`--accent`/`--field`/`--border`/`--card`; the select dropdown popup is drawn
+from the virtual `.select-popup`/`.select-option[-hover|-selected]` classes
+(`whaleui_style_virtual`), not hard-coded colors.
 
 Reference source archives used during the translation are kept out of git
 (`temp/ref/`, gitignored).
 
 Status legend: `[x]` implemented, `[ ]` not yet.
+
+## Engine features the stylesheets assume (marked `needs:` in theme.cpp)
+
+The CSS is written for the *target* engine; rules that need engine work are
+kept (commented with `needs:`) so nothing is lost:
+
+- [ ] `pseudo-box` - `::before`/`::after` painted as real boxes
+  (position/width/height/inset/background/border-radius + their own
+  transition/animation). Today a pseudo-element is only a text run (its
+  `content` becomes a run; paint merges text properties). The Aero button
+  hover/active gradient overlays, the Fluent/M3 state layers and the input
+  focus underline all depend on this.
+- [ ] `multi-shadow` - `box-shadow` with more than one shadow / spread.
+  Today one shadow (`ox oy blur color`, `inset` ok). Theme shadows like
+  `--shadow-lg` carry two layers; the second is dropped.
+- [ ] `grad-trans` - transitions between two `background` gradients (the
+  reference systems cross-fade hover gradients; today a gradient change
+  snaps).
+- [ ] `:checked` / `:indeterminate` - pseudo-classes on checkbox/radio
+  (switch component, selected tabs without JS class toggling).
+- [ ] `outline` / `outline-offset` - focus ring property (focus rings are
+  approximated with `box-shadow: 0 0 0 Npx` / inset).
+- [ ] `4-side-bd` - per-side `border-color` (7.css inputs use four different
+  edge colors; today border is a single color).
+- [ ] `backdrop` - `backdrop-filter` (Aero glass window blur).
+- [ ] `box-shadow` transition (hover shadow deepening snaps today; the
+  transform translateY part does animate).
+
+## Fixed in this round
+
+- [x] `::before/::after` selectors no longer leak into the element's own
+  style: a rule like `input::after { position:absolute; height:2px }` used
+  to apply position/height to every `input` (the `::` suffix was skipped as
+  an unknown pseudo-class) and broke layout. `parse_simple` now marks
+  `pseudo_el` and the element match fails; pseudo rules still surface for
+  paint via `whaleui_style_match_pseudo`. Regression test in test_style.
+- [x] select dropdown popup is CSS-driven: `paint_select_list` computes the
+  virtual `.select-popup` / `.select-option-hover` / `.select-option-
+  selected` classes (`whaleui_style_virtual` in style.cpp) and paints
+  background/border/radius/first-shadow/row colors from them. The theme
+  stylesheets now style the popup like any other surface.
+- [x] `content: ""` pseudo rules produce no layout run (they did insert an
+  empty run before the parse fix; verified `input::after{content:""}` alone
+  is inert).
 
 ## Pseudo-classes
 

@@ -363,6 +363,40 @@ int main(void)
         assert(std::strcmp(whaleui_theme_name(0), "fluent") == 0);
     }
 
+    /* ::after rules must NOT leak into the element's own style: the
+     * pseudo-element suffix makes the rule match nothing (a bare
+     * "input::after { position:absolute; height:2px }" used to apply
+     * position/height to every input and broke layout) */
+    {
+        const char* css =
+            "input::after { content: \"\"; position: absolute; height: 2px; }\n"
+            "input { color: red; }\n"
+            "input:focus::after { transform: scaleX(1); }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><input></body>", 18);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* input = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "input"));
+        assert(input != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(input, rules, count, vars, nullptr);
+        assert(cs["color"] == "red");
+        assert(cs.find("position") == cs.end());
+        assert(cs.find("height") == cs.end());
+        /* the ::after content still surfaces for paint via match_pseudo */
+        whaleui_style_state st;
+        int pseudo = 0;
+        assert(whaleui_style_match_pseudo("input::after", input, &st,
+                                          &pseudo) == 1 && pseudo == 2);
+        assert(whaleui_style_match("input::after", input, &st) == 0);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     return 0;
 }
 

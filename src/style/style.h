@@ -76,6 +76,15 @@ WhaleUIComputedStyle whaleui_style_compute(lxb_dom_element* el,
  * unit: 0=px, 1=%, 2=em, 3=auto, 4=number(unitless). Returns 0 on success. */
 int whaleui_style_parse_len(const char* value, float* num, int* unit);
 
+/* Merge the declarations of every rule whose selector equals `selector`
+ * (a synthetic element with no DOM node - e.g. the select popup
+ * ".select-popup"/".select-option-hover"). var() values resolve against
+ * vars; later rules win per declaration. */
+void whaleui_style_virtual(const char* selector,
+                           const whaleui_css_rule_t* rules, size_t count,
+                           const std::map<std::string, std::string>& vars,
+                           WhaleUIComputedStyle& out);
+
 #ifdef __cplusplus
 }
 #endif
