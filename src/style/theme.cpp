@@ -171,7 +171,9 @@ const char* kComponentsCss = R"(
 .card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 
 /* --- 按钮：状态覆盖层 + 按压下沉。按钮默认外观由主题定义，class 只改色 --- */
-button { position: relative; overflow: hidden; }
+/* note: 不加 position:relative - 引擎 relative 布局 bug 会把 inline-block
+ * 按钮压成竖线（needs: relative 布局修复后，覆盖层 ::before/::after
+ * 才能用 position:absolute 铺满） */
 button::before, button::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;
     opacity: 0; transition: opacity 0.15s; /* needs: pseudo-box */
@@ -179,9 +181,9 @@ button::before, button::after {
 button:hover::before { opacity: 1; }
 button:active::before { opacity: 0; }
 button:active::after { opacity: 1; }
-.btn-primary { background: var(--btn-bg); color: var(--btn-fg); border-color: transparent; }
-.btn-primary:hover { background: var(--btn-bg-hover); }
-.btn-primary:active { background: var(--btn-bg-active); }
+.btn-primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:active { background: var(--accent-active); }
 .btn-secondary { background: transparent; color: var(--accent); }
 .btn-secondary:hover { background: var(--btn-bg-hover); }
 .btn-subtle { background: transparent; border-color: transparent; color: var(--fg); }

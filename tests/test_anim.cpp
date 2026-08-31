@@ -106,6 +106,40 @@ int main(void)
         whaleui_css_keyframes_destroy(&kf);
     }
 
+    /* 3-frame round-trip (0%->50%->100%), infinite: the pulse pattern
+     * (opacity .45 -> 1 -> .45). Regression: multi-frame keyframes with a
+     * middle frame must interpolate both segments and loop. */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf,
+                "@keyframes pulse { 0% { opacity: 0.45; } "
+                "50% { opacity: 1; } 100% { opacity: 0.45; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "pulse 1000ms linear infinite";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(num(s["opacity"]) > 0.40f && num(s["opacity"]) < 0.50f);
+        assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
+        std::fprintf(stderr, "[pulse] t=500 opacity=%s\n", s["opacity"].c_str());
+        assert(num(s["opacity"]) > 0.99f); /* 50% frame: 1 */
+        assert(whaleui_anim_apply(a, nullptr, s, 750) == 1);
+        std::fprintf(stderr, "[pulse] t=750 opacity=%s\n", s["opacity"].c_str());
+        assert(num(s["opacity"]) > 0.70f && num(s["opacity"]) < 0.80f);
+        assert(whaleui_anim_apply(a, nullptr, s, 1000) == 1); /* loops */
+        std::fprintf(stderr, "[pulse] t=1000 opacity=%s\n", s["opacity"].c_str());
+        assert(num(s["opacity"]) > 0.40f && num(s["opacity"]) < 0.50f);
+        assert(whaleui_anim_apply(a, nullptr, s, 1250) == 1);
+        std::fprintf(stderr, "[pulse] t=1250 opacity=%s\n", s["opacity"].c_str());
+        assert(num(s["opacity"]) > 0.70f && num(s["opacity"]) < 0.80f); /* 2nd loop @25% */
+        assert(whaleui_anim_apply(a, nullptr, s, 1500) == 1);
+        std::fprintf(stderr, "[pulse] t=1500 opacity=%s\n", s["opacity"].c_str());
+        assert(num(s["opacity"]) > 0.99f); /* second loop @50% */
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
     /* single-`from` keyframes imply 100% = the element's base style
      * ("rise{from{opacity:0}}" animates 0 -> base 1, not 0 forever) */
     {

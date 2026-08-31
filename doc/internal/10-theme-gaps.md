@@ -55,6 +55,14 @@ kept (commented with `needs:`) so nothing is lost:
 - [ ] `backdrop` - `backdrop-filter` (Aero glass window blur).
 - [ ] `box-shadow` transition (hover shadow deepening snaps today; the
   transform translateY part does animate).
+- [ ] `position: relative` layout bug - an inline-block element with
+  `position: relative` (buttons, tabs) collapses to a vertical sliver in a
+  flex/block flow. The stylesheets avoid `position: relative` on buttons
+  for now (the overlay-layer pattern needs it once pseudo-box lands).
+- [ ] `placeholder` attribute on input/textarea - an empty-value control
+  shows nothing; placeholder text must be painted by the engine.
+- [ ] `transform: rotate` (and other rotation functions) - `spin`-style
+  keyframes have no effect; translate/scale work.
 
 ## Fixed in this round
 
