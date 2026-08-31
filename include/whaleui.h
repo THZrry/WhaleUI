@@ -659,6 +659,15 @@ const char* whaleui_font_get_default(void);
 /* Comma-separated list of registered families (for debugging/enumeration). */
 const char* whaleui_font_list(void);
 
+/* One-shot: register the current platform's common UI fonts (Latin, CJK,
+ * emoji candidates) as a lazy fallback chain. Only the file PATHS are
+ * recorded - no font data is loaded here and nothing is opened until a
+ * page actually renders glyphs the default font cannot provide (see
+ * render_text). Missing files are skipped, so this works on any system
+ * (Win8 without Segoe UI still gets Arial/SimSun). Idempotent; returns
+ * the number of fonts newly registered. */
+int whaleui_font_register_system_defaults(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -263,94 +263,161 @@ static int glyph_stb(unsigned int cp, void* st);
 
 #ifdef WHALEUI_BUILD_FULL
 
-/* open a font for a family (no fallback chain); "" or generic families pick
- * the default font. style: TTF_STYLE_* bits (BOLD/ITALIC). */
-TTF_Font* render_open_font(whaleui_render_t* r, const std::string& family, int size,
-                           int style, bool use_cache)
+/* open a registered font file (no fallback chain, no cache); returns the
+ * TTF_Font at an arbitrary size (callers set the real size via
+ * ensure_font_state). NULL when the family is not registered. */
+static TTF_Font* open_registry_font(const std::string& family)
 {
-    if (size <= 0) {
-        size = 16;
-    }
-    std::string key = family + "|" + std::to_string(size) + "|" +
-                      std::to_string(style);
-    if (use_cache) {
-        for (auto& f : r->fonts) {
-            if (f.first == key) {
-                return f.second;
+    whaleui_font_registry* reg = whaleui_font_registry_get();
+    for (size_t i = 0; i < reg->count; ++i) {
+        if (std::strcmp(reg->fonts[i].family, family.c_str()) == 0) {
+            SDL_IOStream* io = nullptr;
+            if (reg->fonts[i].path) {
+                io = SDL_IOFromFile(reg->fonts[i].path, "rb");
+            } else if (reg->fonts[i].data && reg->fonts[i].len) {
+                io = SDL_IOFromMem(const_cast<unsigned char*>(
+                                       reg->fonts[i].data),
+                                   reg->fonts[i].len);
             }
+            if (!io) {
+                return nullptr;
+            }
+            return TTF_OpenFontIO(io, true, 16.0f);
         }
     }
-    /* find the font file in the registry */
-    const unsigned char* data = nullptr;
-    size_t len = 0;
-    bool generic = family == "sans-serif" || family == "serif" || family == "monospace";
+    return nullptr;
+}
+
+/* apply (size, style) to a font only when it changed (SDL3_ttf rebuilds
+ * its glyph cache on either call, so skipping the no-op calls matters on
+ * mixed-size pages) */
+static void ensure_font_state(whaleui_render_t* r, TTF_Font* font, int size,
+                              int style)
+{
+    auto it = r->font_state.find(font);
+    if (it != r->font_state.end() && it->second.first == size &&
+        it->second.second == style) {
+        return;
+    }
+    TTF_SetFontSize(font, static_cast<float>(size > 0 ? size : 16));
+    TTF_SetFontStyle(font, style);
+    r->font_state[font] = std::make_pair(size > 0 ? size : 16, style);
+}
+
+/* sync the primary font AND its whole fallback chain to the current
+ * (size, style): SDL3_ttf renders a fallback glyph at the FALLBACK's own
+ * size, so every chain member must match the run being rasterized. */
+static void sync_chain(whaleui_render_t* r, TTF_Font* font, int size,
+                       int style)
+{
+    ensure_font_state(r, font, size, style);
+    auto it = r->font_chain.find(font);
+    if (it != r->font_chain.end()) {
+        for (TTF_Font* fb : it->second) {
+            ensure_font_state(r, fb, size, style);
+        }
+    }
+}
+
+/* lazily open the next registered font that can provide `cp`, attach it
+ * to every primary font's fallback chain and return it. Called when a
+ * glyph is missing - a page that never renders CJK/emoji never opens
+ * those fonts (a registered-but-unused font costs only its path string).
+ * A font that does NOT provide the glyph is closed again and remembered
+ * in fallback_tried, so it is not reopened for every missing glyph. */
+static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
+                                 int size, int style, unsigned int cp)
+{
     whaleui_font_registry* reg = whaleui_font_registry_get();
-    if (!family.empty() && !generic) {
-        for (size_t i = 0; i < reg->count; ++i) {
-            if (std::strcmp(reg->fonts[i].family, family.c_str()) == 0) {
-                data = reg->fonts[i].data;
-                len = reg->fonts[i].len;
+    for (size_t i = 0; i < reg->count; ++i) {
+        const std::string fam = reg->fonts[i].family;
+        bool open = false;
+        for (auto& f : r->fonts) {
+            if (f.first == fam) {
+                open = true;
                 break;
             }
         }
-    } else if (reg->count > 0) {
-        data = reg->fonts[0].data;
-        len = reg->fonts[0].len;
-    }
-    TTF_Font* font = nullptr;
-    if (data && len) {
-        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(data), len);
-        if (io) {
-            font = TTF_OpenFontIO(io, true, static_cast<float>(size));
+        /* the default font already covers its own family */
+        if (open || fam == r->default_family) {
+            continue;
         }
+        bool tried = false;
+        for (auto& t : r->fallback_tried) {
+            if (t == fam) {
+                tried = true;
+                break;
+            }
+        }
+        if (tried) {
+            continue;
+        }
+        TTF_Font* fb = open_registry_font(fam);
+        if (!fb) {
+            continue;
+        }
+        ensure_font_state(r, fb, size, style);
+        if (!TTF_FontHasGlyph(fb, cp)) {
+            /* cannot help with this glyph: close it and remember, so the
+             * next missing glyph does not reopen a useless font */
+            TTF_CloseFont(fb);
+            r->fallback_tried.push_back(fam);
+            continue;
+        }
+        for (auto& kv : r->font_chain) {
+            if (kv.first != fb) {
+                TTF_AddFallbackFont(kv.first, fb);
+            }
+            kv.second.push_back(fb);
+        }
+        if (r->font_default && r->font_default != fb) {
+            TTF_AddFallbackFont(r->font_default, fb);
+        }
+        r->fallback_open.push_back(fb);
+        r->fonts.emplace_back(fam, fb); /* marks it open */
+        return fb;
     }
-    if (font && style) {
-        TTF_SetFontStyle(font, style);
-    }
-    if (use_cache && font) {
-        r->fonts.emplace_back(key, font);
-    }
-    return font;
+    return nullptr;
 }
 
-/* attach every other registered font as a fallback (same size) so glyphs
- * missing from `font` (CJK, emoji, ...) resolve through the library */
-void render_build_fallback(whaleui_render_t* r, TTF_Font* font, int size, int style)
+/* case-insensitive family-name match (CSS "Segoe UI" vs TTF real name) */
+static bool family_eq(const char* a, const char* b)
 {
-    if (!font) {
-        return;
+    if (!a || !b) {
+        return false;
     }
-    if (size <= 0) {
-        size = 16;
-    }
-    whaleui_font_registry* reg = whaleui_font_registry_get();
-    for (size_t i = 0; i < reg->count; ++i) {
-        TTF_Font* fb = render_open_font(r, reg->fonts[i].family, size, style, true);
-        if (fb && fb != font) {
-            TTF_AddFallbackFont(font, fb);
+    for (; *a && *b; ++a, ++b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = static_cast<char>(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = static_cast<char>(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return false;
         }
     }
-    /* the default font itself is a last-resort fallback */
-    if (r->font_default && r->font_default != font) {
-        TTF_AddFallbackFont(font, r->font_default);
-    }
+    return *a == 0 && *b == 0;
 }
 
+/* get (or open) the font for a family; one TTF_Font per family, size and
+ * style applied on demand. Generic families ("" / sans-serif / serif /
+ * monospace) and unknown families resolve to the default font. CSS family
+ * lists like "Segoe UI", Helvetica, sans-serif match the real font names
+ * reported by SDL3_ttf, so a page naming a font we registered by file
+ * name ("segoeui.ttf") still resolves to it. */
 TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int size,
                           int style)
 {
     if (size <= 0) {
         size = 16;
     }
-    /* one TTF_Font per (family, style), size scaled on demand. Re-parsing
-     * the font per size was the biggest chunk of the 21k page's memory (90
-     * fonts). The font's current size is set only when a glyph actually
-     * needs rasterization (glyph_img_ttf) or a one-off measure misses the
-     * size-keyed cache - the layout/ad-advance hot path reuses the cache so
-     * it does not toggle the size every run every frame. */
-    std::string key = family + "|" + std::to_string(style);
+    std::string key = family;
     for (auto& f : r->fonts) {
         if (f.first == key) {
+            sync_chain(r, f.second, size, style);
             return f.second;
         }
     }
@@ -361,21 +428,54 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
     }
     TTF_Font* font = nullptr;
     for (const std::string& fam : fams) {
-        font = render_open_font(r, fam, size, style, false);
+        if (fam.empty() || fam == "sans-serif" || fam == "serif" ||
+            fam == "monospace") {
+            font = r->font_default;
+            break;
+        }
+        font = open_registry_font(fam);
+        if (font) {
+            break;
+        }
+        /* file-name miss: match the real family name of an opened font
+         * ("Segoe UI" -> the font opened from segoeui.ttf). The default
+         * font is opened at render_create and not in r->fonts, so it is
+         * checked too. */
+        if (r->font_default) {
+            const char* real = TTF_GetFontFamilyName(r->font_default);
+            if (real && family_eq(real, fam.c_str())) {
+                font = r->font_default;
+                break;
+            }
+        }
+        for (auto& f : r->fonts) {
+            const char* real = TTF_GetFontFamilyName(f.second);
+            if (real && family_eq(real, fam.c_str())) {
+                font = f.second;
+                break;
+            }
+        }
         if (font) {
             break;
         }
     }
     if (!font) {
-        /* nothing matched: use the default font */
-        if (style && r->font_default) {
-            TTF_SetFontStyle(r->font_default, style);
-        }
         font = r->font_default;
     }
     if (font) {
-        TTF_SetFontSize(font, static_cast<float>(size));
-        render_build_fallback(r, font, size, style);
+        /* primary font: attach the fallbacks opened so far + default */
+        if (r->font_chain.find(font) == r->font_chain.end()) {
+            for (TTF_Font* fb : r->fallback_open) {
+                if (fb != font) {
+                    TTF_AddFallbackFont(font, fb);
+                }
+            }
+            if (r->font_default && r->font_default != font) {
+                TTF_AddFallbackFont(font, r->font_default);
+            }
+            r->font_chain[font]; /* create the chain entry */
+        }
+        sync_chain(r, font, size, style);
         r->fonts.emplace_back(key, font);
     }
     return font;
@@ -403,7 +503,6 @@ static int glyph_ttf(unsigned int cp, void* st)
         if (c->r->ascii_font != font || c->r->ascii_fs != c->fs) {
             c->r->ascii_font = font;
             c->r->ascii_fs = c->fs;
-            TTF_SetFontSize(font, static_cast<float>(c->fs));
             for (int i = 0; i < 128; ++i) {
                 int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
                 TTF_GetGlyphMetrics(font, static_cast<Uint32>(i),
@@ -420,9 +519,14 @@ static int glyph_ttf(unsigned int cp, void* st)
         return it->second;
     }
     int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
-    /* cache miss: the font's current size may be another run's - set it so
-     * the measure is for THIS size, then cache the per-size advance. */
-    TTF_SetFontSize(font, static_cast<float>(c->fs));
+    /* render_get_font synced the chain to THIS size; a glyph the primary
+     * font does not provide (TTF_GetGlyphMetrics happily reports .notdef
+     * for missing glyphs, so existence is checked explicitly) lazily opens
+     * the next registered font (CJK/emoji) as fallback and retries once -
+     * unused fonts are never opened. */
+    if (!TTF_FontHasGlyph(font, cp)) {
+        ensure_fallback(c->r, font, c->fs, c->bold ? kFontBold : 0, cp);
+    }
     TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv);
     c->r->glyph_w_cache[key] = adv;
     return adv;
@@ -442,11 +546,15 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     if (!font) {
         return false;
     }
-    /* rasterization needs THIS size: the shared font's current size may be
-     * another run's. Set it once per call (text_cache hits skip this whole
-     * glyph path, so it is not per-frame for cached runs). */
-    TTF_SetFontSize(font, static_cast<float>(fs));
+    /* render_get_font synced the font + its chain to THIS size/style. A
+     * glyph the primary font does not provide lazily opens the next
+     * registered font as fallback (unused CJK/emoji fonts cost nothing
+     * until a page needs them). TTF_GetGlyphMetrics alone cannot detect
+     * this - it reports .notdef metrics for missing glyphs. */
     int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
+    if (!TTF_FontHasGlyph(font, cp)) {
+        ensure_fallback(r, font, fs, style, cp);
+    }
     if (!TTF_GetGlyphMetrics(font, cp, &minx, &maxx, &miny, &maxy, &adv)) {
         return false;
     }

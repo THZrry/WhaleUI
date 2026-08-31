@@ -43,6 +43,17 @@ struct whaleui_window
      * test_html pages link to each other by bare relative names, which
      * must resolve against the page's own directory, not the cwd). */
     std::string base_uri;
+
+    /* coalesced resize: a window drag floods SDL_EVENT_WINDOW_RESIZED (one
+     * per frame of the drag); rebuilding GPU targets + relayout per event
+     * is what makes the window feel frozen while resizing. The event only
+     * records the target size here; the render worker applies it at most
+     * once per kResizeCoalesceMs (app.cpp), so the window keeps responding
+     * during the drag and settles ~80ms after it stops. */
+    int resize_pending;
+    int resize_w;
+    int resize_h;
+    unsigned long long resize_last; /* last time resize was actually applied */
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

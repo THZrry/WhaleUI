@@ -605,6 +605,81 @@ fail:
     return nullptr;
 }
 
+int whaleui_gpu_resize(whaleui_gpu_t* g, int w, int h)
+{
+    if (!g || w <= 0 || h <= 0) {
+        return -1;
+    }
+    SDL_GPUDevice* dev = g->device;
+    if (g->target) {
+        SDL_ReleaseGPUTexture(dev, g->target);
+    }
+    if (g->target_b) {
+        SDL_ReleaseGPUTexture(dev, g->target_b);
+    }
+    if (g->target2) {
+        SDL_ReleaseGPUTexture(dev, g->target2);
+    }
+    if (g->text_layer) {
+        SDL_ReleaseGPUTexture(dev, g->text_layer);
+    }
+    if (g->blur_tex) {
+        SDL_ReleaseGPUTexture(dev, g->blur_tex);
+    }
+    if (g->layer_transfer) {
+        SDL_ReleaseGPUTransferBuffer(dev, g->layer_transfer);
+    }
+    g->blur_w = w / kBlurDiv;
+    g->blur_h = h / kBlurDiv;
+    if (g->blur_w < 1) {
+        g->blur_w = 1;
+    }
+    if (g->blur_h < 1) {
+        g->blur_h = 1;
+    }
+    const Uint32 wu = static_cast<Uint32>(w);
+    const Uint32 hu = static_cast<Uint32>(h);
+    /* same formats/usages as whaleui_gpu_create */
+    g->target = make_texture(
+        dev, wu, hu, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER |
+            SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
+            SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE);
+    g->target_b = make_texture(
+        dev, wu, hu, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER |
+            SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
+            SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE);
+    g->geom_cur = g->target;
+    g->target2 = make_texture(
+        dev, wu, hu, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE |
+            SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
+            SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    g->text_layer = make_texture(dev, wu, hu,
+                                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                 SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    g->blur_tex = make_texture_mips(dev, static_cast<uint32_t>(g->blur_w),
+                                    static_cast<uint32_t>(g->blur_h),
+                                    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                    SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                        SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                                    kBlurLevels);
+    SDL_GPUTransferBufferCreateInfo tbi;
+    std::memset(&tbi, 0, sizeof(tbi));
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbi.size = static_cast<uint32_t>(static_cast<size_t>(w) * h * 4);
+    g->layer_transfer = SDL_CreateGPUTransferBuffer(dev, &tbi);
+    g->fb_w = static_cast<float>(w);
+    g->fb_h = static_cast<float>(h);
+    g->layer_rx = g->layer_ry = g->layer_rw = g->layer_rh = 0;
+    g->layer_dirty = 0;
+    return (g->target && g->target_b && g->target2 && g->text_layer &&
+            g->blur_tex && g->layer_transfer)
+               ? 0
+               : -1;
+}
+
 void whaleui_gpu_destroy(whaleui_gpu_t* g)
 {
     if (!g) {

@@ -44,12 +44,15 @@ struct whaleui_render
 
     int width, height;     /* window size in pixels */
     int has_dirty;
+    /* set by whaleui_render_frame: 1 while the frame loop must keep
+     * repainting (running animation, blinking caret), 0 when the page is
+     * static. The app loop reads it (via the worker's OR over windows) to
+     * decide whether to keep requesting frames or park idle. */
+    int alive;
 
-    /* CPU framebuffer (0xAARRGGBB) + GPU offscreen target (B8G8R8A8 so the
-     * little-endian framebuffer bytes map 1:1). */
+    /* CPU framebuffer (0xAARRGGBB) - CPU paint path (controls/selection)
+     * only; the GPU path draws geometry + text directly. */
     std::vector<unsigned int> pixels;
-    SDL_GPUTexture* offscreen;
-    SDL_GPUTransferBuffer* transfer;
 
     /* owned stylesheet + last layout tree (rebuilt on dirty) */
     whaleui_layout_tree_t* tree;
@@ -58,9 +61,29 @@ struct whaleui_render
     whaleui_css_keyframes_t keyframes;
     std::map<std::string, std::string> theme_vars;
 
-    /* font cache: "family|size" -> TTF_Font */
+    /* font cache: "family" -> TTF_Font. One font per FAMILY - size and
+     * style are set on demand (font_state below) right before use, so a
+     * page with N font sizes does not open N copies of the 20MB CJK font
+     * (that was the bulk of the ~130MB font memory: every (family,size,
+     * style) fallback chain re-opened every registered font). */
     std::vector<std::pair<std::string, TTF_Font*>> fonts;
+    /* last-applied (size, style) per font; ensure_font_state skips the
+     * SDL3_ttf calls when unchanged */
+    std::map<TTF_Font*, std::pair<int, int>> font_state;
+    /* primary font -> its fallback chain (rendered glyphs sync the chain's
+     * sizes to the current run before rasterizing) */
+    std::map<TTF_Font*, std::vector<TTF_Font*>> font_chain;
+    /* fallback fonts already opened and attached to every chain (lazy:
+     * a registered font is only opened when a glyph is actually missing,
+     * so an unused emoji/CJK font costs nothing) */
+    std::vector<TTF_Font*> fallback_open;
+    /* families verified NOT to provide a missing glyph (closed again):
+     * skipped on later misses so they are not reopened per glyph */
+    std::vector<std::string> fallback_tried;
     TTF_Font* font_default;
+    /* family of font_default (its registry family name); lazy fallback
+     * skips re-opening it */
+    std::string default_family;
     /* ASCII glyph-advance cache (layout hot path): rebuilt when the font
      * changes. Full build only; stb measures directly from its font table. */
     TTF_Font* ascii_font;

@@ -17,7 +17,13 @@ extern "C" {
 struct whaleui_font
 {
     char* family;
-    const unsigned char* data; /* borrowed for memory-registered fonts */
+    /* path for file-registered fonts (owned; the file is read lazily when
+     * a TTF_Font is actually opened, so a registered-but-unused font costs
+     * only this string - the 20MB+ msyh.ttc data is no longer pinned in
+     * memory just by being registered). NULL for memory-registered fonts. */
+    char* path;
+    /* borrowed for memory-registered fonts; NULL when path is set */
+    const unsigned char* data;
     size_t len;
 };
 

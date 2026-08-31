@@ -177,6 +177,10 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->height = height;
     win->visible = 0;
     win->document = nullptr;
+    win->resize_pending = 0;
+    win->resize_w = width;
+    win->resize_h = height;
+    win->resize_last = 0;
     app->windows.push_back(win);
     return win;
 }

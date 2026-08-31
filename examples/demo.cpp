@@ -199,11 +199,11 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "app create failed\n");
         return 1;
     }
-    /* register system fonts so text can render (Segoe UI is the Win11 font).
-     * Only the two the demo actually uses: Segoe UI (Latin) + Microsoft YaHei
-     * (CJK). Fewer loaded fonts = less memory (see font.cpp). */
-    whaleui_font_register("C:/Windows/Fonts/segoeui.ttf");
-    whaleui_font_register("C:/Windows/Fonts/msyh.ttc");
+    /* one-shot system font registration: Latin + CJK + emoji candidates for
+     * the current platform are registered (path only - nothing is loaded
+     * until a page actually renders glyphs, see font.cpp). The lazy
+     * fallback chain opens exactly the fonts the page needs. */
+    whaleui_font_register_system_defaults();
 
     /* the theme dropdown switches the whole UI style; keys are the app's job */
     whaleui_app_set_select_callback(app, on_theme_select, nullptr);

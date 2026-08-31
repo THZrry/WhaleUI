@@ -69,22 +69,20 @@ extern "C" const char* whaleui_font_register(const char* uri)
         }
     }
     std::free(want);
-    char* data = nullptr;
-    size_t len = 0;
-    if (whaleui_fs_load(uri, &data, &len) != 0) {
-        return nullptr;
-    }
-    /* data is malloc'd by fs_load; font registry borrows it */
     whaleui_font_t* nf = static_cast<whaleui_font_t*>(std::realloc(reg->fonts, (reg->count + 1) * sizeof(*reg->fonts)));
     if (!nf) {
-        std::free(data);
         return nullptr;
     }
     reg->fonts = nf;
     whaleui_font_t* f = &reg->fonts[reg->count];
+    std::memset(f, 0, sizeof(*f));
     f->family = family_from_path(uri);
-    f->data = reinterpret_cast<const unsigned char*>(data);
-    f->len = len;
+    /* the file is read lazily when a TTF_Font is opened (render_text), so
+     * registering a font pins no file data - a 20MB CJK font costs a few
+     * bytes until a page actually renders its glyphs. */
+    f->path = dup_str(uri);
+    f->data = nullptr;
+    f->len = 0;
     reg->count++;
     return f->family;
 }
@@ -101,9 +99,11 @@ extern "C" const char* whaleui_font_register_memory(const unsigned char* data, s
     }
     reg->fonts = nf;
     whaleui_font_t* f = &reg->fonts[reg->count];
+    std::memset(f, 0, sizeof(*f));
     char name[32];
     std::sprintf(name, "memory-%zu", reg->count);
     f->family = dup_str(name);
+    f->path = nullptr;
     f->data = data; /* borrowed */
     f->len = len;
     reg->count++;
@@ -153,18 +153,41 @@ extern "C" const char* whaleui_font_list(void)
 
 extern "C" int whaleui_font_register_system_defaults(void)
 {
-    /* candidate files (lowercased base names) tried in order; the first that
-     * loads becomes the fallback chain for CJK + emoji on Windows.
-     * Keep it lean: loading every Windows UI font at startup is a big chunk
-     * of the ~50MB render-side memory. segoui (Latin) + msyh (CJK) +
-     * seguiemj (emoji) cover the vast majority of pages; simsun/simhei/arial
-     * are fallback redundancy (msyh covers CJK, a page pinning a specific
-     * Latin family can register it explicitly). */
+    /* One-shot helper: register the platform's common UI fonts so text can
+     * fall back across Latin / CJK / emoji. Registration only records the
+     * file PATH - no font data is read here (render_text opens a font only
+     * when a page actually needs its glyphs), so registering a long list
+     * costs a few dozen bytes per font and never auto-loads anything.
+     * Candidates are tried in order; missing files are skipped. The lazy
+     * fallback chain (render_text.cpp ensure_fallback) walks this same
+     * order, so the first candidate that can satisfy a missing glyph wins. */
+#if defined(_WIN32)
+    /* Windows: Segoe UI (Vista+) + Arial (universal) cover Latin; YaHei /
+     * SimSun cover CJK; Segoe UI Emoji (8.1+) covers emoji. Arial/SimSun
+     * stay as the last-resort chain so even a stripped Win8 without
+     * Segoe/YaHei still has a default font. */
     static const char* kFiles[] = {
-        "segoeui.ttf",   /* Segoe UI */
-        "seguiemj.ttf",  /* Segoe UI Emoji */
-        "msyh.ttc",      /* Microsoft YaHei */
+        "segoeui.ttf",  /* Segoe UI */
+        "arial.ttf",    /* universal Latin fallback */
+        "msyh.ttc",     /* Microsoft YaHei */
+        "simsun.ttc",   /* SimSun */
+        "seguiemj.ttf", /* Segoe UI Emoji */
     };
+#elif defined(__APPLE__)
+    static const char* kFiles[] = {
+        "Helvetica.ttc",            /* universal */
+        "PingFang.ttc",             /* CJK */
+        "Apple Color Emoji.ttc",    /* emoji */
+    };
+#else
+    /* Linux/BSD: DejaVu (universal), Noto CJK, Noto emoji, FreeSans */
+    static const char* kFiles[] = {
+        "DejaVuSans.ttf",
+        "FreeSans.ttf",
+        "NotoSansCJK-Regular.ttc",
+        "NotoColorEmoji.ttf",
+    };
+#endif
     const char* dirs[4];
     int ndirs = whaleui_platform_system_font_dirs(dirs, 4);
     int added = 0;
@@ -192,6 +215,8 @@ extern "C" int whaleui_font_register_system_defaults(void)
             if (known) {
                 continue;
             }
+            /* register (path only - the file is read lazily on first use,
+             * and a missing file simply never opens) */
             if (whaleui_font_register(path) != nullptr) {
                 added++;
             }

@@ -67,6 +67,11 @@ struct whaleui_app
     std::thread render_thread;
     std::atomic<int> frame_request{0}; /* main -> worker: render now */
     std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
+    /* worker -> main: at least one window still needs continuous frames
+     * (running animation, blinking caret). The event loop keeps requesting
+     * frames while set; when clear it parks in SDL_WaitEventTimeout and the
+     * worker sleeps - an idle static page costs ~0 CPU. */
+    std::atomic<int> frames_alive{0};
     std::mutex render_lock;            /* protects input_queue + render state */
     std::condition_variable frame_cv;  /* worker waits on queue/frame_request */
     std::deque<SDL_Event> input_queue; /* main posts, worker consumes */

@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <set>
 
 /* paint-pass globals shared with the split render sources */
 whaleui_gpu_t* g_gpu = nullptr;
@@ -1876,21 +1877,31 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
         return nullptr;
     }
     r->fsr_active = 0;
-    /* FSR compute resources (created up front; auto mode may enable it) */
-    render_fsr_create(r);
+    /* FSR resources are NOT created up front: the fsr_up/fsr_out textures
+     * are window-sized (14MB+ at 2k each) and the pipelines only matter
+     * while FSR is on - the frame's fsr_want_active branch creates them on
+     * the first frame that actually needs FSR. */
 
-    /* default font: register the platform UI fonts (CJK/emoji fallback
-     * chain), then open the first as default and chain fallbacks */
+    /* default font: register the platform UI fonts (Latin/CJK/emoji
+     * fallback chain), then open the first one that actually loads as the
+     * default (no assumption that a specific family exists - a stripped
+     * Win8 without Segoe UI still gets Arial/SimSun). Fallbacks load
+     * lazily on the first missing glyph (registered-but-unused fonts pin
+     * no file data), so startup memory is one Latin font, not 3 font
+     * files. */
 #ifdef WHALEUI_BUILD_FULL
     whaleui_font_register_system_defaults();
     whaleui_font_registry* reg = whaleui_font_registry_get();
-    if (reg->count > 0) {
-        SDL_IOStream* io = SDL_IOFromMem(const_cast<unsigned char*>(reg->fonts[0].data),
-                                         reg->fonts[0].len);
+    for (size_t i = 0; i < reg->count; ++i) {
+        if (!reg->fonts[i].path) {
+            continue;
+        }
+        SDL_IOStream* io = SDL_IOFromFile(reg->fonts[i].path, "rb");
         if (io) {
             r->font_default = TTF_OpenFontIO(io, true, 16.0f);
             if (r->font_default) {
-                render_build_fallback(r, r->font_default, 16, 0);
+                r->default_family = reg->fonts[i].family;
+                break;
             }
         }
     }
@@ -1927,10 +1938,21 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     }
     whaleui_css_keyframes_destroy(&r->keyframes);
 #ifdef WHALEUI_BUILD_FULL
+    /* fonts are shared across cache keys (one TTF_Font per family, reused
+     * by every generic/missing family), so close each unique font once */
+    std::set<TTF_Font*> to_close;
     for (auto& f : r->fonts) {
-        TTF_CloseFont(f.second);
+        to_close.insert(f.second);
     }
-    TTF_CloseFont(r->font_default);
+    for (TTF_Font* fb : r->fallback_open) {
+        to_close.insert(fb);
+    }
+    to_close.insert(r->font_default);
+    for (TTF_Font* f : to_close) {
+        if (f) {
+            TTF_CloseFont(f);
+        }
+    }
     /* text_cache 的栅格化缓冲是 std::vector,随 map 析构自动释放 */
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
@@ -2106,32 +2128,16 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
      * leaving them at the old size made text painting (and the layer
      * upload) index out of bounds after growing the window */
     r->text_layer.assign(static_cast<size_t>(width) * height, 0);
-    SDL_ReleaseGPUTexture(r->device, r->offscreen);
-    SDL_ReleaseGPUTransferBuffer(r->device, r->transfer);
-    SDL_GPUTextureCreateInfo tci;
-    std::memset(&tci, 0, sizeof(tci));
-    tci.type = SDL_GPU_TEXTURETYPE_2D;
-    tci.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    tci.width = static_cast<Uint32>(width);
-    tci.height = static_cast<Uint32>(height);
-    tci.layer_count_or_depth = 1;
-    tci.num_levels = 1;
-    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    r->offscreen = SDL_CreateGPUTexture(r->device, &tci);
-    SDL_GPUTransferBufferCreateInfo tbi;
-    std::memset(&tbi, 0, sizeof(tbi));
-    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbi.size = static_cast<Uint32>(static_cast<size_t>(width) * height * 4);
-    r->transfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
     /* GPU render targets (geometry ping-pong + composite) must follow the
-     * new size; recreate the renderer like the FSR toggle does */
-    whaleui_gpu_destroy(r->gpu);
-    r->gpu = whaleui_gpu_create(r->device, width, height);
-    if (!r->gpu) {
+     * new size. Only the size-bound textures are rebuilt - the compiled
+     * shaders/pipelines survive (a full recreate recompiles every shader
+     * with DXC, which froze the window mid-drag). */
+    if (whaleui_gpu_resize(r->gpu, width, height) != 0) {
         return -2;
     }
+    /* FSR textures are window-sized: drop them; they are recreated lazily
+     * the next time FSR activates (see frame's fsr_want_active branch). */
     render_fsr_destroy(r);
-    render_fsr_create(r);
     r->fsr_active = 0;
     r->has_dirty = 1;
     /* stale scroll deltas from the old size would make the first scroll
@@ -3039,6 +3045,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->layout_thread) {
         /* worker still running: keep the event loop responsive; there is
          * no tree to paint yet, the window keeps its clear color */
+        r->alive = 1; /* stay in the frame loop until the layout lands */
         return 0;
     }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
@@ -3047,6 +3054,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * the DOM was mutated. */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !r->edit_el && dom_dirty.empty()) {
+        r->alive = 0; /* static page: the app loop can park idle */
         return 0;
     }
     r->scroll_dirty = 0;
@@ -3597,6 +3605,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     Uint32 sw = 0, sh = 0;
     if (!SDL_AcquireGPUSwapchainTexture(cmd, r->window, &swapchain, &sw, &sh) || !swapchain) {
         SDL_SubmitGPUCommandBuffer(cmd);
+        r->alive = (animating || r->edit_el) ? 1 : 0;
         return 0;
     }
     /* FSR 1.0 upscale: EASU (target2 low-res -> fsr_up) + RCAS sharpen
@@ -3651,6 +3660,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     blit.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cmd, &blit);
     SDL_SubmitGPUCommandBuffer(cmd);
+    /* keep the frame loop alive while an animation runs or an editable
+     * caret blinks; a static page goes idle (the app loop parks). */
+    r->alive = (animating || r->edit_el) ? 1 : 0;
     return 0;
 }
 

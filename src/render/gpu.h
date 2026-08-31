@@ -154,6 +154,13 @@ enum { kBlurDiv = 2, kBlurLevels = 8 };
 whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h);
 void whaleui_gpu_destroy(whaleui_gpu_t* g);
 
+/* resize: rebuild only the size-bound textures + text-layer transfer,
+ * keeping the compiled shaders, pipelines, samplers, atlas and vertex
+ * buffers (none depend on size). A full create/destroy per resize event
+ * recompiles every shader (DXC) - that is what froze windows while
+ * dragging the edge. Returns 0 on success. */
+int whaleui_gpu_resize(whaleui_gpu_t* g, int w, int h);
+
 /* push one solid quad (px coords). clip: NULL or a rectangle to
  * intersect (rounded corners are approximated when clipped). */
 void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
