@@ -108,7 +108,11 @@ struct whaleui_gpu
     SDL_GPUBuffer* vb_text;
     SDL_GPUTransferBuffer* vb_transfer;
     SDL_GPUTransferBuffer* atlas_transfer; /* full-atlas upload (4MB) */
-    SDL_GPUTransferBuffer* layer_transfer; /* text-layer upload */
+    SDL_GPUTransferBuffer* layer_transfer[2]; /* text-layer upload, ping-pong:
+        two buffers so the next frame's Map does not wait for the GPU to
+        finish reading the previous upload (a 2k strip upload takes ~0.5ms
+        of GPU time; a single buffer serialized the CPU on it) */
+    int layer_cur; /* index of the buffer used by the current upload */
 
     /* blur machinery buffers: vb_shapes holds the solid quads drawn into
      * blur_tex (shadow shapes + backdrop body fills); the param storage

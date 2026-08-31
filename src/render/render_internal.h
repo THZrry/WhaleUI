@@ -1,4 +1,4 @@
-#ifndef WHALEUI_RENDER_INTERNAL_H
+﻿#ifndef WHALEUI_RENDER_INTERNAL_H
 #define WHALEUI_RENDER_INTERNAL_H
 
 /* Shared helpers between the split render sources: render.cpp (context +
@@ -30,7 +30,7 @@ const int kSelectItemH = 26;
     (void)pf_##name##_0
 #define PERF_FN_END(name)                                                    \
     pf_##name##_t += SDL_GetPerformanceCounter() - pf_##name##_0;            \
-    if (++pf_##name##_n >= 60) {                                             \
+    if (++pf_##name##_n >= 30) {                                             \
         fprintf(stderr, "[pf] %s=%.3f ms\n", #name,                          \
                 (double)pf_##name##_t /                                     \
                     (double)SDL_GetPerformanceFrequency() * 1000.0 /         \
@@ -215,3 +215,4 @@ void render_fsr_destroy(whaleui_render_t* r);
 int fsr_want_active(whaleui_render_t* r);
 
 #endif /* WHALEUI_RENDER_INTERNAL_H */
+

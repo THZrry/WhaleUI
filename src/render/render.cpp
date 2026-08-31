@@ -3183,7 +3183,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->drag_scroll_node = nullptr; /* nodes were recreated */
             r->scroll_max_el = nullptr;    /* scroll_max may have changed */
             r->wheel_node = nullptr;       /* hit cache is stale */
-            fix_scroll_max(r); /* embedded scroll ranges may have moved */
+            /* ponytail: skip the full-tree fix_scroll_max walk on layout-
+             * animation frames. A width/height animation inside a scroll
+             * container is rare, and the range corrects on the next full
+             * relayout (scroll/hover/DOM/edit); the walk is per-frame
+             * baseline cost otherwise. */
         } else {
             r->has_dirty = 1; /* tree inconsistent: full rebuild */
         }
@@ -3751,10 +3755,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). */
     r->alive = (animating || r->edit_el) ? 1 : 0;
-
-
     return 0;
 }
+
+
+
 
 
 

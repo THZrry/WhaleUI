@@ -490,13 +490,13 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         }
 
         if (work) {
-            /* frame cap: max_fps wins; battery saver caps at 60 on battery.
-             * On AC the loop is NOT capped - the worker's WaitAndAcquire
-             * throttles it to the display refresh (vblank), so a 144Hz
-             * display gets 144fps animations without burning a core. */
-            int fps = app->max_fps > 0
-                          ? app->max_fps
-                          : (app->battery_saver && app->on_battery ? 60 : 0);
+            /* frame cap: max_fps wins; default 60 on battery and AC alike.
+             * The renderer's per-frame cost times the frame rate is the
+             * CPU bill, and on a 240Hz display an uncapped animation loop
+             * runs at ~130fps burning 65% of a core for little visual
+             * gain - power-first: 60fps by default, raise via max_fps
+             * (e.g. 144 on a high-refresh display that can afford it). */
+            int fps = app->max_fps > 0 ? app->max_fps : 60;
             if (fps > 0) {
                 Uint64 target = last + 1000 / fps;
                 if (now < target) {
@@ -701,6 +701,9 @@ extern "C" int whaleui_app_set_reduced_motion(whaleui_app_t* app, int reduce)
     }
     return 0;
 }
+
+
+
 
 
 
