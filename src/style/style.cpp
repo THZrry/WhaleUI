@@ -1,4 +1,4 @@
-/* Style engine: selector matching, cascade, var() resolution.
+﻿/* Style engine: selector matching, cascade, var() resolution.
  *
  * Computed styles are plain property->value maps. Cascade order:
  * !important > specificity (id, class, type) > source order; inline style
@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <functional>
 #include <vector>
 
@@ -869,6 +870,27 @@ extern "C" void whaleui_style_collect_vars(lxb_dom_element* root,
     }
 }
 
+namespace {
+
+/* tag index over a rule set, cached across elements AND frames: the rules
+ * array is stable per render context, and rebuilding the index for every
+ * element on every relayout (a width animation rebuilds its subtree each
+ * frame) was the dominant cost of animated frames. Invalidated when the
+ * rules pointer/count changes. Mutex-guarded for the async first-layout
+ * worker, which can technically run beside nothing (first frame has no
+ * interaction) but costs nothing to protect. */
+struct RuleTagIndex
+{
+    const whaleui_css_rule_t* rules = nullptr;
+    size_t count = 0;
+    std::map<std::string, std::vector<size_t>> tag_idx;
+    std::vector<size_t> generic_idx;
+};
+RuleTagIndex g_rule_index;
+std::mutex g_rule_index_mtx;
+
+} // namespace
+
 extern "C" WhaleUIComputedStyle whaleui_style_compute(
     lxb_dom_element* el,
     const whaleui_css_rule_t* rules, size_t count,
@@ -885,10 +907,8 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
 
     /* tag-index the rules by the LAST simple selector's tag (the one that
      * must match el itself): only those rules plus the tag-less ones can
-     * possibly match, so the cascade scan skips the rest. Built once per
-     * compute call (the rules array is reused across elements, but the
-     * index is cheap to build and caching across calls needs a rule-array
-     * identity check). */
+     * possibly match, so the cascade scan skips the rest. The index is
+     * cached per rule set (see RuleTagIndex above). */
     std::string el_tag;
     {
         size_t nl = 0;
@@ -897,69 +917,80 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
             el_tag.assign(reinterpret_cast<const char*>(nm), nl);
         }
     }
-    std::map<std::string, std::vector<size_t>> tag_idx;
-    std::vector<size_t> generic_idx;
-    for (size_t i = 0; i < count; ++i) {
-        const char* sel = rules[i].selector;
-        if (!sel) {
-            generic_idx.push_back(i);
-            continue;
-        }
-        /* last simple selector: walk back from the end past whitespace and
-         * combinators, then read the last segment's leading tag */
-        size_t len = std::strlen(sel);
-        const char* seg_end = sel + len;
-        while (seg_end > sel) {
-            char c = seg_end[-1];
-            if (c == ' ' || c == '\t' || c == '>' || c == '+') {
-                --seg_end;
-            } else {
-                break;
-            }
-        }
-        const char* seg_start = seg_end;
-        while (seg_start > sel) {
-            char c = seg_start[-1];
-            if (c == ' ' || c == '\t' || c == '>' || c == '+') {
-                break;
-            }
-            if (c == ')') {
-                /* walk back past the matching '(' - function args like
-                 * nth-child(n+4) contain '+'/spaces that are NOT
-                 * combinators */
-                int depth = 1;
-                --seg_start;
-                while (seg_start > sel && depth) {
-                    if (seg_start[-1] == ')') {
-                        ++depth;
-                    } else if (seg_start[-1] == '(') {
-                        --depth;
+    {
+        std::lock_guard<std::mutex> lk(g_rule_index_mtx);
+        if (g_rule_index.rules != rules || g_rule_index.count != count) {
+            g_rule_index.rules = rules;
+            g_rule_index.count = count;
+            g_rule_index.tag_idx.clear();
+            g_rule_index.generic_idx.clear();
+            for (size_t i = 0; i < count; ++i) {
+                const char* sel = rules[i].selector;
+                if (!sel) {
+                    g_rule_index.generic_idx.push_back(i);
+                    continue;
+                }
+                /* last simple selector: walk back from the end past
+                 * whitespace and combinators, then read the last segment's
+                 * leading tag */
+                size_t len = std::strlen(sel);
+                const char* seg_end = sel + len;
+                while (seg_end > sel) {
+                    char c = seg_end[-1];
+                    if (c == ' ' || c == '\t' || c == '>' || c == '+') {
+                        --seg_end;
+                    } else {
+                        break;
+                    }
+                }
+                const char* seg_start = seg_end;
+                while (seg_start > sel) {
+                    char c = seg_start[-1];
+                    if (c == ' ' || c == '\t' || c == '>' || c == '+') {
+                        break;
+                    }
+                    if (c == ')') {
+                        /* walk back past the matching '(' - function args
+                         * like nth-child(n+4) contain '+'/spaces that are
+                         * NOT combinators */
+                        int depth = 1;
+                        --seg_start;
+                        while (seg_start > sel && depth) {
+                            if (seg_start[-1] == ')') {
+                                ++depth;
+                            } else if (seg_start[-1] == '(') {
+                                --depth;
+                            }
+                            --seg_start;
+                        }
+                        continue;
                     }
                     --seg_start;
                 }
-                continue;
+                const char* t = seg_start;
+                while (t < seg_end && *t != '#' && *t != '.' && *t != ':' &&
+                       *t != ' ' && *t != '\t' && *t != '>' && *t != '+') {
+                    ++t;
+                }
+                if (t > seg_start &&
+                    !(t - seg_start == 1 && *seg_start == '*')) {
+                    g_rule_index
+                        .tag_idx[std::string(
+                            seg_start,
+                            static_cast<size_t>(t - seg_start))]
+                        .push_back(i);
+                } else {
+                    g_rule_index.generic_idx.push_back(i);
+                }
             }
-            --seg_start;
-        }
-        const char* t = seg_start;
-        while (t < seg_end && *t != '#' && *t != '.' && *t != ':' &&
-               *t != ' ' && *t != '\t' && *t != '>' && *t != '+') {
-            ++t;
-        }
-        if (t > seg_start && !(t - seg_start == 1 && *seg_start == '*')) {
-            tag_idx[std::string(seg_start,
-                                static_cast<size_t>(t - seg_start))]
-                .push_back(i);
-        } else {
-            generic_idx.push_back(i);
         }
     }
     /* candidate rule indices: this element's tag + tag-less rules */
     const std::vector<size_t>* tagged = nullptr;
     {
         std::map<std::string, std::vector<size_t>>::iterator it =
-            tag_idx.find(el_tag);
-        if (it != tag_idx.end()) {
+            g_rule_index.tag_idx.find(el_tag);
+        if (it != g_rule_index.tag_idx.end()) {
             tagged = &it->second;
         }
     }
@@ -1003,8 +1034,8 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
             cascade_rule((*tagged)[ci]);
         }
     }
-    for (size_t ci = 0; ci < generic_idx.size(); ++ci) {
-        cascade_rule(generic_idx[ci]);
+    for (size_t ci = 0; ci < g_rule_index.generic_idx.size(); ++ci) {
+        cascade_rule(g_rule_index.generic_idx[ci]);
     }
     for (auto& kv : best) {
         out[kv.first] = kv.second.value;
@@ -1206,3 +1237,4 @@ extern "C" void whaleui_style_virtual(
         }
     }
 }
+

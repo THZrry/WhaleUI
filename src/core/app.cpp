@@ -333,6 +333,22 @@ void render_worker_fn(whaleui_app_t* app)
                 app->frames_alive.store(alive);
                 app->frame_done.store(1);
                 app->frame_request.store(0);
+                /* pace to the display refresh rate OUTSIDE the lock (the
+                 * main thread can still push events): the D3D12 backend's
+                 * VSYNC present mode does not wait for vblank, so without
+                 * this an uncapped animation ran at ~186fps. 60Hz display
+                 * -> 60fps, 144Hz -> 144fps (not a hard 60 cap). */
+                Uint64 finterval = app->display_refresh > 0
+                                       ? 1000u / static_cast<Uint64>(
+                                                     app->display_refresh)
+                                       : 16;
+                Uint64 fnow = SDL_GetTicks();
+                Uint64 fnext = app->last_frame_tick + finterval;
+                if (fnow < fnext) {
+                    SDL_Delay(static_cast<Uint32>(fnext - fnow));
+                    fnow = fnext;
+                }
+                app->last_frame_tick = fnow;
             }
         }
     }
@@ -370,6 +386,8 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
         (SDL_GetPowerInfo(nullptr, nullptr) == SDL_POWERSTATE_ON_BATTERY) ? 1 : 0;
     app->power_check_ticks = 0;
     app->vsync = 1;
+    app->display_refresh = 60; /* refined at window show */
+    app->last_frame_tick = 0;
     app->running = 0;
     /* default is FULL motion (animated pages play their CSS animations).
      * The no-JS tradeoff is documented: a reveal-on-scroll page (opacity:0
@@ -472,11 +490,13 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         }
 
         if (work) {
-            /* frame cap: max_fps wins; default 60 on battery and AC alike -
-             * the SDL3 D3D12 backend's VSYNC present mode does not throttle
-             * reliably here, and an uncapped animation loop rendered at
-             * ~123fps (~90% of a core). Users raise it via max_fps. */
-            int fps = app->max_fps > 0 ? app->max_fps : 60;
+            /* frame cap: max_fps wins; battery saver caps at 60 on battery.
+             * On AC the loop is NOT capped - the worker's WaitAndAcquire
+             * throttles it to the display refresh (vblank), so a 144Hz
+             * display gets 144fps animations without burning a core. */
+            int fps = app->max_fps > 0
+                          ? app->max_fps
+                          : (app->battery_saver && app->on_battery ? 60 : 0);
             if (fps > 0) {
                 Uint64 target = last + 1000 / fps;
                 if (now < target) {
@@ -484,10 +504,20 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
                     now = target;
                 }
             } else {
-                /* uncapped: don't busy-spin while the worker is already
-                 * throttled by vsync - a 1ms poll keeps input latency
-                 * negligible for a fraction of the CPU. */
-                SDL_Delay(1);
+                /* uncapped: don't busy-spin while the worker is throttled
+                 * to the display refresh - wait up to one frame period for
+                 * events (latency <= a frame, negligible) instead of a 1ms
+                 * poll. */
+                int wait = app->display_refresh > 0
+                               ? 1000 / app->display_refresh
+                               : 16;
+                if (wait < 1) {
+                    wait = 1;
+                }
+                if (SDL_WaitEventTimeout(&e, wait)) {
+                    std::lock_guard<std::mutex> lk(app->render_lock);
+                    app->input_queue.push_back(e);
+                }
             }
             last = now;
         } else {
@@ -671,6 +701,16 @@ extern "C" int whaleui_app_set_reduced_motion(whaleui_app_t* app, int reduce)
     }
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

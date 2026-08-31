@@ -1148,7 +1148,27 @@ struct Builder
         std::memset(n->padding, 0, sizeof(n->padding));
         std::memset(n->border_w, 0, sizeof(n->border_w));
 
-        n->style = whaleui_style_compute(el, rules, rule_count, vars, &st);
+        /* computed style: cached per (element, interaction state) - the
+         * cascade is static (animations are applied on top below) and a
+         * width-animation relayout rebuilds the same element every frame.
+         * Only used when an animation context is present: a plain relayout
+         * (anim == NULL, e.g. after a DOM style edit) must re-cascade, the
+         * cache would return the stale pre-edit style. */
+        if (anim) {
+            whaleui_layout_style_key sk = {el, st.hover, st.focus,
+                                           st.pressed};
+            auto sit = tree->style_cache.find(sk);
+            if (sit != tree->style_cache.end()) {
+                n->style = sit->second;
+            } else {
+                n->style = whaleui_style_compute(el, rules, rule_count, vars,
+                                                 &st);
+                tree->style_cache[sk] = n->style;
+            }
+        } else {
+            n->style = whaleui_style_compute(el, rules, rule_count, vars,
+                                             &st);
+        }
 
         /* <img> has intrinsic size (300x150, browser default) and is
          * inline-level when the page sets nothing; explicit CSS wins */
@@ -3827,6 +3847,8 @@ extern "C" void whaleui_layout_set_wrap_lines_metric(whaleui_wrap_lines_fn fn)
 {
     g_wrap_lines = fn;
 }
+
+
 
 
 

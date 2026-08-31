@@ -272,6 +272,9 @@ cbuffer Params : register(b0, space2) { uint4 offset; };
 void main(uint3 id : SV_DispatchThreadID) {
     int2 p = int2(id.xy + offset.xy);
     float4 t = text_layer.Load(int3(p, 0));
+    /* text_layer is B8G8R8A8 (CPU 0xAARRGGBB uploads without swapping);
+     * swap R/B back so it matches the R8G8B8A8 geometry */
+    t = t.bgra;
     float4 g = geometry.Load(int3(p, 0));
     /* text_layer holds straight (non-premultiplied) color + real alpha:
      * glyph edges must blend over the geometry, not replace it */

@@ -72,6 +72,12 @@ struct whaleui_app
      * frames while set; when clear it parks in SDL_WaitEventTimeout and the
      * worker sleeps - an idle static page costs ~0 CPU. */
     std::atomic<int> frames_alive{0};
+    /* display refresh rate (Hz) of the first shown window, queried at
+     * window show. The worker throttles itself to it (60Hz -> 60fps,
+     * 144Hz -> 144fps) because the D3D12 backend's VSYNC present mode does
+     * not actually wait for vblank (an animation loop ran at ~186fps). */
+    int display_refresh;
+    unsigned long long last_frame_tick; /* worker frame pacing */
     std::mutex render_lock;            /* protects input_queue + render state */
     std::condition_variable frame_cv;  /* worker waits on queue/frame_request */
     std::deque<SDL_Event> input_queue; /* main posts, worker consumes */

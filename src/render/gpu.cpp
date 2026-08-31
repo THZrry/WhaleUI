@@ -425,9 +425,13 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
      * SDL's DXIL reflection decodes Load/Sample channel order from the
      * format NAME, so a B8G8R8A8 layer composited into an R8G8B8A8 target
      * swapped R/B (red text came out blue). */
+    /* CPU-rasterized text layer. B8G8R8A8 so the upload is a straight
+     * memcpy: the CPU pixels are 0xAARRGGBB, whose little-endian bytes are
+     * B,G,R,A - exactly B8G8R8A8. The composite shader swaps R/B back when
+     * it reads this texture (it composites over the R8G8B8A8 geometry). */
     g->text_layer = make_texture(device, static_cast<uint32_t>(w),
                                  static_cast<uint32_t>(h),
-                                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                 SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER);
 
     /* blur source: half-res, mipmapped (box-shadow shapes + backdrop
@@ -658,7 +662,7 @@ int whaleui_gpu_resize(whaleui_gpu_t* g, int w, int h)
             SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
             SDL_GPU_TEXTUREUSAGE_SAMPLER);
     g->text_layer = make_texture(dev, wu, hu,
-                                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                 SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER);
     g->blur_tex = make_texture_mips(dev, static_cast<uint32_t>(g->blur_w),
                                     static_cast<uint32_t>(g->blur_h),
@@ -1074,18 +1078,16 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
     if (!mapped) {
         return;
     }
-    /* CPU pixels are 0xAARRGGBB; the RGBA8 layer wants R,G,B,A */
+    /* CPU pixels are 0xAARRGGBB whose little-endian bytes are B,G,R,A -
+     * exactly the B8G8R8A8 layer format, so the region is a straight
+     * memcpy (no per-pixel R/B swap; the swap moved into the composite
+     * shader). This is the hot loop on wide dirty strips at 2k. */
     const unsigned char* src = reinterpret_cast<const unsigned char*>(pixels);
     unsigned char* dst = static_cast<unsigned char*>(mapped);
     for (int yy = ry; yy < ry + rh; ++yy) {
-        const unsigned char* srow = src + (static_cast<size_t>(yy) * w + rx) * 4;
-        unsigned char* drow = dst + (static_cast<size_t>(yy - ry) * w) * 4;
-        for (int xx = 0; xx < rw; ++xx) {
-            drow[xx * 4 + 0] = srow[xx * 4 + 2];
-            drow[xx * 4 + 1] = srow[xx * 4 + 1];
-            drow[xx * 4 + 2] = srow[xx * 4 + 0];
-            drow[xx * 4 + 3] = srow[xx * 4 + 3];
-        }
+        const unsigned char* s = src + (static_cast<size_t>(yy) * w + rx) * 4;
+        unsigned char* d = dst + (static_cast<size_t>(yy - ry) * w) * 4;
+        std::memcpy(d, s, static_cast<size_t>(rw) * 4);
     }
     SDL_UnmapGPUTransferBuffer(g->device, g->layer_transfer);
     g->layer_rx = rx;

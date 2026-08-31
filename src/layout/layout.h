@@ -94,6 +94,23 @@ struct whaleui_layout_node
 
 typedef struct whaleui_layout_node whaleui_layout_node_t;
 
+/* key for the cascade cache: the element plus the interaction state that
+ * drives pseudo-class matching (:hover/:active/:focus) */
+struct whaleui_layout_style_key
+{
+    struct lxb_dom_element* el;
+    struct lxb_dom_element* hover;
+    struct lxb_dom_element* focus;
+    struct lxb_dom_element* pressed;
+    bool operator<(const whaleui_layout_style_key& o) const
+    {
+        if (el != o.el) return el < o.el;
+        if (hover != o.hover) return hover < o.hover;
+        if (focus != o.focus) return focus < o.focus;
+        return pressed < o.pressed;
+    }
+};
+
 struct whaleui_layout_tree
 {
     whaleui_layout_node_t* root;
@@ -115,6 +132,14 @@ struct whaleui_layout_tree
      * is mutated so the next pass re-collects. */
     std::map<std::string, std::string> vars;
     bool vars_collected;
+
+    /* computed-style cascade cache (element + interaction state): a
+     * width-animation relayout rebuilds the animated element each frame
+     * and whaleui_style_compute re-matches every candidate rule per build
+     * - the per-frame cost. The cascade is static (animations are applied
+     * on top afterwards), so keying on (el, hover, focus, pressed) makes
+     * stable frames O(1). Cleared alongside vars when the DOM changes. */
+    std::map<whaleui_layout_style_key, WhaleUIComputedStyle> style_cache;
 };
 
 typedef struct whaleui_layout_tree whaleui_layout_tree_t;

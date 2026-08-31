@@ -270,6 +270,17 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
                 win->app->gpu, win->sdl, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
                 SDL_GPU_PRESENTMODE_VSYNC);
         }
+        /* display refresh rate: the worker paces frames to it (the D3D12
+         * backend's VSYNC present mode does not actually wait for vblank) */
+        {
+            SDL_DisplayID did = SDL_GetDisplayForWindow(win->sdl);
+            const SDL_DisplayMode* dm =
+                did ? SDL_GetCurrentDisplayMode(did) : nullptr;
+            if (dm && dm->refresh_rate > 0) {
+                win->app->display_refresh =
+                    static_cast<int>(dm->refresh_rate);
+            }
+        }
         win->render = whaleui_render_create(win->app->gpu, win->sdl,
                                             win->width, win->height);
         if (!win->render) {
@@ -415,5 +426,9 @@ extern "C" whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t*
 {
     return win ? win->document : nullptr;
 }
+
+
+
+
 
 

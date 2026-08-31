@@ -2035,6 +2035,12 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
      * fresh keyframes copy */
     whaleui_anim_reset(r->anim);
     whaleui_anim_set_keyframes(r->anim, &r->keyframes);
+    /* the cascade/vars caches depend on the old rules + theme vars */
+    if (r->tree) {
+        r->tree->style_cache.clear();
+        r->tree->vars.clear();
+        r->tree->vars_collected = false;
+    }
     r->has_dirty = 1;
 }
 
@@ -2944,6 +2950,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (!r || !doc) {
         return -1;
     }
+
     /* advance all running animations and collect the current values (the
      * paint-only fast path below applies them without relaying out) */
     const uint64_t now = SDL_GetTicks();
@@ -3184,18 +3191,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
     } else if (animating) {
-        /* paint-only animation: apply the tick's values to the tree styles
-         * and refresh the cascaded opacity (children inherit it) - one
-         * pre-order pass does both (apply_ov + re_op were two full-tree
-         * recursions per frame). */
-        std::function<void(whaleui_layout_node_t*, float)> apply_op =
+        /* paint-only animation: apply the tick's values to the animated
+         * elements' styles and refresh the cascaded opacity ONLY along
+         * their subtrees (opacity inheritance cannot leave them). The old
+         * version walked the whole tree every frame doing a style lookup
+         * per node - the fixed per-frame cost that made even a tiny pulse
+         * animation cost ms at 2k. */
+        std::function<void(whaleui_layout_node_t*, float)> apply_sub =
             [&](whaleui_layout_node_t* nd, float po) {
-                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
-                    /* apply the tick's interpolated values (keyframes +
-                     * transition progress land in the ov table; apply_ov
-                     * copies them into the style for paint). */
-                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
-                }
                 if (nd->is_text) {
                     nd->opacity = po;
                     return;
@@ -3214,10 +3217,37 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 nd->opacity = o * po;
                 for (whaleui_layout_node_t* c = nd->first_child; c;
                      c = c->next) {
-                    apply_op(c, nd->opacity);
+                    apply_sub(c, nd->opacity);
                 }
             };
-        apply_op(r->tree->root, 1.0f);
+        std::function<void(whaleui_layout_node_t*)> find_anim =
+            [&](whaleui_layout_node_t* nd) {
+                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
+                    float o = 1.0f;
+                    std::string ov2 = sget(nd->style, "opacity");
+                    if (!ov2.empty()) {
+                        o = std::strtof(ov2.c_str(), nullptr);
+                        if (o < 0.0f) {
+                            o = 0.0f;
+                        }
+                        if (o > 1.0f) {
+                            o = 1.0f;
+                        }
+                    }
+                    nd->opacity = o;
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        apply_sub(c, nd->opacity);
+                    }
+                } else {
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        find_anim(c);
+                    }
+                }
+            };
+        find_anim(r->tree->root);
     }
     /* DOM mutations: incremental relayout. Only the affected subtrees get
      * a fresh style cascade + build; the box pass re-positions the tree
@@ -3229,6 +3259,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         if (r->tree) {
             r->tree->vars.clear();
             r->tree->vars_collected = false;
+            r->tree->style_cache.clear();
         }
         bool ok = true;
         whaleui_style_state st;
@@ -3429,21 +3460,19 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * the dropdown repaints over stale pixels and jitters - repaint
          * fully while a dropdown is open. */
         const bool lay_anim = whaleui_anim_needs_layout(r->anim);
-        const int AM = 40; /* ponytail: anim-travel margin. The strip must
-                               cover not just the CURRENT box but anywhere
-                               the element has BEEN: a translate animation
-                               leaves a ghost at the previous position, and
-                               a strip that covers only the current box
-                               never repaints it (animation end skips the
-                               frame, so the ghost is permanent). A fixed
-                               margin covers common translate/travel
-                               animations (<=160px); a full trajectory
-                               tracker would be exact but not worth it. */
+        /* anim-travel margin: per-element, derived from the actual
+         * transform - a width/opacity animation (no transform) needs only
+         * a couple of pixels of anti-alias room, while a translate needs
+         * its travel distance (capped). A fixed 40px margin on every
+         * animated element inflated the 2k strip (and the text-layer
+         * upload) for bar/opacity animations that never move. */
+        const int AM = 40;
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
                     int x0 = nd->border.x, y0 = nd->border.y;
                     int x1 = x0 + nd->border.w, y1 = y0 + nd->border.h;
+                    int am = 4;
                     /* widen by the transform translation */
                     std::string tv = sget(nd->style, "transform");
                     if (!tv.empty() && tv != "none") {
@@ -3451,10 +3480,29 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         if (whaleui_transform_eval(
                                 tv.c_str(), static_cast<float>(nd->border.w),
                                 static_cast<float>(nd->border.h), &tf) == 0) {
-                            x0 -= static_cast<int>(tf.tx > 0 ? tf.tx : -tf.tx);
-                            y0 -= static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
-                            x1 += static_cast<int>(tf.tx > 0 ? tf.tx : -tf.tx);
-                            y1 += static_cast<int>(tf.ty > 0 ? tf.ty : -tf.ty);
+                            int dtx = static_cast<int>(tf.tx > 0 ? tf.tx
+                                                                 : -tf.tx);
+                            int dty = static_cast<int>(tf.ty > 0 ? tf.ty
+                                                                 : -tf.ty);
+                            x0 -= dtx;
+                            y0 -= dty;
+                            x1 += dtx;
+                            y1 += dty;
+                            int sm = static_cast<int>(
+                                (tf.sx > 1.0f ? tf.sx - 1.0f : 0.0f) *
+                                    static_cast<float>(nd->border.w) +
+                                (tf.sy > 1.0f ? tf.sy - 1.0f : 0.0f) *
+                                    static_cast<float>(nd->border.h) +
+                                4.0f);
+                            if (sm > am) {
+                                am = sm;
+                            }
+                            if (dtx > am) {
+                                am = dtx;
+                            }
+                            if (dty > am) {
+                                am = dty;
+                            }
                         }
                     }
                     if (lay_anim && nd->parent && !nd->parent->is_text) {
@@ -3468,10 +3516,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         x1 = px1 > x1 ? px1 : x1;
                         y1 = py1 > y1 ? py1 : y1;
                     }
-                    x0 -= AM;
-                    y0 -= AM;
-                    x1 += AM;
-                    y1 += AM;
+                    if (am > AM) {
+                        am = AM;
+                    }
+                    x0 -= am;
+                    y0 -= am;
+                    x1 += am;
+                    y1 += am;
                     if (x0 < 0) x0 = 0;
                     if (y0 < 0) y0 = 0;
                     if (x1 > r->fb_w) x1 = r->fb_w;
@@ -3622,6 +3673,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 
     /* present: one batched render pass into the offscreen target, then a
      * single blit to the swapchain - no per-element GPU round-trips */
+
     SDL_GPUCommandBuffer* cmd =
         whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color, scroll_dy,
                           partial ? 1 : 0);
@@ -3630,7 +3682,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     }
     SDL_GPUTexture* swapchain = nullptr;
     Uint32 sw = 0, sh = 0;
-    if (!SDL_AcquireGPUSwapchainTexture(cmd, r->window, &swapchain, &sw, &sh) || !swapchain) {
+    /* WaitAndAcquire blocks until the GPU finishes the previous frame and
+     * the swapchain image is available, so the worker is throttled by the
+     * display (vblank) instead of spinning - on the D3D12 backend the
+     * VSYNC present mode alone did not throttle (an animation loop ran at
+     * ~130fps, ~90% of a core), so this is what keeps an uncapped AC-power
+     * animation at the refresh rate. Falls through on failure like the
+     * non-blocking acquire. */
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, r->window, &swapchain,
+                                               &sw, &sh) ||
+        !swapchain) {
         SDL_SubmitGPUCommandBuffer(cmd);
         r->alive = (animating || r->edit_el) ? 1 : 0;
         return 0;
@@ -3690,8 +3751,33 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). */
     r->alive = (animating || r->edit_el) ? 1 : 0;
+
+
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

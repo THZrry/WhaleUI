@@ -1393,6 +1393,12 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 continue;
             }
             const unsigned int da = (d >> 24) & 0xFF;
+            if (da == 0) {
+                /* destination transparent (the text layer was just cleared):
+                 * write through without src-over math */
+                d = sp;
+                continue;
+            }
             const unsigned int oa = sa + da * (255 - sa) / 255;
             if (oa == 0) {
                 continue;

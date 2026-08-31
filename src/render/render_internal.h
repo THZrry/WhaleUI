@@ -19,6 +19,30 @@ enum { kFontBold = 1, kFontItalic = 2 };
 const int kSelectItemH = 26;
 
 /* paint-pass globals (defined in render.cpp, outside any namespace) */
+/* per-call wall-clock timing of a hot function (WHALEUI_PERF_LOG only):
+ * accumulate across calls, print the average every 60. Independent of any
+ * frame-level segment chain, so it cannot hide cost. */
+#ifdef WHALEUI_PERF_LOG
+#define PERF_FN(name)                                                        \
+    static Uint64 pf_##name##_t = 0;                                         \
+    static int pf_##name##_n = 0;                                            \
+    Uint64 pf_##name##_0 = SDL_GetPerformanceCounter();                      \
+    (void)pf_##name##_0
+#define PERF_FN_END(name)                                                    \
+    pf_##name##_t += SDL_GetPerformanceCounter() - pf_##name##_0;            \
+    if (++pf_##name##_n >= 60) {                                             \
+        fprintf(stderr, "[pf] %s=%.3f ms\n", #name,                          \
+                (double)pf_##name##_t /                                     \
+                    (double)SDL_GetPerformanceFrequency() * 1000.0 /         \
+                    (double)pf_##name##_n);                                 \
+        pf_##name##_t = 0;                                                   \
+        pf_##name##_n = 0;                                                   \
+    }
+#else
+#define PERF_FN(name) ((void)0)
+#define PERF_FN_END(name) ((void)0)
+#endif
+
 extern whaleui_gpu_t* g_gpu;
 extern int g_backdrop_active;
 extern whaleui_layout_tree_t* g_last_tree;
