@@ -2498,17 +2498,57 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
                 r->has_dirty = 1;
             }
         }
-        /* the popup is a modal overlay: the pointer must NOT fall through
-         * to the elements underneath it - hit_test would land on an input
-         * below the list and switch the cursor to an I-beam / apply its
-         * :hover ("鼠标在选项上还变成输入状"). Hover state stays on the
-         * select; only the option highlight (above) tracks the mouse. The
-         * cursor is the default arrow too: the select's pointer cursor
-         * must not leak onto the rest of the page while the list is open
-         * ("下拉点开后鼠标在哪都是 pointer"). */
-        SDL_Cursor* cur = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
-        if (cur) {
-            SDL_SetCursor(cur);
+        /* the popup is a modal overlay: hover styles must NOT fall through
+         * to the elements underneath it (an input below the list would
+         * switch to an I-beam / apply its :hover). But the cursor is not
+         * frozen: it follows the element under the pointer - the select
+         * itself stays pointer (its UA cursor), the popup options are
+         * default arrow (unless they set their own), and anything else on
+         * the page shows its own cursor ("下拉点开后鼠标在哪都是 pointer"
+         * was the select's pointer leaking to the whole page because
+         * hover_el stayed pinned to the select). */
+        whaleui_layout_node_t* s2 = find_node_by_el(r->tree, r->open_select);
+        int lx = 0, ly = 0, lw = 0, lh = 0;
+        if (s2) {
+            int soff = 0;
+            for (whaleui_layout_node_t* p = s2->parent; p; p = p->parent) {
+                soff += scroll_delta(r, p);
+            }
+            std::vector<std::string> texts2, values2;
+            select_options(s2->el, texts2, values2);
+            lx = s2->border.x;
+            ly = s2->border.y + soff + s2->border.h;
+            lw = s2->border.w;
+            lh = kSelectItemH * static_cast<int>(values2.size());
+        }
+        bool in_list = x >= lx && x < lx + lw && y >= ly && y < ly + lh;
+        whaleui_layout_node_t* hit2 =
+            in_list ? nullptr : hit_test(r, r->tree->root, x, y, 0);
+        SDL_Cursor* want = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
+        lxb_dom_element* cur_el =
+            in_list ? (s2 ? s2->el : nullptr) : (hit2 ? hit2->el : nullptr);
+        if (cur_el) {
+            std::string c = in_list ? std::string()
+                                    : sget(hit2->style, "cursor");
+            bool pointer = c == "pointer";
+            if (!pointer) {
+                size_t tlen = 0;
+                const lxb_char_t* tname =
+                    lxb_dom_element_local_name(cur_el, &tlen);
+                pointer = tname &&
+                          ((tlen == 1 && tname[0] == 'a') ||
+                           (tlen == 6 &&
+                            (std::memcmp(tname, "select", 6) == 0 ||
+                             std::memcmp(tname, "button", 6) == 0)) ||
+                           (tlen == 7 &&
+                            std::memcmp(tname, "summary", 7) == 0));
+            }
+            if (pointer) {
+                want = render_cursor(r, SDL_SYSTEM_CURSOR_POINTER);
+            }
+        }
+        if (want) {
+            SDL_SetCursor(want);
         }
         return;
     }
