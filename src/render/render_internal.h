@@ -149,7 +149,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp = 0, bool wrap = false,
-                  float opacity = 1.0f);
+                  float opacity = 1.0f, bool outline = false);
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
                    size_t* a, size_t* b, int seq, int sel_lo, int sel_hi);
 void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip);

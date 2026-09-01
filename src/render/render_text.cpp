@@ -1180,7 +1180,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int bx, int by, int bw, int bh,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
-                  const Clip* clip, int lsp, bool wrap, float opacity)
+                  const Clip* clip, int lsp, bool wrap, float opacity,
+                  bool outline)
 {
     /* 缓存查询先行:text+样式不变时,排版(layout_text)与字形光栅化是
      * 每帧重复计算 —— 动画帧对每个 run 重新排版曾是 42ms 的大头。
@@ -1318,6 +1319,38 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                             const unsigned int sa = (sp >> 24) & 0xFF;
                             if (sa == 0) {
                                 continue;
+                            }
+                            if (outline) {
+                                /* text-stroke paints the glyph OUTLINE
+                                 * only. The 8-direction whole-glyph copies
+                                 * (dx/dy = +-sw) filled wide strokes solid
+                                 * - a 200px glyph with 1px stroke came out
+                                 * as a solid silhouette ("glyph 实心").
+                                 * Keep only pixels with a transparent
+                                 * neighbour; solid interiors stay empty. */
+                                bool edge = false;
+                                for (int oy2 = -1; oy2 <= 1 && !edge; ++oy2) {
+                                    for (int ox2 = -1; ox2 <= 1 && !edge;
+                                         ++ox2) {
+                                        if (!ox2 && !oy2) {
+                                            continue;
+                                        }
+                                        int ny2 = yy + oy2, nx2 = xx + ox2;
+                                        unsigned int na = 0;
+                                        if (ny2 >= 0 && ny2 < g.h &&
+                                            nx2 >= 0 && nx2 < g.w) {
+                                            na = (g.px[static_cast<size_t>(ny2) * g.w +
+                                                         nx2] >>
+                                                  24) & 0xFF;
+                                        }
+                                        if (na == 0) {
+                                            edge = true;
+                                        }
+                                    }
+                                }
+                                if (!edge) {
+                                    continue;
+                                }
                             }
                             unsigned int& d =
                                 buf[static_cast<size_t>(ty2) * tw + tx2];
@@ -1808,7 +1841,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 draw_text_at(r, shown, tx0 + dx * sw, ty0 + dy * sw,
                              avail_w, n->border.h, fs, family, scc,
                              style, align, n->el, clip, lsp, wrap,
-                             n->opacity);
+                             n->opacity, true);
             }
         }
     }
