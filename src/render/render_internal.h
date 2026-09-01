@@ -115,6 +115,13 @@ bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, int& seq, int sel_lo, int sel_hi,
                 const Clip* clip, bool tc);
+/* z-order helpers (render_paint.cpp): an element with z-index>0 or
+ * fixed/sticky position paints on its own layer and clears the old text
+ * under its subtree before drawing (text_layer composites last). */
+bool is_high_root(const whaleui_layout_node_t* n);
+void text_layer_clear(whaleui_render_t* r, int x, int y, int w, int h);
+void clear_subtree_text(whaleui_render_t* r, const whaleui_layout_node_t* n,
+                        int off_x, int off_y);
 
 /* --- text (render_text.cpp) --- */
 

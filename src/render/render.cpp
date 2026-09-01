@@ -3019,8 +3019,17 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             continue; /* no horizontal overflow: page scrolls */
         }
         if ((ov == "auto" || ov == "scroll") && n->scroll_max > 0) {
+            int before = r->scrolls[n->el];
             do_scroll(n);
-            return;
+            /* a container at its edge must NOT swallow the wheel forever:
+             * once it cannot move (already at top/bottom), fall through to
+             * the next scrollable ancestor so the page keeps scrolling
+             * ("鼠标在 card/textarea 上无法滚动到底" - the container
+             * claimed every wheel event and never bubbled). */
+            if (r->scrolls[n->el] != before) {
+                return;
+            }
+            continue;
         }
     }
     /* nothing explicitly scrollable: scroll the page (html root) */
@@ -3944,7 +3953,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 
     /* expanded select list is drawn last (highest z) so later siblings and
      * other content cannot cover it; its position follows the select's
-     * scroll-offset ancestors */
+     * scroll-offset ancestors. Like every z-raised layer it clears the old
+     * text under its area first, otherwise lower elements' glyphs show
+     * through the popup ("下拉选项被下层文字穿透"). */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {
@@ -3952,6 +3963,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             for (whaleui_layout_node_t* p = s->parent; p; p = p->parent) {
                 soff += scroll_delta(r, p);
             }
+            std::vector<std::string> texts3, values3;
+            select_options(s->el, texts3, values3);
+            text_layer_clear(r, s->border.x,
+                             s->border.y + soff + s->border.h, s->border.w,
+                             kSelectItemH * static_cast<int>(values3.size()));
             paint_select_list(r, s, soff, &full);
         }
     }

@@ -640,6 +640,91 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
 
 const int kCullMargin = 64;
 
+/* z-order: elements that paint on top of normal flow ("high roots").
+ * Unified bottom-layer rule, NOT per-element special-casing: anything
+ * with z-index > 0 or a fixed/sticky position gets its own paint layer
+ * (UA default CSS raises popup/fixed elements). */
+bool is_high_root(const whaleui_layout_node_t* n)
+{
+    if (!n->el || n->is_text) {
+        return false;
+    }
+    std::string z = sget(n->style, "z-index");
+    if (!z.empty() && z != "auto" && std::atoi(z.c_str()) > 0) {
+        return true;
+    }
+    std::string pos = sget(n->style, "position");
+    return pos == "fixed" || pos == "sticky";
+}
+
+/* should a high root clear the old text under it? Only when its own
+ * background is (near-)opaque: then it occludes the lower layers and the
+ * text_layer's "text always on top" composite must not let the lower
+ * glyphs show through. Semi-transparent high roots (a blur header, a
+ * noise overlay) leave the lower text in place - it shows through their
+ * background, which is the correct CSS stacking. */
+static bool high_root_occludes(const whaleui_layout_node_t* n)
+{
+    if (!is_high_root(n)) {
+        return false;
+    }
+    unsigned int bg = color_of(n->style, "background-color", 0);
+    if (bg == 0) {
+        bg = color_of(n->style, "background", 0);
+    }
+    return ((bg >> 24) & 0xFF) >= 250;
+}
+
+/* clear a rectangle of the text layer (the old glyphs underneath a
+ * higher layer's area must not survive the composite) */
+void text_layer_clear(whaleui_render_t* r, int x, int y, int w, int h)
+{
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w > r->fb_w) {
+        w = r->fb_w - x;
+    }
+    if (y + h > r->fb_h) {
+        h = r->fb_h - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    for (int yy = y; yy < y + h; ++yy) {
+        std::fill(r->text_layer.begin() + static_cast<size_t>(yy) * r->fb_w + x,
+                  r->text_layer.begin() + static_cast<size_t>(yy) * r->fb_w + x + w,
+                  0);
+    }
+}
+
+void clear_subtree_text(whaleui_render_t* r,
+                        whaleui_layout_node_t* nd, int off_x,
+                        int off_y)
+{
+    if (!nd->visible) {
+        return;
+    }
+    int nox = off_x, noy = off_y;
+    if (nd->el && !nd->is_text) {
+        if (sget(nd->style, "position") == "fixed") {
+            nox = 0;
+            noy = 0;
+        }
+    }
+    text_layer_clear(r, nd->border.x + nox, nd->border.y + noy,
+                     nd->border.w, nd->border.h);
+    int coy = noy + (nd->is_text ? 0 : scroll_delta(r, nd));
+    for (whaleui_layout_node_t* c = nd->first_child; c; c = c->next) {
+        clear_subtree_text(r, c, nox, coy);
+    }
+}
+
 bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, const Clip* clip)
 {
@@ -748,6 +833,13 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     int nox = off_x + static_cast<int>(tdx) + (n->border.w - bw) / 2;
     int noy = off_y + static_cast<int>(tdy) + (n->border.h - bh) / 2;
+    /* z-order high root with an opaque background: this element's layer
+     * occludes lower layers - clear the old text under it so lower
+     * glyphs do not show through its background. Unified rule; the popup
+     * and fixed headers are just z-raised elements. */
+    if (high_root_occludes(n)) {
+        clear_subtree_text(r, n, off_x, off_y);
+    }
     /* overflow: hidden/auto/scroll clips descendants to the border box
      * (auto/scroll containers also shift children by scroll_y at layout) */
     Clip self;

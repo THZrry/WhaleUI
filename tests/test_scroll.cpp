@@ -1054,8 +1054,12 @@ int main(void)
                     w->render->scrolls[tel], ta->scroll_max, page_s);
         std::fflush(stdout);
         assert(w->render->scrolls[tel] >= ta->scroll_max - 1);
-        /* scrolling the textarea must NOT drag the page along */
-        assert(w->render->scrolls[rel] == page_s);
+        /* while the textarea can still scroll it swallows the wheel (the
+         * page stays); once it hits its bottom, further wheel BUBBLES to
+         * the page - a container at its edge must not claim the wheel
+         * forever ("鼠标在 card/textarea 上无法滚动到底"). The page is
+         * therefore allowed to move here (it did, via the bubble). */
+        assert(w->render->scrolls[rel] >= page_s);
         /* and the page range is still exact */
         assert(w->render->scrolls[rel] <= page_max);
         whaleui_window_destroy(w);
