@@ -1,4 +1,4 @@
-﻿/* GPU renderer implementation (see gpu.h). */
+/* GPU renderer implementation (see gpu.h). */
 
 #include "render/gpu.h"
 #include "render/gpu_shaders.h"
@@ -761,6 +761,16 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
     float gg = ((color >> 8) & 0xFF) / 255.0f;
     float b = (color & 0xFF) / 255.0f;
     float a = ((color >> 24) & 0xFF) / 255.0f;
+    /* clamp the corner radius to half the smaller side: the SDF computes
+     * d = length(q) - radius with q >= -(half - radius), so a radius
+     * larger than half (999px pill, common for chips/tags) makes every
+     * pixel's d large and positive -> alpha 0 -> the element's background
+     * vanished (it showed the layer below). The CPU path clamps; the GPU
+     * vertex path must too. */
+    float hr = w < h ? w : h;
+    if (radius > hr * 0.5f) {
+        radius = hr * 0.5f;
+    }
     gpu_vert_solid v[6];
     /* two triangles, UV 0..1, same color, size + radius + fb size */
     for (int i = 0; i < 6; ++i) {
