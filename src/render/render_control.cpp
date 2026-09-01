@@ -75,17 +75,23 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
         fill_round_border(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh,
                           rad, 1, fg, bg, clip);
         if (checked) {
-            /* check mark: two strokes drawn as thick lines */
+            /* check mark: a proper V (✓) drawn as thick staircase
+             * strokes - the old 3 filled rects painted a square blob,
+             * not a check. */
             int sw = bw / 5;
             if (sw < 1) {
                 sw = 1;
             }
-            fill_rect(r->pixels, r->fb_w, r->fb_h,
-                      bx + bw / 5, cy, bw / 4, sw, acc, clip);
-            fill_rect(r->pixels, r->fb_w, r->fb_h,
-                      bx + bw / 2 - sw / 2, cy, sw, bh / 3, acc, clip);
-            fill_rect(r->pixels, r->fb_w, r->fb_h,
-                      bx + bw / 2, cy - bh / 4, bw / 3, sw, acc, clip);
+            /* left arm: top-left -> middle-bottom (down-right) */
+            for (int i = 0; i <= 4; ++i) {
+                fill_rect(r->pixels, r->fb_w, r->fb_h,
+                          bx + 3 + i, cy - 2 + i, sw, 2, acc, clip);
+            }
+            /* right arm: middle-bottom -> top-right (up-right) */
+            for (int i = 0; i <= 5; ++i) {
+                fill_rect(r->pixels, r->fb_w, r->fb_h,
+                          bx + 6 + i, cy + 3 - i, sw, 2, acc, clip);
+            }
         }
     }
 }

@@ -866,6 +866,16 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     if (n->el && tag_eq(n->el, "img")) {
         paint_img(r, n, nox, noy, eff);
     }
+    /* native controls (checkbox/radio/progress) own their box appearance
+     * (painted at a fixed native size by paint_checkbox/progress below),
+     * so the layout box's background/border must NOT also paint - that
+     * drew a second larger frame around the control ("checkbox 外面更大
+     * 的框"). */
+    bool native_ctrl = !n->pseudo && n->el &&
+                       (is_check_radio(n->el) ||
+                        n->tag_id == WUI_TAG_PROGRESS ||
+                        n->tag_id == WUI_TAG_METER);
+    if (!native_ctrl) {
     /* background (border-radius supported). A gradient in `background`/
      * `background-image` paints over the plain color (which shows through
      * the gradient's transparent stops). */
@@ -976,6 +986,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             }
         }
     }
+    } /* end if(!native_ctrl): native controls paint their own box */
     } /* end else: plain body paint (skipped for GPU backdrop-filter) */
     int child_off_y = noy + scroll_delta(r, n);
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
