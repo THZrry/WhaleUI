@@ -350,8 +350,41 @@ struct BoxMetrics
 BoxMetrics box_metrics(const WhaleUIComputedStyle& s, float cw, float em)
 {
     BoxMetrics r;
-    sides(get(s, "margin"), r.m, cw, em, 0);
-    sides(get(s, "padding"), r.p, cw, em, 0);
+    /* shorthand (margin: 1px 2px) OR per-side properties
+     * (margin-top/bottom/...). q21k's .kicker uses margin-bottom:22px -
+     * reading only the shorthand left it 0 and the hero text sat glued to
+     * the heading ("开屏文字紧凑"). */
+    std::string mv = get(s, "margin");
+    if (mv.empty()) {
+        sides("", r.m, cw, em, 0);
+    } else {
+        sides(mv, r.m, cw, em, 0);
+    }
+    /* per-side properties override the shorthand when both are present:
+     * "*{margin:0}" + ".kicker{margin-bottom:22px}" must end at 22px for
+     * the bottom side, not 0 (q21k hero text glued together). */
+    const char* mk[4] = {"margin-top", "margin-right", "margin-bottom",
+                         "margin-left"};
+    for (int i = 0; i < 4; ++i) {
+        std::string side = get(s, mk[i]);
+        if (!side.empty()) {
+            r.m[i] = static_cast<int>(len_px(side, cw, em));
+        }
+    }
+    std::string pv = get(s, "padding");
+    if (pv.empty()) {
+        sides("", r.p, cw, em, 0);
+    } else {
+        sides(pv, r.p, cw, em, 0);
+    }
+    const char* pk[4] = {"padding-top", "padding-right", "padding-bottom",
+                         "padding-left"};
+    for (int i = 0; i < 4; ++i) {
+        std::string side = get(s, pk[i]);
+        if (!side.empty()) {
+            r.p[i] = static_cast<int>(len_px(side, cw, em));
+        }
+    }
     box_border_widths(s, em, r.b);
     return r;
 }
