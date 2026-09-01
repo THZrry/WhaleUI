@@ -2074,8 +2074,11 @@ struct Builder
                               ? tree->viewport_h - bh_est - static_cast<int>(off_bottom)
                               : 0;
         } else if (pkind == 3 || pkind == 4) {
-            /* relative / sticky: shift from the static position */
-            x = cx + static_cast<int>(off_left);
+            /* relative / sticky: shift FROM the static position (which may
+             * already include margin:auto centering above); add, not
+             * overwrite - otherwise a positioned centered block
+             * (position:relative + margin:0 auto) loses its centering */
+            x += static_cast<int>(off_left);
             y = *cursor_y + static_cast<int>(off_top);
         }
         n->border.x = x + m[1];
