@@ -2428,8 +2428,21 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     }
     if (toggle_el && is_check_radio(toggle_el)) {
         lxb_dom_element* hit2 = toggle_el;
-        if (lxb_dom_element_has_attribute(hit2, (const lxb_char_t*)"checked", 7)) {
-            lxb_dom_element_remove_attribute(hit2, (const lxb_char_t*)"checked", 7);
+        bool was_checked = lxb_dom_element_has_attribute(
+            hit2, (const lxb_char_t*)"checked", 7);
+        size_t tlen0 = 0;
+        const lxb_char_t* tname0 = lxb_dom_element_get_attribute(
+            hit2, (const lxb_char_t*)"type", 4, &tlen0);
+        bool r0 = tname0 && tlen0 == 5 &&
+                  std::memcmp(tname0, "radio", 5) == 0;
+        if (was_checked) {
+            /* a checked radio does NOT un-toggle on a second click (browser
+             * behavior: it only switches to another radio in the group). A
+             * checkbox does. */
+            if (!r0) {
+                lxb_dom_element_remove_attribute(
+                    hit2, (const lxb_char_t*)"checked", 7);
+            }
         } else {
             lxb_dom_element_set_attribute(hit2, (const lxb_char_t*)"checked", 7,
                                           (const lxb_char_t*)"", 0);
