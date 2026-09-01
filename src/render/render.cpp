@@ -564,7 +564,7 @@ void fix_run_heights(whaleui_render_t* r)
                 int fs;
                 std::string fam;
                 bool bold;
-                node_font(nd, &fs, &fam, &bold);
+                node_font(r, nd, &fs, &fam, &bold);
                 int tw = 0, th = 0;
                 text_size(r, nd->text, fs, fam, bold, &tw, &th,
                           run_wrap_w(nd));
@@ -798,12 +798,132 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
 /* --- editing interaction helpers --- */
 
 /* font params of a layout node (matches the paint path) */
-void node_font(whaleui_layout_node_t* n, int* fs, std::string* family, bool* bold)
+/* font-size -> px. The layout pass resolves clamp()/vw against the
+ * viewport, but the paint/fix-run side used atoi (clamp -> 0 -> 16px),
+ * so a clamp() font-size rendered at the wrong size AND the run heights
+ * were overwritten with the 16px metrics (q21k h3 title 22px instead of
+ * 33). Resolve the same way the layout does: clamp(MIN,VAL,MAX) /
+ * min() / max() with px/em/%/vw/vh terms. */
+int font_size_px(whaleui_render_t* r, const std::string& v)
+{
+    std::string s = v;
+    size_t b = s.find_first_not_of(" \t");
+    size_t e = s.find_last_not_of(" \t\r\n");
+    if (b != std::string::npos && e >= b) {
+        s = s.substr(b, e - b + 1);
+    }
+    auto term_px = [r](const std::string& t, float em) -> float {
+        char* end = nullptr;
+        float n = std::strtof(t.c_str(), &end);
+        if (end == t.c_str()) {
+            return 0;
+        }
+        if (*end == '%') {
+            return n * 16.0f / 100.0f; /* % of parent font (approx 16) */
+        }
+        if (end[0] == 'e' && end[1] == 'm') {
+            return n * em;
+        }
+        if (end[0] == 'v' && end[1] == 'w') {
+            return n * static_cast<float>(r->fb_w) / 100.0f;
+        }
+        if (end[0] == 'v' && end[1] == 'h') {
+            return n * static_cast<float>(r->fb_h) / 100.0f;
+        }
+        return n; /* px / unitless */
+    };
+    auto split_args = [](const std::string& t, size_t open,
+                         std::vector<std::string>& out) {
+        size_t depth = 0;
+        size_t start = open;
+        for (size_t i = open; i < t.size(); ++i) {
+            char c = t[i];
+            if (c == '(') {
+                ++depth;
+            } else if (c == ')') {
+                if (depth == 0) {
+                    break;
+                }
+                --depth;
+            } else if (c == ',' && depth == 0) {
+                std::string arg = t.substr(start, i - start);
+                size_t ab = arg.find_first_not_of(" \t");
+                size_t ae = arg.find_last_not_of(" \t");
+                if (ab != std::string::npos) {
+                    out.push_back(arg.substr(ab, ae - ab + 1));
+                }
+                start = i + 1;
+            }
+        }
+        std::string arg = t.substr(start);
+        size_t ab = arg.find_first_not_of(" \t");
+        size_t ae = arg.find_last_not_of(" \t\r\n");
+        if (ab != std::string::npos) {
+            std::string last = arg.substr(ab, ae - ab + 1);
+            if (!last.empty() && last.back() == ')') {
+                last.pop_back();
+            }
+            out.push_back(last);
+        }
+    };
+    auto fn_val = [&](const std::string& t, float em) -> float {
+        if (t.compare(0, 6, "clamp(") == 0) {
+            std::vector<std::string> args;
+            split_args(t, 6, args);
+            if (args.size() != 3) {
+                return 0;
+            }
+            float mn = term_px(args[0], em);
+            float val = term_px(args[1], em);
+            float mx = term_px(args[2], em);
+            if (val < mn) {
+                return mn;
+            }
+            if (val > mx) {
+                return mx;
+            }
+            return val;
+        }
+        if (t.compare(0, 4, "min(") == 0) {
+            std::vector<std::string> args;
+            split_args(t, 4, args);
+            if (args.size() != 2) {
+                return 0;
+            }
+            float a = term_px(args[0], em);
+            float b = term_px(args[1], em);
+            return a < b ? a : b;
+        }
+        if (t.compare(0, 4, "max(") == 0) {
+            std::vector<std::string> args;
+            split_args(t, 4, args);
+            if (args.size() != 2) {
+                return 0;
+            }
+            float a = term_px(args[0], em);
+            float b = term_px(args[1], em);
+            return a > b ? a : b;
+        }
+        return term_px(t, em);
+    };
+    float em = 16.0f;
+    float px = fn_val(s, em);
+    if (px <= 0 || px > 2048.0f) {
+        return 0;
+    }
+    return static_cast<int>(px);
+}
+
+void node_font(whaleui_render_t* r, whaleui_layout_node_t* n, int* fs,
+               std::string* family, bool* bold)
 {
     *fs = 16;
     std::string fsv = sget(n->style, "font-size");
     if (!fsv.empty()) {
-        *fs = std::atoi(fsv.c_str());
+        int f = font_size_px(r, fsv);
+        if (f > 0) {
+            *fs = f;
+        }
     }
     *family = sget(n->style, "font-family");
     std::string fw = sget(n->style, "font-weight");
@@ -834,7 +954,7 @@ size_t byte_at_node(whaleui_render_t* r, whaleui_layout_node_t* hit, int x, int 
     int fs;
     std::string family;
     bool bold;
-    node_font(hit, &fs, &family, &bold);
+    node_font(r, hit, &fs, &family, &bold);
     int tx = 0, ty = 0;
     int ww = run_wrap_w(hit);
     text_origin(r, hit, hit->text, fs, family, bold, &tx, &ty, ww);
@@ -860,7 +980,7 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     int fs;
     std::string family;
     bool bold;
-    node_font(box, &fs, &family, &bold);
+    node_font(r, box, &fs, &family, &bold);
     int tx = 0, ty = 0;
     int ww = tag_eq(el, "input") ? 0 : run_wrap_w(geo);
     text_origin(r, geo, val, fs, family, bold, &tx, &ty, ww);
@@ -1161,7 +1281,7 @@ static void edit_ensure_visible(whaleui_render_t* r)
     int fs;
     std::string family;
     bool bold;
-    node_font(n, &fs, &family, &bold);
+    node_font(r, n, &fs, &family, &bold);
     whaleui_layout_node_t* geo = editable_geo(n);
     int wrap_w = tag_eq(r->edit_el, "input") ? 0 : run_wrap_w(geo);
     int cx = 0, cy = 0, ch = 16;
@@ -2824,7 +2944,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
                 int fs = 0;
                 std::string fam;
                 bool bold = false;
-                node_font(n, &fs, &fam, &bold);
+                node_font(r, n, &fs, &fam, &bold);
                 int tw = 0, th = 0;
                 text_size(r, val, fs, fam, bold, &tw, &th, 0);
                 hmax = tw - n->content.w;

@@ -1682,7 +1682,12 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     int fs = 16;
     std::string fsv = sget(n->style, "font-size");
     if (!fsv.empty()) {
-        fs = std::atoi(fsv.c_str());
+        /* clamp()/vw font-sizes (q21k h3/glyph) resolve like the layout
+         * pass - atoi treated "clamp(30px,...)" as 0 and drew 16px */
+        int f = font_size_px(r, fsv);
+        if (f > 0) {
+            fs = f;
+        }
     }
     std::string family = sget(n->style, "font-family");
     /* font-weight: bold/bolder/600-900 render bold; font-style italic/

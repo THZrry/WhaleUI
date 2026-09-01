@@ -966,7 +966,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(ta, &fs, &family, &bold);
+        node_font(w->render, ta, &fs, &family, &bold);
         int tx = 0, ty = 0;
         text_origin(w->render, ta, "", fs, family, bold, &tx, &ty,
                     run_wrap_w(ta));

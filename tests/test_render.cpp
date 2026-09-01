@@ -1193,7 +1193,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello ", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -1289,7 +1289,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello wo", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -1425,7 +1425,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(ina, &fs, &family, &bold);
+        node_font(w->render, ina, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello", fs, family, bold, &tw, &th);
         /* click at the start, ctrl+shift+right selects "hello" (0..5) */
@@ -1549,7 +1549,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello ", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -1585,7 +1585,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int lh = text_line_h(w->render, fs, family, bold);
         /* first line, far right of the text */
         whaleui_render_set_pressed(w->render, run->border.x + 150,
@@ -1619,7 +1619,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         /* caret at the line start, then three rights -> column 3 */
         whaleui_render_set_pressed(w->render, run->border.x + 1,
                                    run->border.y + 2, 1);
@@ -1749,7 +1749,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello ", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -1793,7 +1793,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "hello ", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -1932,7 +1932,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(ta, &fs, &family, &bold);
+        node_font(w->render, ta, &fs, &family, &bold);
         int cx = 0, cy = 0, chh = 16;
         caret_pos(w->render, long_v, fs, family, bold, long_v.size(),
                   &cx, &cy, &chh, run_wrap_w(run));
@@ -2012,7 +2012,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int lh = text_line_h(w->render, fs, family, bold);
         int tw = 0, th = 0;
         text_size(w->render, run->text, fs, family, bold, &tw, &th,
@@ -2121,7 +2121,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, "foo ba", fs, family, bold, &tw, &th);
         int y = run->border.y + run->border.h / 2;
@@ -2168,7 +2168,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int w1 = 0, h1 = 0, w2 = 0, h2 = 0;
         text_size(w->render, "a\tb", fs, family, bold, &w1, &h1, 0);
         text_size(w->render, "a    b", fs, family, bold, &w2, &h2, 0);
@@ -2755,7 +2755,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int tw = 0, th = 0;
         text_size(w->render, run->text, fs, family, bold, &tw, &th,
                   run_wrap_w(run));
@@ -2976,7 +2976,7 @@ int main(void)
         int fs;
         std::string family;
         bool bold;
-        node_font(run, &fs, &family, &bold);
+        node_font(w->render, run, &fs, &family, &bold);
         int lh = text_line_h(w->render, fs, family, bold);
         int ww = run_wrap_w(run);
         int cx = -1, cy = -1, ch = -1;

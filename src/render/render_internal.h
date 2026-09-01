@@ -204,8 +204,12 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
 size_t utf8_prev(const std::string& s, size_t b);
 size_t utf8_next(const std::string& s, size_t b);
 int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n);
-void node_font(whaleui_layout_node_t* n, int* fs, std::string* family,
-               bool* bold);
+/* font-size -> px (clamp()/min()/max()/vw/vh supported, matching the
+ * layout pass). 0 when unparseable. */
+int font_size_px(whaleui_render_t* r, const std::string& v);
+
+void node_font(whaleui_render_t* r, whaleui_layout_node_t* n, int* fs,
+               std::string* family, bool* bold);
 whaleui_layout_node_t* editable_geo(whaleui_layout_node_t* n);
 
 /* --- FSR upscale (render_fsr.cpp) --- */
