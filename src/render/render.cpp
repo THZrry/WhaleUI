@@ -3418,6 +3418,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         acca(r->tree->root);
     }
     bool partial = false; /* load-only repaint of a dirty region */
+    /* partial strips (hover / animation) are computed from node bounds -
+     * compute them BEFORE the strip math. After a relayout bounds_valid
+     * is 0 and every bound reads (0,0,0,0), so the hover strip came out
+     * empty and a hover change repainted nothing (background-color :hover
+     * "不响应"; the relayout had applied the style, the paint just never
+     * covered the box). */
+    if (!r->bounds_valid) {
+        compute_paint_bounds(r->tree->root);
+        r->bounds_valid = 1;
+    }
     /* a wheel scroll happened (scroll_el set by the scroll behavior) or a
      * scrollbar is being dragged: the WHOLE viewport repaints at the new
      * scroll offset. Consume it so it only forces one frame; embedded
@@ -3618,10 +3628,6 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * animation ("topbar blur not applied"). */
     g_backdrop_active = (scroll_dy == 0) ? 1 : 0;
     int sel_lo = 0, sel_hi = 0;
-    if (!r->bounds_valid) {
-        compute_paint_bounds(r->tree->root);
-        r->bounds_valid = 1;
-    }
     const Clip* paint_clip = (partial || scroll_dy != 0) ? &strip : &full;
     /* load-only frames (scroll strip / hover / animation, GPU LOADOP_LOAD)
      * keep stale pixels in areas nothing repaints: the html/body background
