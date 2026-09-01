@@ -228,6 +228,17 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                             const lxb_char_t* href = lxb_dom_element_get_attribute(
                                 ael, (const lxb_char_t*)"href", 4, &hlen);
                             if (href && hlen > 0) {
+                                std::string h(reinterpret_cast<const char*>(href),
+                                              hlen);
+                                if (h[0] == '#' && h.size() > 1) {
+                                    /* page-internal anchor: scroll the
+                                     * document to the target element, not a
+                                     * navigation */
+                                    whaleui_render_scroll_to_id(
+                                        win->render, win->document,
+                                        h.c_str() + 1);
+                                    break;
+                                }
                                 std::string target = resolve_href(
                                     win, std::string(
                                              reinterpret_cast<const char*>(href),

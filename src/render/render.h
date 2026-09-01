@@ -351,6 +351,13 @@ void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x, int y, int down,
  * (x, y) by dy wheel ticks (x/y may be -1 to reuse the last hover pos). */
 void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y, float dy);
 
+/* Page-internal anchor: scroll the document so the element with this id is
+ * visible near the top (leaving room for a fixed header). No-op when the id
+ * is missing. Returns 0 on success. */
+int whaleui_render_scroll_to_id(whaleui_render_t* r,
+                                whaleui_dom_document_t* doc,
+                                const char* id);
+
 /* Scroll behavior hook: called for every wheel delta applied to an element.
  * delta is the pixel amount to ADD to the element's scroll position (may be
  * negative). Return 1 when the scroll position actually changed (a repaint

@@ -31,6 +31,7 @@
 #include <SDL3_ttf/SDL_ttf.h>
 #endif
 #include <lexbor/dom/dom.h>
+#include <lexbor/html/html.h>
 
 #include <algorithm>
 #include <cmath>
@@ -2836,6 +2837,73 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     }
     /* nothing explicitly scrollable: scroll the page (html root) */
     do_scroll(r->tree->root);
+}
+
+/* Page-internal anchor: scroll the document so the element with this id is
+ * visible near the top (leaving room for a fixed header). The laid-out y is
+ * baked (content shifted up by the live scroll), so the raw position is
+ * border.y + current scroll; subtract the header allowance. No-op when the
+ * id is missing. */
+extern "C" int whaleui_render_scroll_to_id(whaleui_render_t* r,
+                                           whaleui_dom_document_t* doc,
+                                           const char* id)
+{
+    if (!r || !r->tree || !doc || !id || !*id) {
+        return -1;
+    }
+    lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+    lxb_dom_element* root =
+        hd ? lxb_dom_document_element(&hd->dom_document) : nullptr;
+    if (!root) {
+        return -1;
+    }
+    /* find the element with this id (document walk; ids are rare) */
+    lxb_dom_element* el = nullptr;
+    std::function<lxb_dom_element*(lxb_dom_node*)> find_id =
+        [&](lxb_dom_node* node) -> lxb_dom_element* {
+        if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* e = lxb_dom_interface_element(node);
+            size_t alen = 0;
+            const lxb_char_t* a = lxb_dom_element_get_attribute(
+                e, (const lxb_char_t*)"id", 2, &alen);
+            if (a && alen == std::strlen(id) &&
+                std::memcmp(a, id, alen) == 0) {
+                return e;
+            }
+        }
+        for (lxb_dom_node* c = node->first_child; c; c = c->next) {
+            lxb_dom_element* found = find_id(c);
+            if (found) {
+                return found;
+            }
+        }
+        return nullptr;
+    };
+    el = find_id(&root->node);
+    if (!el) {
+        return -1;
+    }
+    whaleui_layout_node_t* n = find_node_by_el(r->tree, el);
+    if (!n) {
+        return -1;
+    }
+    lxb_dom_element* root_el = r->tree->root->el;
+    auto sit = r->scrolls.find(root_el);
+    int cur = sit != r->scrolls.end() ? sit->second : 0;
+    int target = n->border.y + cur - 80; /* 80px for the fixed header */
+    if (target < 0) {
+        target = 0;
+    }
+    int max = r->tree->root->scroll_max;
+    if (target > max) {
+        target = max;
+    }
+    if (target != cur) {
+        r->scrolls[root_el] = target;
+        r->scroll_dirty = 1;
+        r->scroll_el = root_el;
+    }
+    return 0;
 }
 
 /* default scroll behavior: add delta to the element's scroll_y, clamped to
