@@ -617,6 +617,22 @@ void expand_shorthands(WhaleUIComputedStyle& s)
             s["border-bottom"] = bb->second;
         }
     }
+    /* border: 1px solid red -> all four sides (same reasoning as above) */
+    WhaleUIComputedStyle::const_iterator bd = s.find("border");
+    if (bd != s.end()) {
+        if (s.find("border-top") == s.end()) {
+            s["border-top"] = bd->second;
+        }
+        if (s.find("border-bottom") == s.end()) {
+            s["border-bottom"] = bd->second;
+        }
+        if (s.find("border-left") == s.end()) {
+            s["border-left"] = bd->second;
+        }
+        if (s.find("border-right") == s.end()) {
+            s["border-right"] = bd->second;
+        }
+    }
     expand_border_side(s, "border-top", "border-top-width");
     expand_border_side(s, "border-bottom", "border-bottom-width");
     expand_border_side(s, "border-left", "border-left-width");

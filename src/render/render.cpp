@@ -2502,7 +2502,14 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
          * to the elements underneath it - hit_test would land on an input
          * below the list and switch the cursor to an I-beam / apply its
          * :hover ("鼠标在选项上还变成输入状"). Hover state stays on the
-         * select; only the option highlight (above) tracks the mouse. */
+         * select; only the option highlight (above) tracks the mouse. The
+         * cursor is the default arrow too: the select's pointer cursor
+         * must not leak onto the rest of the page while the list is open
+         * ("下拉点开后鼠标在哪都是 pointer"). */
+        SDL_Cursor* cur = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
+        if (cur) {
+            SDL_SetCursor(cur);
+        }
         return;
     }
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
@@ -3447,7 +3454,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             };
         std::function<void(whaleui_layout_node_t*)> find_anim =
             [&](whaleui_layout_node_t* nd) {
-                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
+                /* text runs share their element's animatable style but
+                 * must not have the animation values applied to their own
+                 * style (a translateY would offset the glyphs inside the
+                 * already-transformed box - "ghost text" regression). Their
+                 * opacity is handled by apply_sub above. */
+                if (nd->el && !nd->is_text &&
+                    whaleui_anim_has_el(r->anim, nd->el)) {
                     whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
                     float o = 1.0f;
                     std::string ov2 = sget(nd->style, "opacity");
@@ -3465,11 +3478,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                          c = c->next) {
                         apply_sub(c, nd->opacity);
                     }
-                } else {
-                    for (whaleui_layout_node_t* c = nd->first_child; c;
-                         c = c->next) {
-                        find_anim(c);
-                    }
+                }
+                /* an ancestor being animated must not stop the walk: the
+                 * children may carry their own animated values (e.g. a
+                 * hovered cell inside a section whose reveal transition is
+                 * still running). Without this the child's apply_ov never
+                 * runs and its transition stays pinned at the start value
+                 * ("hover changes and snaps straight back"). */
+                for (whaleui_layout_node_t* c = nd->first_child; c;
+                     c = c->next) {
+                    find_anim(c);
                 }
             };
         find_anim(r->tree->root);
@@ -3650,7 +3668,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->scroll_el || r->drag_scroll_el) {
         r->scroll_el = nullptr;
         r->hover_old_el = nullptr;
-    } else if (!animating && !r->edit_el && r->hover_old_el) {
+    } else if (!animating && !r->edit_el && !r->open_select &&
+               r->hover_old_el) {
         /* hover change: repaint only the previous and current hover
          * targets (their :hover style changed). The relayout already
          * re-cascaded the styles; the geometry is stable. */
