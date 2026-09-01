@@ -1252,6 +1252,13 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 tw += lsp * static_cast<int>(max_ch - 1);
             }
         }
+        /* some glyphs are wider than their advance (msyh's f/t/v/w/y/
+         * A/V/W/Y/Z/&/_// have maxx 1px past advance; italic/kerning add
+         * more): L.tw is the advance sum, so a line's LAST glyph's ink
+         * falls past tw and the raster clip (tx2 >= tw) sliced it off -
+         * small mixed CJK/latin text lost its tail. The 2px slack covers
+         * the typical 1px overflow plus a hair of anti-aliasing. */
+        tw += 2;
         if (tw <= 0 || th <= 0) {
             return;
         }

@@ -3613,6 +3613,16 @@ struct Builder
             for (size_t j = 0; j < cells.size(); ++j) {
                 if (cells[j].rs <= i + 1 && cells[j].re > i + 1) {
                     int h = est_node_height(cells[j].node, inner_w, em);
+                    /* auto rows cover the cell's FULL border box: the
+                     * estimate is content-only, and a padded/bordered cell
+                     * (td padding 4px + 1px border -> 10px taller than its
+                     * text) laid out at the content height overflowed the
+                     * row - the next row started under the content and the
+                     * cells overlapped their border line ("文字在线上") */
+                    BoxMetrics cbm = box_metrics(cells[j].node->style,
+                                                 static_cast<float>(inner_w),
+                                                 em);
+                    h += cbm.p[0] + cbm.p[2] + cbm.b[0] + cbm.b[2];
                     if (h > mx) {
                         mx = h;
                     }

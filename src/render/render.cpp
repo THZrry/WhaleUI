@@ -3418,12 +3418,19 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         acca(r->tree->root);
     }
     bool partial = false; /* load-only repaint of a dirty region */
-    /* a wheel scroll happened (scroll_el set by the scroll behavior): the
-     * WHOLE viewport repaints at the new scroll offset. Consume it so it
-     * only forces one frame; embedded scroll boxes repaint too (their
-     * content shifts, drawn at the new offset during the full paint). */
-    if (r->scroll_el) {
+    /* a wheel scroll happened (scroll_el set by the scroll behavior) or a
+     * scrollbar is being dragged: the WHOLE viewport repaints at the new
+     * scroll offset. Consume it so it only forces one frame; embedded
+     * scroll boxes repaint too (their content shifts, drawn at the new
+     * offset during the full paint). The drag path also clears a stale
+     * hover_old_el: set_hover returns early while dragging, so a hover
+     * change right before the drag leaves hover_old_el set - the partial
+     * branch below would then repaint ONLY the two hover boxes and the
+     * scrolled content stayed frozen until mouse-up ("half the page does
+     * not move while dragging the scrollbar"). */
+    if (r->scroll_el || r->drag_scroll_el) {
         r->scroll_el = nullptr;
+        r->hover_old_el = nullptr;
     } else if (!animating && !r->edit_el && r->hover_old_el) {
         /* hover change: repaint only the previous and current hover
          * targets (their :hover style changed). The relayout already
