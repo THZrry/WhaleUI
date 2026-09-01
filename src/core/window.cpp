@@ -366,6 +366,9 @@ extern "C" int whaleui_window_set_size(whaleui_window_t* win, int width, int hei
     }
     if (win->render) {
         whaleui_render_resize(win->render, width, height);
+        /* viewport changed: re-filter @media rules against the new width
+         * (the worker's coalesced resize path does the same) */
+        whaleui_window_refresh_css(win);
     }
     return 0;
 }

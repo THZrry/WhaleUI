@@ -326,6 +326,16 @@ void render_worker_fn(whaleui_app_t* app)
                     (now - win->resize_last >= kResizeCoalesceMs)) {
                     whaleui_render_resize(win->render, win->resize_w,
                                           win->resize_h);
+                    /* keep the window's own size in sync (the worker path
+                     * bypasses whaleui_window_set_size) and re-filter the
+                     * @media rules against the NEW viewport width - without
+                     * this a resized window kept the rules filtered at load
+                     * time and never re-laid out responsively ("改变窗口
+                     * 大小不会响应式布局": @media max-width / vw stayed
+                     * stuck at the original size). */
+                    win->width = win->resize_w;
+                    win->height = win->resize_h;
+                    whaleui_window_refresh_css(win);
                     win->resize_last = now;
                     win->resize_pending = 0;
                 }
