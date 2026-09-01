@@ -117,6 +117,11 @@ struct whaleui_layout_style_key
 
 struct whaleui_layout_tree
 {
+    whaleui_layout_tree()
+        : root(nullptr), viewport_w(0), viewport_h(0), vars_collected(false)
+    {
+    }
+
     whaleui_layout_node_t* root;
     int viewport_w, viewport_h;
 

@@ -719,8 +719,16 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
 {
     /* pseudo-element boxes (::before/::after state layers, focus
      * underlines) are pointer-events:none: they must not become the
-     * hover/click target, or the button under the layer loses hover */
+     * hover/click target, or the button under the layer loses hover.
+     * Same for real pointer-events:none elements - a full-viewport
+     * decorative overlay (q21k's .noise, fixed inset:0 opacity:.05)
+     * would otherwise swallow every hover/click, and a fixed header
+     * overlay would steal the pointer from the links below it. */
     if (!n || !n->visible || n->pseudo) {
+        return nullptr;
+    }
+    if (!n->is_text && n->el &&
+        sget(n->style, "pointer-events") == "none") {
         return nullptr;
     }
     int child_off = off_y + scroll_delta(r, n);
@@ -2370,6 +2378,12 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
                 r->has_dirty = 1;
             }
         }
+        /* the popup is a modal overlay: the pointer must NOT fall through
+         * to the elements underneath it - hit_test would land on an input
+         * below the list and switch the cursor to an I-beam / apply its
+         * :hover ("鼠标在选项上还变成输入状"). Hover state stays on the
+         * select; only the option highlight (above) tracks the mouse. */
+        return;
     }
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     lxb_dom_element* el = hit ? hit->el : nullptr;
@@ -2547,6 +2561,13 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
     }
     fb_coords(r, x, y);
     if (down) {
+        /* the expanded list is a modal overlay: a press picks an option
+         * (handle_click) or closes the list - it must not press/focus the
+         * element underneath the popup */
+        if (r->open_select) {
+            r->has_dirty = 1;
+            return;
+        }
         whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
         lxb_dom_element* el = hit ? hit->el : nullptr;
         r->press_x = x;
