@@ -606,6 +606,17 @@ void expand_border_side(WhaleUIComputedStyle& s, const char* side,
 void expand_shorthands(WhaleUIComputedStyle& s)
 {
     expand_font(s);
+    /* background shorthand carries the color: a page's
+     * "background:#10141d" must win over the UA default's
+     * "background-color:var(--bg)" - without this the UA color stayed
+     * and every page that set a plain background kept the theme's
+     * (背景/文字颜色被默认样式顶掉). Gradients/images survive: their
+     * value does not parse as a color, so paint falls back to the
+     * background key itself. */
+    WhaleUIComputedStyle::iterator bgs = s.find("background");
+    if (bgs != s.end() && bgs->second != "none") {
+        s["background-color"] = bgs->second;
+    }
     /* border-block: 1px solid red -> border-top + border-bottom (before the
      * side expansion so the width/color shorthands apply to both) */
     WhaleUIComputedStyle::const_iterator bb = s.find("border-block");

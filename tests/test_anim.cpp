@@ -192,7 +192,7 @@ int main(void)
         assert(s["background-color"] == "#000000"); /* old value shown first */
         s["background-color"] = "#ffffff";
         assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
-        assert(s["background-color"] == "#ff808080");
+        assert(s["background-color"] == "#808080ff");
         s["background-color"] = "#ffffff";
         assert(whaleui_anim_apply(a, nullptr, s, 1000) == 0);
         assert(s["background-color"] == "#ffffff");

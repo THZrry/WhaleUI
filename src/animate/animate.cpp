@@ -30,8 +30,13 @@ std::string num_str(float v)
 std::string color_str(unsigned int c)
 {
     char buf[16];
+    /* #RRGGBBAA - must round-trip through parse_color (which reads
+     * r,g,b,a in that order); the old A,R,G,B output came back as a
+     * byte-rotated color and transition interpolations rendered wrong
+     * ("#ff0f131c" re-parsed to R=ff,G=0f,B=13,A=1c). */
     std::snprintf(buf, sizeof(buf), "#%02x%02x%02x%02x",
-                  (c >> 24) & 0xFF, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+                  (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF,
+                  (c >> 24) & 0xFF);
     return buf;
 }
 
@@ -442,7 +447,7 @@ void parse_transition_list(const std::string& v, TransSpec& ts)
                 prop = tok;
             }
         }
-        if (prop.empty()) {
+        if (prop.empty() || prop == "all") {
             ts.all = true;
         } else if (!ts.all) {
             ts.props.push_back(prop);

@@ -869,8 +869,8 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     /* background (border-radius supported). A gradient in `background`/
      * `background-image` paints over the plain color (which shows through
      * the gradient's transparent stops). */
-    unsigned int bg = color_of(n->style, "background-color", 0);
-    unsigned int bg2 = color_of(n->style, "background", 0);
+    unsigned int bg = color_of(n->style, "background", 0);
+    unsigned int bg2 = color_of(n->style, "background-color", 0);
     if (bg == 0) {
         bg = bg2;
     }
@@ -1003,7 +1003,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * painted LAST in render_frame so nothing occludes it. Pseudo-element
      * boxes (the focus underline) share el with the select but must not
      * trigger the value paint - its transform (scaleX) shifts nox and
-     * drew a second value+arrow offset right and down ("右下角重复按钮"). */
+     * drew a second value+arrow offset right and down ("鍙充笅瑙掗噸澶嶆寜閽?). */
     if (!n->pseudo && is_select_node(n)) {
         paint_select_value(r, n, nox, noy, eff);
     }
