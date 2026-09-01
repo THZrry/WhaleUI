@@ -2126,10 +2126,13 @@ struct Builder
         bool scrollable = !n->pseudo &&
                           (ov == "auto" || ov == "scroll" ||
                            (n == tree->root && tree->root->scroll_y > 0));
+        /* children keep their DOCUMENT coordinates (no scroll bake): the
+         * paint path offsets them by scroll_delta(current) at render time.
+         * Baking scroll_y into content.y here is what made every scroll
+         * range / auto-height computation depend on the live scroll (the
+         * smax-drift bug) - the user's guidance: each element computes its
+         * own scroll space from children's sizes/positions only. */
         int saved_cy = n->content.y;
-        if (scrollable && n->scroll_y > 0) {
-            n->content.y -= n->scroll_y;
-        }
 
         /* position:absolute children search the nearest positioned ancestor;
          * simplified: any positioned ancestor. */

@@ -352,7 +352,9 @@ int main(void)
         assert(sc2 != nullptr);
         whaleui_layout_node_t* inner2 = sc2->first_child;
         assert(inner2 != nullptr);
-        assert(inner2->border.y == sc2->content.y - 50);
+        /* children keep DOCUMENT coordinates (no scroll bake; the paint
+         * path offsets them by scroll_delta at render time) */
+        assert(inner2->border.y == sc2->content.y);
         /* scrolling the max amount reaches the content end */
         scrolls[sc2->el] = sc2->scroll_max;
         whaleui_layout_tree_t* t3 = whaleui_layout_compute(
@@ -361,7 +363,7 @@ int main(void)
         whaleui_layout_node_t* sc3 = find_tag(t3->root, "div");
         assert(sc3 != nullptr);
         whaleui_layout_node_t* inner3 = sc3->first_child;
-        assert(inner3->border.y == sc3->content.y - sc3->scroll_max);
+        assert(inner3->border.y == sc3->content.y);
         whaleui_layout_destroy(t3);
         whaleui_layout_destroy(t2);
         whaleui_dom_document_destroy(doc);
@@ -412,7 +414,7 @@ int main(void)
         assert(sc1 != nullptr);
         whaleui_layout_node_t* tr1 = sc1->first_child;
         assert(tr1 != nullptr && tr1->is_text);
-        assert(tr1->border.y == sc1->content.y - 30);
+        assert(tr1->border.y == sc1->content.y);
         assert(sc1->scroll_y == 30);
         whaleui_layout_destroy(t1);
         whaleui_layout_destroy(t);
@@ -460,7 +462,7 @@ int main(void)
         assert(t1->root->scroll_max == 500);
         whaleui_layout_node_t* d = find_tag(t1->root, "div");
         assert(d != nullptr);
-        assert(d->border.y == t1->root->content.y - 200);
+        assert(d->border.y == t1->root->content.y);
         whaleui_layout_destroy(t1);
         whaleui_layout_destroy(t0);
         whaleui_dom_document_destroy(doc);

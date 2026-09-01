@@ -525,16 +525,16 @@ bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
  * during painting matches. -1 when same-element or collapsed. */
 
 
-/* paint-time scroll offset of a scrollable box: the layout tree already
- * shifted the content up by the scroll_y baked in at build time; the paint
- * path adds (current - baked) MORE shift. Since a larger scroll_y moves
- * content UP, the extra offset is negative: baked - current. */
+/* paint-time scroll offset of a scrollable box: children keep DOCUMENT
+ * coordinates (the layout no longer bakes scroll_y), so painting shifts
+ * the content up by the CURRENT scroll (bigger scroll moves it up, hence
+ * negative). */
 int scroll_delta(whaleui_render_t* r, whaleui_layout_node_t* n)
 {
     if (n->scroll_max > 0 && n->el) {
         auto it = r->scrolls.find(n->el);
         if (it != r->scrolls.end()) {
-            return n->scroll_y - it->second;
+            return -it->second;
         }
     }
     return 0;
@@ -599,7 +599,7 @@ void fix_scroll_max(whaleui_render_t* r)
             scrollable = ov == "auto" || ov == "scroll" ||
                          nd == r->tree->root;
         }
-        int child_comp = scomp + (scrollable ? nd->scroll_y : 0);
+        int child_comp = scomp;
         /* a scrollable box's own border box is the VIEWPORT, not content:
          * its range is child-bottom minus content.h. Starting from the
          * border box added (border.h - content.h) of phantom scroll
