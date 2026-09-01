@@ -1754,7 +1754,20 @@ struct Builder
             c = c->next;
         }
         flush_run();
-        if (n->visible && (pseudo_has_box(el, 2) || !post.empty())) {
+        /* native controls (checkbox/radio) never get a ::after underline
+         * pseudo-box, whatever the theme says: they are 16px self-painted
+         * controls, and the 2px focus underline leaks below them as a
+         * stray bar */
+        bool nc_el = false;
+        if (el) {
+            size_t tlen0 = 0;
+            const lxb_char_t* tv = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &tlen0);
+            nc_el = (tv && tlen0 == 8 && std::memcmp(tv, "checkbox", 8) == 0) ||
+                    (tv && tlen0 == 5 && std::memcmp(tv, "radio", 5) == 0);
+        }
+        if (n->visible && !nc_el &&
+            (pseudo_has_box(el, 2) || !post.empty())) {
             if (pseudo_has_box(el, 2)) {
                 /* box pseudo-element (::after): focus underline / active
                  * state layer (see ::before above) */

@@ -194,12 +194,16 @@ button:active::after { opacity: 1; }
 .btn-danger:hover { background: var(--btn-bg-active); }
 
 /* --- 输入框 focus 下划线（::after scaleX 展开，needs: pseudo-box +
- * transition on transform 非元素自身） --- */
-input::after, select::after, textarea::after {
+ * transition on transform 非元素自身）。checkbox/radio 不画下划线：
+ * 它们是 16px 原生控件，底部这条 2px 横线会露在控件下面成为
+ * "checkbox 下方横杠"。 --- */
+input:not([type="checkbox"]):not([type="radio"])::after,
+select::after, textarea::after {
     content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
     background: var(--accent); transform: scaleX(0); transition: transform 0.2s;
 } /* needs: pseudo-box */
-input:focus::after, select:focus::after, textarea:focus::after { transform: scaleX(1); }
+input:not([type="checkbox"]):not([type="radio"]):focus::after,
+select:focus::after, textarea:focus::after { transform: scaleX(1); }
 
 /* --- 文本工具 --- */
 .muted { color: var(--muted); }
