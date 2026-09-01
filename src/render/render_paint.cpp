@@ -908,8 +908,11 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         paint_editable(r, n, nox, noy, eff);
     }
     /* <select> control: value + arrow painted here; the expanded list is
-     * painted LAST in render_frame so nothing occludes it */
-    if (is_select_node(n)) {
+     * painted LAST in render_frame so nothing occludes it. Pseudo-element
+     * boxes (the focus underline) share el with the select but must not
+     * trigger the value paint - its transform (scaleX) shifts nox and
+     * drew a second value+arrow offset right and down ("右下角重复按钮"). */
+    if (!n->pseudo && is_select_node(n)) {
         paint_select_value(r, n, nox, noy, eff);
     }
 }

@@ -513,21 +513,29 @@ static int glyph_ttf(unsigned int cp, void* st)
         return c->r->ascii_w[cp];
     }
     /* non-ASCII: cached per (font, size, codepoint); fallback chain included */
-    std::tuple<TTF_Font*, int, unsigned int> key(font, static_cast<int>(c->fs), cp);
+    /* The chain is NOT used for metrics: TTF_GetGlyphMetrics reports the
+     * PRIMARY font's .notdef advance for missing glyphs (it does not walk
+     * the fallback chain, while TTF_GetGlyphImage does) - measuring the
+     * primary font gave CJK a 12px .notdef width at 18px while the paint
+     * path drew 18px glyphs. Layout/widths/raster buffers were all off and
+     * the last CJK char fell outside the buffer ("深度求索" lost its 索).
+     * Measure the FALLBACK font that will actually render the glyph. */
+    TTF_Font* gfont = font;
+    if (!TTF_FontHasGlyph(font, cp)) {
+        TTF_Font* fb = ensure_fallback(c->r, font, c->fs,
+                                       c->bold ? kFontBold : 0, cp);
+        if (fb) {
+            gfont = fb;
+        }
+    }
+    std::tuple<TTF_Font*, int, unsigned int> key(
+        gfont, static_cast<int>(c->fs), cp);
     auto it = c->r->glyph_w_cache.find(key);
     if (it != c->r->glyph_w_cache.end()) {
         return it->second;
     }
     int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
-    /* render_get_font synced the chain to THIS size; a glyph the primary
-     * font does not provide (TTF_GetGlyphMetrics happily reports .notdef
-     * for missing glyphs, so existence is checked explicitly) lazily opens
-     * the next registered font (CJK/emoji) as fallback and retries once -
-     * unused fonts are never opened. */
-    if (!TTF_FontHasGlyph(font, cp)) {
-        ensure_fallback(c->r, font, c->fs, c->bold ? kFontBold : 0, cp);
-    }
-    TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv);
+    TTF_GetGlyphMetrics(gfont, cp, &m0, &m1, &m2, &m3, &adv);
     c->r->glyph_w_cache[key] = adv;
     return adv;
 }
@@ -550,16 +558,23 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
      * glyph the primary font does not provide lazily opens the next
      * registered font as fallback (unused CJK/emoji fonts cost nothing
      * until a page needs them). TTF_GetGlyphMetrics alone cannot detect
-     * this - it reports .notdef metrics for missing glyphs. */
-    int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
+     * this - it reports .notdef metrics for missing glyphs AND does not
+     * walk the fallback chain, so the metrics + bitmap below must come
+     * from the SAME font that provides the glyph (glyph_ttf measures the
+     * same font - see its comment). */
+    TTF_Font* gfont = font;
     if (!TTF_FontHasGlyph(font, cp)) {
-        ensure_fallback(r, font, fs, style, cp);
+        TTF_Font* fb = ensure_fallback(r, font, fs, style, cp);
+        if (fb) {
+            gfont = fb;
+        }
     }
-    if (!TTF_GetGlyphMetrics(font, cp, &minx, &maxx, &miny, &maxy, &adv)) {
+    int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
+    if (!TTF_GetGlyphMetrics(gfont, cp, &minx, &maxx, &miny, &maxy, &adv)) {
         return false;
     }
     TTF_ImageType type = TTF_IMAGE_INVALID;
-    SDL_Surface* img = TTF_GetGlyphImage(font, cp, &type);
+    SDL_Surface* img = TTF_GetGlyphImage(gfont, cp, &type);
     if (!img) {
         return false;
     }
