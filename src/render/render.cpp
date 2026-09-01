@@ -1,4 +1,4 @@
-﻿/* Renderer core: per-window render context, frame loop and interaction
+/* Renderer core: per-window render context, frame loop and interaction
  * (hit-test / click / wheel / editing / FSR decision).
  *
  * Paint primitives, colors, text and controls live in the split sources
@@ -2094,7 +2094,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
             TTF_CloseFont(f);
         }
     }
-    /* text_cache 的栅格化缓冲是 std::vector,随 map 析构自动释放 */
+    /* text_cache 鐨勬爡鏍煎寲缂撳啿鏄?std::vector,闅?map 鏋愭瀯鑷姩閲婃斁 */
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
     }
@@ -2212,7 +2212,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         return;
     }
 #ifdef WHALEUI_BUILD_FULL
-    /* text_cache 缓冲为 std::vector,直接清空即可 */
+    /* text_cache 缂撳啿涓?std::vector,鐩存帴娓呯┖鍗冲彲 */
     r->text_cache.clear();
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
@@ -2404,19 +2404,41 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         }
     }
     /* 4. checkbox/radio toggle the checked attribute (radio is exclusive
-     * within its name group, matching browser behavior) */
+     * within its name group, matching browser behavior). A <label> click
+     * forwards to its associated input (the wrapped one, or for="id"). */
+    lxb_dom_element* toggle_el = nullptr;
     if (hit && hit->el && is_check_radio(hit->el)) {
-        if (lxb_dom_element_has_attribute(hit->el, (const lxb_char_t*)"checked", 7)) {
-            lxb_dom_element_remove_attribute(hit->el, (const lxb_char_t*)"checked", 7);
+        toggle_el = hit->el;
+    } else if (hit && hit->el && tag_eq(hit->el, "label")) {
+        lxb_dom_element* lab = hit->el;
+        /* wrapped input: first input descendant of the label (the common
+         * <label><input>...</label> form). for="id" association is not yet
+         * wired (no document handle on the render context). */
+        for (lxb_dom_node* nd = lab->node.first_child; nd; nd = nd->next) {
+            if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* e = lxb_dom_interface_element(nd);
+                size_t elen = 0;
+                const lxb_char_t* en = lxb_dom_element_local_name(e, &elen);
+                if (en && elen == 5 && std::memcmp(en, "input", 5) == 0) {
+                    toggle_el = e;
+                    break;
+                }
+            }
+        }
+    }
+    if (toggle_el && is_check_radio(toggle_el)) {
+        lxb_dom_element* hit2 = toggle_el;
+        if (lxb_dom_element_has_attribute(hit2, (const lxb_char_t*)"checked", 7)) {
+            lxb_dom_element_remove_attribute(hit2, (const lxb_char_t*)"checked", 7);
         } else {
-            lxb_dom_element_set_attribute(hit->el, (const lxb_char_t*)"checked", 7,
+            lxb_dom_element_set_attribute(hit2, (const lxb_char_t*)"checked", 7,
                                           (const lxb_char_t*)"", 0);
             size_t nlen = 0;
             const lxb_char_t* nm = lxb_dom_element_get_attribute(
-                hit->el, (const lxb_char_t*)"name", 4, &nlen);
+                hit2, (const lxb_char_t*)"name", 4, &nlen);
             size_t tlen = 0;
             const lxb_char_t* tname = lxb_dom_element_get_attribute(
-                hit->el, (const lxb_char_t*)"type", 4, &tlen);
+                hit2, (const lxb_char_t*)"type", 4, &tlen);
             bool radio = tname && tlen == 5 &&
                          std::memcmp(tname, "radio", 5) == 0;
             if (radio && nm && nlen > 0) {
@@ -2426,7 +2448,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                         while (nd) {
                             if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
                                 lxb_dom_element* e = lxb_dom_interface_element(nd);
-                                if (e != hit->el &&
+                                if (e != hit2 &&
                                     lxb_dom_element_has_attribute(
                                         e, (const lxb_char_t*)"checked", 7)) {
                                     size_t nn = 0;
@@ -2445,7 +2467,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                             nd = nd->next;
                         }
                     };
-                lxb_dom_document* doc2 = hit->el->node.owner_document;
+                lxb_dom_document* doc2 = hit2->node.owner_document;
                 lxb_dom_element* docroot =
                     doc2 ? lxb_dom_document_element(doc2) : nullptr;
                 if (docroot) {
@@ -2504,7 +2526,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
          * frozen: it follows the element under the pointer - the select
          * itself stays pointer (its UA cursor), the popup options are
          * default arrow (unless they set their own), and anything else on
-         * the page shows its own cursor ("下拉点开后鼠标在哪都是 pointer"
+         * the page shows its own cursor ("涓嬫媺鐐瑰紑鍚庨紶鏍囧湪鍝兘鏄?pointer"
          * was the select's pointer leaking to the whole page because
          * hover_el stayed pinned to the select). */
         whaleui_layout_node_t* s2 = find_node_by_el(r->tree, r->open_select);
@@ -3024,7 +3046,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             /* a container at its edge must NOT swallow the wheel forever:
              * once it cannot move (already at top/bottom), fall through to
              * the next scrollable ancestor so the page keeps scrolling
-             * ("鼠标在 card/textarea 上无法滚动到底" - the container
+             * ("榧犳爣鍦?card/textarea 涓婃棤娉曟粴鍔ㄥ埌搴? - the container
              * claimed every wheel event and never bubbled). */
             if (r->scrolls[n->el] != before) {
                 return;
@@ -3698,7 +3720,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * compute them BEFORE the strip math. After a relayout bounds_valid
      * is 0 and every bound reads (0,0,0,0), so the hover strip came out
      * empty and a hover change repainted nothing (background-color :hover
-     * "不响应"; the relayout had applied the style, the paint just never
+     * "涓嶅搷搴?; the relayout had applied the style, the paint just never
      * covered the box). */
     if (!r->bounds_valid) {
         compute_paint_bounds(r->tree->root);
@@ -3955,7 +3977,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * other content cannot cover it; its position follows the select's
      * scroll-offset ancestors. Like every z-raised layer it clears the old
      * text under its area first, otherwise lower elements' glyphs show
-     * through the popup ("下拉选项被下层文字穿透"). */
+     * through the popup ("涓嬫媺閫夐」琚笅灞傛枃瀛楃┛閫?). */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {

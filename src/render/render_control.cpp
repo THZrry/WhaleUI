@@ -75,22 +75,25 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
         fill_round_border(r->pixels, r->fb_w, r->fb_h, bx, by, bw, bh,
                           rad, 1, fg, bg, clip);
         if (checked) {
-            /* check mark: a proper V (✓) drawn as thick staircase
-             * strokes - the old 3 filled rects painted a square blob,
-             * not a check. */
+            /* check mark: a left-low / right-high tick (✓). Drawn as thick
+             * staircase strokes so it reads as a check at any size. NOTE:
+             * the shape is a placeholder by design - different themes draw
+             * their own check glyph; keep this simple V and let a theme
+             * override if it needs a distinctive mark. */
             int sw = bw / 5;
             if (sw < 1) {
                 sw = 1;
             }
-            /* left arm: top-left -> middle-bottom (down-right) */
-            for (int i = 0; i <= 4; ++i) {
+            /* left arm: top-left -> low bend (short) */
+            for (int i = 0; i <= 3; ++i) {
                 fill_rect(r->pixels, r->fb_w, r->fb_h,
-                          bx + 3 + i, cy - 2 + i, sw, 2, acc, clip);
+                          bx + 2 + i, cy - 1 + i, sw, 2, acc, clip);
             }
-            /* right arm: middle-bottom -> top-right (up-right) */
-            for (int i = 0; i <= 5; ++i) {
+            /* right arm: low bend -> top-right (long, so the tick leans
+             * right-up like a browser check) */
+            for (int i = 0; i <= 8; ++i) {
                 fill_rect(r->pixels, r->fb_w, r->fb_h,
-                          bx + 6 + i, cy + 3 - i, sw, 2, acc, clip);
+                          bx + 4 + i, cy + 2 - i, sw, 2, acc, clip);
             }
         }
     }
