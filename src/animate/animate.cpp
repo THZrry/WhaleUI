@@ -567,6 +567,20 @@ void skip_to_close(const char*& p)
     }
 }
 
+/* skip a unit suffix (px/em/...) after a parsed number - parse_num stops
+ * at the first unit letter, so a following ',' (translate(0px, -3px))
+ * was never found and the second component silently became 0 (the
+ * transition interpolation "translate(0px,-Npx)" never lifted the
+ * element). translateY(...)/translateX(...) have no comma and were fine -
+ * which is why the showcase's slide (translateX) worked while the tag's
+ * translateY via translate(x,y) interpolation did not. */
+static void skip_unit(const char*& p)
+{
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) {
+        ++p;
+    }
+}
+
 bool transform_parse(const char* v, std::vector<TransformOp>& out)
 {
     const char* p = v;
@@ -608,6 +622,7 @@ bool transform_parse(const char* v, std::vector<TransformOp>& out)
             if (!parse_num(p, &a, &au)) {
                 return false;
             }
+            skip_unit(p);
             while (*p == ' ' || *p == '\t') {
                 ++p;
             }
@@ -628,6 +643,7 @@ bool transform_parse(const char* v, std::vector<TransformOp>& out)
                 return false;
             }
             b = a;
+            skip_unit(p);
             while (*p == ' ' || *p == '\t') {
                 ++p;
             }
