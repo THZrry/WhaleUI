@@ -73,13 +73,15 @@ struct whaleui_render
     /* primary font -> its fallback chain (rendered glyphs sync the chain's
      * sizes to the current run before rasterizing) */
     std::map<TTF_Font*, std::vector<TTF_Font*>> font_chain;
-    /* fallback fonts already opened and attached to every chain (lazy:
-     * a registered font is only opened when a glyph is actually missing,
-     * so an unused emoji/CJK font costs nothing) */
+    /* fallback fonts already opened (lazy: a registered font is only
+     * opened when a glyph is actually missing; one TTF_Font per family is
+     * kept and size-applied on demand - no per-element font copies) */
     std::vector<TTF_Font*> fallback_open;
-    /* families verified NOT to provide a missing glyph (closed again):
-     * skipped on later misses so they are not reopened per glyph */
-    std::vector<std::string> fallback_tried;
+    /* (family, codepoint) pairs verified NOT to be provided by that font
+     * (checked without keeping the font open): skipped on later misses so
+     * a useless font is not reopened per glyph, but the same family can
+     * still serve OTHER codepoints (msyh has CJK but not emoji) */
+    std::vector<std::pair<std::string, unsigned int>> fallback_tried;
     TTF_Font* font_default;
     /* family of font_default (its registry family name); lazy fallback
      * skips re-opening it */

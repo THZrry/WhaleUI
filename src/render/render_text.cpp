@@ -60,25 +60,25 @@ std::vector<std::string> split_families(const std::string& s)
     return out;
 }
 
-/* --- 缂佸顑呯花顓㈠礃閸涱喗鐎柡鍫墯鐢捇鎮?闁哥儐鍨粩瀵糕偓鍦仧楠?full 濞?stb 闁稿繗浜弫?---
- * 闁圭儤甯炴晶妤冩嫻閻旇崵鐓?UTF-8 閻熸瑱绲块悥婊堝Υ娴ｇ懓浠橀柛鎺曟硾閻⊙呯箔閿曗偓椤︹晠鎮堕崱鏇犵憿闁圭顦崕姘辨閻樺樊鍟嶉幖杈惧濞?soft-wrap;
- * 婵炴挸寮堕悡瀣沪?SDL3_ttf / stb_truetype)闁告瑯浜濊ぐ浣圭瑹濞戞ê绀嬮悗娑欘殘椤戜胶鈧妫勭€规娊宕堕悙鍓佹濞戞挸楠搁悺褑銇愰姀銏㈠笡闁告帟缈伴埀?
- * 缂傚倹鐗炵欢顐﹀极閺夋鍔?caret/selection/hit-test)濞戞挸娴风划顖炲礆鐠哄搫褰欓柣顫妼閹挻绋夐埀顒佺閸婄噥鏀介悽顖氬暙閻?
- * 闁圭鍋撳ù?full 濞?lite/minimal 闁汇劌瀚畷鑼偘鐏炶偐绉寸紓鍐惧枔閳ь兛鐒︾敮鍫曞礆鐠鸿櫣鎽熺紒妤嬬畳椤㈡垶绋夐崫鍕殮闁稿繈鍔嬬粩鎾嚊濞ｎ兘鍋?*/
+/* --- 缂傚倷绀侀鍛搭敄閸涱垵濮虫い鎾卞灩缁€鍐煕濞戝崬鏋熼柣搴櫍閺岋繝宕奸銏狀潽闁汇埄鍨遍幑鍥箖?闂備礁鎽滈崕鎰板垂椤栨粎鍗氶悗鐢电《閸嬫捇宕烽鐐版埛濡?full 濠?stb 闂備胶顭堢换妤佺椤掑嫬鏋?---
+ * 闂備礁婀遍崕銈囨暜閻愬瓨娅犳俊銈呭暞鐎氬鏌ｉ弮鍥у惞闁?UTF-8 闂佽崵鍠愰悷杈╁緤閸ф鍋夋繝濠傜墕杩濇繛杈剧悼閹虫挻绂掑鈧弻娑㈠箳閺囩喓銆愰梺鐑╁閸涱垳鐣堕梺鎸庢磵閸嬫挻銇勯敂瑙勬珚闁诡喖鐖煎畷閬嶅即閻樺灚鍠涢梻浣告贡椤牓藝椤栫偛纾挎慨妯块哺椤洟鏌ｅΟ鐑樷枙闁哥喎绉归獮鏍ㄦ綇閹屾喘濠?soft-wrap;
+ * 婵犵數鍋為幐绋款嚕閸洘鍋傞悗锝庡厸濞?SDL3_ttf / stb_truetype)闂備礁鎲￠悷顖涚濠靛浜瑰ù锝呮贡閻熻绻涢幋鐏活亞绮堢€ｎ喗鍊垫繛鎴炵懐濞堟ɑ銇勯幋婊嗗厡闁逞屽墰椤㈠﹤螞閸曨厸鍋撶憴鍕枙鐎规洖鐖奸幃娆撳礈娴ｈ鍟€濠电偞鍨堕幐鍛婎殽閹间焦鍋ょ憸鎴﹀Φ閹版澘顫呴柕蹇嬪灩缁楋繝姊洪崨濠傜缂傚牅鍗抽崺鈧?
+ * 缂傚倸鍊搁崐褰掓偋閻愬灚顐芥い鎰剁畱閺嬩線鏌℃径瀣靛劌闁?caret/selection/hit-test)濠电偞鍨堕幐绋棵规搴″灊妞ゆ牜鍋涚粈鍡涙偣閸濆嫭鎯堢憸鐗堢懇閺岋綁锝為鈧俊濂告煙椤旇姤灏扮紒瀣樀閸┾偓妞ゆ帊鑳堕々鐑芥煕婵犲嫬娅忛柡鈧禒瀣仺妞ゆ牗鑹鹃弳娆撴煟?
+ * 闂備礁婀遍。浠嬪磻閹捐秮?full 濠?lite/minimal 闂備焦鐪归崝宀€鈧凹鍘奸悾鐑芥嚑椤掍礁浠掗柣蹇曞仩閸嬫劗绮旂€靛摜纾介柛鎰劤閺嬫棃鏌嶈閸忔盯鎮為敂鐐殰闁割偅娲栫粈鍡涙偣妤︽寧顏犻柟鐣屽枔缁辨帒螖鐎ｎ剛鏆㈠銈冨灪閸ㄥ墎绮欐径鎰紶闁告洦鍘藉▓顕€姊虹粙璺ㄧ疄闁告柨顑囩划鈺呭箻椤旇棄娈滃┑鐑囩秵閸忔﹢宕?*/
 
 struct TextLayoutLine { size_t cstart; size_t cend; int w; };
 struct TextLayout {
-    std::string disp;          /* 闁哄嫬澧介妵姘跺棘閸ャ劍鎷?闁硅矇鍐ㄧ厬閻庢稒顨堥浣轰沪閺囩偟纾?缂佸顭峰▍搴ㄥ触鎼达絾鐣?UTF-8 */
-    std::vector<size_t> map;   /* disp 婵絽绻愰悺褏绮敃浣瑰闯闁?闁?闁告鍠愰弸鍐嫉椤掆偓閻⊙囨嚍閸屾矮鐒婄紒?*/
-    std::vector<size_t> dbytes;/* disp 婵絽绻愰悺褏绮敃浣瑰闯闁?闁?disp 閻庢稒顨夋俊顓㈠磻韫囨泤?*/
+    std::string disp;          /* 闂備礁鎼€氼剚鏅舵禒瀣︽慨妯挎硾濡﹢鏌涢妷锝呭闁?闂備胶顢婇惌鍥礃閵娧冨箑闂佽瀛╃粙鎺椼€冮崼銉晞濞达綀妗ㄥ▽顏堟煛閸モ晛浠х痪?缂傚倷绀侀ˇ顖炩€﹀畡鎵虫瀺閹兼番鍔岀憴锕傚箹鏉堝墽绋婚柣?UTF-8 */
+    std::vector<size_t> map;   /* disp 婵犳鍣徊鐣屾崲閹扮増鍋ょ憸蹇曞垝椤撱垺鏅濆ù锝囨嚀闂傤垶姊?闂?闂備礁鎲￠…鍥窗閹版澘鍑犻柛鎰靛枛鐎氬銇勯幒鍡椾壕闂佺儵濮嶉崶銊ユ疅闂佺鏈惌顕€鎮炴繝鍕＜?*/
+    std::vector<size_t> dbytes;/* disp 婵犳鍣徊鐣屾崲閹扮増鍋ょ憸蹇曞垝椤撱垺鏅濆ù锝囨嚀闂傤垶姊?闂?disp 闂佽瀛╃粙鎺椼€冩径瀣╃箚妞ゆ挶鍨圭壕濠氱叓閸ャ劍闀?*/
     std::vector<TextLayoutLine> lines;
     int tw, th;
 };
-/* 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟?婵炴挸寮堕悡瀣沪閸屾氨鏉介柣?閻㈩垰鍟惇顒勬倻椤擄紕鐔呯€?ASCII 閻犙勫缁憋妇鈧? */
+/* 闂備礁鎲￠〃鍡椕洪弽顓熷仱鐟滃繒鍒掗銏℃櫇闁逞屽墴瀹曟洖顫濇潏顭戞綗闂佺粯锚濡﹪宕?婵犵數鍋為幐绋款嚕閸洘鍋傞悗锝庡厸濞岊亪鏌涚仦鐐殤闁哄绮欓弻?闂佹眹鍩勯崹浼村疮椤愶附鍎戞い鎺戝閸婄粯銇勯幙鍕？闁绘柨鎳愰埀?ASCII 闂佽崵濮嶉崟顐缂備焦鍞绘俊鍥焵? */
 typedef int (*TextGlyphFn)(unsigned int cp, void* st);
 
-/* 閻熸瑱绲块悥婊堝储閻斿憡鐎柡鍫厸鐠愮喖寮伴崜褋浠涢柡鍌氭处濠€? \r 闊洨鏅弳?CRLF),\n 闁哄偆鍙€椤?\t 閻忕偞娲栫槐鎴炵▔?4 缂佸瞼鍎ら悧?
- * 闁稿繑婀圭紞?C0/DEL 闁硅矇鍐ㄧ厬閻庢稒顨堥浣烘崉鐎圭姷绠?濞戞挸绉村畷鐗堟媴?;婵絽绻嬮柌婊堝及閸撗佷粵閻庢稒顨堥浣烘媼閺夎法绉块柛妯煎枎娴滃摜绮斿Ч鍥ｅ亾?*/
+/* 闂佽崵鍠愰悷杈╁緤閸ф鍋夋繝濠傜墕閸屻劑鏌ｉ弬鎸庡暈闁诲寒鍣ｉ弻锟犲醇椤愩垹骞愰柣鐘冲姉閸犳牕顕ｆ导鏉戠鐟滃绂掑☉銏＄厸闁稿本纰嶆径鍕節閳? \r 闂傚鍋勫ú銊╁疾椤愶箑姹?CRLF),\n 闂備礁鎼崑鍡涘矗閳ь剚銇?\t 闂佽绻掗崑鐐裁洪弽顐ｎ潟闁瑰鍋熼埢?4 缂傚倷绀侀惉濂稿磿閵堝鍋?
+ * 闂備胶顭堢换鎴濓耿閸︻厾绀?C0/DEL 闂備胶顢婇惌鍥礃閵娧冨箑闂佽瀛╃粙鎺椼€冮崼銉晞濞达絿鍎ゅ畷澶愭倵閸︻厼啸缂?濠电偞鍨堕幐鍝ョ矓閺夋垹鏆﹂柣妤€鐗婃刊?;婵犳鍣徊鐣屾崲鐎ｎ喗鐓傛繝濠傜墕閸欏﹪鏌涢幘妞炬缁敻鏌ｆ惔銏⑩姇妞ゃ劌鐗撻、鏍ㄦ媴閻戞ê顎涢梺鍝勵槼濞夋洜绮旈崸妤佺厱婵☆垳鍘ч弸搴∶瑰鍐╂喐缂侇喗鏌ㄦ晥闁搞儻绲芥禍?*/
 static void layout_decode(const std::string& text, TextLayout& L)
 {
     const unsigned char* sb =
@@ -132,7 +132,7 @@ static void layout_decode(const std::string& text, TextLayout& L)
     }
 }
 
-/* 閻熸瑱绲块悥婊堝及閸撗佷粵闁哄倸娲﹀﹢鐗堢▔椤撶偟鎽熺紒妤嬪閸屻劌顕?ci 濠㈣泛瀚▓鎴︽儘娴ｅ搫浠?*/
+/* 闂佽崵鍠愰悷杈╁緤閸ф鍋夋繝濠傜墕閸欏﹪鏌涢幘妞炬缁敻姊洪崫鍕偓绋棵洪敃鈧敃銏ゆ偋閸懇鏋栧銈嗘尵閸嬬喖骞楅悢铏圭＜婵°倕顑呴々顒勬煕鐏炶濡兼い?ci 濠电姰鍨煎▔娑氣偓姘煎枛閳绘捇骞嬮敂钘夊壓婵炶揪绲介幖顐ｇ?*/
 static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
     size_t b0 = L.dbytes[ci];
     size_t b1 = (ci + 1 < L.dbytes.size()) ? L.dbytes[ci + 1] : L.disp.size();
@@ -156,8 +156,8 @@ static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
     return 0;
 }
 
-/* 闁?wrap_w 闁哄偆鍙€椤?闂侇偅鍔曢悺褏绮敂鍓ф焾閻犱讲鈧剚鍟嶉幖?閻℃帒鎳庨鏃堝籍鐠虹儤绀€闂侇偀鍋撻柛鎺斿濞撳爼宕ユ惔婵堫伇濞戞搩浜為埞鏍冀?闁?
- * wrap_w <= 0 = 濞戞挸绉烽拏瀣箲閵忥綆鏀介柕鍡楀€界换鎴﹀炊閻愬妲ㄩ悶娑樼灱濞堟垿寮伴崜褋浠涢悗娑欘殘椤戜線鎳犻崘銊︾函 [cstart,cend) 濞戞挸楠搁崕姘辨閻樺樊鍟嶉柕?*/
+/* 闂?wrap_w 闂備礁鎼崑鍡涘矗閳ь剚銇?闂傚倷绶￠崑鍛村礉閺囥垺鍋ょ憸蹇曞垝椤撱垺鏅滈柛鎾楀嫮鍔搁梺鑽ゅС鐠佹煡鍩€椤掍礁澧柛鐔风Ч楠?闂佺儵鍓濈敮鎺楀箠鎼搭煈鏁婇柡鍐ㄧ墕缁秹鎮归搹鐟板妺缂佲偓閳ь剟姊绘笟鍥т簮闁稿鎹囬弻娑㈠箳閺傛鏆┑鐐存尭閻栫厧鐣烽妷锔藉劅婵犻潧鐗滄导鍥ㄧ箾閹寸偞鎯勫ù婊呭仱閸╃偤寮介鐐插敤?闂?
+ * wrap_w <= 0 = 濠电偞鍨堕幐鍝ョ矓閻戣姤瀚冮悗锝庡枛缁犳煡鏌曡箛銉хУ闁衡偓娴犲鐓忛柛鈩冾殔閳ь剛鏅幑銏ゅ箣閿曗偓閻愬﹪鏌ｉ幇顒夊殶婵″眰鍔戦幃璺衡槈濡偐浼囧┑鐐茬墛閸ㄥ灝顕ｆ导鏉戠鐟滃绂掑☉銏″€垫繛鎴炵懐濞堟ɑ銇勯幋婊呯獢闁瑰磭濞€瀹曟﹢濡搁敂鎯у毐 [cstart,cend) 濠电偞鍨堕幐鍛婎殽閹间礁纾挎慨妯块哺椤洟鏌ｅΟ鐑樷枙闁哥喎绉归弻?*/
 static void layout_wrap(TextLayout& L, int wrap_w, int lh,
                         TextGlyphFn gw, void* st)
 {
@@ -178,14 +178,14 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
             int w = gw(disp_cp_at(L, ci), st);
             const bool is_sp = dch == ' ';
             if (wrap_w > 0 && wacc > 0 && wacc + w > wrap_w) {
-                /* 閻℃帒鎳庨?濞村吋锚閸樻盯宕堕悙琛″亾閳ь剟宕氶悧鍫熶粯闁告艾绨肩粩瀛樼▔椤忓棌鏁勯柡宥夋？缁狅綁宕?閻犲洤绉舵鍥棘椤撯槅鏀? */
+                /* 闂佺儵鍓濈敮鎺楀箠鎼搭煈鏁?濠电偞娼欓崥瀣晪闂佸憡蓱閻╊垰鐣烽崼鏇熷€烽悶娑掆偓鍏呭闂侀€炲苯澧寸€规洘宀搁幃褔宕奸悢鍓佸笡闂備礁鎲￠懝鍓ц姳閼测晝鍗氶悗娑欘焽閳绘梹銇勮箛鎾搭棏闁轰礁瀚伴弻鈥愁吋婢跺绱电紓浣哄缂嶄礁鐣?闂佽崵濮村ú銈囩矓閼告娈介柛銉墮濡ɑ銇勯幘顖涱潑闁衡偓? */
                 size_t br = ci;
                 int bw = wacc;
                 if (last_sp != static_cast<size_t>(-1)) {
                     br = last_sp + 1;
                     bw = wacc_at_sp;
                 }
-                if (br <= ls) { /* 缂佸瞼鍎ら悧鎼佸及椤栨繍鏀藉Λ锝嗙墱閻℃垵顕ｉ崒姘卞煑:闁哄偆鍘煎﹢顏囥亹閹惧啿顤呴悗娑欘殘椤戜線宕?*/
+                if (br <= ls) { /* 缂傚倷绀侀惉濂稿磿閵堝鍋嬮柟闂寸閸欏﹥銇勯弽銊х闁衡偓閽樺）娑㈡晲閸℃瑥鈷堥梺鐑╁墲閸ㄧ敻顢氶敐澶婄＜婵ê宕悡?闂備礁鎼崑鍡涘储閻撳函鑰挎い蹇撴储娴滃綊鏌熼幆褍鏆辨い銈呮嚇閹鈽夊▎妯荤暭濡炪倖鍨崇欢姘暦?*/
                     br = ci;
                     bw = wacc;
                 }
@@ -205,19 +205,19 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
             ++ci;
         }
         if (ci >= nc || nl) {
-            /* 闂侇偅妲掔欢顐ゆ偘瀹€鍐ㄦ闁绘帒澧庣划銊╁级?闁哄倸娲﹀﹢浼村嫉椤愩垻鍟查柟瀛樼墬濡顕ｈ箛鏂垮簥閻? */
+            /* 闂傚倷绶￠崑鍛ｉ幒鏃€顐芥い鎰╁€栭崑妯尖偓鍏夊亾闁告劑鍔嶉鍥⒑缂佹ê绗掑褍娴烽崚鎺楀Ω閳轰胶楠?闂備礁鎼崐绋棵洪敃鈧敃銏″閺夋垵鐝樺銈嗗姂閸ㄥ宕弻銉︾厵閻庢稒顭囨晶顒佷繆椤栨凹妲告い鏇秬缁犳盯寮崹顔惧搸闂? */
             L.lines.push_back({ls, ci, wacc});
             if (wacc > L.tw) {
                 L.tw = wacc;
             }
             L.th += lh;
             if (nl) {
-                ++ci; /* 閻犲搫鐤囩换?\n */
+                ++ci; /* 闂佽崵濮撮幖顐︽偪閸モ晜宕?\n */
             }
         }
     }
-    /* 闁哄倸娲﹀﹢鐗堢?\n 缂備焦鎸搁悢顒勫籍?闁哄牜鍋勯悢顒佹交濡粯绠掑☉鎾亾濞戞搩浜為埞鏍偘?缂傚倹鐗炵欢顐﹀闯閵娾晛娅￠柛蹇擃槹閻栵綁宕戝鍐╄含闁哄牃鍋撻柛姘凹缁斿鎮?闁?
-     * 濞戞挸绉疯棢濞?text_size/缂備焦锚閸?闁告稒鍨濋懙鎴犱焊閸楃偟姣岀紒鐘炽仦缁斿鎮?闁告劕鎳庨鎰板极缂堢姷绉奸柛瀣箣缁楀懘濡?*/
+    /* 闂備礁鎼崐绋棵洪敃鈧敃銏ゆ偋閸埄娴?\n 缂傚倸鍊烽悞锕傚箰閹间焦鍋勬い鎺戝缁?闂備礁鎼悧婊堝磻閸曨垱鍋勬い鎺嶇劍娴溿倖淇婇婊呭笡缂佺姵甯掗埥澶愬箻椤栨矮澹曞┑鐐村灦閹尖晜绂嶉悙鍝勭厴闁哄稁鍋呴崑?缂傚倸鍊搁崐褰掓偋閻愬灚顐芥い鎰剁畱闂傤垶鏌曟繛鐐珔婵炲拑绻濋弻娑滅疀閹垮啯效闂佺粯鐗紞浣哥暦閹存繍鐓ラ柛鎰ㄦ櫈閸氼偊姊洪崫鍕闁稿鎹囬弻娑橆潩椤掑倸鍤紓浣规煥椤曨參骞?闂?
+     * 濠电偞鍨堕幐鍝ョ矓閻ゎ垱锛傚┑?text_size/缂傚倸鍊烽悞锕傛晪闂?闂備礁鎲＄粙鎺楀垂濠靛鍤堥柟瀵稿С閻掑﹪鏌涘Δ鍐ㄤ户婵絽鐬肩槐鎺楁偐閻愭垝娌紓浣规煥椤曨參骞?闂備礁鎲￠崝鏇㈠箠鎼搭煈鏁婇柟鐗堟緲閺嬩胶绱撻崼銏犘ョ紒澶娿偢閺屾稓鈧綆浜炵粻锝囩磼濡も偓閹虫ɑ淇?*/
     if (!L.lines.empty() && !L.disp.empty() && L.disp.back() == '\n') {
         L.lines.push_back({nc, nc, 0});
         L.th += lh;
@@ -233,11 +233,11 @@ static TextLayout layout_text(const std::string& text, int wrap_w, int lh,
     return L;
 }
 
-/* --- 闁哄倸娲﹀﹢鏉棵圭€ｎ亶鍟?闁告稒鍨濋懙?闂侇偄顦扮€?闁稿繗浜弫銈団偓鍦仧楠?闁糕晞妗ㄧ花顒佺▔婵犲洦妗ㄩ柣銊ュ椤㈡垹鏁崘銊ф拱) --- */
+/* --- 闂備礁鎼崐绋棵洪敃鈧敃銏ゅ级濡潧婀遍埀顒婄秵娴滃爼宕?闂備礁鎲＄粙鎺楀垂濠靛鍤?闂傚倷绶￠崑鍕囬幍顔瑰亾?闂備胶顭堢换妤佺椤掑嫬鏋侀柕鍫濇礌閸嬫捇宕烽鐐版埛濡?闂備胶纭堕弲鐐差浖閵娧嗗С妞ゆ帊鑳堕埢鏂库攽閻樺弶澶勬俊妞煎姂閺岋綁濡搁妷銉紓濡炪們鍨洪崹褰掑极椤曗偓瀹曟﹢濡歌閹? --- */
 
-/* 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩鎾触鎼达綆浼傞柟鎭掑劚瑜?full 濞?stb 闁稿繗浜弫?:闁稿秴绻掔粈灞剧▔?0xAARRGGBB;
- * colored=true 闁哄啳娉涢崕姘辨閻樺搫娈伴悽顖ょ畵椤や線鎳?鐟滄壋鏅炴竟?emoji),闁告熬绠戦崹顖炲磽韫囨洜顦卞☉鎾虫惈婢х娀寮查婵嗩棌 閼?alpha闁?
- * xoff/yoff 濞戞捁妗ㄧ紞鍛村炊閸撗勭ゲ閻?pen+baseline 闁汇劌瀚划顖炲礆鐠鸿桨鐒婄紒澶嬬湽閳?*/
+/* 闂佽瀛╃粙鎺椼€冮崨瀛樺殝闁绘鐗婃刊瀵糕偓骞垮劚閹冲繒绮?缂傚倸鍊烽懗鍫曞窗瀹ュ洨鍗氶柟缁㈠枛鐟欙箓骞栨潏鍓хУ濞寸厧鍊块弻鐔煎箒閹烘垵濮庨悷?full 濠?stb 闂備胶顭堢换妤佺椤掑嫬鏋?:闂備胶顭堢粔瀵告崲閹烘梻鐭嗛悘鐐插⒔閳?0xAARRGGBB;
+ * colored=true 闂備礁鎼崯鍐测枖濞戙垹纾挎慨妯块哺椤洟鏌ｅΟ鐑樻儓婵炲牅鍗抽幃浠嬵敍閵堝洨鏆ゅ銈冨€撶欢姘跺箠?闁荤喐绮嶆竟瀣疾閻愬鐝?emoji),闂備礁鎲￠悢顒傜不閹达箑鍨傛い鏍仜绾句粙鐓崶銊︾妞わ箑宕埥澶愬箻閾忣偅鍎撴繝鈷€鍛枅鐎殿喗鐓￠、娑樷攽閸♀晜顥?闂?alpha闂?
+ * xoff/yoff 濠电偞鍨堕幑浣割浖閵娧呯闁告稒娼欓悙濠囨煕閹炬瀚妶鏌ユ煟?pen+baseline 闂備焦鐪归崝宀€鈧凹鍠氶崚鎺楊敍閻愯尙顦柣鐘荤細濡椼劑鎮炴繝鍕＜濠㈣泛顑囧﹢浠嬫煃?*/
 struct GlyphImg
 {
     int w, h;
@@ -247,7 +247,7 @@ struct GlyphImg
     std::vector<unsigned int> px;
 };
 
-/* full: 闁告娲栭悺褏绮敃鈧鏃€鎯旈敂鐣屻偞闂佹彃绻掑▓鎴炵▔婵犱胶鐟撻柡?閻庢稒銇炵紞瀣?render_get_font 闁? */
+/* full: 闂備礁鎲￠〃鍡椕洪弽顓熷仱鐟滃繒鍒掗銏℃櫇闁逞屽墴椤㈡瑩寮埀顒勫箚閺冨牊鏅滈柣锝呰閸嬬偤姊绘担鐟扮祷缂佺粯甯掗埢鎾诲箣閻愮鏋栨繝鐢靛С閼冲爼鎮烽幘缁樼厸?闂佽瀛╃粙鎺楀Φ閻愮數绀婇悗锝庡亞椤?render_get_font 闂? */
 struct TextMeasureCtx
 {
     whaleui_render_t* r;
@@ -297,11 +297,25 @@ static void ensure_font_state(whaleui_render_t* r, TTF_Font* font, int size,
     auto it = r->font_state.find(font);
     if (it != r->font_state.end() && it->second.first == size &&
         it->second.second == style) {
-        return;
+        /* cached as (size, style): trust it ONLY if the font really is at
+         * that size. A stale entry (recorded 48 while the font was later
+         * reopened/restyled at 16 by another path) would skip SetFontSize
+         * and rasterize CJK at the wrong size. Expected pixel height of a
+         * `size`-point SDL3_ttf font is ~size*4/3 (48pt -> 64px). */
+        int exp = size * 4 / 3;
+        int h = TTF_GetFontHeight(font);
+        if (h <= 0 || (h >= exp - exp / 4 && h <= exp + exp / 4)) {
+            return;
+        }
+        r->font_state.erase(font); /* stale: fall through and re-apply */
     }
-    TTF_SetFontSize(font, static_cast<float>(size > 0 ? size : 16));
+    bool ok = TTF_SetFontSize(font, static_cast<float>(size > 0 ? size : 16));
     TTF_SetFontStyle(font, style);
-    r->font_state[font] = std::make_pair(size > 0 ? size : 16, style);
+    if (ok) {
+        r->font_state[font] = std::make_pair(size > 0 ? size : 16, style);
+    } else {
+        r->font_state.erase(font); /* failed: retry next time */
+    }
 }
 
 /* sync the primary font AND its whole fallback chain to the current
@@ -328,23 +342,34 @@ static void sync_chain(whaleui_render_t* r, TTF_Font* font, int size,
 static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
                                  int size, int style, unsigned int cp)
 {
+    /* 1) fonts already opened are reused (one TTF_Font per family; size is
+     * applied on demand). Checking hasGlyph on an open font is cheap, so
+     * no miss memory is needed here - only step 2 records (fam, cp). */
+    for (TTF_Font* fb : r->fallback_open) {
+        ensure_font_state(r, fb, size, style);
+        if (TTF_FontHasGlyph(fb, cp)) {
+            return fb;
+        }
+    }
     whaleui_font_registry* reg = whaleui_font_registry_get();
     for (size_t i = 0; i < reg->count; ++i) {
         const std::string fam = reg->fonts[i].family;
-        bool open = false;
+        if (fam == r->default_family || fam.empty()) {
+            continue; /* the primary font covers its own family */
+        }
+        bool opened = false;
         for (auto& f : r->fonts) {
             if (f.first == fam) {
-                open = true;
+                opened = true;
                 break;
             }
         }
-        /* the default font already covers its own family */
-        if (open || fam == r->default_family) {
-            continue;
+        if (opened) {
+            continue; /* handled by the fallback_open pass above */
         }
         bool tried = false;
         for (auto& t : r->fallback_tried) {
-            if (t == fam) {
+            if (t.first == fam && t.second == cp) {
                 tried = true;
                 break;
             }
@@ -358,25 +383,14 @@ static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
         }
         ensure_font_state(r, fb, size, style);
         if (!TTF_FontHasGlyph(fb, cp)) {
-            /* cannot help with this glyph: close it and remember, so the
-             * next missing glyph does not reopen a useless font */
+            /* cannot help with THIS glyph: close it and remember (fam, cp),
+             * so this codepoint does not reopen it, while other codepoints
+             * the font DOES provide (CJK vs emoji in msyh) still reach it */
             TTF_CloseFont(fb);
-            r->fallback_tried.push_back(fam);
+            r->fallback_tried.emplace_back(fam, cp);
             continue;
         }
-        /* NOTE: no TTF_AddFallbackFont. SDL3_ttf's font chain makes
-         * TTF_FontHasGlyph report TRUE for chain-provided glyphs while
-         * metrics/bitmap still come from the primary (.notdef), and one
-         * shared fallback font restyles across sizes when any primary
-         * syncs. The engine manages fallback itself: glyph_ttf /
-         * glyph_img_ttf pick the providing font via ensure_fallback and
-         * rasterize it directly (font_chain below only records which
-         * primaries already attach this fallback, for size syncing). */
-        for (auto& kv : r->font_chain) {
-            kv.second.push_back(fb);
-        }
         r->fallback_open.push_back(fb);
-        r->fonts.emplace_back(fam, fb); /* marks it open */
         return fb;
     }
     return nullptr;
@@ -483,9 +497,9 @@ TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, int) { ret
 /* (struct TRect lives in render_internal.h) */
 
 #ifdef WHALEUI_BUILD_FULL
-/* full: 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟嶉柕鍡曠簿SCII 濞戞挸閰ｅ?ASCII 缂備胶鍠嶇粩瀵告導?TTF_GetGlyphMetrics(閻?
- * fallback chain,CJK/emoji 閻庣妫勭€瑰啿顫㈤敐鍥ｂ偓?,濞?glyph_img_ttf 闁?advance 闁告艾鏈花?
- * 婵炴挸寮堕悡瀣媴瀹ュ洨鏋傚☉鎾抽缁旈浠﹂埀顒傗偓纭呮鐎硅櫕绋夐妷锔惧濞戞挴鍋撻柤閿嬬暘閳ь兛绮維CII 闁活潿鍔庣槐锔锯偓娑欘焾閵?闂?ASCII 闁?(font,cp) 缂傚倹鎸搁悺銊╁Υ?*/
+/* full: 闂備礁鎲￠〃鍡椕洪弽顓熷仱鐟滃繒鍒掗銏℃櫇闁逞屽墴瀹曟洖顫濇潏顭戞綗闂佺粯锚濡﹪宕澶嬬厪闁糕剝娲滅花绺嶤II 濠电偞鍨堕幐鎼佹煀閿濆拋鐒?ASCII 缂傚倸鍊烽懗鍫曞窗瀹ュ洨鍗氶悗闈涙啞鐏?TTF_GetGlyphMetrics(闂?
+ * fallback chain,CJK/emoji 闂佽娴烽、濠偽涢崟顓涘亾閻熸澘鏆辨い顐犲灲閺佹劙宕堕敐鍌氫壕?,濠?glyph_img_ttf 闂?advance 闂備礁鎲￠懝楣冨嫉椤掑倽濮?
+ * 婵犵數鍋為幐绋款嚕閸洘鍋傞悗锝庡亝婵鈧箍鍎卞ú銊╁几閸屾埃妲堥柟鐐▕椤庢绱掗弮鍫濞寸媴绠撻崺鈧い鎺戝€甸崑鎾舵兜閸涱噮妫勯柣搴ｎ攰濞呮洜绮欐径鎰ㄩ柨鏃€鍎抽ˉ鏇熺箾閹寸偞灏ㄩ柛瀣崌閺屻倝鏌ㄧ€ｎ剚娈梺閫炲苯鍘哥紒顔捐懀CII 闂備焦妞垮鍧楀礉鎼达絾顫曢柨鏃堟暜閸嬫挸鈽夊▎妯煎姼闂?闂?ASCII 闂?(font,cp) 缂傚倸鍊搁崐褰掑箰閹间焦鍋ら柕濞炬櫅杩?*/
 static int glyph_ttf(unsigned int cp, void* st)
 {
     TextMeasureCtx* c = static_cast<TextMeasureCtx*>(st);
@@ -513,7 +527,7 @@ static int glyph_ttf(unsigned int cp, void* st)
      * the fallback chain, while TTF_GetGlyphImage does) - measuring the
      * primary font gave CJK a 12px .notdef width at 18px while the paint
      * path drew 18px glyphs. Layout/widths/raster buffers were all off and
-     * the last CJK char fell outside the buffer ("婵烇絽宕€瑰啿效閸屾粌鍋? lost its 缂?.
+     * the last CJK char fell outside the buffer ("婵犵數鍎戠徊钘夌暦椤掑倵鍋撻悷鏉挎毐閺佸牓鏌涚仦鍓х煀闁? lost its 缂?.
      * Measure the FALLBACK font that will actually render the glyph. */
     TTF_Font* gfont = font;
     if (cp >= 0x80 || !TTF_FontHasGlyph(font, cp)) {
@@ -539,12 +553,12 @@ static int glyph_ttf(unsigned int cp, void* st)
     return adv;
 }
 
-/* full: 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩?GlyphImg 闁规亽鍎辫ぐ?闁靛棔绻俆F_GetGlyphImage 閻?fallback 闂?
- * TTF_IMAGE_COLOR(COLR 鐟滄壋鏅炴竟濠勨偓娑欘殔閼?闁?闁稿秴绻掔粈宀勬嚊椤忓嫮鏁ㄥΛ鐗堢矎婢?TTF_IMAGE_ALPHA(闁诲繑婢樼€?
- * 闁?濠?fg 闁肩懓鐪伴埀顒€鍊搁悾鐐媴?x = pen + minx(bitmap_left), y = baseline - maxy
- * (bitmap_top),濞?TTF_GetGlyphMetrics 閺夆晜鏌ㄥú鏍ㄧ▔閳ь剟鎳?advance 濞?glyph_ttf 闁告艾鏈花顕€濡?
- * ponytail: 婵絽绻愰悺褑銇愰姀鐘电处/闂佸簱鍋撴慨锝勬缁斿瓨绋?SDL_Surface,闁?ckey 闁汇劌瀚惌鎯ь嚗?select 濞戞挸顑嗘刊铏圭驳?
- * 婵絽绻愰幎姘舵焻閹邦剛鎽熺憸鑸灪鐟曞棝寮?闁兼眹鍎寸换鏍尵閼姐倗鍙氶柡鍌氭处濠€浼村箣閹邦喗鎳曞Λ?闁?(font,cp) 缂傚倹鎸搁悺銊р偓娑欘殔閼哥増鎷呭鍛闁?*/
+/* full: 闂佽瀛╃粙鎺椼€冮崨瀛樺殝闁绘鐗婃刊瀵糕偓骞垮劚閹冲繒绮?缂傚倸鍊烽懗鍫曞窗瀹ュ洨鍗?GlyphImg 闂備浇顫夋禍浠嬪磿鏉堫偁浜?闂備線娼уΛ鏃傛崲娣囧挾_GetGlyphImage 闂?fallback 闂?
+ * TTF_IMAGE_COLOR(COLR 闁荤喐绮嶆竟瀣疾閻愬鐝跺┑鐘插閸嬫挸鈽夊▎妯荤暥闂?闂?闂備胶顭堢粔瀵告崲閹烘梻鐭嗙€光偓閸曨剙娈滃銈呯箰鐎氼噣寮妸銉庢盯鎮ч崼銏㈢厔婵?TTF_IMAGE_ALPHA(闂備浇顕х换鎴濐熆濡皷鍋?
+ * 闂?濠?fg 闂備浇鍋愰幊鎾绘儑娴兼潙鐒垫い鎺嗗亾闁稿﹥鎮傞幃楣冩倷椤掍礁顎?x = pen + minx(bitmap_left), y = baseline - maxy
+ * (bitmap_top),濠?TTF_GetGlyphMetrics 闂佸搫顦弲婊堝蓟閵娿儍娲冀閵娧€鏋栭梺閫炲苯澧撮柟?advance 濠?glyph_ttf 闂備礁鎲￠懝楣冨嫉椤掑倽濮虫い鏇楀亾濠?
+ * ponytail: 婵犳鍣徊鐣屾崲閹扮増鍋ょ憸鎴﹀Φ閹版澘顫呴柣妯兼暩婢?闂傚倷绀佺花閬嶅磻閹惧瓨鍙忛柨婵嗗椤﹂绱掗弬璺ㄦ憼缂?SDL_Surface,闂?ckey 闂備焦鐪归崝宀€鈧凹鍨堕幆宀勫箚瑜滈崵?select 濠电偞鍨堕幐鎼侇敄閸℃ê鍨旈柧蹇撴贡妞?
+ * 婵犳鍣徊鐣屾崲閹版澘绠慨妯垮煐閻掑鏌熼柇锕€澧伴柟鐣屽枔閹叉悂鎳滈鈧悘顏堟偡閺囩偞顥㈢€?闂備礁鍚嬮惇褰掑磿鐎靛憡宕查柡宥庡亞鐏忕敻鏌ゆ慨鎰偓妤呭矗濮樿埖鐓涢柛灞剧婢跺嫭绻濋埀顒佸閺夋垹顓洪梺褰掑亰閸犳骞婇弴鐐?闂?(font,cp) 缂傚倸鍊搁崐褰掑箰閹间焦鍋ら柕濞р偓閸嬫挸鈽夊▎妯荤暥闂佺厧鎽滄晶妤呭箯閸涱収鍚嬮柛娑卞枤椤╊參姊?*/
 static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
                           int fs, int style, unsigned int cp, unsigned int fg,
                           GlyphImg& out)
@@ -599,10 +613,10 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     out.colored = (type == TTF_IMAGE_COLOR);
     out.px.resize(static_cast<size_t>(img->w) * img->h);
     if (out.colored) {
-        /* ARGB8888 閻忓繐绻掗顒勫礃閸涱厾鎽犻幖?= B,G,R,A 闁?0xAARRGGBB,濞?framebuffer 濞戞挴鍋撻柤?*/
+        /* ARGB8888 闂佽绻愮换鎰崲閹烘鏁傛い鎺戝缁€鍐煕濞戝崬骞橀柟鐣屽█楠?= B,G,R,A 闂?0xAARRGGBB,濠?framebuffer 濠电偞鍨堕幐鎾磻閹剧粯鐓?*/
         std::memcpy(out.px.data(), img->pixels, out.px.size() * 4);
     } else {
-        /* 闁诲繑婢樼€瑰磭鈧稒顨呴懜?SDL3_ttf 闁告劖鐟у▍褔鎳?+ alpha,闁哄洦瀵у畷鍙夌▔?fg 闁?濞?fg alpha) */
+        /* 闂備浇顕х换鎴濐熆濡皷鍋撻悷鎵紞闁逞屽墯缁嬫帡銆冮崨瀛樺殝?SDL3_ttf 闂備礁鎲￠崝鏍偡瑜嶉埢宥堫樄闁?+ alpha,闂備礁鎼ú锔锯偓绗涘啰鏆﹂柛娆忣槺閳?fg 闂?濠?fg alpha) */
         const unsigned char* p =
             static_cast<const unsigned char*>(img->pixels);
         const unsigned int rgb = fg & 0xFFFFFF;
@@ -616,9 +630,9 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     return true;
 }
 #else
-/* --- stb_truetype 闁告艾娴烽?婵炴潙顑呴?+ 鐟滄壋鏅炴竟濠勨偓娑欘殔閼?COLR/CPAL,闁告瑥鍊介埀?stb#512/#1135) --- */
+/* --- stb_truetype 闂備礁鎲￠懝鎯归悜绛嬫晜?婵犵數鍋炲娆擃敄閸涙惌鏁?+ 闁荤喐绮嶆竟瀣疾閻愬鐝跺┑鐘插閸嬫挸鈽夊▎妯荤暥闂?COLR/CPAL,闂備礁鎲￠悷銉╁磹娴犲鐒?stb#512/#1135) --- */
 
-/* 濠㈠爢鍜佷紓閻犲洩顕цぐ?sfnt 閻炴稏鍔岄悺褍鈻撻棃娑欑秵濞?big-endian) */
+/* 濠电姰鍨归悥銏ゅ椽娴ｉ纾介梺鑽ゅТ濞测晠顢氳閵?sfnt 闂佽崵鍋炵粙蹇涘礉瀹€鍕仱鐟滃秹鍩㈤幘缁橆棃婵炴垶鐟х粔鍨箾?big-endian) */
 static unsigned int be16(const unsigned char* p)
 {
     return (static_cast<unsigned int>(p[0]) << 8) | p[1];
@@ -630,8 +644,8 @@ static unsigned int be32(const unsigned char* p)
            (static_cast<unsigned int>(p[2]) << 8) | p[3];
 }
 
-/* 闁革负鍔岄悺褎鎷呴幘瀛樻闁硅鍠曢懙鎴﹀蓟閵夛箑顥?sfnt 閻?tag 4 閻庢稒顨夋俊?闁汇劌瀚禍鍝ョ矓?閺夆晜鏌ㄥú鏍儎缁嬫鍤犻柡浣哄瀹撲胶鎸ф搴′化闁汇劌瀚禍鍝ョ矓?
- * TTC 闁告瑦鐗滈鍥ㄧ▔閳ь剚绋夐鍕憻濞达絾鎸堕埀顒€鍊规竟妯荤▔瀹ュ懎鐓傞弶鈺傛煥濞?-1闁?*/
+/* 闂備線娼荤拹鐔煎礉瀹€鍕仱鐟滃酣骞忛崨鏉戠閻庢稒蓱椤斿秹姊虹涵鍜佸殐闁哥姵娲熼幊娆撳箣閿曗偓閽冪喖鏌曟径娑氱暠妞?sfnt 闂?tag 4 闂佽瀛╃粙鎺椼€冩径瀣╃箚?闂備焦鐪归崝宀€鈧凹鍓氱粋宥夊传閵壯呯厠?闂佸搫顦弲婊堝蓟閵娿儍娲冀椤撶喎鍓紓浣割儐椤戞瑩宕甸悩缁樼厸濞达絽鎼。鑲┾偓瑙勬尫閼冲爼骞愯椤︾増鎯旈垾鎻掑闂備焦鐪归崝宀€鈧凹鍓氱粋宥夊传閵壯呯厠?
+ * TTC 闂備礁鎲￠悷锕傛偋濠婂牜鏁勯柛銉ｅ妿閳绘棃鏌嶈閸撴氨绮欐径鎰垫晜闁告洦鍘介幉缁樼箾鏉堝墽绋婚柟绋跨埣閸┾偓妞ゆ巻鍋撻柛濠咁潐缁旂喎螣閼姐倐鏋栭悗骞垮劚閹冲酣鎮￠崒鐐茬骇闁冲搫鍊归悡銉︾箾?-1闂?*/
 static int font_table_off(const unsigned char* data, size_t len, const char* tag)
 {
     if (!data || len < 12) {
@@ -659,11 +673,11 @@ static int font_table_off(const unsigned char* data, size_t len, const char* tag
     return -1;
 }
 
-/* COLR 閻忕偛鍊介鍥亹?閻忕偛鍊搁悺褑銇?id + 閻犲鍟虫竟濠囧级閹稿孩钂嬮柣?闁告瑥鍊介埀?stb#1135 闁?stbtt_glyphlayer) */
+/* COLR 闂佽绻掗崑娑㈠磹娴犲鏁婇柛銉簵娴?闂佽绻掗崑娑㈠磹閹间焦鍋ょ憸鎴﹀Φ?id + 闂佽崵濮撮鍛村疮閾忣偆鐝跺┑鐘叉搐缁狙囨煙缁嬪灝顒㈤柦鍌氼儔閺?闂備礁鎲￠悷銉╁磹娴犲鐒?stb#1135 闂?stbtt_glyphlayer) */
 struct ColrLayer { unsigned short glyph; unsigned short color; };
 
-/* 闁哄被鍎叉竟?glyph 闁?COLR 閻?缂佺偓瀵ч埀顑嫬顥囬柟?base glyph records 闁?glyph id 闁告娲ょ花?
- * 闁轰椒鍗抽崳铏圭棯瑜嶉崵鎴︽儌缁舵瑩宕欓悩鎻掔．,婵絽绻愰悺褑銇愰～顓狀伇婵炲棌鈧啿璁查柟鎭掑劚瑜?闁靛棗鍊界换鎴﹀炊閻愯尙婀撮柡?0 = 閻犲洢鍎遍悺褑銇愰姀鈩冿骏閻忕偛鍊堕埀?*/
+/* 闂備礁鎼悮顐﹀磿閸欏鐝?glyph 闂?COLR 闂?缂傚倷鑳堕崑鎾垛偓绗涘洤鐒垫い鎴墮鐎氼剟藟閸ヮ剚鐓?base glyph records 闂?glyph id 闂備礁鎲￠〃鍛洪妶鍥С?
+ * 闂備浇妗ㄥ鎺楀础閹惰棄闂柧蹇撴贡濡垳鎲稿澶婂惞闁硅揪闄勯崕宀€绱掗懜鐢垫噰鐎规洘鐟╅幃鈺呭箵閹烘棑绱?婵犳鍣徊鐣屾崲閹扮増鍋ょ憸鎴﹀Φ閹板府缍栨い鎾跺娴煎洤鈹戦悙鍙夘棏闁逞屽墮閸熻法鎷嬮弻銉︾厵闁诡厽甯掗崝姘辨喐?闂備線娼уΛ妤呭磹閻ｅ本宕查柟杈剧畱閻愬﹪鏌ｉ幇顖氱毢婵犫偓閹绢喗鐓?0 = 闂佽崵濮村ú銏ゅ磿闁秵鍋ょ憸鎴﹀Φ閹版澘顫呴柍鈺佸枦妤犲繘鏌ｈ箛鏇炰粶闁稿﹤鐖奸崺鈧?*/
 static int colr_layers(const unsigned char* data, int colr_off,
                        unsigned int gid, const ColrLayer*& out)
 {
@@ -683,8 +697,8 @@ static int colr_layers(const unsigned char* data, int colr_off,
     return 0;
 }
 
-/* CPAL v0 閻犲鍟虫竟濠囧级閸ф鏉归柤?BGRA 闁告劕鎳庨悺銊︽償?闁?0xAARRGGBB);colorid==0xFFFF 闁汇垼绮鹃惃鐔兼偨?
- * 闁哄倸婀遍弫銈夊礈瀹ュ棙鐝柤鐟扮湴閳ь剙鍊歌ぐ鍥╂嫬閸愵厼顥忛柡?0(濡絾鐗旈柌?闁?*/
+/* CPAL v0 闂佽崵濮撮鍛村疮閾忣偆鐝跺┑鐘叉搐缁狙囨煕瑜庨〃蹇涘级瑜版帗鐓?BGRA 闂備礁鎲￠崝鏇㈠箠鎼淬劍鍋ら柕濠忛檮閸?闂?0xAARRGGBB);colorid==0xFFFF 闂備焦鐪归崹鑲╁垝妤ｅ啯鍎嶉柣鏂垮悑閸?
+ * 闂備礁鎼崐绋匡耿闁秴鏋侀柕鍫濐槸缁€鍫⑩偓骞垮劚濡瑩鎮甸鐐寸厾闁荤喐澹嗗﹢鎾煃瑜滈崜娆撳磹濮濆被浜归柛銉㈡櫆鐎氼剟鏌涢幇闈涘箹妞ゃ儱绻橀弻?0(濠碘槅鍋撶徊楣冩偋閺冨牊鐓?闂?*/
 static unsigned int colr_palette_color(const unsigned char* data, int cpal_off,
                                        unsigned int colorid)
 {
@@ -698,15 +712,15 @@ static unsigned int colr_palette_color(const unsigned char* data, int cpal_off,
         return 0xFFFFFFFF;
     }
     unsigned int cro = be32(t + 8);
-    unsigned int pidx = be16(t + 12); /* palette 0 闁?colorRecordIndices */
+    unsigned int pidx = be16(t + 12); /* palette 0 闂?colorRecordIndices */
     const unsigned char* c = t + cro + pidx * 4 + colorid * 4;
     return (static_cast<unsigned int>(c[3]) << 24) |
            (static_cast<unsigned int>(c[2]) << 16) |
            (static_cast<unsigned int>(c[1]) << 8) | c[0];
 }
 
-/* 婵炴挸寮堕悡?COLR 闁告帒妫楅惇鎵偓娑欘殔閼哥増绋?RGBA(0xAARRGGBB);閺夆晜鏌ㄥú?false 閻炴稏鍔庨妵姘跺籍閻樿尙婀?閻犲鍟伴弫銈夊棘绾懓娉?
- * 闁哄拋鍣ｉ埀顒佹皑娴煎棙鎯旈敃浣虹唴鐎?闁靛棗鍊归惁锛勪沪?stbtt 濞达絽绉村ù?+ 閻犲鍟虫竟濠囧级閸ф鏉归柤?src-over 闁告艾鐗婇崹姘跺Υ?*/
+/* 婵犵數鍋為幐绋款嚕閸洘鍋?COLR 闂備礁鎲＄敮鎺懳涘Δ鍛剳闁规鍠掗崑鎾斥槈濞嗘ɑ鐣堕梺鐓庢憸婢ф绮?RGBA(0xAARRGGBB);闂佸搫顦弲婊堝蓟閵娿儍?false 闂佽崵鍋炵粙蹇涘礉鎼淬劌桅婵娉涚猾宥夋煟濡灝鐨烘繝鈧?闂佽崵濮撮鍛村疮娴兼潙鏋侀柕鍫濐槸濡鐥鐐村殌婵?
+ * 闂備礁鎼幏瀣闯閿濆鐒垫い鎺嶇劍閻ㄦ垵霉閻撳孩顥為柟顖涙閺佸啯鎷呴搹鐟版暥闁?闂備線娼уΛ妤呭磹瑜版帗鍎婇柨娑樺濞?stbtt 濠电偠鎻徊鐣岀矓閺夋嚚?+ 闂佽崵濮撮鍛村疮閾忣偆鐝跺┑鐘叉搐缁狙囨煕瑜庨〃蹇涘级瑜版帗鐓?src-over 闂備礁鎲￠懝楣冩偋婵犲洤鍨傛慨妯挎硾杩?*/
 static bool colr_render(const stbtt_fontinfo& info, float scale,
                         const unsigned char* data, int colr_off, int cpal_off,
                         unsigned int gid, unsigned int fg,
@@ -799,7 +813,7 @@ struct StbFonts
 {
     struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
     std::vector<F> fonts;
-    std::vector<int> colr, cpal; /* 婵絽绻愰悺褎鎷?COLR/CPAL 閻炴稏鍔屾禍鍝ョ矓?闁哄啰濮鹃妴鍐╃▔?-1 */
+    std::vector<int> colr, cpal; /* 婵犳鍣徊鐣屾崲閹扮増鍋ょ憸搴ㄥ箯?COLR/CPAL 闂佽崵鍋炵粙蹇涘礉鐏炲墽顩查柛婵勫劤閻?闂備礁鎼崯鐗堟叏妤ｅ啫违闁告劏鏅濋埢?-1 */
     size_t pref;
     int line_h;
     explicit StbFonts(const std::string& family, int fs)
@@ -883,7 +897,7 @@ struct StbFonts
         return static_cast<size_t>(-1);
     }
 };
-/* stb: 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟?閻?fallback 閻庢稒銇炵紞瀣偘? */
+/* stb: 闂備礁鎲￠〃鍡椕洪弽顓熷仱鐟滃繒鍒掗銏℃櫇闁逞屽墴瀹曟洖顫濇潏顭戞綗闂佺粯锚濡﹪宕?闂?fallback 闂佽瀛╃粙鎺楀Φ閻愮數绀婇悗锝庡墯閸? */
 static int glyph_stb(unsigned int cp, void* st)
 {
     StbFonts* f = static_cast<StbFonts*>(st);
@@ -896,9 +910,9 @@ static int glyph_stb(unsigned int cp, void* st)
     return static_cast<int>(adv * f->fonts[fi].scale + 0.5f);
 }
 
-/* stb: 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩?GlyphImg 闁规亽鍎辫ぐ?闁靛棔鏅疧LR 闁告帒妫楅惇鎵偓娑欘殔閼哥増娼忛幘鍐叉瘔闁煎浜滈悽顐ｏ紣濠婂棗顥?
- * (colored=true),闁哄拋鍣ｉ埀顒佽壘閻⊙嗐亹椤叀绀?fg 闁?閼?alpha闁靛棗鈧埣ff/yoff 濞戞捁娅ｅù澶屸偓?pen+baseline
- * 闁汇劌瀚紞鍛村炊閹傜剨缂?stb 閻犲浂鍘虹粻?濞?glyph_stb 闁告艾鏈花顔济圭€ｎ亶鍟?闁?*/
+/* stb: 闂佽瀛╃粙鎺椼€冮崨瀛樺殝闁绘鐗婃刊瀵糕偓骞垮劚閹冲繒绮?缂傚倸鍊烽懗鍫曞窗瀹ュ洨鍗?GlyphImg 闂備浇顫夋禍浠嬪磿鏉堫偁浜?闂備線娼уΛ鏃堝疾閻ゎ湌R 闂備礁鎲＄敮鎺懳涘Δ鍛剳闁规鍠掗崑鎾斥槈濞嗘ɑ鐣堕梺鐓庢憸婢ф顭囪箛娑樼闁告劕寮堕惁鏃堟⒑閻撳寒娈犲ù婊勭矒閹粙顢曢敐蹇曠煑濠电姴锕ゅΛ妤吽?
+ * (colored=true),闂備礁鎼幏瀣闯閿濆鐒垫い鎺嶆祰婢规﹢鏌ｉ埊娆忔娴滆銇勯顐㈠绩缂佲偓?fg 闂?闂?alpha闂備線娼уΛ妤呭焵椤掆偓閸╊柆f/yoff 濠电偞鍨堕幑浣糕枍閿濆悿瑙勫緞鐏炵浜?pen+baseline
+ * 闂備焦鐪归崝宀€鈧凹浜炵槐鐐哄川閺夋垹鍊為梺璇″瀻閸屾粌澧剧紓?stb 闂佽崵濮村ù鍌炲储閾忓湱涓?濠?glyph_stb 闂備礁鎲￠懝楣冨嫉椤掑倽濮虫い鏃€绁归崷顓涘亾閿濆簼鎲鹃柛?闂?*/
 static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
                           GlyphImg& out)
 {
@@ -933,7 +947,7 @@ static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
     const unsigned int sr = (fg >> 16) & 0xFF;
     const unsigned int sg = (fg >> 8) & 0xFF;
     const unsigned int sb = fg & 0xFF;
-    const unsigned int fa = (fg >> 24) & 0xFF; /* 闁告挸绉靛▍?alpha 濞戞梹锚閸╁瞼鈧稒顨呴懜鐗堢▔?*/
+    const unsigned int fa = (fg >> 24) & 0xFF; /* 闂備礁鎲￠幐鍝ョ矓闂堟稈鏋?alpha 濠电偞鍨跺褰掓晪闂佺硶鏅涢惉濂稿焵椤掍胶鈯曟い銊ユ嚇閹虫粓鎮ч崼鈶╂灃?*/
     for (size_t i = 0; i < out.px.size(); ++i) {
         unsigned int a = bmp[i] * fa / 255;
         out.px[i] = a ? (a << 24) | (sr << 16) | (sg << 8) | sb : 0;
@@ -943,9 +957,9 @@ static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
 }
 #endif
 
-/* 閻庢稒顨呴懜鎵喆閸℃凹娼曢柣鈺傚浮閻?ascent + descent/2),闁活潿鍔嬬花顒勫棘閸パ呮憻/闁稿繐顦伴悥?闂侇偄顦亸顖炲垂閸屾粍绾悘鐐叉噸閼?
- * 閻炴稑鐭傞悵?th 闁告凹鍋夐、鎴犳崉?闁?th 閻忕偛鎳嶉懙鎴炲濮樻剚鍞ㄩ柣銏ｎ嚙濠€顏嗙磽閹惧啿鏆卞銈呯埣閸庢挳鎯冮崟顐ゆ憻鐟滆埇鍨奸～瀣喆婢跺﹣鐒婂☉鎾愁焾閳?
- * 濞?draw_text_at 闁汇劌瀚惇铏▔椤撶偟鍞ㄩ柛鎴濇缁旀挳鎳?闂侇剙鐏濋崢?caret 濞戞挸瀛╅弸鍐偓娑欘殜閺佸﹥鎷呭鍐ｅ亾?*/
+/* 闂佽瀛╃粙鎺椼€冮崨瀛樺殝闁规鍠楅崰鍡涙煕閳╁啫鍤繛鍏兼礋閺岋綁鍩￠崒姘癁闂?ascent + descent/2),闂備焦妞垮鍧楀礉鐎ｎ剝濮虫い鎺戝濡﹢鏌涢妷鎴濇噺閹?闂備胶顭堢换鎰八囨导瀛樺亯?闂傚倷绶￠崑鍕囬婊€鐒婃い鏍仜閸ㄥ倿鏌涚仦鍓х煁缂佺虎鍨堕幃姗€鎮欓崣澶婃闂?
+ * 闂佽崵鍋炵粙鎴︽儗閸岀偞鍋?th 闂備礁鎲￠崙褰掑磻婢舵劑鈧線骞嬮悩鍐茬／?闂?th 闂佽绻掗崑娑㈠箠瀹ュ鍤堥柟瀵稿仜椤曡鲸鎱ㄥΟ璇插闁哥偑鍔戦弻锝夊閿濆骸娈┑鐘亾妞ゅ繐妫涚壕浠嬫煙閹冩毐闁哄棗宕—鍐Χ閸涱垰鐓熼梺绋垮閹告娊骞嗛崘顔肩妞ゆ劑鍊栭幉濠氭偡濠婂棗鐒介柛銊ャ偢閿濈偟鈧綆鍓氶崰鍡楊熆鐠虹尨姊楅柣鎺戯工閳藉骞橀幇浣哄姼闂?
+ * 濠?draw_text_at 闂備焦鐪归崝宀€鈧凹鍓熼幆鍥惞椤愩倐鏋栧銈嗘尵閸嬬喖宕妸鈺傜厱闁瑰瓨绻冮ˉ娆戠磼閺冣偓閹告娊骞?闂傚倷绶￠崜娆撴倶濠靛鍌?caret 濠电偞鍨堕幐鍝モ偓娑掓櫊瀵悂宕橀浣镐壕婵炴垶鐟▓婊堟煛娴ｉ潻鏀婚柟宄版噹椤撳ジ宕橀敐鍛?*/
 int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
                  bool bold)
 {
@@ -1113,15 +1127,15 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
 #endif
     TextLayout L = layout_text(text, wrap_w, lh, gw, st);
     const size_t nc = L.map.size();
-    /* 闁?off 闁圭鍋撻柛锔哄姀椤?off 闁解偓閽樺韬?[閻炴稑鐭傞々濠氬磻韫囨泤? 閻炴稑鑻悢顒勫磻韫囨泤顭?闁告牗妞藉Λ鍧楀Υ?
-     * 閻炴稑鐭傞々濠氬籍?caret 闁汇垼顕у﹢顏嗘嫚閵夘煈鏀?x=0(濞戞挸绉靛Σ鎼佸礈瀹ュ嫮顏遍悶娑樼灱濞堟垹鎮扮仦鐣屽暡)闁?*/
+    /* 闂?off 闂備礁婀遍。浠嬪磻閹剧粯鐓曢柨鏂挎惈婵偓濡?off 闂備浇袙閸嬫捇鏌﹀Ο渚Ч闂?[闂佽崵鍋炵粙鎴︽儗閸岀偑鈧懏绻濆顒傦紱闂婎偄娲﹀▔? 闂佽崵鍋炵粙鎴︽嚐椤栫偞鍋勬い鎺戝绾惧鐓崶銊﹂暱妞?闂備礁鎲￠悧妤€顪冮挊澹╂盯宕稿Δ鈧繚?
+     * 闂佽崵鍋炵粙鎴︽儗閸岀偑鈧懏绻濆顒傜潉?caret 闂備焦鐪归崹濂割敋瑜嶉敃銏ゎ敂閸℃ê鐝伴梺闈涱樈閻撳牓寮?x=0(濠电偞鍨堕幐鍝ョ矓闂堟党锝夊箹娴ｅ摜顦悗骞垮劚鐎氼噣顢旈柆宥嗗仩婵炴垶顭囬悘杈ㄧ箾閸喎鐏╅柟顔藉娴狅箓鎮剧仦鑺ユ)闂?*/
     for (size_t li = 0; li < L.lines.size(); ++li) {
         const TextLayoutLine& ln = L.lines[li];
         size_t ls_off = (ln.cstart < nc) ? L.map[ln.cstart] : off;
         size_t le_off = (ln.cend < nc) ? L.map[ln.cend] : text.size();
         if (off < ls_off) {
-            /* 闁解偓閽樺韬☉鎾筹梗缁斿鎮扮仦鐐睘閻忓繐褰炵粻锝夊触鎼存稈鍋撴担瑙勬嫳閻炴稑鐭侀、鎴烇純閺嶏妇顓洪柛?闁告瑯浜滃﹢顏嗙矚妤︽鏀藉☉鏂款儔濡潡鎯?
-             * \n 濠㈣泛瀚ぐ鏌ユ嚄?鐟滅増鎸风紞鏃堝嫉椤掑喚鏀介悶娑樼焸椤╃粯寰勯崟顓熷€?*/
+            /* 闂備浇袙閸嬫捇鏌﹀Ο渚Ч闂婎剦鍓欓埥澶愬箻缁涜顣肩紓浣规煥椤曨參骞冮幍顔绘勃闁绘劦鍓氶惈姗€鏌ｈ箛鎾剁鐟滄壆鍋熺划濠氭晲婢跺﹨袝闁圭厧鐡ㄧ粙鍫ュ磻閹惧瓨濯撮悷娆忓鐎氭娊鏌ｉ悙瀵糕槈闁活厺绶氶妴渚€骞嬮悜鍥╃＞闂佸搫绋勬俊鍥敇濞差亝鐓?闂備礁鎲￠悷顖涚濠婂喛鑰挎い蹇撴閻艾螖閿旂瓔鍎ラ柡鈧挊澶嗘闁哄倹顑欓崕鏃€淇婇銏″仴闁?
+             * \n 濠电姰鍨煎▔娑氣偓姘煎墲閵囨劙寮婚妷锕€娈?闁荤喐绮庢晶妤呭箰妞嬪海绀婇柡鍐ㄧ墕鐎氬銇勯幒鎴濇灓闁衡偓娴犲鍋犳繛鎴烆焽閻掑憡銇勯埡鍐笡鐎垫澘瀚板畷鐔碱敇閻斿皝鍋?*/
             *cx = 0;
             *cy = static_cast<int>(li) * lh;
             *ch = lh;
@@ -1141,7 +1155,7 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
             return;
         }
     }
-    /* 闁稿繑绮岀花?闁哄倸娲﹀﹢浼村嫉椤愩垻鍟?*/
+    /* 闂備胶顭堢换鎴犲垝瀹€鈧懞?闂備礁鎼崐绋棵洪敃鈧敃銏″閺夋垵鐝樺銈嗗姂閸ㄥ宕?*/
     const TextLayoutLine& last = L.lines.back();
     *cx = last.w;
     *cy = static_cast<int>(L.lines.size() - 1) * lh;
@@ -1216,9 +1230,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   const Clip* clip, int lsp, bool wrap, float opacity,
                   bool outline)
 {
-    /* 缂傚倹鎸搁悺銊╁蓟閵夘煈鍤勯柛蹇撶墣椤?text+闁哄秴鍢茬槐鈩冪▔瀹ュ懎缍侀柡?闁圭儤甯炴晶?layout_text)濞戞挸楠搁悺褑銇愰姀鐘插辅闁哄秴鎳庣€垫煡寮?
-     * 婵絽绻愰幎姘舵煂瀹ュ拋妲婚悹渚婄磿閻?闁炽儲鏌￠埀?闁告柣鍔庨弫鍓ф暜瑜嶉顔夹掕箛搴ㄥ殝 run 闂佹彃绉甸弻濠囧箳閹烘柨顣奸柡鍥╁亾濡?42ms 闁汇劌瀚妵鍥ㄥ緞濞ｎ兘鍋?
-     * 闁告稒鍨濋懙鎴︽儎鐎涙ê澶嶉柣顫妿缁憋妇鈧稒顭囧▓鎴炴媴瀹ュ懏绂堝☉鎾抽閺勫倻鈧?閺夆晝鍋涢悺褎鎷呴幘鏉戔叺鐎殿喒鍋?閻炴稑鐭傞悵顔济圭€ｎ喖娅ら梺顔尖偓鐔哄劜閺夆晛娲㈤埀?*/
+    /* 缂傚倸鍊搁崐褰掑箰閹间焦鍋ら柕濞炬櫅閽冪喖鏌曟径妯煎帥闁搞倕瀚伴弻娑滅疀閹捐泛鈪插?text+闂備礁鎼粔鎾床閼碱剚顫曢柍鈺佸暟閳绘梻鈧箍鍎遍幊搴ｇ礊娓氣偓閺?闂備礁婀遍崕銈囨暜閻愬瓨娅?layout_text)濠电偞鍨堕幐鍛婎殽閹间焦鍋ょ憸鎴﹀Φ閹版澘顫呴柣妯诲絻鏉堝懘姊洪崫鍕㈤柟鍐叉捣閳ь剙鐏氶悡鈥愁嚕?
+     * 婵犳鍣徊鐣屾崲閹版澘绠慨妯垮煐閻撳倻鈧箍鍎遍幏瀣ｆ繝姘仯濞撴艾锕︾壕鍧楁煟?闂備胶鍋ㄩ崕鏌ュ蓟閿熺姴鐒?闂備礁鎲￠弻锝夊礉鎼淬劌鏋侀柛鎾楀嫭娈伴悷婊冪Ч椤㈡岸顢欐径瑙勫笩缁犳稒鎯旈妸銉︾杺 run 闂傚倷鐒﹁ぐ鍐矓閻㈢钃熷┑鐘叉搐缁犳娊鏌熼悜妯荤叆妞わ絽銈搁弻锟犲炊閳轰椒澹曞┑?42ms 闂備焦鐪归崝宀€鈧凹鍓熸俊鐢稿炊閵娿儳绐炲┑鐑囩秵閸忔﹢宕?
+     * 闂備礁鎲＄粙鎺楀垂濠靛鍤堥柟杈鹃檮閸庡酣鎮楀☉娅亝寰勫澶嬬厽妞ゎ偒鍓欐俊璺ㄧ磼閹插顩柍褜鍓氱粙鎺椻€﹂崶褉鏋旈柟瀵稿仦婵鈧箍鍎遍幊蹇曠矉閸績妲堥柟鐐▕椤庢鏌￠崟顐⑩偓濠氬焵?闂佸搫顦弲婵嬪磻濞戙垺鍋ょ憸搴ㄥ箯閸涙潙绠婚柡澶嬪灍閸欐椽鎮楀▓鍨灀闁?闂佽崵鍋炵粙鎴︽儗閸岀偞鍋熸い鏃€绁归崷顓涘亾閿濆骸鏋涙繛鍛€濆娲敊鐏忔牕浜鹃柣鏂挎惈閸旀粓鏌℃径鍡樻珔婵炲眰鍨介崺鈧?*/
     std::vector<unsigned int>* src = nullptr;
     int tw = 0, th = 0;
     int tx = bx, ty = by; /* paint origin (align/center applied below) */
@@ -1257,8 +1271,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         if (lh <= 0) {
             lh = fs;
         }
-        /* 缂備胶鍠嶇粩瀵糕偓娑欘殔閼镐即骞掗妷銉ョ稉:闁圭儤甯炴晶?婵炴潙顑呴?濞戞挸娴风划顖炲礆鐠哄搫褰欓柣顫妼閹挻绋夐埀顒勫触鎼达綆浼傞悗娑欘殔閼镐即寮堕妷锔剧埍,advance/闁稿绻掍簺
-         * 濞戞挶鍎查悧鍛婄▔閳ь剟鎳?full 濞?stb 闁告瑯浜濆﹢浣规交濞嗘挸娅″☉鎾崇Т閹?婵炴挸寮堕悡瀣嚗椤忓棗绠氶柛娆樹簼濠€浣圭▔閳ь剚绂?*/
+        /* 缂傚倸鍊烽懗鍫曞窗瀹ュ洨鍗氶悗鐢电《閸嬫挸鈽夊▎妯荤暥闂佸ジ鏅查崡鎶界嵁閹烘唯闁靛鍎崇粙?闂備礁婀遍崕銈囨暜閻愬瓨娅?婵犵數鍋炲娆擃敄閸涙惌鏁?濠电偞鍨堕幐绋棵规搴″灊妞ゆ牜鍋涚粈鍡涙偣閸濆嫭鎯堢憸鐗堢懇閺岋綁锝為鈧俊濂告煙椤旇姤灏扮紒瀣樀閸┾偓妞ゆ帒瀚憴锕傚箹鏉堝墽绉靛ù鐓庡€块幃妤€鈽夊▎妯荤暥闂佸ジ鏅查崡鍐差嚕閸洖唯闁挎柨澧介崺?advance/闂備胶顭堥鍛崲閹哄秶鏄?
+         * 濠电偞鍨堕幐鍫曞磿閺屻儲鍋嬮柛娑橈功閳绘棃鏌嶈閸撶喖骞?full 濠?stb 闂備礁鎲￠悷顖涚濠靛棴鑰垮ù锝堫潐娴溿倖绻涢崱妯诲碍婵炲應鈧枼妲堥柟鎯х－瀛濋梺?婵犵數鍋為幐绋款嚕閸洘鍋傞悗锝庝憾閸ゆ銇勮箛鎾搭棞缂佺姵宀搁弻娑樷枎濡湱鍑瑰┑鐘亾濞达絽婀遍埢鏃堟煃瑜滈崜姘辩矉?*/
         int baseline_off;
         TextLayout L;
 #ifdef WHALEUI_BUILD_FULL
@@ -1318,9 +1332,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             return glyph_img_stb(stb, cp, color, g);
 #endif
         };
-        /* 闂侇偅鍔曢悺褑銇愰姀陇顩柡?闁哥儐鍨粩鏉戭嚗椤忓棗绠?:閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?RGBA,鐎瑰憡褰冮幆鍫ュ礈瀹ュ棙鐝柤鐟板级閸ㄣ劏銇愰埡鍕棌 emoji
-         * 闁煎浜ｉ棅鈺傦紣濠婂棗顥?src-over 闁告帞澧楅弸鍐嫉椤掑倻澶勯柛鎰湴閳ь兛闈爐b 闁哄啰濮撮幃搴ㄥ箣閹邦喚鐓愬ù?闁哄拋鍣ｉ埀顒佽壘閻⊙嗐亹閵忕姴绀佺紒?
-         * 1px 闁告劕绉堕弫鐐▔閳ь剙鈻?fake bold);full 闁汇劌瀚惌鏍ㄦ媴閹捐埖鏆?FreeType 闁革负鍔岄悺褑銇愰姀鐘叉暥閻庣懓鏈崹姘跺Υ?*/
+        /* 闂傚倷绶￠崑鍛村礉閺囥垺鍋ょ憸鎴﹀Φ閹版澘顫呴梽鍥€呴锔界厸?闂備礁鎽滈崕鎰板垂椤栨粎鍗氶柡澶嬪焾閸ゆ銇勮箛鎾搭棞缂?:闂佽瀛╃粙鎺椼€冮崨瀛樺殝闁绘鐗婃刊瀵糕偓骞垮劚閹冲繒绮?RGBA,闁诲海鎳撻幉陇銇愰崘顔肩畾闁割偁鍎辩粈鍫⑩偓骞垮劚濡瑩鎮甸鐐寸厾闁荤喐婢樼痪褔鏌涢妸锝呭闁靛洦鍔欓崺锟犲礋椤愵偅顥?emoji
+         * 闂備胶鍘ч〃搴㈢閿濆顥婇柍鍝勫亰缁憋絾绻濇繝鍌涱棞妞?src-over 闂備礁鎲＄敮鐐存櫠濡ゅ懎鍑犻柛鎰靛枛鐎氬銇勯幒鎴濃偓缁樺緞閸曨垱鐓曢柟閭﹀墰濠€鎾煃瑜滈崗娑㈡閻栨亣 闂備礁鎼崯鐗堟叏閹绢喖绠栭幖娣妼缁狅綁鏌熼柇锕€鏋ら柣鎾村姇闇?闂備礁鎼幏瀣闯閿濆鐒垫い鎺嶆祰婢规﹢鏌ｉ埊娆忔娴滃綊鏌曡箛鏇炐㈢紒鈧担铏圭＜?
+         * 1px 闂備礁鎲￠崝鏇犵矓閸洖鏋侀柣鎰靛墰閳绘棃鏌嶈閸撴瑩鍩?fake bold);full 闂備焦鐪归崝宀€鈧凹鍣ｉ幆宀勫冀閵婏箑顎撻梺瑙勫礃閸╂牠寮?FreeType 闂備線娼荤拹鐔煎礉瀹€鍕仱鐟滄垿濡甸幇鏉款潊闁绘ê寮堕弳銉╂煟鎼达絾鍤€闁哄牜鍓熷畷鐟邦潩鐠轰綍?*/
         std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
         for (size_t li = 0; li < L.lines.size(); ++li) {
             const TextLayoutLine& ln = L.lines[li];
@@ -1358,7 +1372,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                                  * only. The 8-direction whole-glyph copies
                                  * (dx/dy = +-sw) filled wide strokes solid
                                  * - a 200px glyph with 1px stroke came out
-                                 * as a solid silhouette ("glyph 閻庡湱鍋涚缓?).
+                                 * as a solid silhouette ("glyph 闂佽楠稿﹢閬嶅磻濞戞氨绱?).
                                  * Keep only pixels with a transparent
                                  * neighbour; solid interiors stay empty. */
                                 bool edge = false;
@@ -1412,14 +1426,14 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             px += g.advance + lsp;
         }
     }
-    /* 閻庨潧缍婄紞?line-box 閻忕偛鎳嶉懙?閻℃帒鎳庨崵顓㈡儎閹烘垹鎽嶅ǎ鍥ㄧ箖鐎垫梹銇勯崼鏇炲姤閻庨潧缍婄紞?select 闁稿﹨澹堥崵婊呮偘鐏炴垝绨抽悹? */
+    /* 闂佽閰ｅ褏绱炴繝鍕?line-box 闂佽绻掗崑娑㈠箠瀹ュ鍤?闂佺儵鍓濈敮鎺楀箠鎼淬劌鍚规い鎾卞灪閸庡酣鏌熼悜妯虹仼闁硅棄绉磋彁闁搞儯鍔庣粻鏍倵閸偅鈷愰柕鍥у瀹曞ジ寮撮悙鎻捫撻梺璇查叄濞佳呯礊婵犲嫮绀?select 闂備胶顭堥敃銊︾珶閸儱鍚规繝濠傛噺閸嬫﹢鎮橀悙鏉戠亰缂併劍濞婇幃? */
     tx = bx;
     if (align == 1) {
         tx = bx + (bw - tw) / 2;
     } else if (align == 2) {
         tx = bx + bw - tw;
     }
-    /* 闁告劖鐟х槐锔锯偓?full):miss 闁哄啳鍩栨俊鎼佸礆濮橆厾鍨洪柡宥囧帶鐎垫煡鎯冮崟顏嗙Т闁搞儲鍎抽悺銊╁礂閵壯呭閻庢稒眉缁剁敻宕ユ惔锝囨暰閻㈩垎鍐炬Щ闁?*/
+    /* 闂備礁鎲￠崝鏍偡瑜忓Σ鎰版晜闁款垰浜?full):miss 闂備礁鎼崯鎶藉春閺嶃劋绻嗛柟闂寸缁€鍡樻叏濮楀棗骞橀柛銊︽そ閺屸€愁吋閸パ冧粯闁诲骸鐏氶悡锟犲箚閸愵喖绀嬫い蹇撴瀛濋梻浣规偠閸庢煡宕曢幎鑺ュ仱闁靛ň鏅涚粈鍌炴煏婢诡垰鎳庨ˇ鈺呮煟鎼淬垻鈯曢惇澶岀磼閸撲焦鏆€规洏鍎查幆鏃堟晲閸ャ劍姣庨梺姹囧焺閸ㄥ酣宕橀悙顑晠姊?*/
     if (!ckey_str.empty()) {
         whaleui_render_t::TextCacheEntry& e = r->text_cache[ckey_str];
         if (e.px.empty() || e.w != tw || e.h != th) {
@@ -1454,10 +1468,10 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         src = &buf;
     }
     } /* end cache miss: layout + rasterize */
-    /* 闁搞劌鍊诲ú璺ㄤ沪閸涱剝鍘柟?閻庢稒顨呴懜浼存儎?(ascent+descent)闁兼澘鐭傚顏嗘偘瀹€鍕蒋 th:th 闁告凹鍋夐、鎴犳崉濠靛洦顦ч柤姹囧劜鐎?
-     * th 閻忕偛鎳嶉懙?閻庢稒顨呴懜?闁汇垼顕у﹢顏嗙磽閹惧啿鏆卞銈呯埣閸?濞戞挸顑嗛弻鐔兼偩濞嗗繐姣夌紒宀冩濞?闁哄倸娲ら悺褏鎲撮崱姘兼綍闁稿绻嬬粭?闁炽儲鏌￠埀?input
-     * 闁?闁瑰嘲銈搁悡鑸电▔婵犲浂妫熼柣銊ュ閻楁挳宕堕悩顔瑰亾閸屾氨绠戝銈堫嚙濠€?cache miss 濞戞柨顑呴ˇ濠氬箥瑜戦、?闁告稒鍨濋懙鎴犵磽閹惧磭鎽犻柤姹囧劥閻戯附娼?
-     * ty 濞ｅ洦绻冪€垫棃宕氬┑鍡忓亾?by(濡炪倕鐖奸崕瀵糕偓闈涚秺缂?,闁告艾濂旂粩鎾棘閸ャ劍鎷卞Λ锝嗙墪閹舵氨浠﹂崨顒冨幀闁靛棔绀侀幃妤冪磼椤撶偞濮庨悹鎰尦閵嗗﹪宕戣箛搴ｇ憪闁?*/
+    /* 闂備焦鎮堕崝宀勫磹鐠囪铏规崉閵娿倖鍕冮梺鍛婁緱閸撴繈宕㈤鍕厵?闂佽瀛╃粙鎺椼€冮崨瀛樺殝濞寸厧鐡ㄩ崕?(ascent+descent)闂備礁鍚嬪姗€鎯岄崒姘肩劷妞ゅ繐妫欓崑妯尖偓鍏夊亾闁告洦鍘奸拏?th:th 闂備礁鎲￠崙褰掑磻婢舵劑鈧線骞嬮悩鍐茬／濠电娀娼уú锕偹囪閺屻倕效閸パ冨闁?
+     * th 闂佽绻掗崑娑㈠箠瀹ュ鍤?闂佽瀛╃粙鎺椼€冮崨瀛樺殝?闂備焦鐪归崹濂割敋瑜嶉敃銏ゎ敂閸℃瑧锛濋梺瑙勫劤閸熷潡寮抽崡鐑嗘富闁靛牆鎳愰崺锝夋煕?濠电偞鍨堕幐鎼侇敄閸℃稑钃熼柣鏂垮悑閸嬧晜绻涢崱妤冪婵絽顦辩槐鎺戠暆閸愨晩浠╁┑?闂備礁鎼崐绋棵洪妶澶嬪仱鐟滃繘骞夐幘顔煎耿婵ê鍚嬬紞宥夋⒑缁嬫鍎忕紒璇差儑缁?闂備胶鍋ㄩ崕鏌ュ蓟閿熺姴鐒?input
+     * 闂?闂備胶鎳撻崲鏌ュΧ閹间焦鍋傞柤鍝ユ暩閳绘柨鈹戦悩鍙夌ォ婵☆偆鍠栭弻锝夊Ω閵夈儺浠鹃梺缁橆殕閹稿啿鐣烽崼鏇熷亹妞ゆ梻鎳撴禍楣冩煕鐏炵偓鐨戠紒鐘冲灥椤啴濡堕崼顐㈡濠电姭鍋?cache miss 濠电偞鍨堕弻銊╊敄閸涙鍥ㄧ節濮橆剛顓奸悷婊勫灴閵?闂備礁鎲＄粙鎺楀垂濠靛鍤堥柟瀵稿Х绾句粙鏌熼幆褏锛嶉柟鐣屽█閺屻倕效閸パ冨Г闂佺粯鍩婇梽鍕焽?
+     * ty 濠电儑绲藉ú锔炬崲閸愵亖鍋撻崹顐ｎ棃鐎规洘鑹鹃埞鎴﹀幢韫囨挷澹?by(濠碉紕鍋戦崐鏇㈡偉婵傜纾块悗鐢电《閸嬫捇妫冨☉姘毙ㄧ紓?,闂備礁鎲￠懝鐐附閺冨倻鍗氶柟缁㈠枛濡﹢鏌涢妷锝呭闁瑰嘲宕灋闁挎繂妫涙晶顏堟煙閼稿灚鐨戝ù鐙呯畵瀹曘劑顢楅崘銊ョ畱闂備線娼уΛ鏃傜矆娓氣偓楠炲啫螖閸愵亞锛滃銈嗘尵閸嬬偞鎱ㄦ惔銊﹀仯闁归偊鍘界亸锕傛煏閸℃韬€规洘鍨肩粻娑欐償閿濆洦鍟伴梻?*/
     {
         int gh = text_glyph_h(r, fs, family, (style & kFontBold) != 0);
         if (gh < 1) {
@@ -1465,10 +1479,10 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         ty = gh <= bh ? by + (bh - gh) / 2 : by;
     }
-    /* blend:闁烩晜鎸抽埀?RGBA(濞戞挸绉撮崯鈧柣顫妼婢х娀寮查婵嗩棌闁哄本鎹佹竟?鐟滄壋鏅炴竟?emoji 濞ｅ洦绻勯弳鈧柤濂変海闂娾晜锛愬鍡楊棌)闁?
-     * opacity 闁哄嫷鍨版慨鈺呭箑娴ｇ儤鐣?闁告柣鍔庨弫?濞戞挻鏌х粭澶嬫交濞戞氨澶勯悗?key,闁圭鍋撳ù鐘劚濠€顏呮交濞嗘挸娅￠柟绋款槸閸庢氨妲愰悩鐢电礆闁衡偓?
-     * alpha 闁炽儲鏌￠埀?缂傚倹鎸搁悺銊╁箰婢舵劖楗柟顑跨窔椤や線鎳濋幓鎺濇Щ闁?opacity 闁告柣鍔庨弫鐐▔瀹ュ懎鏅欏ù锝堟硶缁憋妇鈧稒锕㈤埀顒佸姇閹舵碍寰勬潏銊︽珡闁?
-     * GPU 閻犱警鍨扮欢鐐哄礃?text_layer,CPU 閻犱警鍨扮欢鐐哄礃?framebuffer闁?*/
+    /* blend:闂備胶鍎甸弲婊堝箰閹惰棄鐒?RGBA(濠电偞鍨堕幐鍝ョ矓閹绢喖鐤柍褜鍓熼弻锝夛綖椤掆偓婵＄厧顭胯婵炩偓鐎殿喗鐓￠、娑樷攽閸♀晜顥戦梻浣告惈閺堫剟骞戞担鍦彾?闁荤喐绮嶆竟瀣疾閻愬鐝?emoji 濠电儑绲藉ú锔炬崲閸曨垰姹查柍褜鍓熼弻銈嗙附婢跺鎹ｉ梻鍌毰堥弲婊堟晬閹邦剦鐓ラ柛鈩冾殢濡?闂?
+     * opacity 闂備礁鎼€氱兘宕归悧鍫熷弿闁冲搫鎳庣粻鎴澝归敐鍥у妺闁?闂備礁鎲￠弻锝夊礉鎼淬劌鏋?濠电偞鍨堕幐濠氬蓟瑜忕划顓熷緞鐎ｎ偂姘﹀┑鐐村灦濮樸劍寰勯崟顖涘€?key,闂備礁婀遍。浠嬪磻閹捐秮褰掓偐椤旂厧濮庡┑鐘亾妞ゅ繐鎳忔禍銈嗙箾閸℃ɑ灏繛鍜冪節閺岀喓绮欏▎鐐﹂梺绋垮濮樸劌危閹扮増鍋愰柣銏㈡暩缁€鍡涙⒑鐞涒€充壕?
+     * alpha 闂備胶鍋ㄩ崕鏌ュ蓟閿熺姴鐒?缂傚倸鍊搁崐褰掑箰閹间焦鍋ら柕濞炬櫅缁犳澘顭块懜闈涘濡ゆ鍨堕弻鐔碱敄鐠恒劎鐛㈠銈冨€撶欢姘跺箠濠靛绠甸柟鐑樼箖浜涢梻?opacity 闂備礁鎲￠弻锝夊礉鎼淬劌鏋侀柣鎰靛墰閳绘梻鈧箍鍎遍幊搴ㄥ疾濞嗗緷褰掓晲閸喓銆婄紓浣瑰敾婵″洭鍩€椤掍胶鈯曢柨鏇樺灲閸┾偓妞ゆ帊绀佹慨鍥煙閼哥數顣茬€垫澘瀚蹇涘Ω閿旂晫褰欓梻?
+     * GPU 闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰惈缁€?text_layer,CPU 闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰惈缁€?framebuffer闂?*/
     std::vector<unsigned int>& fb = g_gpu ? r->text_layer : r->pixels;
     const int fw = g_gpu ? r->fb_w : r->width;
     const int fh = g_gpu ? r->fb_h : r->height;

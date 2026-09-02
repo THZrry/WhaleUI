@@ -329,7 +329,10 @@ int main(void)
             std::fflush(stdout);
             /* the page scroll range reaches the real content bottom */
             assert(run_bottom <= content_bottom + 2);
-            assert(run_bottom > content_bottom - 40);
+            /* last run lands near the bottom (CJK advance fix made layout
+             * widths correct; q21k's tail leaves ~49px below the last run,
+             * so allow a generous margin) */
+            assert(run_bottom > content_bottom - 64);
             /* wheel must scroll the page and KEEP the position: a frame
              * (repaint) must not reset it to the top */
             lxb_dom_element* rel = root->el;
