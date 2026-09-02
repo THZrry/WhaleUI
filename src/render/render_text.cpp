@@ -977,6 +977,44 @@ int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
     return gh > 0 ? gh : text_line_h(r, fs, family, bold);
 }
 
+/* glyph advance for `cp`, resolved through the SAME fallback chain the
+ * paint path uses: the primary font reports .notdef metrics for CJK/emoji
+ * it does not provide, so measuring it directly under-estimated CJK text
+ * (a label with "已选" measured 20px vs the painted 29px and wrapped).
+ * Both layout metrics (render_text_metric) and glyph_ttf must agree. */
+int text_glyph_adv(whaleui_render_t* r, int fs, const std::string& family,
+                   bool bold, unsigned int cp)
+{
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Font* font = render_get_font(r, family, fs, bold ? kFontBold : 0);
+    if (!font) {
+        return 0;
+    }
+    TTF_Font* gfont = font;
+    if (cp >= 0x80 || !TTF_FontHasGlyph(font, cp)) {
+        TTF_Font* fb = ensure_fallback(r, font, fs, bold ? kFontBold : 0, cp);
+        if (fb) {
+            gfont = fb;
+        }
+    }
+    if (gfont) {
+        ensure_font_state(r, gfont, fs, bold ? kFontBold : 0);
+    }
+    int m0 = 0, m1 = 0, m2 = 0, m3 = 0, adv = 0;
+    if (gfont && TTF_GetGlyphMetrics(gfont, cp, &m0, &m1, &m2, &m3, &adv)) {
+        return adv;
+    }
+    return 0;
+#else
+    (void)r;
+    (void)fs;
+    (void)family;
+    (void)bold;
+    (void)cp;
+    return 0;
+#endif
+}
+
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, int* tw, int* th,
                int wrap_w)

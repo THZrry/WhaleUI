@@ -145,6 +145,9 @@ int text_line_h(whaleui_render_t* r, int fs, const std::string& family,
 /* 字形视觉盒高(ascent+descent/2):文字/光标垂直居中的统一基准。 */
 int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
                  bool bold);
+/* glyph advance via the paint path's fallback chain (.notdef-safe). */
+int text_glyph_adv(whaleui_render_t* r, int fs, const std::string& family,
+                   bool bold, unsigned int cp);
 std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
                              int fs, const std::string& family, bool bold,
                              size_t a, size_t b, int wrap_w = 0);

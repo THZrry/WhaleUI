@@ -746,6 +746,25 @@ float estimate_content_width(whaleui_layout_node_t* k, float em,
         if (tlen == 8 && std::memcmp(tn, "textarea", 8) == 0) {
             return fs * 12.0f; /* 12em default */
         }
+        /* checkbox/radio are native 16px controls with no text runs; a
+         * flex/inline container holding one must count its width, or it
+         * measures short and the following text wraps/overflows (a label
+         * with a checkbox estimated 28px instead of 44+ and wrapped its
+         * text onto two lines) */
+        if (tlen == 5 && std::memcmp(tn, "input", 5) == 0) {
+            size_t tl0 = 0;
+            const lxb_char_t* tv = lxb_dom_element_get_attribute(
+                k->el, (const lxb_char_t*)"type", 4, &tl0);
+            bool cr = (tv && tl0 == 8 &&
+                       std::memcmp(tv, "checkbox", 8) == 0) ||
+                      (tv && tl0 == 5 && std::memcmp(tv, "radio", 5) == 0);
+            if (cr) {
+                bool wauto = true;
+                float wpx =
+                    len_or_auto(get(k->style, "width"), 0, em, &wauto);
+                return wauto ? 16.0f : wpx;
+            }
+        }
     }
     /* a block container's natural width is the widest child, not the sum:
      * summing every child made a card's "content width" include hidden

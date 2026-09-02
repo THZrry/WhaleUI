@@ -150,19 +150,12 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
             }
             adv = r->ascii_w[cp];
         } else {
-            std::tuple<TTF_Font*, int, unsigned int> key(font, fs, cp);
-            auto it = r->glyph_w_cache.find(key);
-            if (it != r->glyph_w_cache.end()) {
-                adv = it->second;
-            } else {
-                TTF_SetFontSize(font, static_cast<float>(fs));
-                int m0 = 0, m1 = 0, m2 = 0, m3 = 0;
-                if (TTF_GetGlyphMetrics(font, cp, &m0, &m1, &m2, &m3, &adv)) {
-                    r->glyph_w_cache[key] = adv;
-                } else {
-                    adv = 0;
-                }
-            }
+            /* CJK/emoji: resolve through the paint path's fallback chain
+             * (text_glyph_adv) - measuring the PRIMARY font directly
+             * returns .notdef advances (a label with "已选" measured 20px
+             * vs the painted 29px and wrapped its text). */
+            adv = text_glyph_adv(r, fs, family ? family : "",
+                                 bold ? true : false, cp);
         }
         total += static_cast<float>(adv);
         i += clen;
