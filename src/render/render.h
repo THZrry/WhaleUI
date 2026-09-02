@@ -389,6 +389,9 @@ int whaleui_scroll_smooth_fn(whaleui_render_t* r,
  * editable element. mods: SDL_Keymod bitmask (for ctrl shortcuts). */
 void whaleui_render_handle_key(whaleui_render_t* r, int keycode, int pressed,
                                int mods);
+/* Tab / Shift+Tab focus navigation between editable controls (dir +-1);
+ * disabled controls are skipped and never take the edit focus. */
+void whaleui_render_focus_editable(whaleui_render_t* r, int dir);
 
 /* Text input (SDL_EVENT_TEXT_INPUT, UTF-8): insert into the focused editable
  * element, replacing the current selection. */

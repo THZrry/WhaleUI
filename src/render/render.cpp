@@ -1833,6 +1833,71 @@ static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
     *we = utf8_next(s, w1);
 }
 
+/* enter text-edit mode on `el`: set the edit target, caret at the end,
+ * clear stale IME state and START text input (SDL_StartTextInput) so the
+ * OS keyboard/IME is active. Called on Tab focus; clicking an editable
+ * runs its own caret placement then the same StartTextInput. */
+static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
+{
+    if (!r || !el) {
+        return;
+    }
+    if (lxb_dom_element_has_attribute(
+            el, (const lxb_char_t*)"disabled", 8)) {
+        return; /* disabled controls never take the edit focus */
+    }
+    r->edit_el = el;
+    r->sel_anchor_el = r->sel_focus_el = el;
+    std::string vv = edit_value(el);
+    r->sel_anchor = r->sel_focus = static_cast<int>(vv.size());
+    r->nav_col = -1;
+    r->compose.clear();
+    r->compose_caret = -1;
+    r->has_dirty = 1;
+    r->edit_scroll_need = 1;
+    if (r->window) {
+        SDL_StartTextInput(r->window);
+    }
+    edit_ensure_visible(r);
+}
+
+extern "C" void whaleui_render_focus_editable(whaleui_render_t* r, int dir)
+{
+    if (!r || !r->tree) {
+        return;
+    }
+    std::vector<lxb_dom_element*> eds;
+    for (auto& n : r->tree->arena) {
+        if (!n.visible || !n.el || n.is_text || n.pseudo) {
+            continue;
+        }
+        if (is_editable(n.el) &&
+            !lxb_dom_element_has_attribute(
+                n.el, (const lxb_char_t*)"disabled", 8)) {
+            eds.push_back(n.el);
+        }
+    }
+    if (eds.empty()) {
+        return;
+    }
+    int cur = -1;
+    if (r->edit_el) {
+        for (size_t i = 0; i < eds.size(); ++i) {
+            if (eds[i] == r->edit_el) {
+                cur = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    int nxt = cur < 0 ? 0
+                      : (cur + dir + static_cast<int>(eds.size())) %
+                            static_cast<int>(eds.size());
+    if (nxt == cur) {
+        return; /* single editable: keep the current focus */
+    }
+    begin_editing(r, eds[static_cast<size_t>(nxt)]);
+}
+
 void edit_key(whaleui_render_t* r, int keycode, int mods)
 {
     lxb_dom_element* el = r->edit_el;
@@ -3268,6 +3333,15 @@ extern "C" void whaleui_render_handle_key(whaleui_render_t* r, int keycode,
     if (!r || !pressed) {
         return;
     }
+    /* Tab / Shift+Tab: move the edit focus to the next / previous
+     * editable control. Text input starts on FOCUS (not on typing), so
+     * IME/keyboard is reliably enabled regardless of how the focus
+     * arrived (click / Tab / API). */
+    if (keycode == WHALEUI_KEY_TAB) {
+        whaleui_render_focus_editable(
+            r, (mods & SDL_KMOD_SHIFT) != 0 ? -1 : 1);
+        return;
+    }
     edit_key(r, keycode, mods);
 }
 
@@ -3283,6 +3357,27 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
     std::string ins = input_insert_filter(r->edit_el, std::string(utf8));
     if (ins.empty()) {
         return;
+    }
+    /* type=number:整个值最多一个小数点(浏览器同);插入后出现第二个
+     * 点则整段拒绝(数字文法的点只允许一个) */
+    if (tag_eq(r->edit_el, "input")) {
+        size_t tlen = 0;
+        const lxb_char_t* tv = lxb_dom_element_get_attribute(
+            r->edit_el, (const lxb_char_t*)"type", 4, &tlen);
+        if (tv && tlen == 6 && std::memcmp(tv, "number", 6) == 0) {
+            std::string vv = edit_value(r->edit_el);
+            std::string nv2 = vv.substr(0, static_cast<size_t>(a)) + ins +
+                              vv.substr(static_cast<size_t>(b));
+            size_t dots = 0;
+            for (size_t i = 0; i < nv2.size(); ++i) {
+                if (nv2[i] == '.') {
+                    ++dots;
+                }
+            }
+            if (dots > 1) {
+                return;
+            }
+        }
     }
     edit_replace(r, r->edit_el, static_cast<size_t>(a), static_cast<size_t>(b),
                  ins);

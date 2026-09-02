@@ -403,16 +403,20 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (lh < 1) {
             lh = fs;
         }
+        /* 与 value 同一个内容盒高度(bh=content.h),draw_text_at 内部
+         * 垂直居中 —— 拼音/后续文字和 value 共用同一垂直位置(基线) */
+        int bhx = n->content.h > lh ? n->content.h : lh;
+        int text_top = fy + (bhx - lh) / 2;
         std::string tail = val.substr(caret > val.size() ? val.size() : caret);
-        draw_text_at(r, r->compose, fx, fy, 300, lh, fs, family, cc, style,
+        draw_text_at(r, r->compose, fx, fy, 300, bhx, fs, family, cc, style,
                      0, el, ic);
         int cw2 = 0, cth2 = 0;
         text_size(r, r->compose, fs, family, bold, &cw2, &cth2, 0);
         unsigned int uc2 = cc & 0x00FFFFFF;
-        fill_rect(r->pixels, r->fb_w, r->fb_h, fx, fy + lh - 1, cw2, 1,
-                  uc2, ic);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, fx, text_top + lh - 1,
+                  cw2, 1, uc2, ic);
         if (!tail.empty()) {
-            draw_text_at(r, tail, fx + cw2, fy, 300, lh, fs, family, fg2,
+            draw_text_at(r, tail, fx + cw2, fy, 300, bhx, fs, family, fg2,
                          style, 0, el, ic);
         }
         /* caret: 拼音内 compose_caret 个字符之后(head + 拼音前缀的宽度) */
@@ -445,10 +449,10 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (cx0 < 0) {
             cx0 = 0;
         }
-        int caret_w = 1;
-        fill_rect(r->pixels, r->fb_w, r->fb_h, cx0, fy, caret_w, lh,
+        fill_rect(r->pixels, r->fb_w, r->fb_h, cx0, text_top, 1, lh,
                   fg2, ic);
         (void)hw2;
+        (void)text_top;
     }
 }
 
