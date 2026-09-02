@@ -3672,6 +3672,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->drag_scroll_node = nullptr; /* nodes were recreated */
             r->scroll_max_el = nullptr;    /* scroll_max may have changed */
             r->wheel_node = nullptr;       /* hit cache is stale */
+            /* the box pass re-estimated every text run's height from its
+             * wrap width; the full rebuild path corrects those to the
+             * renderer's per-glyph wrap (fix_run_heights below), but this
+             * animation path did not - so a run next to a wide sibling
+             * (checkbox input + text in one <p>) kept a 2-line estimate
+             * (32px) while full frames painted it at 19px. The run
+             * shrank/grew every other frame -> the checkbox label visibly
+             * jumped ("label 抽搐") while a width animation ran. Same
+             * correction as the full-rebuild tail, so both paths agree. */
+            fix_run_heights(r);
             /* ponytail: skip the full-tree fix_scroll_max walk on layout-
              * animation frames. A width/height animation inside a scroll
              * container is rare, and the range corrects on the next full
