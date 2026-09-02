@@ -2061,14 +2061,8 @@ int run_wrap_w(whaleui_layout_node_t* n)
         /* a flex item's text does not soft-wrap (browser behavior): it
          * paints at its laid-out width. Wrapping against the container's
          * content edge split a 2-char checkbox label into 3 lines (the
-         * parent box is narrower than the checkbox+label pair).
-         * Wrap width 0 = never soft-wrap: returning the run's own
-         * estimated border.w here let fix_run_heights re-estimate the
-         * height at that width, and when the real glyphs were a few px
-         * wider than the estimate (CJK + letter-spacing) the text wrapped
-         * to a second line (a "拿手好戏" h4/tag run 113px wide painted
-         * 38px tall = 2 lines). */
-        return 0;
+         * parent box is narrower than the checkbox+label pair). */
+        return n->border.w > 0 ? n->border.w : 0;
     }
     int w = box->content.x + box->content.w - n->border.x;
     return w > 0 ? w : 0;
