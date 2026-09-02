@@ -1844,11 +1844,21 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * skipped, mirroring the layout pass) - the parent-box estimate here
      * wrapped an inline <code> run at its own content width (~= the text
      * width) and painted the second line over the text below. */
-    int tx0 = n->border.x + off_x;
-    int ty0 = n->border.y + off_y;
     int avail_w = run_wrap_w(n);
     if (avail_w < 1) {
         avail_w = 1;
+    }
+    /* text origin must match paint_text_selection (both center the glyphs
+     * in the run box via text_origin); painting at border.y while the
+     * selection wash centers left textarea glyphs shifted half a line
+     * below their highlight. */
+    int tx0 = n->border.x + off_x;
+    int ty0 = n->border.y + off_y;
+    {
+        int ox = 0, oy = 0;
+        text_origin(r, n, shown, fs, family, bold, &ox, &oy, avail_w);
+        tx0 = ox + off_x;
+        ty0 = oy + off_y;
     }
 
     /* text-shadow: offset copy (plus 2 spread layers approximating the
