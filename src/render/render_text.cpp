@@ -60,25 +60,25 @@ std::vector<std::string> split_families(const std::string& s)
     return out;
 }
 
-/* --- 程序内文本排版:唯一实现,full 与 stb 共用 ---
- * 排版负责 UTF-8 解码、控制字符处理与按像素宽度的 soft-wrap;
- * 渲染层(SDL3_ttf / stb_truetype)只提供单字符宽度回调与字形绘制。
- * 编辑数学(caret/selection/hit-test)与绘制共用同一份行布局,
- * 所以 full 与 lite/minimal 的换行位置、控制字符行为完全一致。 */
+/* --- 缂佸顑呯花顓㈠礃閸涱喗鐎柡鍫墯鐢捇鎮?闁哥儐鍨粩瀵糕偓鍦仧楠?full 濞?stb 闁稿繗浜弫?---
+ * 闁圭儤甯炴晶妤冩嫻閻旇崵鐓?UTF-8 閻熸瑱绲块悥婊堝Υ娴ｇ懓浠橀柛鎺曟硾閻⊙呯箔閿曗偓椤︹晠鎮堕崱鏇犵憿闁圭顦崕姘辨閻樺樊鍟嶉幖杈惧濞?soft-wrap;
+ * 婵炴挸寮堕悡瀣沪?SDL3_ttf / stb_truetype)闁告瑯浜濊ぐ浣圭瑹濞戞ê绀嬮悗娑欘殘椤戜胶鈧妫勭€规娊宕堕悙鍓佹濞戞挸楠搁悺褑銇愰姀銏㈠笡闁告帟缈伴埀?
+ * 缂傚倹鐗炵欢顐﹀极閺夋鍔?caret/selection/hit-test)濞戞挸娴风划顖炲礆鐠哄搫褰欓柣顫妼閹挻绋夐埀顒佺閸婄噥鏀介悽顖氬暙閻?
+ * 闁圭鍋撳ù?full 濞?lite/minimal 闁汇劌瀚畷鑼偘鐏炶偐绉寸紓鍐惧枔閳ь兛鐒︾敮鍫曞礆鐠鸿櫣鎽熺紒妤嬬畳椤㈡垶绋夐崫鍕殮闁稿繈鍔嬬粩鎾嚊濞ｎ兘鍋?*/
 
 struct TextLayoutLine { size_t cstart; size_t cend; int w; };
 struct TextLayout {
-    std::string disp;          /* 显示文本:控制字符展开/移除后的 UTF-8 */
-    std::vector<size_t> map;   /* disp 每字符起点 → 原文本字节偏移 */
-    std::vector<size_t> dbytes;/* disp 每字符起点 → disp 字节偏移 */
+    std::string disp;          /* 闁哄嫬澧介妵姘跺棘閸ャ劍鎷?闁硅矇鍐ㄧ厬閻庢稒顨堥浣轰沪閺囩偟纾?缂佸顭峰▍搴ㄥ触鎼达絾鐣?UTF-8 */
+    std::vector<size_t> map;   /* disp 婵絽绻愰悺褏绮敃浣瑰闯闁?闁?闁告鍠愰弸鍐嫉椤掆偓閻⊙囨嚍閸屾矮鐒婄紒?*/
+    std::vector<size_t> dbytes;/* disp 婵絽绻愰悺褏绮敃浣瑰闯闁?闁?disp 閻庢稒顨夋俊顓㈠磻韫囨泤?*/
     std::vector<TextLayoutLine> lines;
     int tw, th;
 };
-/* 单字符像素宽(渲染层实现;布局热路径 ASCII 走缓存) */
+/* 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟?婵炴挸寮堕悡瀣沪閸屾氨鏉介柣?閻㈩垰鍟惇顒勬倻椤擄紕鐔呯€?ASCII 閻犙勫缁憋妇鈧? */
 typedef int (*TextGlyphFn)(unsigned int cp, void* st);
 
-/* 解码原文本为显示文本: \r 忽略(CRLF),\n 断行,\t 展开为 4 空格,
- * 其余 C0/DEL 控制字符跳过(不占位);每个显示字符记录原偏移。 */
+/* 閻熸瑱绲块悥婊堝储閻斿憡鐎柡鍫厸鐠愮喖寮伴崜褋浠涢柡鍌氭处濠€? \r 闊洨鏅弳?CRLF),\n 闁哄偆鍙€椤?\t 閻忕偞娲栫槐鎴炵▔?4 缂佸瞼鍎ら悧?
+ * 闁稿繑婀圭紞?C0/DEL 闁硅矇鍐ㄧ厬閻庢稒顨堥浣烘崉鐎圭姷绠?濞戞挸绉村畷鐗堟媴?;婵絽绻嬮柌婊堝及閸撗佷粵閻庢稒顨堥浣烘媼閺夎法绉块柛妯煎枎娴滃摜绮斿Ч鍥ｅ亾?*/
 static void layout_decode(const std::string& text, TextLayout& L)
 {
     const unsigned char* sb =
@@ -132,7 +132,7 @@ static void layout_decode(const std::string& text, TextLayout& L)
     }
 }
 
-/* 解码显示文本中字符索引 ci 处的码点 */
+/* 閻熸瑱绲块悥婊堝及閸撗佷粵闁哄倸娲﹀﹢鐗堢▔椤撶偟鎽熺紒妤嬪閸屻劌顕?ci 濠㈣泛瀚▓鎴︽儘娴ｅ搫浠?*/
 static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
     size_t b0 = L.dbytes[ci];
     size_t b1 = (ci + 1 < L.dbytes.size()) ? L.dbytes[ci + 1] : L.disp.size();
@@ -156,8 +156,8 @@ static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
     return 0;
 }
 
-/* 按 wrap_w 断行(逐字符累计宽度,超宽时回退到最后一个空格)。
- * wrap_w <= 0 = 不软换行。返回每行的显示字符范围 [cstart,cend) 与像素宽。 */
+/* 闁?wrap_w 闁哄偆鍙€椤?闂侇偅鍔曢悺褏绮敂鍓ф焾閻犱讲鈧剚鍟嶉幖?閻℃帒鎳庨鏃堝籍鐠虹儤绀€闂侇偀鍋撻柛鎺斿濞撳爼宕ユ惔婵堫伇濞戞搩浜為埞鏍冀?闁?
+ * wrap_w <= 0 = 濞戞挸绉烽拏瀣箲閵忥綆鏀介柕鍡楀€界换鎴﹀炊閻愬妲ㄩ悶娑樼灱濞堟垿寮伴崜褋浠涢悗娑欘殘椤戜線鎳犻崘銊︾函 [cstart,cend) 濞戞挸楠搁崕姘辨閻樺樊鍟嶉柕?*/
 static void layout_wrap(TextLayout& L, int wrap_w, int lh,
                         TextGlyphFn gw, void* st)
 {
@@ -178,14 +178,14 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
             int w = gw(disp_cp_at(L, ci), st);
             const bool is_sp = dch == ' ';
             if (wrap_w > 0 && wacc > 0 && wacc + w > wrap_w) {
-                /* 超宽:优先回退到最后一个空格之后(词级断行) */
+                /* 閻℃帒鎳庨?濞村吋锚閸樻盯宕堕悙琛″亾閳ь剟宕氶悧鍫熶粯闁告艾绨肩粩瀛樼▔椤忓棌鏁勯柡宥夋？缁狅綁宕?閻犲洤绉舵鍥棘椤撯槅鏀? */
                 size_t br = ci;
                 int bw = wacc;
                 if (last_sp != static_cast<size_t>(-1)) {
                     br = last_sp + 1;
                     bw = wacc_at_sp;
                 }
-                if (br <= ls) { /* 空格是行首等异常:断在当前字符前 */
+                if (br <= ls) { /* 缂佸瞼鍎ら悧鎼佸及椤栨繍鏀藉Λ锝嗙墱閻℃垵顕ｉ崒姘卞煑:闁哄偆鍘煎﹢顏囥亹閹惧啿顤呴悗娑欘殘椤戜線宕?*/
                     br = ci;
                     bw = wacc;
                 }
@@ -205,19 +205,19 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
             ++ci;
         }
         if (ci >= nc || nl) {
-            /* 逻辑行自然结束(文本末尾或显式换行) */
+            /* 闂侇偅妲掔欢顐ゆ偘瀹€鍐ㄦ闁绘帒澧庣划銊╁级?闁哄倸娲﹀﹢浼村嫉椤愩垻鍟查柟瀛樼墬濡顕ｈ箛鏂垮簥閻? */
             L.lines.push_back({ls, ci, wacc});
             if (wacc > L.tw) {
                 L.tw = wacc;
             }
             L.th += lh;
             if (nl) {
-                ++ci; /* 跳过 \n */
+                ++ci; /* 閻犲搫鐤囩换?\n */
             }
         }
     }
-    /* 文本以 \n 结尾时,末尾还有一个空行(编辑器里光标停在最后一行)。
-     * 不补上,text_size/绘制/命中就少算一行,内容整体偏下。 */
+    /* 闁哄倸娲﹀﹢鐗堢?\n 缂備焦鎸搁悢顒勫籍?闁哄牜鍋勯悢顒佹交濡粯绠掑☉鎾亾濞戞搩浜為埞鏍偘?缂傚倹鐗炵欢顐﹀闯閵娾晛娅￠柛蹇擃槹閻栵綁宕戝鍐╄含闁哄牃鍋撻柛姘凹缁斿鎮?闁?
+     * 濞戞挸绉疯棢濞?text_size/缂備焦锚閸?闁告稒鍨濋懙鎴犱焊閸楃偟姣岀紒鐘炽仦缁斿鎮?闁告劕鎳庨鎰板极缂堢姷绉奸柛瀣箣缁楀懘濡?*/
     if (!L.lines.empty() && !L.disp.empty() && L.disp.back() == '\n') {
         L.lines.push_back({nc, nc, 0});
         L.th += lh;
@@ -233,11 +233,11 @@ static TextLayout layout_text(const std::string& text, int wrap_w, int lh,
     return L;
 }
 
-/* --- 文本测宽/命中/选择(共用实现,基于上面的行布局) --- */
+/* --- 闁哄倸娲﹀﹢鏉棵圭€ｎ亶鍟?闁告稒鍨濋懙?闂侇偄顦扮€?闁稿繗浜弫銈団偓鍦仧楠?闁糕晞妗ㄧ花顒佺▔婵犲洦妗ㄩ柣銊ュ椤㈡垹鏁崘銊ф拱) --- */
 
-/* 字形位图(统一后端接口,full 与 stb 共用):像素为 0xAARRGGBB;
- * colored=true 时像素自带颜色(彩色 emoji),否则像素为前景色 × alpha。
- * xoff/yoff 为位图相对 pen+baseline 的绘制偏移。 */
+/* 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩鎾触鎼达綆浼傞柟鎭掑劚瑜?full 濞?stb 闁稿繗浜弫?:闁稿秴绻掔粈灞剧▔?0xAARRGGBB;
+ * colored=true 闁哄啳娉涢崕姘辨閻樺搫娈伴悽顖ょ畵椤や線鎳?鐟滄壋鏅炴竟?emoji),闁告熬绠戦崹顖炲磽韫囨洜顦卞☉鎾虫惈婢х娀寮查婵嗩棌 閼?alpha闁?
+ * xoff/yoff 濞戞捁妗ㄧ紞鍛村炊閸撗勭ゲ閻?pen+baseline 闁汇劌瀚划顖炲礆鐠鸿桨鐒婄紒澶嬬湽閳?*/
 struct GlyphImg
 {
     int w, h;
@@ -247,7 +247,7 @@ struct GlyphImg
     std::vector<unsigned int> px;
 };
 
-/* full: 单字符宽度测量的上下文(字体从 render_get_font 取) */
+/* full: 闁告娲栭悺褏绮敃鈧鏃€鎯旈敂鐣屻偞闂佹彃绻掑▓鎴炵▔婵犱胶鐟撻柡?閻庢稒銇炵紞瀣?render_get_font 闁? */
 struct TextMeasureCtx
 {
     whaleui_render_t* r;
@@ -364,14 +364,16 @@ static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
             r->fallback_tried.push_back(fam);
             continue;
         }
+        /* NOTE: no TTF_AddFallbackFont. SDL3_ttf's font chain makes
+         * TTF_FontHasGlyph report TRUE for chain-provided glyphs while
+         * metrics/bitmap still come from the primary (.notdef), and one
+         * shared fallback font restyles across sizes when any primary
+         * syncs. The engine manages fallback itself: glyph_ttf /
+         * glyph_img_ttf pick the providing font via ensure_fallback and
+         * rasterize it directly (font_chain below only records which
+         * primaries already attach this fallback, for size syncing). */
         for (auto& kv : r->font_chain) {
-            if (kv.first != fb) {
-                TTF_AddFallbackFont(kv.first, fb);
-            }
             kv.second.push_back(fb);
-        }
-        if (r->font_default && r->font_default != fb) {
-            TTF_AddFallbackFont(r->font_default, fb);
         }
         r->fallback_open.push_back(fb);
         r->fonts.emplace_back(fam, fb); /* marks it open */
@@ -463,16 +465,9 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
         font = r->font_default;
     }
     if (font) {
-        /* primary font: attach the fallbacks opened so far + default */
+        /* record the fallbacks opened so far (engine-managed fallback; no
+         * TTF_AddFallbackFont - see ensure_fallback's note) */
         if (r->font_chain.find(font) == r->font_chain.end()) {
-            for (TTF_Font* fb : r->fallback_open) {
-                if (fb != font) {
-                    TTF_AddFallbackFont(font, fb);
-                }
-            }
-            if (r->font_default && r->font_default != font) {
-                TTF_AddFallbackFont(font, r->font_default);
-            }
             r->font_chain[font]; /* create the chain entry */
         }
         sync_chain(r, font, size, style);
@@ -488,9 +483,9 @@ TTF_Font* render_get_font(whaleui_render_t*, const std::string&, int, int) { ret
 /* (struct TRect lives in render_internal.h) */
 
 #ifdef WHALEUI_BUILD_FULL
-/* full: 单字符像素宽。ASCII 与非 ASCII 统一走 TTF_GetGlyphMetrics(带
- * fallback chain,CJK/emoji 宽度正确),与 glyph_img_ttf 的 advance 同源,
- * 渲染位置与布局宽度严格一致。ASCII 用缓存表,非 ASCII 按 (font,cp) 缓存。 */
+/* full: 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟嶉柕鍡曠簿SCII 濞戞挸閰ｅ?ASCII 缂備胶鍠嶇粩瀵告導?TTF_GetGlyphMetrics(閻?
+ * fallback chain,CJK/emoji 閻庣妫勭€瑰啿顫㈤敐鍥ｂ偓?,濞?glyph_img_ttf 闁?advance 闁告艾鏈花?
+ * 婵炴挸寮堕悡瀣媴瀹ュ洨鏋傚☉鎾抽缁旈浠﹂埀顒傗偓纭呮鐎硅櫕绋夐妷锔惧濞戞挴鍋撻柤閿嬬暘閳ь兛绮維CII 闁活潿鍔庣槐锔锯偓娑欘焾閵?闂?ASCII 闁?(font,cp) 缂傚倹鎸搁悺銊╁Υ?*/
 static int glyph_ttf(unsigned int cp, void* st)
 {
     TextMeasureCtx* c = static_cast<TextMeasureCtx*>(st);
@@ -518,15 +513,19 @@ static int glyph_ttf(unsigned int cp, void* st)
      * the fallback chain, while TTF_GetGlyphImage does) - measuring the
      * primary font gave CJK a 12px .notdef width at 18px while the paint
      * path drew 18px glyphs. Layout/widths/raster buffers were all off and
-     * the last CJK char fell outside the buffer ("深度求索" lost its 索).
+     * the last CJK char fell outside the buffer ("婵烇絽宕€瑰啿效閸屾粌鍋? lost its 缂?.
      * Measure the FALLBACK font that will actually render the glyph. */
     TTF_Font* gfont = font;
-    if (!TTF_FontHasGlyph(font, cp)) {
+    if (cp >= 0x80 || !TTF_FontHasGlyph(font, cp)) {
         TTF_Font* fb = ensure_fallback(c->r, font, c->fs,
                                        c->bold ? kFontBold : 0, cp);
         if (fb) {
             gfont = fb;
         }
+    }
+    if (gfont) {
+        ensure_font_state(c->r, gfont, c->fs,
+                          c->bold ? kFontBold : 0);
     }
     std::tuple<TTF_Font*, int, unsigned int> key(
         gfont, static_cast<int>(c->fs), cp);
@@ -540,12 +539,12 @@ static int glyph_ttf(unsigned int cp, void* st)
     return adv;
 }
 
-/* full: 字形位图(统一 GlyphImg 接口)。TTF_GetGlyphImage 走 fallback 链,
- * TTF_IMAGE_COLOR(COLR 彩色字形)→ 像素自带颜色;TTF_IMAGE_ALPHA(灰度)
- * → 填 fg 色。定位:x = pen + minx(bitmap_left), y = baseline - maxy
- * (bitmap_top),与 TTF_GetGlyphMetrics 返回一致;advance 与 glyph_ttf 同源。
- * ponytail: 每字形建/销毁一个 SDL_Surface,无 ckey 的路径(select 下拉等)
- * 每帧逐字形渲染;若这类短文本成瓶颈,按 (font,cp) 缓存字形位图。 */
+/* full: 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩?GlyphImg 闁规亽鍎辫ぐ?闁靛棔绻俆F_GetGlyphImage 閻?fallback 闂?
+ * TTF_IMAGE_COLOR(COLR 鐟滄壋鏅炴竟濠勨偓娑欘殔閼?闁?闁稿秴绻掔粈宀勬嚊椤忓嫮鏁ㄥΛ鐗堢矎婢?TTF_IMAGE_ALPHA(闁诲繑婢樼€?
+ * 闁?濠?fg 闁肩懓鐪伴埀顒€鍊搁悾鐐媴?x = pen + minx(bitmap_left), y = baseline - maxy
+ * (bitmap_top),濞?TTF_GetGlyphMetrics 閺夆晜鏌ㄥú鏍ㄧ▔閳ь剟鎳?advance 濞?glyph_ttf 闁告艾鏈花顕€濡?
+ * ponytail: 婵絽绻愰悺褑銇愰姀鐘电处/闂佸簱鍋撴慨锝勬缁斿瓨绋?SDL_Surface,闁?ckey 闁汇劌瀚惌鎯ь嚗?select 濞戞挸顑嗘刊铏圭驳?
+ * 婵絽绻愰幎姘舵焻閹邦剛鎽熺憸鑸灪鐟曞棝寮?闁兼眹鍎寸换鏍尵閼姐倗鍙氶柡鍌氭处濠€浼村箣閹邦喗鎳曞Λ?闁?(font,cp) 缂傚倹鎸搁悺銊р偓娑欘殔閼哥増鎷呭鍛闁?*/
 static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
                           int fs, int style, unsigned int cp, unsigned int fg,
                           GlyphImg& out)
@@ -563,11 +562,25 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
      * from the SAME font that provides the glyph (glyph_ttf measures the
      * same font - see its comment). */
     TTF_Font* gfont = font;
-    if (!TTF_FontHasGlyph(font, cp)) {
+    if (cp >= 0x80 || !TTF_FontHasGlyph(font, cp)) {
+        /* non-ASCII: never trust TTF_FontHasGlyph on the primary - once a
+         * fallback font is attached to its chain (TTF_AddFallbackFont),
+         * hasGlyph reports true for chain-provided glyphs while
+         * metrics/bitmap still come from the primary (.notdef 16px box for
+         * CJK at 48px). Always ask ensure_fallback for the font that truly
+         * provides the glyph (it returns null when the primary has it). */
         TTF_Font* fb = ensure_fallback(r, font, fs, style, cp);
         if (fb) {
             gfont = fb;
         }
+    }
+    /* gfont may be a SHARED fallback font (one msyh serves every primary
+     * font) that another primary font restyled to a different size:
+     * re-apply (fs, style) right before measuring + rasterizing this
+     * glyph, or a stray 16px sync leaves a 48px CJK run rasterizing 16px
+     * glyphs (big titles looked cut/short). */
+    if (gfont) {
+        ensure_font_state(r, gfont, fs, style);
     }
     int minx = 0, maxx = 0, miny = 0, maxy = 0, adv = 0;
     if (!TTF_GetGlyphMetrics(gfont, cp, &minx, &maxx, &miny, &maxy, &adv)) {
@@ -586,10 +599,10 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     out.colored = (type == TTF_IMAGE_COLOR);
     out.px.resize(static_cast<size_t>(img->w) * img->h);
     if (out.colored) {
-        /* ARGB8888 小端内存序 = B,G,R,A → 0xAARRGGBB,与 framebuffer 一致 */
+        /* ARGB8888 閻忓繐绻掗顒勫礃閸涱厾鎽犻幖?= B,G,R,A 闁?0xAARRGGBB,濞?framebuffer 濞戞挴鍋撻柤?*/
         std::memcpy(out.px.data(), img->pixels, out.px.size() * 4);
     } else {
-        /* 灰度字形:SDL3_ttf 写白色 + alpha,替换为 fg 色(乘 fg alpha) */
+        /* 闁诲繑婢樼€瑰磭鈧稒顨呴懜?SDL3_ttf 闁告劖鐟у▍褔鎳?+ alpha,闁哄洦瀵у畷鍙夌▔?fg 闁?濞?fg alpha) */
         const unsigned char* p =
             static_cast<const unsigned char*>(img->pixels);
         const unsigned int rgb = fg & 0xFFFFFF;
@@ -603,9 +616,9 @@ static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
     return true;
 }
 #else
-/* --- stb_truetype 后端:测宽 + 彩色字形(COLR/CPAL,参考 stb#512/#1135) --- */
+/* --- stb_truetype 闁告艾娴烽?婵炴潙顑呴?+ 鐟滄壋鏅炴竟濠勨偓娑欘殔閼?COLR/CPAL,闁告瑥鍊介埀?stb#512/#1135) --- */
 
-/* 大端读取(sfnt 表字段均为 big-endian) */
+/* 濠㈠爢鍜佷紓閻犲洩顕цぐ?sfnt 閻炴稏鍔岄悺褍鈻撻棃娑欑秵濞?big-endian) */
 static unsigned int be16(const unsigned char* p)
 {
     return (static_cast<unsigned int>(p[0]) << 8) | p[1];
@@ -617,8 +630,8 @@ static unsigned int be32(const unsigned char* p)
            (static_cast<unsigned int>(p[2]) << 8) | p[3];
 }
 
-/* 在字体数据中查找 sfnt 表(tag 4 字节)的偏移,返回相对数据起点的偏移;
- * TTC 取第一个字体。找不到返回 -1。 */
+/* 闁革负鍔岄悺褎鎷呴幘瀛樻闁硅鍠曢懙鎴﹀蓟閵夛箑顥?sfnt 閻?tag 4 閻庢稒顨夋俊?闁汇劌瀚禍鍝ョ矓?閺夆晜鏌ㄥú鏍儎缁嬫鍤犻柡浣哄瀹撲胶鎸ф搴′化闁汇劌瀚禍鍝ョ矓?
+ * TTC 闁告瑦鐗滈鍥ㄧ▔閳ь剚绋夐鍕憻濞达絾鎸堕埀顒€鍊规竟妯荤▔瀹ュ懎鐓傞弶鈺傛煥濞?-1闁?*/
 static int font_table_off(const unsigned char* data, size_t len, const char* tag)
 {
     if (!data || len < 12) {
@@ -646,11 +659,11 @@ static int font_table_off(const unsigned char* data, size_t len, const char* tag
     return -1;
 }
 
-/* COLR 层记录:层字形 id + 调色板条目(参考 stb#1135 的 stbtt_glyphlayer) */
+/* COLR 閻忕偛鍊介鍥亹?閻忕偛鍊搁悺褑銇?id + 閻犲鍟虫竟濠囧级閹稿孩钂嬮柣?闁告瑥鍊介埀?stb#1135 闁?stbtt_glyphlayer) */
 struct ColrLayer { unsigned short glyph; unsigned short color; };
 
-/* 查找 glyph 的 COLR 层(线性扫描;base glyph records 按 glyph id 升序,
- * 数量级几百~几千,每字形一次可接受)。返回层数,0 = 该字形无层。 */
+/* 闁哄被鍎叉竟?glyph 闁?COLR 閻?缂佺偓瀵ч埀顑嫬顥囬柟?base glyph records 闁?glyph id 闁告娲ょ花?
+ * 闁轰椒鍗抽崳铏圭棯瑜嶉崵鎴︽儌缁舵瑩宕欓悩鎻掔．,婵絽绻愰悺褑銇愰～顓狀伇婵炲棌鈧啿璁查柟鎭掑劚瑜?闁靛棗鍊界换鎴﹀炊閻愯尙婀撮柡?0 = 閻犲洢鍎遍悺褑銇愰姀鈩冿骏閻忕偛鍊堕埀?*/
 static int colr_layers(const unsigned char* data, int colr_off,
                        unsigned int gid, const ColrLayer*& out)
 {
@@ -670,8 +683,8 @@ static int colr_layers(const unsigned char* data, int colr_off,
     return 0;
 }
 
-/* CPAL v0 调色板颜色(BGRA 内存序 → 0xAARRGGBB);colorid==0xFFFF 由调用
- * 方用前景色。取调色板 0(首个)。 */
+/* CPAL v0 閻犲鍟虫竟濠囧级閸ф鏉归柤?BGRA 闁告劕鎳庨悺銊︽償?闁?0xAARRGGBB);colorid==0xFFFF 闁汇垼绮鹃惃鐔兼偨?
+ * 闁哄倸婀遍弫銈夊礈瀹ュ棙鐝柤鐟扮湴閳ь剙鍊歌ぐ鍥╂嫬閸愵厼顥忛柡?0(濡絾鐗旈柌?闁?*/
 static unsigned int colr_palette_color(const unsigned char* data, int cpal_off,
                                        unsigned int colorid)
 {
@@ -685,15 +698,15 @@ static unsigned int colr_palette_color(const unsigned char* data, int cpal_off,
         return 0xFFFFFFFF;
     }
     unsigned int cro = be32(t + 8);
-    unsigned int pidx = be16(t + 12); /* palette 0 的 colorRecordIndices */
+    unsigned int pidx = be16(t + 12); /* palette 0 闁?colorRecordIndices */
     const unsigned char* c = t + cro + pidx * 4 + colorid * 4;
     return (static_cast<unsigned int>(c[3]) << 24) |
            (static_cast<unsigned int>(c[2]) << 16) |
            (static_cast<unsigned int>(c[1]) << 8) | c[0];
 }
 
-/* 渲染 COLR 分层字形为 RGBA(0xAARRGGBB);返回 false 表示无层(调用方走
- * 普通灰度路径)。每层 stbtt 位图 + 调色板颜色,src-over 合成。 */
+/* 婵炴挸寮堕悡?COLR 闁告帒妫楅惇鎵偓娑欘殔閼哥増绋?RGBA(0xAARRGGBB);閺夆晜鏌ㄥú?false 閻炴稏鍔庨妵姘跺籍閻樿尙婀?閻犲鍟伴弫銈夊棘绾懓娉?
+ * 闁哄拋鍣ｉ埀顒佹皑娴煎棙鎯旈敃浣虹唴鐎?闁靛棗鍊归惁锛勪沪?stbtt 濞达絽绉村ù?+ 閻犲鍟虫竟濠囧级閸ф鏉归柤?src-over 闁告艾鐗婇崹姘跺Υ?*/
 static bool colr_render(const stbtt_fontinfo& info, float scale,
                         const unsigned char* data, int colr_off, int cpal_off,
                         unsigned int gid, unsigned int fg,
@@ -786,7 +799,7 @@ struct StbFonts
 {
     struct F { stbtt_fontinfo info; float scale; int asc; int line_h; bool ok; };
     std::vector<F> fonts;
-    std::vector<int> colr, cpal; /* 每字体 COLR/CPAL 表偏移;无表为 -1 */
+    std::vector<int> colr, cpal; /* 婵絽绻愰悺褎鎷?COLR/CPAL 閻炴稏鍔屾禍鍝ョ矓?闁哄啰濮鹃妴鍐╃▔?-1 */
     size_t pref;
     int line_h;
     explicit StbFonts(const std::string& family, int fs)
@@ -870,7 +883,7 @@ struct StbFonts
         return static_cast<size_t>(-1);
     }
 };
-/* stb: 单字符像素宽(带 fallback 字体表) */
+/* stb: 闁告娲栭悺褏绮敃鈧崕姘辨閻樺樊鍟?閻?fallback 閻庢稒銇炵紞瀣偘? */
 static int glyph_stb(unsigned int cp, void* st)
 {
     StbFonts* f = static_cast<StbFonts*>(st);
@@ -883,9 +896,9 @@ static int glyph_stb(unsigned int cp, void* st)
     return static_cast<int>(adv * f->fonts[fi].scale + 0.5f);
 }
 
-/* stb: 字形位图(统一 GlyphImg 接口)。COLR 分层字形输出自带颜色
- * (colored=true),普通字形为 fg 色 × alpha。xoff/yoff 为相对 pen+baseline
- * 的位图偏移(stb 语义,与 glyph_stb 同源测宽)。 */
+/* stb: 閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?缂備胶鍠嶇粩?GlyphImg 闁规亽鍎辫ぐ?闁靛棔鏅疧LR 闁告帒妫楅惇鎵偓娑欘殔閼哥増娼忛幘鍐叉瘔闁煎浜滈悽顐ｏ紣濠婂棗顥?
+ * (colored=true),闁哄拋鍣ｉ埀顒佽壘閻⊙嗐亹椤叀绀?fg 闁?閼?alpha闁靛棗鈧埣ff/yoff 濞戞捁娅ｅù澶屸偓?pen+baseline
+ * 闁汇劌瀚紞鍛村炊閹傜剨缂?stb 閻犲浂鍘虹粻?濞?glyph_stb 闁告艾鏈花顔济圭€ｎ亶鍟?闁?*/
 static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
                           GlyphImg& out)
 {
@@ -920,7 +933,7 @@ static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
     const unsigned int sr = (fg >> 16) & 0xFF;
     const unsigned int sg = (fg >> 8) & 0xFF;
     const unsigned int sb = fg & 0xFF;
-    const unsigned int fa = (fg >> 24) & 0xFF; /* 前景 alpha 乘到字形上 */
+    const unsigned int fa = (fg >> 24) & 0xFF; /* 闁告挸绉靛▍?alpha 濞戞梹锚閸╁瞼鈧稒顨呴懜鐗堢▔?*/
     for (size_t i = 0; i < out.px.size(); ++i) {
         unsigned int a = bmp[i] * fa / 255;
         out.px[i] = a ? (a << 24) | (sr << 16) | (sg << 8) | sb : 0;
@@ -930,9 +943,9 @@ static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
 }
 #endif
 
-/* 字形视觉盒高(ascent + descent/2),用于文字/光标/选区垂直居中:
- * 行高 th 含行距,按 th 居中会让画在缓冲顶部的字形视觉偏上。
- * 与 draw_text_at 的居中基准一致,避免 caret 与文字错位。 */
+/* 閻庢稒顨呴懜鎵喆閸℃凹娼曢柣鈺傚浮閻?ascent + descent/2),闁活潿鍔嬬花顒勫棘閸パ呮憻/闁稿繐顦伴悥?闂侇偄顦亸顖炲垂閸屾粍绾悘鐐叉噸閼?
+ * 閻炴稑鐭傞悵?th 闁告凹鍋夐、鎴犳崉?闁?th 閻忕偛鎳嶉懙鎴炲濮樻剚鍞ㄩ柣銏ｎ嚙濠€顏嗙磽閹惧啿鏆卞銈呯埣閸庢挳鎯冮崟顐ゆ憻鐟滆埇鍨奸～瀣喆婢跺﹣鐒婂☉鎾愁焾閳?
+ * 濞?draw_text_at 闁汇劌瀚惇铏▔椤撶偟鍞ㄩ柛鎴濇缁旀挳鎳?闂侇剙鐏濋崢?caret 濞戞挸瀛╅弸鍐偓娑欘殜閺佸﹥鎷呭鍐ｅ亾?*/
 int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
                  bool bold)
 {
@@ -1100,15 +1113,15 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
 #endif
     TextLayout L = layout_text(text, wrap_w, lh, gw, st);
     const size_t nc = L.map.size();
-    /* 找 off 所在行:off 落在 [行首偏移, 行尾偏移] 区间。
-     * 行首时 caret 画在该行 x=0(不是前一行的行尾)。 */
+    /* 闁?off 闁圭鍋撻柛锔哄姀椤?off 闁解偓閽樺韬?[閻炴稑鐭傞々濠氬磻韫囨泤? 閻炴稑鑻悢顒勫磻韫囨泤顭?闁告牗妞藉Λ鍧楀Υ?
+     * 閻炴稑鐭傞々濠氬籍?caret 闁汇垼顕у﹢顏嗘嫚閵夘煈鏀?x=0(濞戞挸绉靛Σ鎼佸礈瀹ュ嫮顏遍悶娑樼灱濞堟垹鎮扮仦鐣屽暡)闁?*/
     for (size_t li = 0; li < L.lines.size(); ++li) {
         const TextLayoutLine& ln = L.lines[li];
         size_t ls_off = (ln.cstart < nc) ? L.map[ln.cstart] : off;
         size_t le_off = (ln.cend < nc) ? L.map[ln.cend] : text.size();
         if (off < ls_off) {
-            /* 落在上一行末尾之后、本行行首之前:只在空行之间的
-             * \n 处可能;当作本行行首处理 */
+            /* 闁解偓閽樺韬☉鎾筹梗缁斿鎮扮仦鐐睘閻忓繐褰炵粻锝夊触鎼存稈鍋撴担瑙勬嫳閻炴稑鐭侀、鎴烇純閺嶏妇顓洪柛?闁告瑯浜滃﹢顏嗙矚妤︽鏀藉☉鏂款儔濡潡鎯?
+             * \n 濠㈣泛瀚ぐ鏌ユ嚄?鐟滅増鎸风紞鏃堝嫉椤掑喚鏀介悶娑樼焸椤╃粯寰勯崟顓熷€?*/
             *cx = 0;
             *cy = static_cast<int>(li) * lh;
             *ch = lh;
@@ -1128,7 +1141,7 @@ void caret_pos(whaleui_render_t* r, const std::string& text, int fs,
             return;
         }
     }
-    /* 兜底:文本末尾 */
+    /* 闁稿繑绮岀花?闁哄倸娲﹀﹢浼村嫉椤愩垻鍟?*/
     const TextLayoutLine& last = L.lines.back();
     *cx = last.w;
     *cy = static_cast<int>(L.lines.size() - 1) * lh;
@@ -1203,9 +1216,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   const Clip* clip, int lsp, bool wrap, float opacity,
                   bool outline)
 {
-    /* 缓存查询先行:text+样式不变时,排版(layout_text)与字形光栅化是
-     * 每帧重复计算 —— 动画帧对每个 run 重新排版曾是 42ms 的大头。
-     * 命中直接用缓存的位图与尺寸,连字体打开/行高测量都跳过。 */
+    /* 缂傚倹鎸搁悺銊╁蓟閵夘煈鍤勯柛蹇撶墣椤?text+闁哄秴鍢茬槐鈩冪▔瀹ュ懎缍侀柡?闁圭儤甯炴晶?layout_text)濞戞挸楠搁悺褑銇愰姀鐘插辅闁哄秴鎳庣€垫煡寮?
+     * 婵絽绻愰幎姘舵煂瀹ュ拋妲婚悹渚婄磿閻?闁炽儲鏌￠埀?闁告柣鍔庨弫鍓ф暜瑜嶉顔夹掕箛搴ㄥ殝 run 闂佹彃绉甸弻濠囧箳閹烘柨顣奸柡鍥╁亾濡?42ms 闁汇劌瀚妵鍥ㄥ緞濞ｎ兘鍋?
+     * 闁告稒鍨濋懙鎴︽儎鐎涙ê澶嶉柣顫妿缁憋妇鈧稒顭囧▓鎴炴媴瀹ュ懏绂堝☉鎾抽閺勫倻鈧?閺夆晝鍋涢悺褎鎷呴幘鏉戔叺鐎殿喒鍋?閻炴稑鐭傞悵顔济圭€ｎ喖娅ら梺顔尖偓鐔哄劜閺夆晛娲㈤埀?*/
     std::vector<unsigned int>* src = nullptr;
     int tw = 0, th = 0;
     int tx = bx, ty = by; /* paint origin (align/center applied below) */
@@ -1244,8 +1257,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         if (lh <= 0) {
             lh = fs;
         }
-        /* 统一字形接口:排版(测宽)与绘制共用同一后端字形来源,advance/偏移
-         * 严格一致,full 与 stb 只有这里不同,渲染循环只有一份 */
+        /* 缂備胶鍠嶇粩瀵糕偓娑欘殔閼镐即骞掗妷銉ョ稉:闁圭儤甯炴晶?婵炴潙顑呴?濞戞挸娴风划顖炲礆鐠哄搫褰欓柣顫妼閹挻绋夐埀顒勫触鎼达綆浼傞悗娑欘殔閼镐即寮堕妷锔剧埍,advance/闁稿绻掍簺
+         * 濞戞挶鍎查悧鍛婄▔閳ь剟鎳?full 濞?stb 闁告瑯浜濆﹢浣规交濞嗘挸娅″☉鎾崇Т閹?婵炴挸寮堕悡瀣嚗椤忓棗绠氶柛娆樹簼濠€浣圭▔閳ь剚绂?*/
         int baseline_off;
         TextLayout L;
 #ifdef WHALEUI_BUILD_FULL
@@ -1305,9 +1318,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             return glyph_img_stb(stb, cp, color, g);
 #endif
         };
-        /* 逐字形渲染(唯一循环):字形位图(RGBA,已含前景色或彩色 emoji
-         * 自身颜色)src-over 到文本缓冲。stb 无合成粗体:普通字形右移
-         * 1px 再画一次(fake bold);full 的粗体由 FreeType 在字形内完成。 */
+        /* 闂侇偅鍔曢悺褑銇愰姀陇顩柡?闁哥儐鍨粩鏉戭嚗椤忓棗绠?:閻庢稒顨呴懜鐗堟媴瀹ュ懏绂?RGBA,鐎瑰憡褰冮幆鍫ュ礈瀹ュ棙鐝柤鐟板级閸ㄣ劏銇愰埡鍕棌 emoji
+         * 闁煎浜ｉ棅鈺傦紣濠婂棗顥?src-over 闁告帞澧楅弸鍐嫉椤掑倻澶勯柛鎰湴閳ь兛闈爐b 闁哄啰濮撮幃搴ㄥ箣閹邦喚鐓愬ù?闁哄拋鍣ｉ埀顒佽壘閻⊙嗐亹閵忕姴绀佺紒?
+         * 1px 闁告劕绉堕弫鐐▔閳ь剙鈻?fake bold);full 闁汇劌瀚惌鏍ㄦ媴閹捐埖鏆?FreeType 闁革负鍔岄悺褑銇愰姀鐘叉暥閻庣懓鏈崹姘跺Υ?*/
         std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
         for (size_t li = 0; li < L.lines.size(); ++li) {
             const TextLayoutLine& ln = L.lines[li];
@@ -1345,7 +1358,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                                  * only. The 8-direction whole-glyph copies
                                  * (dx/dy = +-sw) filled wide strokes solid
                                  * - a 200px glyph with 1px stroke came out
-                                 * as a solid silhouette ("glyph 实心").
+                                 * as a solid silhouette ("glyph 閻庡湱鍋涚缓?).
                                  * Keep only pixels with a transparent
                                  * neighbour; solid interiors stay empty. */
                                 bool edge = false;
@@ -1399,14 +1412,14 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             px += g.advance + lsp;
         }
     }
-    /* 对齐(line-box 居中;超出盒子保持顶部对齐,select 值自行微调) */
+    /* 閻庨潧缍婄紞?line-box 閻忕偛鎳嶉懙?閻℃帒鎳庨崵顓㈡儎閹烘垹鎽嶅ǎ鍥ㄧ箖鐎垫梹銇勯崼鏇炲姤閻庨潧缍婄紞?select 闁稿﹨澹堥崵婊呮偘鐏炴垝绨抽悹? */
     tx = bx;
     if (align == 1) {
         tx = bx + (bw - tw) / 2;
     } else if (align == 2) {
         tx = bx + bw - tw;
     }
-    /* 写缓存(full):miss 时把刚栅格化的位图存入缓存供后续帧复用 */
+    /* 闁告劖鐟х槐锔锯偓?full):miss 闁哄啳鍩栨俊鎼佸礆濮橆厾鍨洪柡宥囧帶鐎垫煡鎯冮崟顏嗙Т闁搞儲鍎抽悺銊╁礂閵壯呭閻庢稒眉缁剁敻宕ユ惔锝囨暰閻㈩垎鍐炬Щ闁?*/
     if (!ckey_str.empty()) {
         whaleui_render_t::TextCacheEntry& e = r->text_cache[ckey_str];
         if (e.px.empty() || e.w != tw || e.h != th) {
@@ -1441,10 +1454,10 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         src = &buf;
     }
     } /* end cache miss: layout + rasterize */
-    /* 垂直居中按"字形盒"(ascent+descent)而非行高 th:th 含行距时若按
-     * th 居中,字形(画在缓冲顶部)下方留出空白,文字视觉偏上 —— input
-     * 值/拼音上飘的根因。必须在 cache miss 之外执行:命中缓存若跳过,
-     * ty 保持初值 by(顶部对齐),同一文本首帧居中、后续帧贴顶偏上。 */
+    /* 闁搞劌鍊诲ú璺ㄤ沪閸涱剝鍘柟?閻庢稒顨呴懜浼存儎?(ascent+descent)闁兼澘鐭傚顏嗘偘瀹€鍕蒋 th:th 闁告凹鍋夐、鎴犳崉濠靛洦顦ч柤姹囧劜鐎?
+     * th 閻忕偛鎳嶉懙?閻庢稒顨呴懜?闁汇垼顕у﹢顏嗙磽閹惧啿鏆卞銈呯埣閸?濞戞挸顑嗛弻鐔兼偩濞嗗繐姣夌紒宀冩濞?闁哄倸娲ら悺褏鎲撮崱姘兼綍闁稿绻嬬粭?闁炽儲鏌￠埀?input
+     * 闁?闁瑰嘲銈搁悡鑸电▔婵犲浂妫熼柣銊ュ閻楁挳宕堕悩顔瑰亾閸屾氨绠戝銈堫嚙濠€?cache miss 濞戞柨顑呴ˇ濠氬箥瑜戦、?闁告稒鍨濋懙鎴犵磽閹惧磭鎽犻柤姹囧劥閻戯附娼?
+     * ty 濞ｅ洦绻冪€垫棃宕氬┑鍡忓亾?by(濡炪倕鐖奸崕瀵糕偓闈涚秺缂?,闁告艾濂旂粩鎾棘閸ャ劍鎷卞Λ锝嗙墪閹舵氨浠﹂崨顒冨幀闁靛棔绀侀幃妤冪磼椤撶偞濮庨悹鎰尦閵嗗﹪宕戣箛搴ｇ憪闁?*/
     {
         int gh = text_glyph_h(r, fs, family, (style & kFontBold) != 0);
         if (gh < 1) {
@@ -1452,10 +1465,10 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         ty = gh <= bh ? by + (bh - gh) / 2 : by;
     }
-    /* blend:直通 RGBA(不再用前景色染色,彩色 emoji 保留自身颜色)。
-     * opacity 是动态的(动画)且不进缓存 key,所以在这里按像素缩放
-     * alpha —— 缓存按静态颜色复用,opacity 动画不再使缓存逐帧失效。
-     * GPU 路径写 text_layer,CPU 路径写 framebuffer。 */
+    /* blend:闁烩晜鎸抽埀?RGBA(濞戞挸绉撮崯鈧柣顫妼婢х娀寮查婵嗩棌闁哄本鎹佹竟?鐟滄壋鏅炴竟?emoji 濞ｅ洦绻勯弳鈧柤濂変海闂娾晜锛愬鍡楊棌)闁?
+     * opacity 闁哄嫷鍨版慨鈺呭箑娴ｇ儤鐣?闁告柣鍔庨弫?濞戞挻鏌х粭澶嬫交濞戞氨澶勯悗?key,闁圭鍋撳ù鐘劚濠€顏呮交濞嗘挸娅￠柟绋款槸閸庢氨妲愰悩鐢电礆闁衡偓?
+     * alpha 闁炽儲鏌￠埀?缂傚倹鎸搁悺銊╁箰婢舵劖楗柟顑跨窔椤や線鎳濋幓鎺濇Щ闁?opacity 闁告柣鍔庨弫鐐▔瀹ュ懎鏅欏ù锝堟硶缁憋妇鈧稒锕㈤埀顒佸姇閹舵碍寰勬潏銊︽珡闁?
+     * GPU 閻犱警鍨扮欢鐐哄礃?text_layer,CPU 閻犱警鍨扮欢鐐哄礃?framebuffer闁?*/
     std::vector<unsigned int>& fb = g_gpu ? r->text_layer : r->pixels;
     const int fw = g_gpu ? r->fb_w : r->width;
     const int fh = g_gpu ? r->fb_h : r->height;
