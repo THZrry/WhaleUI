@@ -2549,6 +2549,18 @@ struct Builder
                 }
             }
             min_main[i] = minc;
+            /* native controls (checkbox/radio) have no text content, so
+             * the content-based min floor would shrink them below their
+             * fixed control width; floor at the explicit width */
+            if (k->el && input_kind(k->el) == 2) {
+                bool wauto2 = true;
+                float wpx2 = len_or_auto(get(k->style, "width"),
+                                         static_cast<float>(inner_w), em,
+                                         &wauto2);
+                if (!wauto2 && wpx2 > min_main[i]) {
+                    min_main[i] = static_cast<int>(wpx2);
+                }
+            }
             if (basis >= 0) {
                 main_size[i] = basis; /* "flex: 1" -> basis 0, grows fully */
                 if (container_main <= 0 && main_size[i] < min_main[i]) {

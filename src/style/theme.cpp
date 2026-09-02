@@ -328,6 +328,7 @@ button::after { background: rgba(0,0,0,0.12); }
 .btn-primary::before { background: rgba(255,255,255,0.12); }
 .btn-primary::after { background: rgba(0,0,0,0.15); }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid #dadce0; border-radius: var(--radius-btn);
     min-height: 28px; padding: 0 8px; font-size: 13px;
@@ -341,7 +342,7 @@ input:focus, select:focus, textarea:focus {
 } /* needs: multi-shadow */
 textarea { padding: 6px 8px; overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; }
+input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; padding: 0; }
 progress { width: 160px; height: 12px; }
 )";
 
@@ -366,6 +367,7 @@ button:disabled { opacity: var(--disabled-opacity); }
 button::before { background: rgba(0,0,0,0.05); } /* needs: pseudo-box */
 button::after { background: rgba(0,0,0,0.1); }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid var(--border); border-bottom-color: var(--border-strong);
     border-radius: var(--radius-btn); min-height: 32px;
@@ -378,7 +380,7 @@ input:focus, select:focus, textarea:focus {
 } /* 下划线展开动画走 kComponentsCss 的 ::after（needs: pseudo-box） */
 textarea { padding: 6px 10px; overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; }
+input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; padding: 0; }
 progress { width: 100%; height: 4px; border-radius: 2px; }
 )";
 
@@ -405,6 +407,7 @@ button::after { background: var(--active); }
 .btn-primary::before { background: rgba(255,255,255,0.12); }
 .btn-primary::after { background: rgba(0,0,0,0.18); }
 input, select, textarea {
+    box-sizing: border-box;
     background: transparent; color: var(--fg);
     border: none; border-bottom: 2px solid var(--border-strong);
     border-radius: 0; min-height: 32px; padding: 0 4px;
@@ -414,7 +417,7 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { border-bottom-color: var(--accent); }
 textarea { padding: 6px 4px; overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; }
+input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; padding: 0; }
 progress { width: 100%; height: 6px; border-radius: 0; }
 )";
 
@@ -442,6 +445,7 @@ button::before { background: rgba(0,0,0,0.03); }
 button::after { background: rgba(0,0,0,0.06); }
 .btn-primary { background: linear-gradient(to bottom, #f8f4e8, #e0ddd5 48%, #d4d0c8 52%, #c8c4ba); }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid #7f7c6e; border-radius: 0;
     min-height: 22px; padding: 2px 6px; font-size: 13px;
@@ -450,7 +454,7 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { background: #ffffff; }
 textarea { overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 13px; height: 13px; }
+input[type="checkbox"], input[type="radio"] { width: 13px; height: 13px; padding: 0; }
 progress { width: 160px; height: 14px; border: 1px solid #8a8678; }
 )";
 
@@ -481,6 +485,7 @@ button::after {
 .btn-primary { background: linear-gradient(to bottom, #4fc1ff 45%, #2b8fd6 45%, #1a6cb0); }
 .btn-primary:hover { border-color: #1a6cb0; }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid #abadb3; border-radius: var(--radius-btn);
     min-height: 24px; padding: 3px 6px; font-size: 13px;
@@ -491,7 +496,7 @@ input:hover, select:hover, textarea:hover { border-color: #3c7fb1; }
 input:focus, select:focus, textarea:focus { border-color: #3d7bad; }
 textarea { padding: 6px; overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; }
+input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; padding: 0; }
 progress { width: 160px; height: 14px; border-radius: 2px; }
 )";
 
@@ -525,6 +530,7 @@ button::after { background: rgba(0,0,0,0.14); }
 }
 .btn-outline:hover { background: var(--btn-bg-hover); }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid var(--border-strong); border-radius: var(--radius-btn);
     min-height: 36px; padding: 0 12px; font-size: var(--text-base);
@@ -536,7 +542,7 @@ input:focus, select:focus, textarea:focus {
 }
 textarea { padding: 8px 12px; overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; }
+input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; padding: 0; }
 progress { width: 100%; height: 4px; border-radius: 2px; }
 )";
 
@@ -563,6 +569,7 @@ button::after { background: rgba(0,0,0,0.08); }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-primary:active { background: var(--accent-active); }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid var(--border); border-radius: var(--radius-btn);
     min-height: 32px; padding: 4px 10px; font-size: var(--text-base);
@@ -575,7 +582,7 @@ input:focus, select:focus, textarea:focus {
 } /* needs: multi-shadow */
 textarea { overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; }
+input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; padding: 0; }
 progress { width: 100%; height: 6px; border-radius: 3px; }
 )";
 
@@ -602,6 +609,7 @@ button::after { background: rgba(0,0,0,0.1); }
 .btn-primary:hover { background: linear-gradient(to bottom, #7ec0f8, #2e8cfb); }
 .btn-primary:active { background: #3e9bf4; }
 input, select, textarea {
+    box-sizing: border-box;
     background: var(--field); color: var(--fg);
     border: 1px solid var(--border); border-radius: var(--radius-btn);
     min-height: 25px; padding: 3px 8px; font-size: var(--text-sm);
@@ -614,7 +622,7 @@ input:focus, select:focus, textarea:focus {
 }
 textarea { overflow: auto; }
 select { cursor: pointer; }
-input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; }
+input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; padding: 0; }
 progress { width: 100%; height: 8px; border-radius: 4px; }
 )";
 
