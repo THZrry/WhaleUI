@@ -111,6 +111,27 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     }
+    case SDL_EVENT_WINDOW_FOCUS_LOST: {
+        /* 窗口失去焦点:编辑控件同步失焦 —— 清 edit 态、退出文本输入,
+         * caret/选区消失(浏览器切窗即 blur)。SDL 调用回主线程执行。 */
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->render && w->render->edit_el) {
+            w->render->edit_el = nullptr;
+            w->render->compose.clear();
+            w->render->compose_caret = -1;
+            w->render->compose_flow_x = -1;
+            w->render->compose_flow_y = -1;
+            w->render->sel_anchor_el = w->render->sel_focus_el = nullptr;
+            w->render->has_dirty = 1;
+            if (w->sdl) {
+                SDL_Window* sdlw = w->sdl;
+                whaleui_sdl_on_main(
+                    [](void* p) { SDL_StopTextInput(static_cast<SDL_Window*>(p)); },
+                    sdlw);
+            }
+        }
+        break;
+    }
     case SDL_EVENT_KEY_DOWN: {
         whaleui_window_t* w = window_for(app, e.key.windowID);
         if (w && w->render) {
