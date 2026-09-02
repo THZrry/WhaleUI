@@ -312,6 +312,24 @@ static void ensure_font_state(whaleui_render_t* r, TTF_Font* font, int size,
     bool ok = TTF_SetFontSize(font, static_cast<float>(size > 0 ? size : 16));
     TTF_SetFontStyle(font, style);
     if (ok) {
+        /* size actually changed (or was never applied): every per-glyph
+         * advance cached under the OLD size is now wrong - CJK runs
+         * measured 13px/char at a stale 12.5pt state while the paint path
+         * measured 12px, so fix_run_heights wrapped "本地部署友好" onto a
+         * second line and only "吃白饭没吃饱" (advances that happened to
+         * round the same) stayed on one. Flush so the next measure and
+         * paint both read the glyphs at THIS size. */
+        auto it = r->glyph_w_cache.begin();
+        while (it != r->glyph_w_cache.end()) {
+            if (std::get<0>(it->first) == font) {
+                it = r->glyph_w_cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (r->ascii_font == font) {
+            r->ascii_font = nullptr;
+        }
         r->font_state[font] = std::make_pair(size > 0 ? size : 16, style);
     } else {
         r->font_state.erase(font); /* failed: retry next time */
