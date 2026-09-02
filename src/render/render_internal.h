@@ -142,6 +142,9 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
                int wrap_w = 0);
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family,
                 bool bold);
+/* 字形视觉盒高(ascent+descent/2):文字/光标垂直居中的统一基准。 */
+int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
+                 bool bold);
 std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
                              int fs, const std::string& family, bool bold,
                              size_t a, size_t b, int wrap_w = 0);

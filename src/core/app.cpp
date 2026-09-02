@@ -116,6 +116,7 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
          * caret/选区消失(浏览器切窗即 blur)。SDL 调用回主线程执行。 */
         whaleui_window_t* w = window_for(app, e.window.windowID);
         if (w && w->render && w->render->edit_el) {
+            w->render->focus_el = nullptr; /* :focus 样式随失焦移除 */
             w->render->edit_el = nullptr;
             w->render->compose.clear();
             w->render->compose_caret = -1;

@@ -10,6 +10,47 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+/* password 掩码文本:每可见字符替换为掩码字符(theme --password-char,
+ * 默认 U+2022 •)。只替换显示形态;值/光标/选区逻辑仍用明文。 */
+static std::string mask_password_value(whaleui_render_t* r,
+                                       const std::string& val)
+{
+    std::string mc = "\xE2\x80\xA2"; /* U+2022 BULLET */
+    if (r) {
+        auto it = r->theme_vars.find("--password-char");
+        if (it != r->theme_vars.end() && !it->second.empty()) {
+            mc = it->second;
+        }
+    }
+    std::string out;
+    out.reserve(val.size() + mc.size());
+    size_t i = 0;
+    while (i < val.size()) {
+        out += mc;
+        unsigned char c0 = static_cast<unsigned char>(val[i]);
+        i += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                ? 2
+                                : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+    }
+    return out;
+}
+
+/* val[0,byte_off) 里的 UTF-8 可见字符数(caret 的明文字节 -> 掩码文本
+ * 里的字符索引) */
+static size_t utf8_count_upto(const std::string& s, size_t byte_off)
+{
+    size_t n = 0, i = 0;
+    while (i < byte_off && i < s.size()) {
+        unsigned char c0 = static_cast<unsigned char>(s[i]);
+        i += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                ? 2
+                                : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+        ++n;
+    }
+    return n;
+}
+
 void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
                     int off_x, int off_y, const Clip* clip)
 {
@@ -190,6 +231,16 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * renders below the text. */
     ty += off_y + scroll_delta(r, n);
     int th = text_line_h(r, fs, family, bold);
+    /* 单行 input:caret/选区/IME 与值文字共用字形盒居中基准 —— 值绘制
+     * (draw_text_at)按字形盒 gh 居中,text_origin 按行高 th 居中会让
+     * caret 比文字高 (th-gh)/2(垂直修正后 caret 仍偏上)。 */
+    if (tag_eq(el, "input")) {
+        int ghx = text_glyph_h(r, fs, family, bold);
+        if (ghx >= 1) {
+            ty = n->content.y + off_y + scroll_delta(r, n) +
+                 (n->content.h - ghx) / 2;
+        }
+    }
 
     /* single-line input: content scrolls horizontally with the caret and is
      * clipped to the content box (long values never stretch or spill) */
@@ -235,31 +286,16 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
          * vertically itself, so pass the uncentered content top. */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
         std::string shown = val;
-        /* password: 每个可见字符掩码为圆点;value/光标/选区仍用明文
-         * (输入过滤与复制逻辑不变,只替换显示形态) */
-        if (!shown.empty() && tag_eq(el, "input")) {
+        /* password: 每个可见字符掩码为配置字符(默认 •);值/光标/选区
+         * 仍用明文(输入过滤与复制逻辑不变,只替换显示形态) */
+        bool pw_box = tag_eq(el, "input") && !val.empty();
+        if (pw_box) {
             size_t tlen = 0;
             const lxb_char_t* tv = lxb_dom_element_get_attribute(
                 el, (const lxb_char_t*)"type", 4, &tlen);
-            if (tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0) {
-                std::string masked;
-                size_t pi = 0;
-                while (pi < shown.size()) {
-                    masked += "\xE2\x80\xA2"; /* U+2022 BULLET */
-                    unsigned char c0 = static_cast<unsigned char>(shown[pi]);
-                    size_t step = 1;
-                    if ((c0 & 0x80) == 0) {
-                        step = 1;
-                    } else if ((c0 & 0xE0) == 0xC0) {
-                        step = 2;
-                    } else if ((c0 & 0xF0) == 0xE0) {
-                        step = 3;
-                    } else if ((c0 & 0xF8) == 0xF0) {
-                        step = 4;
-                    }
-                    pi += step;
-                }
-                shown = masked;
+            pw_box = tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
+            if (pw_box) {
+                shown = mask_password_value(r, val);
             }
         }
         unsigned int pc = fg;
@@ -286,16 +322,34 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                 el, (const lxb_char_t*)"type", 4, &tlen);
             pw = tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
         }
-        /* IME 组合期(input, 非密码):先画 caret 前的值;拼音与 caret 后
-         * 的值由 focused 块在拼音右侧续画(不重叠、可退格到拼音中间) */
-        bool comp = focused && !r->compose.empty() && !pw;
+        /* IME 组合期(input,含密码):先画 caret 前的值;拼音与 caret
+         * 后的值由 focused 块在拼音右侧续画(不重叠、可退格到拼音中间)。
+         * 密码框的值段是掩码点,head/tail 按可见字符截取(不是明文字节)。 */
+        bool comp = focused && !r->compose.empty();
         size_t comp_caret_b =
             static_cast<size_t>(r->sel_focus > 0 ? r->sel_focus : 0);
-        if (comp_caret_b > shown.size()) {
-            comp_caret_b = shown.size();
+        if (comp_caret_b > val.size()) {
+            comp_caret_b = val.size();
         }
-        std::string shown_head =
-            comp ? shown.substr(0, comp_caret_b) : shown;
+        std::string shown_head;
+        if (comp) {
+            if (pw) {
+                size_t nc = utf8_count_upto(val, comp_caret_b);
+                size_t gi = 0;
+                for (size_t k = 0; k < nc && gi < shown.size(); ++k) {
+                    unsigned char c0 =
+                        static_cast<unsigned char>(shown[gi]);
+                    gi += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                            ? 2
+                                            : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+                }
+                shown_head = shown.substr(0, gi);
+            } else {
+                shown_head = shown.substr(0, comp_caret_b);
+            }
+        } else {
+            shown_head = shown;
+        }
         if (!shown_head.empty()) {
             draw_text_at(r, shown_head, n->content.x - hx + off_x,
                          n->content.y + off_y + scroll_delta(r, n),
@@ -370,9 +424,33 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (caret2 > val.size()) {
             caret2 = val.size();
         }
+        /* caret/IME 几何文本:密码框按掩码文本测量(caret 在明文字节
+         * 处,换算成掩码文本里对应的字符前缀) */
+        std::string geom_text = val;
+        size_t geom_caret = caret2;
+        if (tag_eq(el, "input") && !val.empty()) {
+            size_t tl0 = 0;
+            const lxb_char_t* tv0 = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &tl0);
+            if (tv0 && tl0 == 8 && std::memcmp(tv0, "password", 8) == 0) {
+                geom_text = mask_password_value(r, val);
+                size_t nchars = utf8_count_upto(val, caret2);
+                size_t gi = 0;
+                for (size_t k = 0; k < nchars && gi < geom_text.size(); ++k) {
+                    unsigned char c0 =
+                        static_cast<unsigned char>(geom_text[gi]);
+                    gi += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                            ? 2
+                                            : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+                }
+                geom_caret = gi;
+            }
+        }
         /* keep the IME candidate window anchored at the caret */
-        update_ime_area(r, val, fs, family, bold, caret2, tx, ty, wrap_w);
-        paint_caret(r, tx, ty, val, fs, family, bold, caret2, ic, wrap_w);
+        update_ime_area(r, geom_text, fs, family, bold, geom_caret, tx, ty,
+                        wrap_w);
+        paint_caret(r, tx, ty, geom_text, fs, family, bold, geom_caret, ic,
+                    wrap_w);
         if (!r->compose.empty()) {
             unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
             unsigned int comp = (0xC8 << 24) | (fg & 0x00FFFFFF);
@@ -407,7 +485,30 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
          * 垂直居中 —— 拼音/后续文字和 value 共用同一垂直位置(基线) */
         int bhx = n->content.h > lh ? n->content.h : lh;
         int text_top = fy + (bhx - lh) / 2;
-        std::string tail = val.substr(caret > val.size() ? val.size() : caret);
+        std::string tail;
+        {
+            bool pwb = false;
+            size_t tl9 = 0;
+            const lxb_char_t* tv9 = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &tl9);
+            pwb = tv9 && tl9 == 8 && std::memcmp(tv9, "password", 8) == 0;
+            if (pwb) {
+                std::string msk = mask_password_value(r, val);
+                size_t nc = utf8_count_upto(
+                    val, caret > val.size() ? val.size() : caret);
+                size_t gi = 0;
+                for (size_t k = 0; k < nc && gi < msk.size(); ++k) {
+                    unsigned char c0 =
+                        static_cast<unsigned char>(msk[gi]);
+                    gi += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                            ? 2
+                                            : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+                }
+                tail = msk.substr(gi);
+            } else {
+                tail = val.substr(caret > val.size() ? val.size() : caret);
+            }
+        }
         draw_text_at(r, r->compose, fx, fy, 300, bhx, fs, family, cc, style,
                      0, el, ic);
         int cw2 = 0, cth2 = 0;

@@ -930,6 +930,26 @@ static bool glyph_img_stb(StbFonts& stb, unsigned int cp, unsigned int fg,
 }
 #endif
 
+/* 字形视觉盒高(ascent + descent/2),用于文字/光标/选区垂直居中:
+ * 行高 th 含行距,按 th 居中会让画在缓冲顶部的字形视觉偏上。
+ * 与 draw_text_at 的居中基准一致,避免 caret 与文字错位。 */
+int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
+                 bool bold)
+{
+    int gh = 0;
+#ifdef WHALEUI_BUILD_FULL
+    TTF_Font* gfont = render_get_font(r, family, fs, bold ? kFontBold : 0);
+    if (gfont) {
+        int ga = TTF_GetFontAscent(gfont);
+        int gd = TTF_GetFontDescent(gfont);
+        if (ga > 0) {
+            gh = ga + gd / 2;
+        }
+    }
+#endif
+    return gh > 0 ? gh : text_line_h(r, fs, family, bold);
+}
+
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, int* tw, int* th,
                int wrap_w)
@@ -1426,17 +1446,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
      * 值/拼音上飘的根因。必须在 cache miss 之外执行:命中缓存若跳过,
      * ty 保持初值 by(顶部对齐),同一文本首帧居中、后续帧贴顶偏上。 */
     {
-        int gh = th;
-#ifdef WHALEUI_BUILD_FULL
-        TTF_Font* gfont = render_get_font(r, family, fs, style);
-        if (gfont) {
-            int ga = TTF_GetFontAscent(gfont);
-            int gd = TTF_GetFontDescent(gfont);
-            if (ga > 0) {
-                gh = ga + gd / 2;
-            }
-        }
-#endif
+        int gh = text_glyph_h(r, fs, family, (style & kFontBold) != 0);
         if (gh < 1) {
             gh = th;
         }
