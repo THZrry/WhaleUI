@@ -83,6 +83,17 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     case SDL_EVENT_QUIT:
         app->running = 0;
         break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+        /* OS 焦点回到窗口时,若控件仍处于编辑态,重新开启文本输入:
+         * 首次打开窗口时 SDL_StartTextInput 可能早于 OS 焦点授予而被
+         * 丢弃(输入法无法唤起/无法切中英文),切走再切回才恢复 ——
+         * 焦点获得时重启即可修复。 */
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->render && w->render->edit_el) {
+            SDL_StartTextInput(w->sdl);
+        }
+        break;
+    }
     case SDL_EVENT_KEY_DOWN: {
         whaleui_window_t* w = window_for(app, e.key.windowID);
         if (w && w->render) {

@@ -1386,7 +1386,29 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     } else if (align == 2) {
         tx = bx + bw - tw;
     }
-    ty = th <= bh ? by + (bh - th) / 2 : by;
+    /* 垂直居中按"字形盒"(ascent+descent)而非行高 th:th 含行距时,
+     * 若按 th 居中,字形(画在缓冲顶部)下方留出一截行距空白,文字
+     * 视觉偏上 —— input 值/拼音都上飘的根因。 */
+    {
+        int gh = th;
+#ifdef WHALEUI_BUILD_FULL
+        TTF_Font* gfont = render_get_font(r, family, fs, style);
+        if (gfont) {
+            int ga = TTF_GetFontAscent(gfont);
+            int gd = TTF_GetFontDescent(gfont);
+            if (ga > 0) {
+                /* 字形主体从基线往上 ascent 高;无 descender 字符占满
+                 * 这高度,descent 是下行预留。视觉居中用 ascent(偏下
+                 * descent/2 与浏览器接近),descender 字符略探出下方 */
+                gh = ga + gd / 2;
+            }
+        }
+#endif
+        if (gh < 1) {
+            gh = th;
+        }
+        ty = gh <= bh ? by + (bh - gh) / 2 : by;
+    }
     /* 写缓存(full):miss 时把刚栅格化的位图存入缓存供后续帧复用 */
     if (!ckey_str.empty()) {
         whaleui_render_t::TextCacheEntry& e = r->text_cache[ckey_str];
