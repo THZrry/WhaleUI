@@ -48,6 +48,10 @@ extern "C" whaleui_theme_t whaleui_platform_system_theme(void)
 
 extern "C" int whaleui_platform_init(void)
 {
+    /* IME: application renders the composition text (SDL_EVENT_TEXT_EDITING
+     * -> compose overlay in the input). Candidate list stays with the OS
+     * native IME window - the engine does not take over the candidate UI. */
+    SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         return -1;
     }

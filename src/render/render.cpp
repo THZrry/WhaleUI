@@ -1161,6 +1161,42 @@ static std::string edit_lines_replace(whaleui_render_t* r,
     return nv;
 }
 
+/* input type 差异通过统一的字符过滤表达(底层通用,type 是配置):
+ * - disabled: 拒绝一切编辑(聚焦/插入/粘贴/IME)
+ * - type=number: 只放行数字与数字文法字符(0-9 . - + e E);
+ *   其余 type(text/password/email/...)原样放行。
+ * 页面未来可在此处挂钩自定义过滤回调(whaleui.h 预留)。
+ * 返回过滤后允许插入的字符串;为空表示整段拒绝。 */
+static std::string input_insert_filter(lxb_dom_element* el,
+                                       const std::string& ins)
+{
+    if (ins.empty()) {
+        return ins;
+    }
+    if (lxb_dom_element_has_attribute(
+            el, (const lxb_char_t*)"disabled", 8)) {
+        return std::string();
+    }
+    if (tag_eq(el, "input")) {
+        size_t alen = 0;
+        const lxb_char_t* t = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"type", 4, &alen);
+        if (t && alen == 6 && std::memcmp(t, "number", 6) == 0) {
+            std::string out;
+            out.reserve(ins.size());
+            for (size_t i = 0; i < ins.size(); ++i) {
+                unsigned char c = static_cast<unsigned char>(ins[i]);
+                if ((c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                    c == '+' || c == 'e' || c == 'E') {
+                    out.push_back(static_cast<char>(c));
+                }
+            }
+            return out;
+        }
+    }
+    return ins;
+}
+
 /* replace [a,b) of the editable value with `insertion`, move the caret to
  * the end of the insertion and write the result back into the DOM */
 void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
@@ -1803,6 +1839,12 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
     if (!el) {
         return;
     }
+    /* disabled 控件:不响应任何编辑/移动键(通用拦截,checkbox/button
+     * 等控件的 disabled 一并由各自的聚焦/点击处理拒绝) */
+    if (lxb_dom_element_has_attribute(
+            el, (const lxb_char_t*)"disabled", 8)) {
+        return;
+    }
     std::string val = edit_value(el);
     int anchor = r->sel_anchor, focus = r->sel_focus;
     int a = anchor < focus ? anchor : focus;
@@ -1832,9 +1874,14 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
         case 'v': { /* paste from the system clipboard */
             char* cl = SDL_GetClipboardText();
             if (cl) {
-                edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b),
-                             cl);
+                std::string pv = input_insert_filter(
+                    el, std::string(cl));
                 SDL_free(cl);
+                if (pv.empty()) {
+                    return;
+                }
+                edit_replace(r, el, static_cast<size_t>(a),
+                             static_cast<size_t>(b), pv);
             }
             return;
         }
@@ -2810,7 +2857,9 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
                 return;
             }
         }
-        if (el && is_editable(el)) {
+        if (el && is_editable(el) &&
+            !lxb_dom_element_has_attribute(
+                el, (const lxb_char_t*)"disabled", 8)) {
             /* focus the editable control and place the caret / word / line */
             r->edit_el = el;
             r->sel_anchor_el = r->sel_focus_el = el;
@@ -3231,8 +3280,12 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
     if (a > b) {
         std::swap(a, b);
     }
+    std::string ins = input_insert_filter(r->edit_el, std::string(utf8));
+    if (ins.empty()) {
+        return;
+    }
     edit_replace(r, r->edit_el, static_cast<size_t>(a), static_cast<size_t>(b),
-                 std::string(utf8));
+                 ins);
 }
 
 extern "C" void whaleui_render_handle_editing(whaleui_render_t* r,

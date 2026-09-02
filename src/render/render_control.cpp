@@ -235,6 +235,33 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
          * vertically itself, so pass the uncentered content top. */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
         std::string shown = val;
+        /* password: 每个可见字符掩码为圆点;value/光标/选区仍用明文
+         * (输入过滤与复制逻辑不变,只替换显示形态) */
+        if (!shown.empty() && tag_eq(el, "input")) {
+            size_t tlen = 0;
+            const lxb_char_t* tv = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &tlen);
+            if (tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0) {
+                std::string masked;
+                size_t pi = 0;
+                while (pi < shown.size()) {
+                    masked += "\xE2\x80\xA2"; /* U+2022 BULLET */
+                    unsigned char c0 = static_cast<unsigned char>(shown[pi]);
+                    size_t step = 1;
+                    if ((c0 & 0x80) == 0) {
+                        step = 1;
+                    } else if ((c0 & 0xE0) == 0xC0) {
+                        step = 2;
+                    } else if ((c0 & 0xF0) == 0xE0) {
+                        step = 3;
+                    } else if ((c0 & 0xF8) == 0xF0) {
+                        step = 4;
+                    }
+                    pi += step;
+                }
+                shown = masked;
+            }
+        }
         unsigned int pc = fg;
         if (shown.empty()) {
             /* placeholder: shown only while the value is empty (browser
@@ -323,6 +350,15 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                       wrap_w);
             draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
                          fs, family, comp, style, 0, el, ic);
+            /* 未确认组合文本:下方细下划线(浏览器 IME 风格,提示这段
+             * 拼音尚未上屏;候选列表由系统 IME 窗口负责,引擎不接管) */
+            int ctw = 0, cth = 0;
+            text_size(r, r->compose, fs, family, bold, &ctw, &cth, 0);
+            if (ctw > 0) {
+                unsigned int uc = comp & 0x00FFFFFF;
+                fill_rect(r->pixels, r->fb_w, r->fb_h, tx + cxx,
+                          ty + cyy + chh - 1, ctw, 1, uc, ic);
+            }
         }
     }
 }
