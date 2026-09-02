@@ -241,6 +241,13 @@ struct whaleui_render
     struct lxb_dom_element* edit_el;
     /* IME composition text (SDL_EVENT_TEXT_EDITING), drawn at the caret */
     std::string compose;
+    /* caret position INSIDE the composition text, in UTF-8 code points
+     * (SDL_TextEditingEvent.start); -1 = at the end */
+    int compose_caret = -1;
+    /* paint-time flow position after the pre-compose value text (x) and
+     * its baseline y: the composition text + the value tail continue here */
+    int compose_flow_x = -1;
+    int compose_flow_y = -1;
     /* undo/redo stack (Ctrl-Z/Y): each entry replaces [a,b) of the target
      * element's value with `ins` (removing `del`). The element pointer is
      * stable across layout-tree rebuilds. */
@@ -388,7 +395,8 @@ void whaleui_render_handle_key(whaleui_render_t* r, int keycode, int pressed,
 void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8);
 
 /* IME composition update (SDL_EVENT_TEXT_EDITING); empty text commits. */
-void whaleui_render_handle_editing(whaleui_render_t* r, const char* utf8);
+void whaleui_render_handle_editing(whaleui_render_t* r, const char* utf8,
+                                   int caret);
 
 /* FSR 1.0 upscaling. mode: 0 = auto (4K display or battery -> on, unless the
  * scaled render size would be too small), 1 = force on, 2 = off. scale e.g.

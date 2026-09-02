@@ -121,7 +121,8 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     case SDL_EVENT_TEXT_EDITING: {
         whaleui_window_t* w = window_for(app, e.edit.windowID);
         if (w && w->render) {
-            whaleui_render_handle_editing(w->render, e.edit.text);
+            whaleui_render_handle_editing(w->render, e.edit.text,
+                                          static_cast<int>(e.edit.start));
         }
         break;
     }

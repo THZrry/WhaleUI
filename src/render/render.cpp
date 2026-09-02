@@ -3289,12 +3289,13 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
 }
 
 extern "C" void whaleui_render_handle_editing(whaleui_render_t* r,
-                                              const char* utf8)
+                                              const char* utf8, int caret)
 {
     if (!r) {
         return;
     }
     r->compose = utf8 ? utf8 : "";
+    r->compose_caret = caret;
     r->has_dirty = 1;
 }
 

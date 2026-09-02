@@ -279,11 +279,37 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                 }
             }
         }
-        if (!shown.empty()) {
-            draw_text_at(r, shown, n->content.x - hx + off_x,
+        bool pw = false;
+        {
+            size_t tlen = 0;
+            const lxb_char_t* tv = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"type", 4, &tlen);
+            pw = tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
+        }
+        /* IME 组合期(input, 非密码):先画 caret 前的值;拼音与 caret 后
+         * 的值由 focused 块在拼音右侧续画(不重叠、可退格到拼音中间) */
+        bool comp = focused && !r->compose.empty() && !pw;
+        size_t comp_caret_b =
+            static_cast<size_t>(r->sel_focus > 0 ? r->sel_focus : 0);
+        if (comp_caret_b > shown.size()) {
+            comp_caret_b = shown.size();
+        }
+        std::string shown_head =
+            comp ? shown.substr(0, comp_caret_b) : shown;
+        if (!shown_head.empty()) {
+            draw_text_at(r, shown_head, n->content.x - hx + off_x,
                          n->content.y + off_y + scroll_delta(r, n),
                          n->content.w, n->content.h,
                          fs, family, pc, style, 0, el, ic);
+        }
+        if (comp) {
+            /* 记住 head 的结束 x,供 focused 块画拼音/tail 用 */
+            int hw = 0, hth = 0;
+            text_size(r, shown_head, fs, family, bold, &hw, &hth, 0);
+            r->compose_flow_x =
+                n->content.x - hx + off_x + hw;
+            r->compose_flow_y =
+                n->content.y + off_y + scroll_delta(r, n);
         }
     } else if (tag_eq(el, "textarea") && val.empty()) {
         /* empty textarea: its value glyphs normally come from the layout
@@ -310,7 +336,12 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * and the viewport clip - painting the value a second time here
      * double-rendered it (ghosted text). tx/ty below still anchor the
      * focused selection/caret geometry. */
-    if (focused) {
+    bool comp_ime = focused && !r->compose.empty() &&
+                    tag_eq(el, "input") && r->compose_flow_x >= 0;
+    size_t caret = focused
+                       ? static_cast<size_t>(r->sel_focus)
+                       : 0;
+    if (focused && !comp_ime) {
         size_t a = 0, b = 0;
         if (sel_range_for(r, el, val.size(), &a, &b, -1, -1, -1)) {
             std::vector<TRect> rects = sel_rects(r, val, fs, family, bold,
@@ -335,13 +366,13 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                           rects[i].w, rects[i].h, hl, ic);
             }
         }
-        size_t caret = static_cast<size_t>(r->sel_focus);
-        if (caret > val.size()) {
-            caret = val.size();
+        size_t caret2 = caret;
+        if (caret2 > val.size()) {
+            caret2 = val.size();
         }
         /* keep the IME candidate window anchored at the caret */
-        update_ime_area(r, val, fs, family, bold, caret, tx, ty, wrap_w);
-        paint_caret(r, tx, ty, val, fs, family, bold, caret, ic, wrap_w);
+        update_ime_area(r, val, fs, family, bold, caret2, tx, ty, wrap_w);
+        paint_caret(r, tx, ty, val, fs, family, bold, caret2, ic, wrap_w);
         if (!r->compose.empty()) {
             unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
             unsigned int comp = (0xC8 << 24) | (fg & 0x00FFFFFF);
@@ -360,6 +391,64 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                           ty + cyy + chh - 1, ctw, 1, uc, ic);
             }
         }
+    } else if (comp_ime) {
+        /* IME 组合期(input 非密码):值的前段(head)已画,这里把拼音画在
+         * head 右侧,再把 caret 之后的值画在拼音右侧 —— 拼音像浏览器一样
+         * 挤在中间,不覆盖后文。caret 画在拼音内部(SDL 事件的 start)。 */
+        unsigned int fg2 = color_of(n->style, "color", 0xFF1a1a1a);
+        unsigned int cc = (0xC8 << 24) | (fg2 & 0x00FFFFFF);
+        int fx = r->compose_flow_x;
+        int fy = r->compose_flow_y;
+        int lh = text_line_h(r, fs, family, bold);
+        if (lh < 1) {
+            lh = fs;
+        }
+        std::string tail = val.substr(caret > val.size() ? val.size() : caret);
+        draw_text_at(r, r->compose, fx, fy, 300, lh, fs, family, cc, style,
+                     0, el, ic);
+        int cw2 = 0, cth2 = 0;
+        text_size(r, r->compose, fs, family, bold, &cw2, &cth2, 0);
+        unsigned int uc2 = cc & 0x00FFFFFF;
+        fill_rect(r->pixels, r->fb_w, r->fb_h, fx, fy + lh - 1, cw2, 1,
+                  uc2, ic);
+        if (!tail.empty()) {
+            draw_text_at(r, tail, fx + cw2, fy, 300, lh, fs, family, fg2,
+                         style, 0, el, ic);
+        }
+        /* caret: 拼音内 compose_caret 个字符之后(head + 拼音前缀的宽度) */
+        std::string headx = val.substr(0, caret > val.size() ? val.size() : caret);
+        int hw2 = 0;
+        if (!headx.empty()) {
+            int hth2 = 0;
+            text_size(r, headx, fs, family, bold, &hw2, &hth2, 0);
+        }
+        int ccnt = r->compose_caret > 0 ? r->compose_caret : 0;
+        std::string cpre;
+        {
+            const std::string& cs = r->compose;
+            size_t ci = 0;
+            int n = 0;
+            while (ci < cs.size() && n < ccnt) {
+                unsigned char c0 = static_cast<unsigned char>(cs[ci]);
+                ci += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                          ? 2
+                                          : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
+                ++n;
+            }
+            cpre = cs.substr(0, ci);
+        }
+        int pw2 = 0, pth = 0;
+        if (!cpre.empty()) {
+            text_size(r, cpre, fs, family, bold, &pw2, &pth, 0);
+        }
+        int cx0 = fx + pw2;
+        if (cx0 < 0) {
+            cx0 = 0;
+        }
+        int caret_w = 1;
+        fill_rect(r->pixels, r->fb_w, r->fb_h, cx0, fy, caret_w, lh,
+                  fg2, ic);
+        (void)hw2;
     }
 }
 
