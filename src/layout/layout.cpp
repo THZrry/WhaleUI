@@ -2541,9 +2541,10 @@ struct Builder
                 fs = font_px > 0 ? font_px : 16;
             }
             int minc = k->is_text
-                           ? static_cast<int>(text_measure_est(
-                                 k->text, fs,
-                                 letter_spacing_px(k->style, fs))) +
+                           ? static_cast<int>(std::ceil(text_measure(
+                                 k->text, fs, get(k->style, "font-family"),
+                                 font_weight_bold(k->style),
+                                 letter_spacing_px(k->style, fs)))) +
                                  1
                            : (column
                                   ? static_cast<int>(
