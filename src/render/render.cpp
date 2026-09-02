@@ -1161,12 +1161,12 @@ static std::string edit_lines_replace(whaleui_render_t* r,
     return nv;
 }
 
-/* input type 差异通过统一的字符过滤表达(底层通用,type 是配置):
- * - disabled: 拒绝一切编辑(聚焦/插入/粘贴/IME)
- * - type=number: 只放行数字与数字文法字符(0-9 . - + e E);
- *   其余 type(text/password/email/...)原样放行。
- * 页面未来可在此处挂钩自定义过滤回调(whaleui.h 预留)。
- * 返回过滤后允许插入的字符串;为空表示整段拒绝。 */
+/* input type 宸紓閫氳繃缁熶竴鐨勫瓧绗﹁繃婊よ〃杈?搴曞眰閫氱敤,type 鏄厤缃?:
+ * - disabled: 鎷掔粷涓€鍒囩紪杈?鑱氱劍/鎻掑叆/绮樿创/IME)
+ * - type=number: 鍙斁琛屾暟瀛椾笌鏁板瓧鏂囨硶瀛楃(0-9 . - + e E);
+ *   鍏朵綑 type(text/password/email/...)鍘熸牱鏀捐銆?
+ * 椤甸潰鏈潵鍙湪姝ゅ鎸傞挬鑷畾涔夎繃婊ゅ洖璋?whaleui.h 棰勭暀)銆?
+ * 杩斿洖杩囨护鍚庡厑璁告彃鍏ョ殑瀛楃涓?涓虹┖琛ㄧず鏁存鎷掔粷銆?*/
 static std::string input_insert_filter(lxb_dom_element* el,
                                        const std::string& ins)
 {
@@ -1856,7 +1856,10 @@ static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
     r->has_dirty = 1;
     r->edit_scroll_need = 1;
     if (r->window) {
-        SDL_StartTextInput(r->window);
+        SDL_Window* ww = r->window;
+        whaleui_sdl_on_main(
+            [](void* p) { SDL_StartTextInput(static_cast<SDL_Window*>(p)); },
+            ww);
     }
     edit_ensure_visible(r);
 }
@@ -1904,8 +1907,8 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
     if (!el) {
         return;
     }
-    /* disabled 控件:不响应任何编辑/移动键(通用拦截,checkbox/button
-     * 等控件的 disabled 一并由各自的聚焦/点击处理拒绝) */
+    /* disabled 鎺т欢:涓嶅搷搴斾换浣曠紪杈?绉诲姩閿?閫氱敤鎷︽埅,checkbox/button
+     * 绛夋帶浠剁殑 disabled 涓€骞剁敱鍚勮嚜鐨勮仛鐒?鐐瑰嚮澶勭悊鎷掔粷) */
     if (lxb_dom_element_has_attribute(
             el, (const lxb_char_t*)"disabled", 8)) {
         return;
@@ -2206,7 +2209,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
             TTF_CloseFont(f);
         }
     }
-    /* text_cache 鐨勬爡鏍煎寲缂撳啿鏄?std::vector,闅?map 鏋愭瀯鑷姩閲婃斁 */
+    /* text_cache 閻ㄥ嫭鐖￠弽鐓庡缂傛挸鍟块弰?std::vector,闂?map 閺嬫劖鐎懛顏勫З闁插﹥鏂?*/
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
     }
@@ -2324,7 +2327,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         return;
     }
 #ifdef WHALEUI_BUILD_FULL
-    /* text_cache 缂撳啿涓?std::vector,鐩存帴娓呯┖鍗冲彲 */
+    /* text_cache 缂傛挸鍟挎稉?std::vector,閻╁瓨甯村〒鍛敄閸楀啿褰?*/
     r->text_cache.clear();
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
@@ -2651,7 +2654,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
          * frozen: it follows the element under the pointer - the select
          * itself stays pointer (its UA cursor), the popup options are
          * default arrow (unless they set their own), and anything else on
-         * the page shows its own cursor ("涓嬫媺鐐瑰紑鍚庨紶鏍囧湪鍝兘鏄?pointer"
+         * the page shows its own cursor ("娑撳濯洪悙鐟扮磻閸氬酣绱堕弽鍥ф躬閸濐亪鍏橀弰?pointer"
          * was the select's pointer leaking to the whole page because
          * hover_el stayed pinned to the select). */
         whaleui_layout_node_t* s2 = find_node_by_el(r->tree, r->open_select);
@@ -2952,11 +2955,21 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             /* mouse click (not a drag yet) can move the caret past the
              * visible edge of a horizontally scrolled input: bring it back */r->edit_scroll_need = 1;
             edit_ensure_visible(r);
-            SDL_StartTextInput(r->window);
+            if (r->window) {
+                SDL_Window* ww = r->window;
+                whaleui_sdl_on_main(
+                    [](void* p) { SDL_StartTextInput(static_cast<SDL_Window*>(p)); },
+                    ww);
+            }
         } else if (hit && hit->is_text) {
             /* anchor a potential selection (only drags extend it) */
             if (r->edit_el) {
-                SDL_StopTextInput(r->window);
+                if (r->window) {
+                    SDL_Window* ww = r->window;
+                    whaleui_sdl_on_main(
+                        [](void* p) { SDL_StopTextInput(static_cast<SDL_Window*>(p)); },
+                        ww);
+                }
                 r->edit_el = nullptr;
             }
             r->compose.clear();
@@ -2983,7 +2996,12 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         } else {
             /* click elsewhere: drop the selection + editing focus */
             if (r->edit_el) {
-                SDL_StopTextInput(r->window);
+                if (r->window) {
+                    SDL_Window* ww = r->window;
+                    whaleui_sdl_on_main(
+                        [](void* p) { SDL_StopTextInput(static_cast<SDL_Window*>(p)); },
+                        ww);
+                }
                 r->edit_el = nullptr;
             }
             r->compose.clear();
@@ -3173,7 +3191,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             /* a container at its edge must NOT swallow the wheel forever:
              * once it cannot move (already at top/bottom), fall through to
              * the next scrollable ancestor so the page keeps scrolling
-             * ("榧犳爣鍦?card/textarea 涓婃棤娉曟粴鍔ㄥ埌搴? - the container
+             * ("姒х姵鐖ｉ崷?card/textarea 娑撳﹥妫ゅ▔鏇熺泊閸斻劌鍩屾惔? - the container
              * claimed every wheel event and never bubbled). */
             if (r->scrolls[n->el] != before) {
                 return;
@@ -3358,8 +3376,8 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
     if (ins.empty()) {
         return;
     }
-    /* type=number:整个值最多一个小数点(浏览器同);插入后出现第二个
-     * 点则整段拒绝(数字文法的点只允许一个) */
+    /* type=number:鏁翠釜鍊兼渶澶氫竴涓皬鏁扮偣(娴忚鍣ㄥ悓);鎻掑叆鍚庡嚭鐜扮浜屼釜
+     * 鐐瑰垯鏁存鎷掔粷(鏁板瓧鏂囨硶鐨勭偣鍙厑璁镐竴涓? */
     if (tag_eq(r->edit_el, "input")) {
         size_t tlen = 0;
         const lxb_char_t* tv = lxb_dom_element_get_attribute(
@@ -3882,7 +3900,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * compute them BEFORE the strip math. After a relayout bounds_valid
      * is 0 and every bound reads (0,0,0,0), so the hover strip came out
      * empty and a hover change repainted nothing (background-color :hover
-     * "涓嶅搷搴?; the relayout had applied the style, the paint just never
+     * "娑撳秴鎼锋惔?; the relayout had applied the style, the paint just never
      * covered the box). */
     if (!r->bounds_valid) {
         compute_paint_bounds(r->tree->root);
@@ -4139,7 +4157,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * other content cannot cover it; its position follows the select's
      * scroll-offset ancestors. Like every z-raised layer it clears the old
      * text under its area first, otherwise lower elements' glyphs show
-     * through the popup ("涓嬫媺閫夐」琚笅灞傛枃瀛楃┛閫?). */
+     * through the popup ("娑撳濯洪柅澶愩€嶇悮顐＄瑓鐏炲倹鏋冪€涙鈹涢柅?). */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {

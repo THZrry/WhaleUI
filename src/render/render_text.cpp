@@ -1716,7 +1716,21 @@ void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
         wy = wy * r->height / r->fb_h;
     }
     SDL_Rect rect = {wx, wy, 2, chh};
-    SDL_SetTextInputArea(r->window, &rect, 0);
+    if (r->window) {
+        struct ImeAreaTask {
+            SDL_Window* w;
+            SDL_Rect r;
+        };
+        SDL_Window* ww = r->window;
+        ImeAreaTask* t = new ImeAreaTask{ww, rect};
+        whaleui_sdl_on_main(
+            [](void* p) {
+                ImeAreaTask* a = static_cast<ImeAreaTask*>(p);
+                SDL_SetTextInputArea(a->w, &a->r, 0);
+                delete a;
+            },
+            t);
+    }
 }
 
 void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,

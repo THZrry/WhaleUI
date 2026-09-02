@@ -16,6 +16,22 @@
 
 #include <cstring>
 #include <string>
+#include <functional>
+#include <mutex>
+#include <vector>
+
+/* SDL window/IME calls must run on the window's message thread (the main
+ * thread here). The render worker posts them here; the main loop drains
+ * the queue right after SDL_PollEvent. Lives OUTSIDE the anonymous
+ * namespace so render.cpp/render_text.cpp can link against it. */
+static std::mutex g_main_tasks_mx;
+static std::vector<std::function<void()>> g_main_tasks;
+
+extern "C" void whaleui_sdl_on_main(void (*fn)(void*), void* ud)
+{
+    std::lock_guard<std::mutex> lk(g_main_tasks_mx);
+    g_main_tasks.push_back([fn, ud] { fn(ud); });
+}
 
 namespace {
 
@@ -84,13 +100,14 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         app->running = 0;
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED: {
-        /* OS 焦点回到窗口时,若控件仍处于编辑态,重新开启文本输入:
-         * 首次打开窗口时 SDL_StartTextInput 可能早于 OS 焦点授予而被
-         * 丢弃(输入法无法唤起/无法切中英文),切走再切回才恢复 ——
-         * 焦点获得时重启即可修复。 */
+        /* OS 焦点回到窗口时,若控件仍处于编辑态,重新开启文本输入。
+         * 必须在主线程执行(IMM 绑定窗口线程),post 到主线程队列。 */
         whaleui_window_t* w = window_for(app, e.window.windowID);
-        if (w && w->render && w->render->edit_el) {
-            SDL_StartTextInput(w->sdl);
+        if (w && w->render && w->render->edit_el && w->sdl) {
+            SDL_Window* sdlw = w->sdl;
+            whaleui_sdl_on_main(
+                [](void* p) { SDL_StartTextInput(static_cast<SDL_Window*>(p)); },
+                sdlw);
         }
         break;
     }
@@ -509,6 +526,22 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         if (work) {
             app->frame_request.store(1);
             app->frame_cv.notify_one();
+        }
+        /* run SDL window/IME tasks posted by the worker on the MAIN thread:
+         * SDL_StartTextInput/StopTextInput/SetTextInputArea touch the
+         * Windows IMM/TSF context, which is bound to the window's message
+         * thread. Called from the render worker they leave the IME in a
+         * half-activated state (cannot switch/enable input until the window
+         * loses+regains focus) and can crash on later input events. */
+        {
+            std::vector<std::function<void()>> todo;
+            {
+                std::lock_guard<std::mutex> lk(g_main_tasks_mx);
+                todo.swap(g_main_tasks);
+            }
+            for (auto& f : todo) {
+                f();
+            }
         }
 
         /* power-state poll (~2s): unplugging throttles the loop to the

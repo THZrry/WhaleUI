@@ -44,6 +44,10 @@ const int kSelectItemH = 26;
 #endif
 
 extern whaleui_gpu_t* g_gpu;
+/* run a function on the SDL window/message thread (main thread). SDL
+ * window/IME calls (StartTextInput/Stop/SetTextInputArea) are bound to
+ * that thread on Windows (IMM context); the render worker must post them. */
+extern "C" void whaleui_sdl_on_main(void (*fn)(void*), void* ud);
 extern int g_backdrop_active;
 extern whaleui_layout_tree_t* g_last_tree;
 extern whaleui_render_t* g_metric_render;
