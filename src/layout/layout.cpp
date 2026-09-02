@@ -2743,6 +2743,16 @@ struct Builder
                     }
                 }
             }
+            /* a flex item never sizes below its explicit min-* even when
+             * there is no grow/shrink pressure to clamp it there
+             * (select/input with min-width:180px inside a wide row was
+             * keeping its ~127px content width) */
+            for (size_t i = 0; i < row.sizes.size(); ++i) {
+                size_t gi = kid_idx(row.items[i]);
+                if (row.sizes[i] < min_main[gi]) {
+                    row.sizes[i] = static_cast<float>(min_main[gi]);
+                }
+            }
             /* justify-content works on the space left after grow/shrink */
             float free_left = static_cast<float>(container_main);
             for (size_t i = 0; i < row.sizes.size(); ++i) {
