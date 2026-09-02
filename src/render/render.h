@@ -60,6 +60,11 @@ struct whaleui_render
     size_t rule_count;
     whaleui_css_keyframes_t keyframes;
     std::map<std::string, std::string> theme_vars;
+    /* any rule selects on :hover/:active/:focus? Interaction-state changes
+     * only need a relayout when a rule can react to them; a stylesheet
+     * with none (most form/plain pages) makes hover purely a cursor/state
+     * update - no tree rebuild per hover element change. */
+    int has_interact_rules;
 
     /* font cache: "family" -> TTF_Font. One font per FAMILY - size and
      * style are set on demand (font_state below) right before use, so a

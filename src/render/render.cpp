@@ -2234,6 +2234,7 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
         r->rules = nullptr;
         r->rule_count = 0;
     }
+    r->has_interact_rules = 0;
     whaleui_css_keyframes_destroy(&r->keyframes);
     if (rules && count) {
         /* deep-copy rules so the render context owns its stylesheet */
@@ -2245,6 +2246,14 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
             }
             r->rules = copy;
             r->rule_count = count;
+            r->has_interact_rules = 0;
+            for (size_t i = 0; i < count; ++i) {
+                const char* sel = rules[i].selector ? rules[i].selector : "";
+                if (std::strstr(sel, ":hover") || std::strstr(sel, ":active") ||
+                    std::strstr(sel, ":focus")) {
+                    r->has_interact_rules = 1;
+                }
+            }
             for (size_t i = 0; i < count; ++i) {
                 copy[i].selector = strdup(rules[i].selector ? rules[i].selector : "");
                 copy[i].media = rules[i].media ? strdup(rules[i].media) : nullptr;
@@ -2698,7 +2707,9 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
-        r->hover_old_el = r->hover_el;
+        r->hover_old_el =
+            (r->has_interact_rules && r->rule_count > 0) ? r->hover_el
+                                                         : nullptr;
         r->hover_el = el;
         /* switch the system cursor: I-beam over editable text, pointer
          * over links/clickable controls, arrow otherwise */
@@ -2726,7 +2737,13 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
             }
         }
         SDL_SetCursor(want);
-        r->has_dirty = 1;
+        /* interaction-state rules present -> a hover change can alter
+         * styles, rebuild. Without them (most plain/form pages) hover is
+         * only the cursor switch above: skip the whole-tree rebuild that
+         * would otherwise run on every element the mouse crosses. */
+        if (r->has_interact_rules && r->rule_count > 0) {
+            r->has_dirty = 1;
+        }
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a
