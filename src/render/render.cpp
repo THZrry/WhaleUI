@@ -3592,10 +3592,22 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         r->tree, el, r->rules, r->rule_count,
                         &r->theme_vars, &st2, &r->scrolls, r->anim,
                         r->text_scale);
-                    /* the style-only pass leaves dom_dirty/has_dirty empty,
+                    /* The style-only pass leaves dom_dirty/has_dirty empty,
                      * which would hit the frame's idle early-return and
-                     * never repaint the hovered box - force a repaint */
-                    r->scroll_dirty = 1;
+                     * never repaint the hovered box. hover_old_el (kept set
+                     * here, or pinned to the hovered element on a first
+                     * hover) drives the frame's partial repaint of the
+                     * changed box(es) instead of a full-viewport repaint.
+                     * The rebuilt subtree's nodes have zeroed paint bounds
+                     * (only box/bounds passes fill them): refresh the
+                     * subtree + ancestor chain locally - a stale whole-tree
+                     * bounds_valid would cull the hovered subtree. */
+                    r->bounds_valid = 1;
+                    refresh_paint_bounds_chain(
+                        find_node_by_el(r->tree, el));
+                    if (!r->hover_old_el) {
+                        r->hover_old_el = el;
+                    }
                 }
             }
         }
@@ -3651,10 +3663,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
-     * animation/transition is running, an editable caret is blinking, or
-     * the DOM was mutated. */
+     * animation/transition is running, an editable caret is blinking, the
+     * DOM was mutated, or a hover change is waiting for its partial
+     * repaint (hover_old_el set by set_hover / the state-relayout pass). */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
-        !animating && !r->edit_el && dom_dirty.empty()) {
+        !animating && !r->edit_el && !r->hover_old_el &&
+        dom_dirty.empty()) {
         r->alive = 0; /* static page: the app loop can park idle */
         return 0;
     }
