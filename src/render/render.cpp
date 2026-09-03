@@ -4004,7 +4004,24 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             if (struct_dirty) {
                 /* structural edit (children/text shape changed): the
                  * subtree must be rebuilt and geometry may shift - the
-                 * full relayout path below */
+                 * full relayout path below. A list whose TAIL grew by new
+                 * <li> rows is the one structural edit that does NOT need
+                 * the old rows rebuilt: whaleui_layout_append_rows builds
+                 * only the new rows and shifts what follows (seconds on a
+                 * 10k-row list -> the new rows only). */
+                if (whaleui_layout_append_rows(
+                        r->tree, el, r->rules, r->rule_count,
+                        &r->theme_vars, &st, &r->scrolls, r->anim,
+                        r->text_scale) == 0) {
+                    continue; /* incremental: geometry grew, no subtree
+                               * rebuild; wide repaint below covers it */
+                }
+                /* a freshly created element (li built by append_rows on its
+                 * parent) has no laid-out subtree yet - rebuilding it alone
+                 * is pointless (its parent's rebuild covers it) */
+                if (!find_node_by_el(r->tree, el)) {
+                    continue;
+                }
                 full_list.push_back(el);
                 continue;
             }

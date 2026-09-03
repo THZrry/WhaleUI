@@ -4114,6 +4114,217 @@ extern "C" int whaleui_layout_relayout_style(
                          anim, text_scale, 1);
 }
 
+/* shift a subtree down by dy: document y of every descendant. Fixed boxes
+ * do not move with content growth. */
+static void shift_tree_down(whaleui_layout_node_t* n, int dy)
+{
+    if (!n) {
+        return;
+    }
+    if (n->fx) {
+        return; /* position:fixed is viewport-anchored */
+    }
+    n->border.y += dy;
+    n->content.y += dy;
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        shift_tree_down(c, dy);
+    }
+}
+
+/* shift every node that comes after `n` in document order (n's following
+ * siblings, then the same for each ancestor) by dy. */
+static void shift_following(whaleui_layout_node_t* n, int dy)
+{
+    for (whaleui_layout_node_t* sib = n->next; sib; sib = sib->next) {
+        shift_tree_down(sib, dy);
+    }
+    if (n->parent) {
+        shift_following(n->parent, dy);
+    }
+}
+
+extern "C" int whaleui_layout_append_rows(
+    whaleui_layout_tree_t* tree, lxb_dom_element* list_el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale)
+{
+    if (!tree || !list_el || !tree->root) {
+        return -1;
+    }
+    auto found = tree->by_el.find(list_el);
+    if (found == tree->by_el.end()) {
+        return -1; /* list not laid out yet: nothing to append to */
+    }
+    whaleui_layout_node_t* list = found->second;
+    if (!list || list->is_text) {
+        return -1;
+    }
+    /* count laid-out row nodes (element children of the list) */
+    size_t tree_rows = 0;
+    whaleui_layout_node_t* last_row = nullptr;
+    for (whaleui_layout_node_t* c = list->first_child; c; c = c->next) {
+        if (c->el && !c->is_text) {
+            last_row = c;
+            ++tree_rows;
+        }
+    }
+    /* count DOM <li> children of the list element */
+    size_t dom_rows = 0;
+    for (lxb_dom_node* c = list_el->node.first_child; c; c = c->next) {
+        if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            continue;
+        }
+        lxb_dom_element* e = lxb_dom_interface_element(c);
+        size_t elen = 0;
+        const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+        if (ename && elen == 2 && ename[0] == 'l' && ename[1] == 'i') {
+            ++dom_rows;
+        }
+    }
+    if (dom_rows <= tree_rows) {
+        return -1; /* no tail growth (or not a list): regular relayout */
+    }
+    const size_t new_rows = dom_rows - tree_rows;
+
+    /* conservative scope: shifting is safe in plain block flow; a flex /
+     * grid / table / absolutely-positioned ancestor reflows children by
+     * rules the simple shift does not model - fall back to the full
+     * relayout for those */
+    for (whaleui_layout_node_t* a = list; a; a = a->parent) {
+        if (a->fx || a->sk) {
+            return -1;
+        }
+        std::string dsp = get(a->style, "display");
+        if (dsp == "flex" || dsp == "grid" || dsp == "table" ||
+            dsp == "table-row" || dsp == "table-cell" ||
+            dsp == "inline-block") {
+            return -1;
+        }
+        if (!a->parent) {
+            break;
+        }
+    }
+
+    /* the DOM cursor: the first DOM <li> after the laid-out tail */
+    lxb_dom_node* next_dom = nullptr;
+    {
+        size_t idx = 0;
+        for (lxb_dom_node* c = list_el->node.first_child; c; c = c->next) {
+            if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                continue;
+            }
+            lxb_dom_element* e = lxb_dom_interface_element(c);
+            size_t elen = 0;
+            const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+            if (ename && elen == 2 && ename[0] == 'l' && ename[1] == 'i') {
+                if (idx == tree_rows) {
+                    next_dom = c;
+                    break;
+                }
+                ++idx;
+            }
+        }
+    }
+    if (!next_dom) {
+        return -1;
+    }
+
+    /* builder with the same inputs as a regular relayout */
+    Builder b;
+    b.tree = tree;
+    b.rules = rules;
+    b.rule_count = count;
+    if (st) {
+        b.st = *st;
+    }
+    b.scrolls = scrolls;
+    b.anim = anim;
+    b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    if (theme_vars) {
+        b.vars = *theme_vars;
+    }
+    for (auto& kv : tree->vars) {
+        b.vars[kv.first] = kv.second;
+    }
+
+    /* running cursor: below the last laid-out row (margin-aware) */
+    int cursor = 0;
+    if (last_row) {
+        cursor = (last_row->border.y - last_row->margin[0]) +
+                 last_row->border.h + last_row->margin[2];
+    } else {
+        cursor = list->content.y;
+    }
+    /* the font the container lays rows with (full-layout context) */
+    int fs = 16;
+    {
+        std::string fsz = get(list->style, "font-size");
+        if (!fsz.empty()) {
+            int v = static_cast<int>(len_px(fsz, 0, 16.0f));
+            if (v > 0) {
+                fs = v;
+            }
+        }
+    }
+    int x = list->content.x;
+    int w = list->content.w > 0 ? list->content.w : tree->viewport_w;
+    int delta = 0;
+
+    /* link anchor: the tail of the list's child chain */
+    whaleui_layout_node_t* tail = list->first_child;
+    if (tail) {
+        while (tail->next) {
+            tail = tail->next;
+        }
+    }
+
+    size_t built = 0;
+    for (lxb_dom_node* c = next_dom; c && built < new_rows; c = c->next) {
+        if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            continue;
+        }
+        lxb_dom_element* e = lxb_dom_interface_element(c);
+        size_t elen = 0;
+        const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+        if (!ename || elen != 2 || ename[0] != 'l' || ename[1] != 'i') {
+            continue;
+        }
+        int c0 = cursor;
+        whaleui_layout_node_t* li = b.build(e, list);
+        if (!li) {
+            break;
+        }
+        if (!list->first_child) {
+            list->first_child = li;
+        } else if (tail) {
+            tail->next = li;
+        }
+        tail = li;
+        b.layout(li, x, 0, w, tree->viewport_h, fs, &c0);
+        delta += c0 - cursor;
+        cursor = c0;
+        ++built;
+    }
+    if (built == 0) {
+        return -1;
+    }
+
+    /* grow the list box, its ancestors (their boxes now contain more
+     * content) and shift everything after it in document order down */
+    list->border.h += delta;
+    list->content.h += delta;
+    for (whaleui_layout_node_t* p = list->parent; p && p->parent;
+         p = p->parent) {
+        p->border.h += delta;
+    }
+    shift_following(list, delta);
+    tree->root->scroll_max += delta;
+    return 0;
+}
+
 /* batch relayout for a layout-affecting animation: rebuild each animated
  * element's subtree with the tick's styles, but run the box pass ONCE for
  * all of them. Per-element relayout ran the whole-tree box pass per element

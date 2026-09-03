@@ -210,6 +210,27 @@ int whaleui_layout_relayout_style(
     const std::map<struct lxb_dom_element*, int>* scrolls,
     struct whaleui_anim* anim, float text_scale);
 
+/* Append-only relayout: <li> rows were appended to the END of an already
+ * laid-out list container (ul/ol). Rebuilds ONLY the new rows (per-item
+ * style cascade + independent layout from the container's running cursor),
+ * links them to the container's node chain, grows the container and shifts
+ * every following node by the added height (ancestor heights + root scroll
+ * range included). The pre-existing rows are never rebuilt - the common
+ * "append one row to a 10k-row list" edit drops from a full relayout of
+ * the whole subtree (seconds) to the new rows only.
+ *
+ * Returns 0 when the append path applied; <0 when the container has no
+ * laid-out rows / the DOM tail did not grow / the container sits inside a
+ * flex/grid/table/absolutely-positioned ancestor (shifting is unsafe) -
+ * the caller then runs the regular full relayout. */
+int whaleui_layout_append_rows(
+    whaleui_layout_tree_t* tree, struct lxb_dom_element* list_el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<struct lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale);
+
 /* Batch relayout for a layout-affecting animation: ~same as relayout but
  * rebuilds several animated subtrees before a single whole-tree box pass
  * (per-element relayout would box-pass the whole tree per element). */
