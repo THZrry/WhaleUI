@@ -52,10 +52,34 @@
 
 ## 4. 先决小实验（实施第一步，决策 A vs B）
 
-插桩统计 build 后每元素相对 cascade 结果实际写入的键数（特判 +
-继承差异）。若平均 <8：方案 B detach 拷贝墙仍大（拷贝全 map），
-需方案 A 覆盖层（小 map ~5 键，写入廉价）。
-若覆盖层方案查询反弹：回退到方案 C（不动 style 表示）。
+## 4. 先决分析结论（2026-06 静态审查 + 前几轮插桩数据）
+
+- style_compute 单次 25us（已近下限）。
+- **继承 merge 是"仅差异写入"**（layout.cpp ~1596：只在 n->style 缺键且
+  parent 有键时写 font-size/color/font-family/line-height/
+  letter-spacing/cursor）——每元素实际 ~2-3 键，非全量。
+- compute 返回值经 NRVO/move 赋给 n->style（O(1) 窃取，无拷贝）。
+- **主拷贝源 = add_run（layout.cpp 1315）`t->style = style`**：每个文本
+  run 深拷贝 node 的整个 style map（~50 键，~20-25us/run）；fill 每行
+  li>a 一个 run → ~25us/行。
+- cache 命中路径 `n->style = sit->second`（const 引用 → 深拷贝 ~20us）
+  只影响整树 rebuild（fill 行是新元素走 compute/move，无此拷贝）。
+
+**修正后的主攻点**：
+1. run style 拷贝（fill 补齐 ~25us/行）——paint/布局读 style 全部经
+   `nd->style`（sget/get 通用，run 与元素同路径），run 的 style 语义与
+   node 相同 → 可共享（run 只读；唯一写 run style 的是 scale_fonts，
+   与 node style 同步写同值）。实现选型：
+   a. run->style 存"空 + 读时回退父节点 style"（sget 侵入小改：is_text
+      且 style 空 → 用 parent->style）——改动最小（add_run 一处 +
+      sget/读点兜底），风险：任何绕过 sget 直读 nd->style 的地方。
+   b. style 表示共享（shared_ptr）——改动面大（全引擎读点）。
+2. cache 命中深拷贝（整树 rebuild）——共享 cache 值（若 n->style 表示
+   允许共享）。
+
+方案 B（COW 全 map detach）因继承写仅差异而**不必要**（detach 拷贝 50
+键只会抵消收益）——放弃。倾向 4.1a（run 回退父）先验证，收益
+~25us/行（补齐 4.5s -> ~3s），风险可控。
 
 ## 5. 方案 C（零 style 改动，并行兜底）
 
