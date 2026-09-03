@@ -94,33 +94,37 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
  * (the worker holds it), so it is serialized with rendering - no data
  * race between input handlers and the render pass. */
 /* SDL event watch: invoked from inside the OS modal resize/drag loop
- * where SDL_PollEvent blocks (Windows AppFreezeDuringDrag). Forward the
- * resize to the worker's input queue so the window keeps resizing live.
- * No SDL calls here (would deadlock inside the watch); just queue + ping. */
+ * where SDL_PollEvent blocks (Windows AppFreezeDuringDrag). The watch runs
+ * under SDL's own event lock, so NO SDL calls and NO render_lock here
+ * (the worker may hold render_lock while calling SDL -> deadlock).
+ * Resized sizes go into lock-free atomic slots; MOVED just pings a frame
+ * so an animated page keeps rendering while dragged. */
 static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
 {
     if (!e) {
-        return false;
-    }
-    /* RESIZED (size changed) and MOVED (window dragged by its title bar):
-     * both come from inside the OS modal loop where SDL_PollEvent blocks.
-     * Resized needs the worker to re-layout; MOVED needs it too, or an
-     * animated page freezes while the window is being dragged (nothing
-     * requests frames during the modal loop). */
-    if (e->type != SDL_EVENT_WINDOW_RESIZED &&
-        e->type != SDL_EVENT_WINDOW_MOVED) {
         return false;
     }
     whaleui_app_t* app = static_cast<whaleui_app_t*>(userdata);
     if (!app) {
         return false;
     }
-    {
-        std::lock_guard<std::mutex> lk(app->render_lock);
-        app->input_queue.push_back(*e);
+    if (e->type == SDL_EVENT_WINDOW_RESIZED) {
+        /* single-window assumption (see window/render comments): no SDL
+         * calls allowed inside the watch, so match by iteration */
+        for (whaleui_window_t* win : app->windows) {
+            if (win->sdl) {
+                win->watch_w.store(e->window.data1);
+                win->watch_h.store(e->window.data2);
+                win->watch_seq.fetch_add(1);
+                break;
+            }
+        }
     }
-    app->frame_request.store(1);
-    app->frame_cv.notify_one();
+    if (e->type == SDL_EVENT_WINDOW_RESIZED ||
+        e->type == SDL_EVENT_WINDOW_MOVED) {
+        app->frame_request.store(1);
+        app->frame_cv.notify_one();
+    }
     return false;
 }
 
@@ -426,6 +430,19 @@ void render_worker_fn(whaleui_app_t* app)
                 app->input_queue.pop_front();
                 process_event(app, e);
             }
+            /* fold event-watch resize slots (written lock-free from inside
+             * the OS modal loop) into the coalesced resize state */
+            for (whaleui_window_t* win : app->windows) {
+                int seq = win->watch_seq.load();
+                if (seq != win->watch_seq_last) {
+                    win->watch_seq_last = seq;
+                    if (win->watch_w.load() > 0) {
+                        win->resize_w = win->watch_w.load();
+                        win->resize_h = win->watch_h.load();
+                        win->resize_pending = 1;
+                    }
+                }
+            }
             /* apply coalesced resizes: at most once per interval. A pending
              * resize keeps the frame alive so the loop below renders at the
              * new size even without further events. */
@@ -466,6 +483,13 @@ void render_worker_fn(whaleui_app_t* app)
                 app->frames_alive.store(alive);
                 app->frame_done.store(1);
                 app->frame_request.store(0);
+                /* an animated window keeps requesting its own frames (the
+                 * main thread is inside the OS modal drag loop and cannot
+                 * poll/set frame_request - without this the animation
+                 * freezes the moment the mouse stops mid-drag) */
+                if (alive) {
+                    app->frame_request.store(1);
+                }
                 /* pace to the display refresh rate OUTSIDE the lock (the
                  * main thread can still push events): the D3D12 backend's
                  * VSYNC present mode does not wait for vblank, so without

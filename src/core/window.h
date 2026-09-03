@@ -9,6 +9,7 @@
 
 #include "whaleui.h"
 
+#include <atomic>
 #include <string>
 
 /* SDL3 opaque types; never dereferenced in this header. */
@@ -52,6 +53,15 @@ struct whaleui_window
      * during the drag and settles ~80ms after it stops. */
     int resize_pending;
     int resize_w;
+    /* event-watch slots (written by the SDL event watch with NO lock -
+     * the watch runs inside SDL's own event lock, taking render_lock there
+     * could deadlock against the worker holding it while calling SDL).
+     * The worker folds watch_seq changes into resize_pending. */
+    std::atomic<int> watch_seq{0};
+    std::atomic<int> watch_w{0};
+    std::atomic<int> watch_h{0};
+    /* last watch_seq the worker folded (worker-thread only) */
+    int watch_seq_last = 0;
     int resize_h;
     unsigned long long resize_last; /* last time resize was actually applied */
 };
