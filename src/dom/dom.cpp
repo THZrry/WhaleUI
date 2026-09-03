@@ -45,6 +45,15 @@ bool& g_vars_dirty()
     return d;
 }
 
+/* a structural DOM edit happened this frame (children/text added, removed,
+ * moved or replaced): the renderer must full-relayout (not the style-only
+ * fast path) and repaint widely. See whaleui_dom_mark_dirty_struct. */
+bool& g_struct_dirty()
+{
+    static bool d = false;
+    return d;
+}
+
 lxb_dom_element* as_el(whaleui_dom_element_t* el)
 {
     return reinterpret_cast<lxb_dom_element*>(el);
@@ -289,6 +298,19 @@ extern "C" int whaleui_dom_take_vars_dirty(void)
     return v ? 1 : 0;
 }
 
+extern "C" void whaleui_dom_mark_dirty_struct(lxb_dom_element* el)
+{
+    g_struct_dirty() = true;
+    whaleui_dom_mark_dirty(el);
+}
+
+extern "C" int whaleui_dom_take_struct_dirty(void)
+{
+    bool v = g_struct_dirty();
+    g_struct_dirty() = false;
+    return v ? 1 : 0;
+}
+
 extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size_t len)
 {
     lxb_html_document* doc = lxb_html_document_create();
@@ -418,12 +440,12 @@ extern "C" int whaleui_dom_append_child(whaleui_dom_element_t* parent, whaleui_d
     }
     if (c->node.parent) {
         /* moving: the old parent loses this subtree too */
-        whaleui_dom_mark_dirty(
+        whaleui_dom_mark_dirty_struct(
             lxb_dom_interface_element(c->node.parent));
         lxb_dom_node_remove(&c->node);
     }
     lxb_dom_node_insert_child(&p->node, &c->node);
-    whaleui_dom_mark_dirty(p);
+    whaleui_dom_mark_dirty_struct(p);
     return 0;
 }
 
@@ -441,7 +463,7 @@ extern "C" int whaleui_dom_remove_child(whaleui_dom_element_t* parent, whaleui_d
         lxb_dom_interface_element(c->node.parent);
     lxb_dom_node_remove(&c->node);
     /* the old parent's subtree loses this branch on its next rebuild */
-    whaleui_dom_mark_dirty(old_parent);
+    whaleui_dom_mark_dirty_struct(old_parent);
     return 0;
 }
 
@@ -457,7 +479,7 @@ extern "C" int whaleui_dom_element_destroy(whaleui_dom_element_t* el)
         lxb_dom_node_destroy(&e->node);
     } else {
         /* attached: the parent's subtree changes when this node goes away */
-        whaleui_dom_mark_dirty(lxb_dom_interface_element(e->node.parent));
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(e->node.parent));
     }
     return 0;
 }
@@ -576,7 +598,7 @@ extern "C" int whaleui_dom_set_text(whaleui_dom_element_t* el, const char* text)
         return -2;
     }
     lxb_dom_node_insert_child(&e->node, lxb_dom_interface_node(tn));
-    whaleui_dom_mark_dirty(e);
+    whaleui_dom_mark_dirty_struct(e);
     return 0;
 }
 
@@ -1114,7 +1136,7 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
     }
     if (nc->parent) {
         /* moving: the old parent loses this subtree too */
-        whaleui_dom_mark_dirty(lxb_dom_interface_element(nc->parent));
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
         lxb_dom_node_remove(nc);
     }
     if (!rc) {
@@ -1122,7 +1144,7 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
     } else {
         lxb_dom_node_insert(&p->node, nc, rc, false);
     }
-    whaleui_dom_mark_dirty(p);
+    whaleui_dom_mark_dirty_struct(p);
     return 0;
 }
 
@@ -1138,13 +1160,13 @@ extern "C" int whaleui_dom_replace_child(whaleui_dom_element_t* parent,
     }
     if (nc->parent) {
         /* moving: the old parent loses this subtree too */
-        whaleui_dom_mark_dirty(lxb_dom_interface_element(nc->parent));
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
         lxb_dom_node_remove(nc);
     }
     /* insert before old, then drop old (lexbor has no node_replace) */
     lxb_dom_node_insert(&p->node, nc, oc, false);
     lxb_dom_node_remove(oc);
-    whaleui_dom_mark_dirty(p);
+    whaleui_dom_mark_dirty_struct(p);
     return 0;
 }
 
@@ -1464,7 +1486,7 @@ extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
         lxb_dom_node_destroy(n);
         n = nx;
     }
-    whaleui_dom_mark_dirty(e);
+    whaleui_dom_mark_dirty_struct(e);
     if (!*html) {
         return 0;
     }
@@ -1472,7 +1494,7 @@ extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
     whaleui_dom_mark_vars_dirty();
     int rc = parse_into(e, html, std::strlen(html));
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        whaleui_dom_mark_dirty_struct(e);
     }
     return rc;
 }
@@ -1518,7 +1540,7 @@ extern "C" int whaleui_dom_set_outer_html(whaleui_dom_element_t* el,
     lxb_dom_node_remove(&e->node);
     lxb_dom_node_destroy(&e->node);
     /* the element is gone: the parent's subtree must rebuild */
-    whaleui_dom_mark_dirty(lxb_dom_interface_element(parent));
+    whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(parent));
     /* the fresh siblings may carry style attributes with --var definitions */
     whaleui_dom_mark_vars_dirty();
     return 0;

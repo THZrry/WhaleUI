@@ -41,6 +41,17 @@ void whaleui_dom_mark_vars_dirty(void);
  * dom_dirty frame). */
 int whaleui_dom_take_vars_dirty(void);
 
+/* Structural DOM change (append/remove/move/replace children, text node
+ * swap, inner/outer HTML): marks the element dirty AND sets the frame's
+ * structural flag - the renderer must run a full relayout (the subtree's
+ * shape changed, geometry may shift following siblings) and a wide
+ * repaint. Attribute/style-only edits (whaleui_dom_mark_dirty without the
+ * struct flag) can take the cheaper layout-key-diff -> style-only path. */
+void whaleui_dom_mark_dirty_struct(struct lxb_dom_element* el);
+
+/* Returns and clears the structural flag (once per frame). */
+int whaleui_dom_take_struct_dirty(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -52,6 +52,24 @@ whaleui_layout_tree_t* g_last_tree = nullptr;
 /* the render context currently laying out (real text metric hook) */
 whaleui_render_t* g_metric_render = nullptr;
 
+/* properties whose change means geometry moved (a relayout must re-run the
+ * box pass / repaint widely); everything else is paint-only. Shared by the
+ * interaction-state path (:hover/:focus/:active) and the DOM-dirty path
+ * (attribute/style edits) - one layout-key rule for all mutations. */
+static const char* const kLayoutKeys[] = {
+    "display", "position", "width", "height", "min-width", "min-height",
+    "max-width", "max-height", "margin", "margin-top", "margin-right",
+    "margin-bottom", "margin-left", "padding", "padding-top",
+    "padding-right", "padding-bottom", "padding-left", "border-width",
+    "border-top-width", "border-right-width", "border-bottom-width",
+    "border-left-width", "inset", "top", "right", "bottom", "left",
+    "box-sizing", "float", "clear", "flex", "flex-grow", "flex-shrink",
+    "flex-basis", "flex-direction", "flex-wrap", "gap", "row-gap",
+    "column-gap", "order", "font-size", "line-height", "letter-spacing",
+    "white-space", "overflow", "overflow-x", "overflow-y", "text-align",
+    "vertical-align", "word-break",
+};
+
 
 #ifdef WHALEUI_BUILD_FULL
 /* real text width for the layout pass: measure with the actual TTF font
@@ -3554,23 +3572,6 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->state_pending) {
         r->state_pending = 0;
         if (r->has_interact_rules && r->rule_count > 0 && r->tree) {
-            /* layout-affecting properties: a change means the box pass
-             * must re-run (geometry moved), everything else is paint */
-            static const char* const kStateLayoutKeys[] = {
-                "display", "position", "width", "height", "min-width",
-                "min-height", "max-width", "max-height", "margin",
-                "margin-top", "margin-right", "margin-bottom", "margin-left",
-                "padding", "padding-top", "padding-right", "padding-bottom",
-                "padding-left", "border-width", "border-top-width",
-                "border-right-width", "border-bottom-width",
-                "border-left-width", "inset", "top", "right", "bottom",
-                "left", "box-sizing", "float", "clear", "flex",
-                "flex-grow", "flex-shrink", "flex-basis", "flex-direction",
-                "flex-wrap", "gap", "row-gap", "column-gap", "order",
-                "font-size", "line-height", "letter-spacing", "white-space",
-                "overflow", "overflow-x", "overflow-y", "text-align",
-                "vertical-align", "word-break",
-            };
             std::map<std::string, std::string> vars2 = r->theme_vars;
             if (!r->tree->vars_collected && r->tree->root) {
                 whaleui_style_collect_vars_full(
@@ -3607,7 +3608,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                  * (font-size/line-height/...) are absent from `ns` when no
                  * rule set them - compare only keys the new cascade
                  * actually carries, those are the ones :hover rules wrote */
-                for (const char* k : kStateLayoutKeys) {
+                for (const char* k : kLayoutKeys) {
                     WhaleUIComputedStyle::const_iterator it = ns.find(k);
                     if (it == ns.end()) {
                         continue;
@@ -3944,6 +3945,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * a fresh style cascade + build; the box pass re-positions the tree
      * while untouched branches keep their computed styles. Falls back to a
      * full rebuild (has_dirty) when the tree is inconsistent. */
+    /* DOM edits that only touch paint (attribute/style changes whose
+     * layout keys are unchanged) rebuild just the element's styles and
+     * partial-repaint its box; structural edits or layout-key changes must
+     * re-run the box pass and repaint widely (dom_geom_changed). */
+    bool dom_geom_changed = false;
+    std::vector<lxb_dom_element*> dom_repaint;
     if (!need_layout && !dom_dirty.empty()) {
         /* DOM mutated. Invalidate ONLY the mutated elements' cached
          * computed styles: untouched branches keep theirs (the cascade for
@@ -3972,12 +3979,70 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 r->tree->vars_collected = false;
             }
         }
+        const bool struct_dirty = whaleui_dom_take_struct_dirty() != 0;
         bool ok = true;
         whaleui_style_state st;
         st.hover = r->hover_el;
         st.focus = r->focus_el;
         st.pressed = r->pressed_el;
+        /* merged vars for the layout-key pre-check (same merge as the
+         * interaction-state path above) */
+        std::map<std::string, std::string> vars2 = r->theme_vars;
+        if (r->tree && !r->tree->vars_collected && r->tree->root) {
+            whaleui_style_collect_vars_full(r->tree->root->el, r->rules,
+                                            r->rule_count, r->tree->vars);
+            r->tree->vars_collected = true;
+        }
+        for (auto& kv : r->tree->vars) {
+            vars2[kv.first] = kv.second;
+        }
+        std::vector<lxb_dom_element*> full_list;
         for (lxb_dom_element* el : dom_dirty) {
+            if (!el) {
+                continue;
+            }
+            if (struct_dirty) {
+                /* structural edit (children/text shape changed): the
+                 * subtree must be rebuilt and geometry may shift - the
+                 * full relayout path below */
+                full_list.push_back(el);
+                continue;
+            }
+            whaleui_layout_node_t* node = find_node_by_el(r->tree, el);
+            if (!node) {
+                full_list.push_back(el);
+                continue;
+            }
+            /* attribute/style edit: re-cascade and diff only the layout
+             * keys - unchanged means paint-only (color/transform/...):
+             * rebuild styles + copy geometry, no whole-tree box pass */
+            WhaleUIComputedStyle ns = whaleui_style_compute(
+                el, r->rules, r->rule_count, vars2, &st);
+            bool lay_changed = false;
+            for (const char* k : kLayoutKeys) {
+                WhaleUIComputedStyle::const_iterator it = ns.find(k);
+                if (it == ns.end()) {
+                    continue; /* inherited-only key: not set by the edit */
+                }
+                if (sget(node->style, k) != it->second) {
+                    lay_changed = true;
+                    break;
+                }
+            }
+            if (lay_changed) {
+                full_list.push_back(el);
+            } else {
+                if (whaleui_layout_relayout_style(
+                        r->tree, el, r->rules, r->rule_count,
+                        &r->theme_vars, &st, &r->scrolls, r->anim,
+                        r->text_scale) < 0) {
+                    full_list.push_back(el);
+                } else {
+                    dom_repaint.push_back(el);
+                }
+            }
+        }
+        for (lxb_dom_element* el : full_list) {
             if (whaleui_layout_relayout(r->tree, el, r->rules,
                                         r->rule_count, &r->theme_vars,
                                         &st, &r->scrolls, r->anim,
@@ -3986,36 +4051,58 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 break;
             }
         }
+        dom_geom_changed = !full_list.empty() || struct_dirty;
+        /* an animation running on top of the edits: the paint paths do not
+         * compose a DOM strip with the anim strip - fall back to full */
+        if (animating) {
+            dom_geom_changed = true;
+            dom_repaint.clear();
+        }
         if (ok) {
             g_last_tree = r->tree;
-            r->bounds_valid = 0; /* subtree paint bounds are stale */
+            if (!dom_geom_changed) {
+                /* paint-only edits: recompute the changed subtrees' bounds
+                 * locally (ancestors unchanged -> still valid); paint
+                 * partial-repaints their boxes (dom_repaint) */
+                r->bounds_valid = 1;
+                for (lxb_dom_element* el : dom_repaint) {
+                    whaleui_layout_node_t* nd =
+                        find_node_by_el(r->tree, el);
+                    if (nd) {
+                        compute_paint_bounds(nd);
+                    }
+                }
+            } else {
+                r->bounds_valid = 0; /* subtree paint bounds are stale */
+                std::function<void(whaleui_layout_node_t*)> clamp_sc =
+                    [&](whaleui_layout_node_t* nd) {
+                        if (nd->el) {
+                            auto it = r->scrolls.find(nd->el);
+                            if (it != r->scrolls.end()) {
+                                if (it->second > nd->scroll_max) {
+                                    it->second = nd->scroll_max;
+                                }
+                                if (it->second < 0) {
+                                    it->second = 0;
+                                }
+                            }
+                        }
+                        for (whaleui_layout_node_t* c = nd->first_child; c;
+                             c = c->next) {
+                            clamp_sc(c);
+                        }
+                    };
+                clamp_sc(r->tree->root);
+            }
             r->drag_scroll_node = nullptr; /* nodes were recreated */
             r->scroll_max_el = nullptr;    /* scroll_max may have changed */
             r->wheel_node = nullptr;       /* hit cache is stale */
-            std::function<void(whaleui_layout_node_t*)> clamp_sc =
-                [&](whaleui_layout_node_t* nd) {
-                    if (nd->el) {
-                        auto it = r->scrolls.find(nd->el);
-                        if (it != r->scrolls.end()) {
-                            if (it->second > nd->scroll_max) {
-                                it->second = nd->scroll_max;
-                            }
-                            if (it->second < 0) {
-                                it->second = 0;
-                            }
-                        }
-                    }
-                    for (whaleui_layout_node_t* c = nd->first_child; c;
-                         c = c->next) {
-                        clamp_sc(c);
-                    }
-                };
-            clamp_sc(r->tree->root);
 #ifdef WHALEUI_BUILD_FULL
             g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
         } else {
             r->has_dirty = 1; /* tree inconsistent: full rebuild */
+            dom_repaint.clear();
         }
     }
     if (!r->tree) {
@@ -4138,17 +4225,21 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
+        dom_repaint.clear();
     } else if (!animating && !r->edit_el && !r->open_select &&
                (r->hover_old_el || r->focus_old_el ||
-                r->pressed_old_el)) {
-        /* interaction-state change: repaint only the old + new elements of
-         * every pseudo-class state (their :hover/:focus/:active styles
-         * changed; the state relayout already re-cascaded the styles, the
-         * geometry is stable). */
+                r->pressed_old_el || !dom_repaint.empty())) {
+        /* interaction-state / paint-only DOM edits: repaint only the old +
+         * new state elements and the changed DOM elements (their styles
+         * changed; the relayout already re-cascaded, geometry is stable). */
         auto is_state_el = [&](lxb_dom_element* e) {
-            return e == r->hover_old_el || e == r->hover_el ||
-                   e == r->focus_old_el || e == r->focus_el ||
-                   e == r->pressed_old_el || e == r->pressed_el;
+            if (e == r->hover_old_el || e == r->hover_el ||
+                e == r->focus_old_el || e == r->focus_el ||
+                e == r->pressed_old_el || e == r->pressed_el) {
+                return true;
+            }
+            return std::find(dom_repaint.begin(), dom_repaint.end(), e) !=
+                   dom_repaint.end();
         };
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
@@ -4184,6 +4275,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
+        dom_repaint.clear();
     } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
                !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes
