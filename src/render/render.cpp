@@ -3581,11 +3581,15 @@ extern "C" void whaleui_render_set_fsr(whaleui_render_t* r, int mode,
  * touched under tree_mx, so the fill measures glyphs exactly like the
  * frame does. Exits when the DOM rows are exhausted, the expand was
  * cancelled (fill_stop / stream_expand cleared) or the tree was rebuilt. */
-static const size_t kFillBatch = 100; /* rows per append_rows batch (~28ms) */
+static const size_t kFillBatch = 80; /* rows per append_rows batch
+                                      * (~22ms): short enough that an
+                                      * interaction frame waits at most one
+                                      * batch for the tree lock */
 static void fill_worker_fn(whaleui_render_t* r)
 {
     r->fill_finished.store(0);
     r->fill_running.store(1);
+    int since_paint = 0;
     for (;;) {
         if (r->fill_stop.load()) {
             break;
@@ -3610,9 +3614,20 @@ static void fill_worker_fn(whaleui_render_t* r)
                 break; /* DOM rows exhausted or append blocked */
             }
         }
-        r->fill_dirty.store(1); /* a batch landed: repaint it */
-        std::this_thread::yield();
+        /* repaint throttled: wake the render frame every ~4 batches
+         * (~160 rows) instead of every batch - keeps the frame loop free
+         * for input between batches */
+        if (++since_paint >= 4) {
+            since_paint = 0;
+            r->fill_dirty.store(1); /* a chunk landed: repaint it */
+        }
+        /* yield is a busy-spin here: the fill re-acquires the lock before
+         * the frame loop's worker thread gets scheduled, starving input
+         * frames (hover mid-fill waited ~150ms). A short sleep hands the
+         * CPU over so an interaction frame wins the lock between batches. */
+        std::this_thread::sleep_for(std::chrono::microseconds(600));
     }
+    r->fill_dirty.store(1); /* show the final rows */
     r->fill_running.store(0);
     r->fill_finished.store(1);
 }

@@ -93,10 +93,31 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
 /* process one SDL event on the worker thread. Runs under render_lock
  * (the worker holds it), so it is serialized with rendering - no data
  * race between input handlers and the render pass. */
+/* SDL event watch: invoked from inside the OS modal resize/drag loop
+ * where SDL_PollEvent blocks (Windows AppFreezeDuringDrag). Forward the
+ * resize to the worker's input queue so the window keeps resizing live.
+ * No SDL calls here (would deadlock inside the watch); just queue + ping. */
+static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
+{
+    if (!e || e->type != SDL_EVENT_WINDOW_RESIZED) {
+        return false;
+    }
+    whaleui_app_t* app = static_cast<whaleui_app_t*>(userdata);
+    if (!app) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(app->render_lock);
+        app->input_queue.push_back(*e);
+    }
+    app->frame_request.store(1);
+    app->frame_cv.notify_one();
+    return false;
+}
+
 void process_event(whaleui_app_t* app, const SDL_Event& e)
 {
-    switch (e.type) {
-    case SDL_EVENT_QUIT:
+    switch (e.type) {    case SDL_EVENT_QUIT:
         app->running = 0;
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED: {
@@ -482,6 +503,12 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->gpu = nullptr;
     app->select_cb = nullptr;
     app->select_ud = nullptr;
+    /* Windows modal message loop (SDL_AppFreezeDuringDrag): SDL_PollEvent
+     * blocks while the window is being resized/dragged, so resize events
+     * never reach the main loop and the app freezes. An event watch is
+     * still invoked from inside the modal loop - forward the resize to the
+     * worker's input queue there so it keeps applying new sizes live. */
+    SDL_AddEventWatch(app_resize_watch, app);
     return app;
 }
 
@@ -490,6 +517,7 @@ extern "C" void whaleui_app_destroy(whaleui_app_t* app)
     if (!app) {
         return;
     }
+    SDL_RemoveEventWatch(app_resize_watch, app);
     app->running = 0;
     app->frame_request.store(1);
     app->frame_cv.notify_one();
