@@ -182,6 +182,11 @@ struct whaleui_render
     std::map<struct lxb_dom_element*, int> last_scrolls;
     /* wheel scrolling changed scrolls: repaint next frame without relayout */
     int scroll_dirty;
+    /* a resize happened with the stylesheet unchanged: the next layout pass
+     * may re-lay-out the existing tree for the new viewport instead of a
+     * whole-tree rebuild (whaleui_layout_relayout_geometry). Cleared when
+     * the CSS rules actually change (set_css). */
+    int geometry_only;
     /* scroll behavior hook (default: clamped; replace for smooth scrolling) */
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);

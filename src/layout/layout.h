@@ -255,6 +255,14 @@ int whaleui_layout_relayout_multi(
     const std::map<struct lxb_dom_element*, int>* scrolls,
     struct whaleui_anim* anim, float text_scale);
 
+/* Re-lay-out an EXISTING tree for a new viewport size: styles/runs are
+ * already built (rules unchanged - a plain window resize), so only the
+ * boxes/lines are recomputed (width change reflows wraps, x/y shift).
+ * No style cascade, no node rebuild: a 34k-node page resizes in ~tens of
+ * ms instead of the seconds a whole-tree rebuild takes. */
+int whaleui_layout_relayout_geometry(whaleui_layout_tree_t* tree,
+                                     int viewport_w, int viewport_h);
+
 /* Text-width metric hook: the renderer installs this so layout measures
  * REAL glyph widths (inline-line x positions, wrap points, flex sizing)
  * instead of the built-in estimate. letter_spacing_px is the resolved

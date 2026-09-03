@@ -3980,6 +3980,26 @@ extern "C" void whaleui_layout_destroy(whaleui_layout_tree_t* tree)
     delete tree;
 }
 
+extern "C" int whaleui_layout_relayout_geometry(whaleui_layout_tree_t* tree,
+                                                int viewport_w,
+                                                int viewport_h)
+{
+    if (!tree || !tree->root) {
+        return -1;
+    }
+    tree->viewport_w = viewport_w;
+    tree->viewport_h = viewport_h;
+    Builder b;
+    b.tree = tree;
+    int cursor = 0;
+    b.layout(tree->root, 0, 0, viewport_w, viewport_h, 16, &cursor);
+    tree->root->border.h = viewport_h;
+    tree->root->content.h = viewport_h;
+    int cmax = cursor - viewport_h;
+    tree->root->scroll_max = cmax > 0 ? cmax : 0;
+    return 0;
+}
+
 static int relayout_impl(
     whaleui_layout_tree_t* tree,
     lxb_dom_element* el,

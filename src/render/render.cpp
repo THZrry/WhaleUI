@@ -2317,6 +2317,9 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
         r->tree->vars.clear();
         r->tree->vars_collected = false;
     }
+    /* rules changed: a plain resize must no longer take the geometry-only
+     * re-layout (its widths/styles came from the old ruleset) */
+    r->geometry_only = 0;
     r->has_dirty = 1;
 }
 
@@ -2443,6 +2446,10 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     /* stale scroll deltas from the old size would make the first scroll
      * after a resize shift by the accumulated difference */
     r->last_scrolls.clear();
+    /* the stylesheet did not change with the size: the next layout pass
+     * re-lays-out the existing tree (geometry only) instead of rebuilding
+     * it - keeps a window drag on a 34k-node page responsive */
+    r->geometry_only = 1;
     return 0;
 }
 
@@ -3881,23 +3888,73 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * opacity chain is recomputed - the bulk of the per-frame cost
      * (style cascade + box layout) is gone. */
     const bool need_layout = r->has_dirty || !r->tree;
+    bool geom_ok = false;
     if (need_layout) {
+        /* plain resize (no DOM/rule change - geometry_only set by
+         * render_resize, cleared by set_css): re-lay-out the EXISTING tree
+         * for the new viewport. Styles/runs are unchanged, so this skips
+         * the style cascade + rebuild entirely - a 34k-node page resizes
+         * in tens of ms instead of seconds (and the window drag stays
+         * live). The hovered/focused/pressed styles already live on the
+         * tree (they were applied locally after the last rebuild) and
+         * survive a geometry-only pass untouched. */
+        if (r->geometry_only && r->tree && r->tree->root) {
+            r->geometry_only = 0;
+            if (whaleui_layout_relayout_geometry(r->tree, r->fb_w,
+                                                 r->fb_h) == 0) {
+                r->has_dirty = 0;
+                g_last_tree = r->tree;
+                r->bounds_valid = 0; /* every box moved */
+                r->drag_scroll_node = nullptr;
+                r->scroll_max_el = nullptr;
+                r->wheel_node = nullptr;
+                fix_run_heights(r);
+                fix_scroll_max(r);
+                geom_ok = true;
+            }
+            /* relayout failed: fall through to the full rebuild */
+        }
+        if (!geom_ok) {
         /* full rebuild covers every interaction state: drop the pending
          * partial-repaint markers so they cannot stall the idle check */
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
         whaleui_layout_destroy(r->tree);
-        whaleui_style_state st;
-        st.hover = r->hover_el;
-        st.focus = r->focus_el;
-        st.pressed = r->pressed_el;
+        /* Build with an interaction-NEUTRAL state so every element hits the
+         * style cache (keyed per element + state): the cascade does not
+         * depend on which element is hovered, so a whole-tree rebuild after
+         * a RESIZE (rules unchanged) must not re-cascade all 34k elements
+         * just because the mouse sits over one of them (froze mid-drag ~3s).
+         * The hovered/focused/pressed elements get their state styles
+         * re-applied right after (local relayout_style, geometry copied). */
+        lxb_dom_element* sa[6] = {r->hover_old_el, r->hover_el,
+                                  r->focus_old_el, r->focus_el,
+                                  r->pressed_old_el, r->pressed_el};
+        whaleui_style_state st0;
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
                                          &r->theme_vars, r->fb_w, r->fb_h,
-                                         &st, &r->scrolls, r->anim,
+                                         &st0, &r->scrolls, r->anim,
                                          r->text_scale);
         g_last_tree = r->tree; /* DOM geometry queries see this frame */
         r->has_dirty = 0;
+        for (int si = 0; si < 6; ++si) {
+            if (!sa[si]) {
+                continue;
+            }
+            whaleui_layout_node_t* nd = find_node_by_el(r->tree, sa[si]);
+            if (!nd) {
+                continue;
+            }
+            whaleui_style_state stx;
+            stx.hover = r->hover_el;
+            stx.focus = r->focus_el;
+            stx.pressed = r->pressed_el;
+            whaleui_layout_relayout_style(r->tree, sa[si], r->rules,
+                                          r->rule_count, &r->theme_vars,
+                                          &stx, &r->scrolls, r->anim,
+                                          r->text_scale);
+        }
         r->bounds_valid = 0; /* subtree paint bounds are stale */
         r->drag_scroll_node = nullptr; /* layout nodes were recreated */
         r->scroll_max_el = nullptr;    /* scroll_max may have changed */
@@ -3927,6 +3984,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
 #ifdef WHALEUI_BUILD_FULL
         g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
+        }
     } else if (animating && whaleui_anim_needs_layout(r->anim)) {
         /* layout-affecting animation (width/margin/...): rebuild only the
          * animated elements' subtrees with the tick's values, re-position

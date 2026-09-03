@@ -96,6 +96,38 @@ void window_reload_css(whaleui_window_t* win)
     whaleui_style_filter_media(rules, &count,
                                whaleui_app_resolved_theme(win->app),
                                win->width, win->app->reduced_motion);
+    /* identical to the active ruleset? (e.g. a plain window RESIZE with no
+     * @media breakpoint crossed - the common case while dragging) Skip the
+     * hand-off so the style cascade cache / CSS vars survive: without this
+     * every resize cleared them and the following whole-tree relayout
+     * re-cascaded all 34k elements (~seconds frozen mid-drag). */
+    {
+        const whaleui_css_rule_t* cur = win->render->rules;
+        size_t cur_n = win->render->rule_count;
+        bool same = cur && count == cur_n;
+        if (same) {
+            for (size_t i = 0; same && i < count; ++i) {
+                if ((rules[i].selector && (!cur[i].selector ||
+                      std::strcmp(rules[i].selector, cur[i].selector) != 0)) ||
+                    (!rules[i].selector && cur[i].selector)) {
+                    same = false;
+                }
+                if (same && (rules[i].decl_count != cur[i].decl_count)) {
+                    same = false;
+                }
+                for (size_t d = 0; same && d < rules[i].decl_count; ++d) {
+                    if (std::strcmp(rules[i].decls[d], cur[i].decls[d]) != 0) {
+                        same = false;
+                    }
+                }
+            }
+        }
+        if (same) {
+            whaleui_css_rules_destroy(rules, count);
+            whaleui_css_keyframes_destroy(&kf);
+            return; /* ruleset unchanged: keep the style cache */
+        }
+    }
     std::map<std::string, std::string> theme_vars;
     whaleui_theme_vars(win->app->theme_style,
                        whaleui_app_resolved_theme(win->app),
