@@ -122,7 +122,7 @@ int main(void)
         lxb_dom_element* body_el = reinterpret_cast<lxb_dom_element*>(body);
 
         /* matching */
-        whaleui_style_state st = {nullptr, nullptr, nullptr};
+        whaleui_style_state st;
         assert(whaleui_style_match(".card", card_el, &st));
         assert(whaleui_style_match("#card", card_el, &st));
         assert(whaleui_style_match("div.card", card_el, &st));

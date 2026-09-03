@@ -22,12 +22,15 @@ extern "C" {
 
 /* Interaction state driving pseudo-class matching (:hover/:active/:focus).
  * hover = element under the mouse; focus = last clicked control;
- * pressed = element the left button is held down on. */
+ * pressed = element the left button is held down on. Default-initialized
+ * to nullptr: a caller that forgets to fill the state must never feed
+ * garbage element pointers into the cascade (style_match dereferences
+ * them). */
 struct whaleui_style_state
 {
-    lxb_dom_element* hover;
-    lxb_dom_element* focus;
-    lxb_dom_element* pressed;
+    lxb_dom_element* hover = nullptr;
+    lxb_dom_element* focus = nullptr;
+    lxb_dom_element* pressed = nullptr;
 };
 
 /* Does the (already comma-split) selector match this element?

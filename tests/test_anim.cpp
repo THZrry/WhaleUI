@@ -234,7 +234,7 @@ int main(void)
         whaleui_anim_t* a = whaleui_anim_create();
         whaleui_anim_set_keyframes(a, &kf);
         std::map<std::string, std::string> vars;
-        whaleui_style_state st = {nullptr, nullptr, nullptr};
+        whaleui_style_state st;
         std::map<lxb_dom_element*, int> scrolls;
         whaleui_layout_tree_t* t = whaleui_layout_compute(
             doc, nullptr, 0, &vars, 800, 600, &st, &scrolls, a, 1.0f);
