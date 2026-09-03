@@ -638,43 +638,6 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
     n->bounds = b;
 }
 
-/* Local paint-bounds refresh after a style-only subtree rebuild: the new
- * subtree's bounds are zeroed (only the box/bounds passes fill them) and
- * a stale bounds_valid would cull the rebuilt subtree from paint. Recompute
- * the subtree, then each ancestor from its (unchanged, valid) children -
- * O(depth + subtree) instead of a whole-tree bounds walk on every hover. */
-void refresh_paint_bounds_chain(whaleui_layout_node_t* n)
-{
-    if (!n) {
-        return;
-    }
-    compute_paint_bounds(n);
-    for (whaleui_layout_node_t* p = n->parent; p; p = p->parent) {
-        if (!p->visible) {
-            continue;
-        }
-        whaleui_rect_t b = p->border;
-        for (whaleui_layout_node_t* c = p->first_child; c; c = c->next) {
-            if (!c->visible) {
-                continue;
-            }
-            int x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
-            int cx0 = c->bounds.x, cy0 = c->bounds.y;
-            int cx1 = c->bounds.x + c->bounds.w;
-            int cy1 = c->bounds.y + c->bounds.h;
-            if (cx0 < x0) x0 = cx0;
-            if (cy0 < y0) y0 = cy0;
-            if (cx1 > x1) x1 = cx1;
-            if (cy1 > y1) y1 = cy1;
-            b.x = x0;
-            b.y = y0;
-            b.w = x1 - x0;
-            b.h = y1 - y0;
-        }
-        p->bounds = b;
-    }
-}
-
 const int kCullMargin = 64;
 
 /* z-order: elements that paint on top of normal flow ("high roots").

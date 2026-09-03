@@ -3597,14 +3597,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                      * never repaint the hovered box. hover_old_el (kept set
                      * here, or pinned to the hovered element on a first
                      * hover) drives the frame's partial repaint of the
-                     * changed box(es) instead of a full-viewport repaint.
-                     * The rebuilt subtree's nodes have zeroed paint bounds
-                     * (only box/bounds passes fill them): refresh the
-                     * subtree + ancestor chain locally - a stale whole-tree
-                     * bounds_valid would cull the hovered subtree. */
-                    r->bounds_valid = 1;
-                    refresh_paint_bounds_chain(
-                        find_node_by_el(r->tree, el));
+                     * changed box(es). Invalidate the whole-tree paint
+                     * bounds: the rebuilt subtree's nodes carry zeroed
+                     * bounds and paint culls on them (a stale bounds_valid
+                     * made hovered <a> elements vanish after scroll on some
+                     * machines); the bounds walk is ~40ms CPU but correct,
+                     * a chain-only refresh proved too easy to miss a node. */
+                    r->bounds_valid = 0;
                     if (!r->hover_old_el) {
                         r->hover_old_el = el;
                     }
