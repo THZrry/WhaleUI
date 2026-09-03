@@ -3288,7 +3288,12 @@ extern "C" int whaleui_render_scroll_to_id(whaleui_render_t* r,
     lxb_dom_element* root_el = r->tree->root->el;
     auto sit = r->scrolls.find(root_el);
     int cur = sit != r->scrolls.end() ? sit->second : 0;
-    int target = n->border.y + cur - 80; /* 80px for the fixed header */
+    /* border.y is DOCUMENT space (layout no longer bakes the scroll into
+     * child coordinates - the P3 scroll fix); the target scroll is the
+     * element's document y, minus room for the fixed header. The old
+     * "+ cur" was left over from the baked model and overshot by the
+     * current scroll on every click (an #anchor jumped past the target). */
+    int target = n->border.y - 80; /* 80px for the fixed header */
     if (target < 0) {
         target = 0;
     }
@@ -4185,7 +4190,19 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
-                    int x0 = nd->border.x, y0 = nd->border.y;
+                    /* the strip is in VIEWPORT space (paint clips against
+                     * the framebuffer), the layout bounds are DOCUMENT
+                     * space: add the ancestor scroll offsets or a scrolled
+                     * animation's strip lands at the wrong rows, the
+                     * element is culled and the animation appears frozen
+                     * once it is partially scrolled out of view. (The
+                     * hover branch below does the same off accumulation.) */
+                    int off = 0;
+                    for (whaleui_layout_node_t* p = nd->parent; p;
+                         p = p->parent) {
+                        off += scroll_delta(r, p);
+                    }
+                    int x0 = nd->border.x, y0 = nd->border.y + off;
                     int x1 = x0 + nd->border.w, y1 = y0 + nd->border.h;
                     int am = 4;
                     /* widen by the transform translation */
@@ -4224,10 +4241,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         /* layout animation: the parent's interior re-flows
                          * (children move within it), cover the whole box */
                         whaleui_layout_node_t* p = nd->parent;
+                        int poff = 0;
+                        for (whaleui_layout_node_t* q = p->parent; q;
+                             q = q->parent) {
+                            poff += scroll_delta(r, q);
+                        }
                         x0 = p->border.x < x0 ? p->border.x : x0;
-                        y0 = p->border.y < y0 ? p->border.y : y0;
+                        y0 = p->border.y + poff < y0 ? p->border.y + poff : y0;
                         int px1 = p->border.x + p->border.w;
-                        int py1 = p->border.y + p->border.h;
+                        int py1 = p->border.y + poff + p->border.h;
                         x1 = px1 > x1 ? px1 : x1;
                         y1 = py1 > y1 ? py1 : y1;
                     }
