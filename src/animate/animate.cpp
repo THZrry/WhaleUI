@@ -967,8 +967,11 @@ struct whaleui_anim
     };
     std::map<std::string, Trans> trans;
 
-    /* last settled computed value per "prop@el" (transition baseline) */
-    std::map<std::string, std::string> prev;
+    /* last settled computed value per element property (transition
+     * baseline), grouped by element. A flat "prop@el" map made every
+     * element scan the whole history - the 22k-node <details> expand spent
+     * ~40s in that scan alone (two string allocs per entry). */
+    std::map<lxb_dom_element*, std::map<std::string, std::string> > prev;
 
     /* current animated values per element (paint-only fast path) */
     std::map<lxb_dom_element*, std::map<std::string, std::string> > ov;
@@ -1231,7 +1234,8 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
 
 /* Transition: interpolate changed properties toward their new values. */
 static std::string prop_from_key(const std::string& key); /* defined below */
-void apply_transition(whaleui_anim_t* a, const std::string& elkey,
+void apply_transition(whaleui_anim_t* a, lxb_dom_element* el,
+                      const std::string& elkey,
                       WhaleUIComputedStyle& style, uint64_t now,
                       bool allow_retarget)
 {
@@ -1255,7 +1259,7 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
                       static_cast<float>(tr->second.dur);
             if (p >= 1.0f) {
                 kv->second = tr->second.to;
-                a->prev[key] = tr->second.to;
+                a->prev[el][kv->first] = tr->second.to;
                 a->trans.erase(tr);
             } else {
                 if (p < 0.0f) {
@@ -1282,8 +1286,9 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
             }
             continue;
         }
-        std::map<std::string, std::string>::iterator pv = a->prev.find(key);
-        if (pv == a->prev.end()) {
+        std::map<std::string, std::string>& pvmap = a->prev[el];
+        std::map<std::string, std::string>::iterator pv = pvmap.find(kv->first);
+        if (pv == pvmap.end()) {
             /* the property appeared with a pseudo-class (the cascade is
              * static between relayouts, so a property that was never in
              * the style before can only have arrived via :hover/:active).
@@ -1307,7 +1312,7 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
                 kv->second = "none"; /* start from the neutral value */
                 a->active = 1;
             } else {
-                a->prev[key] = kv->second;
+                a->prev[el][kv->first] = kv->second;
             }
             continue;
         }
@@ -1333,29 +1338,36 @@ void apply_transition(whaleui_anim_t* a, const std::string& elkey,
     /* a transitioned property that left the style (:hover/:active no
      * longer matches, so the cascade dropped it) must animate back to its
      * neutral value - the hover lift/color reverts smoothly instead of
-     * jumping. Only transform has a known neutral ("none"). */
-    for (std::map<std::string, std::string>::iterator it = a->prev.begin();
-         it != a->prev.end();) {
-        std::string prop = prop_from_key(it->first);
-        std::string elk = it->first.substr(it->first.find('@') + 1);
-        if (elk != elkey || !trans_in_props(ts, prop) ||
-            style.find(prop) != style.end() || prop != "transform") {
-            ++it;
-            continue;
+     * jumping. Only transform has a known neutral ("none"). Only this
+     * element's baselines can be affected. */
+    {
+        auto pg = a->prev.find(el);
+        if (pg != a->prev.end()) {
+            for (std::map<std::string, std::string>::iterator it =
+                     pg->second.begin();
+                 it != pg->second.end();) {
+                const std::string& prop = it->first;
+                if (!trans_in_props(ts, prop) ||
+                    style.find(prop) != style.end() || prop != "transform") {
+                    ++it;
+                    continue;
+                }
+                std::string tmp;
+                if (ts.dur > 0 &&
+                    any_lerp("transform", it->second, "none", 0.0f, tmp)) {
+                    whaleui_anim::Trans st;
+                    st.from = it->second;
+                    st.to = "none";
+                    st.start = now + ts.delay;
+                    st.dur = ts.dur;
+                    st.delay = ts.delay;
+                    st.timing = ts.timing;
+                    a->trans[prop + "@" + elkey] = st;
+                    a->active = 1;
+                }
+                it = pg->second.erase(it); /* gone: drop the baseline */
+            }
         }
-        std::string tmp;
-        if (ts.dur > 0 && any_lerp("transform", it->second, "none", 0.0f, tmp)) {
-            whaleui_anim::Trans st;
-            st.from = it->second;
-            st.to = "none";
-            st.start = now + ts.delay;
-            st.dur = ts.dur;
-            st.delay = ts.delay;
-            st.timing = ts.timing;
-            a->trans[prop + "@" + elkey] = st;
-            a->active = 1;
-        }
-        it = a->prev.erase(it); /* the property is gone: drop the baseline */
     }
 }
 
@@ -1391,7 +1403,7 @@ extern "C" int whaleui_anim_apply(whaleui_anim_t* a, struct lxb_dom_element* el,
             return 1;
         }
     }
-    apply_transition(a, elkey, style, now, true);
+    apply_transition(a, el, elkey, style, now, true);
     return a->active;
 }
 
@@ -1529,8 +1541,8 @@ extern "C" int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now)
                  * completed value - otherwise the style stays at the last
                  * interpolated color ("hover freezes mid-fade"). */
                 act_prop(a, el, prop);
+                a->prev[el][prop] = tr.to;
             }
-            a->prev[it->first] = tr.to;
             it = a->trans.erase(it);
             /* keep active for one more frame so the frame loop's
              * apply_ov applies the completed value (ov=to) to the style.

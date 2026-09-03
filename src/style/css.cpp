@@ -32,19 +32,6 @@ char* dup_range(const char* s, size_t n)
     return d;
 }
 
-char* trim(char* s)
-{
-    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
-        ++s;
-    }
-    char* end = s + std::strlen(s);
-    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
-        --end;
-    }
-    *end = '\0';
-    return s;
-}
-
 void decl_append(whaleui_css_rule_t* rule, const char* name, const char* value,
                  bool important, bool* any_important)
 {

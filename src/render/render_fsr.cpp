@@ -3,7 +3,6 @@
 // Shared helpers: render_internal.h.
 
 #include "render/render_internal.h"
-#include "render/fsr_shaders.h"
 #include "render/fsr_dxil.h"
 #include "render/fsr_demo_spv.h"
 #include "render/fsr_rcas_custom_spv.h"

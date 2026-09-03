@@ -122,7 +122,6 @@ void window_reveal_apply(whaleui_dom_document_t* doc)
         return;
     }
     const lxb_char_t* cls = (const lxb_char_t*)"class";
-    const lxb_char_t* in_attr = (const lxb_char_t*)"in";
     std::function<void(lxb_dom_node*)> walk = [&](lxb_dom_node* n) {
         if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
             lxb_dom_element* el = lxb_dom_interface_element(n);

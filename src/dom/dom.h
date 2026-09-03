@@ -32,6 +32,15 @@ void whaleui_dom_mark_dirty(struct lxb_dom_element* el);
 void whaleui_dom_take_dirty(struct whaleui_dom_document* doc,
                             std::vector<struct lxb_dom_element*>& out);
 
+/* Record that the document's CSS custom-property source changed (a style
+ * attribute holding --var definitions was edited): the next incremental
+ * relayout must re-collect vars. */
+void whaleui_dom_mark_vars_dirty(void);
+
+/* Returns and clears the vars-dirty flag (renderer calls it once per
+ * dom_dirty frame). */
+int whaleui_dom_take_vars_dirty(void);
+
 #ifdef __cplusplus
 }
 #endif

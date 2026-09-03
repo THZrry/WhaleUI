@@ -655,38 +655,6 @@ void build_css(const ThemeDef& d, std::string& css)
 /* =====================================================================
  * 5. Light/dark variable tables.
  * =================================================================== */
-void brighten_accent(const std::string& accent, std::string& out)
-{
-    unsigned int c = 0;
-    if (accent[0] != '#' || std::sscanf(accent.c_str() + 1, "%x", &c) != 1) {
-        out = accent;
-        return;
-    }
-    unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-    r = static_cast<unsigned>((r * 3 + 255) / 4);
-    g = static_cast<unsigned>((g * 3 + 255) / 4);
-    b = static_cast<unsigned>((b * 3 + 255) / 4);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
-    out = buf;
-}
-
-void darken_accent(const std::string& accent, std::string& out)
-{
-    unsigned int c = 0;
-    if (accent[0] != '#' || std::sscanf(accent.c_str() + 1, "%x", &c) != 1) {
-        out = accent;
-        return;
-    }
-    unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-    r = static_cast<unsigned>(r * 85 / 100);
-    g = static_cast<unsigned>(g * 85 / 100);
-    b = static_cast<unsigned>(b * 85 / 100);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
-    out = buf;
-}
-
 /* shadow ladder shared by most themes; aero/classic/metro override */
 void default_shadows(std::map<std::string, std::string>& out, bool dark)
 {

@@ -2515,7 +2515,17 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                             det, (const lxb_char_t*)"open", 4,
                             (const lxb_char_t*)"", 0);
                     }
-                    r->has_dirty = 1; /* relayout: show/hide the body */
+                    /* incremental relayout, not a full-tree rebuild: the
+                     * dirty set below rebuilds only this <details> subtree
+                     * + one box pass. A whole-tree rebuild re-cascaded
+                     * every element (22k-node details froze the UI ~48s).
+                     * Clear a pending full-rebuild request (a mouse-move
+                     * hover change queued in the same event batch sets
+                     * has_dirty; the incremental pass below re-cascades the
+                     * details subtree with the current hover state, so the
+                     * full rebuild is redundant). */
+                    r->has_dirty = 0;
+                    whaleui_dom_mark_dirty(det);
                 }
             }
         }
@@ -2838,8 +2848,6 @@ void update_drag_scroll(whaleui_render_t* r, int y)
     for (whaleui_layout_node_t* p = sc->parent; p; p = p->parent) {
         off += scroll_delta(r, p);
     }
-    const int bw = 8;
-    int track_x = sc->border.x + sc->border.w - bw;
     int track_y = sc->border.y + off;
     int track_h = sc->border.h;
     int content_h = sc->scroll_max + sc->content.h;
@@ -3768,12 +3776,32 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * while untouched branches keep their computed styles. Falls back to a
      * full rebuild (has_dirty) when the tree is inconsistent. */
     if (!need_layout && !dom_dirty.empty()) {
-        /* DOM mutated: CSS custom properties may have changed, so the
-         * cached var collection is stale - force a re-collect */
+        /* DOM mutated. Invalidate ONLY the mutated elements' cached
+         * computed styles: untouched branches keep theirs (the cascade for
+         * them is unchanged). The vars collection also stays - re-run only
+         * when a style-attribute edit touched it (whaleui_dom_mark_vars_dirty,
+         * taken below); open/class/other-attribute mutations cannot change
+         * var() definitions. Clearing the whole cache here made an
+         * incremental <details> expand (6.8k new nodes) re-cascade every
+         * element - a ~31s frame instead of the affected subtree only. */
         if (r->tree) {
-            r->tree->vars.clear();
-            r->tree->vars_collected = false;
-            r->tree->style_cache.clear();
+            for (lxb_dom_element* el : dom_dirty) {
+                if (!el) {
+                    continue;
+                }
+                auto& sc = r->tree->style_cache;
+                for (auto it = sc.begin(); it != sc.end();) {
+                    if (it->first.el == el) {
+                        it = sc.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+            if (whaleui_dom_take_vars_dirty()) {
+                r->tree->vars.clear();
+                r->tree->vars_collected = false;
+            }
         }
         bool ok = true;
         whaleui_style_state st;

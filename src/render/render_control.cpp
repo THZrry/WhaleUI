@@ -236,7 +236,6 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * this delta the first line stays shifted out of view and the caret
      * renders below the text. */
     ty += off_y + scroll_delta(r, n);
-    int th = text_line_h(r, fs, family, bold);
     /* 单行 input:caret/选区/IME 与值文字共用字形盒居中基准 —— 值绘制
      * (draw_text_at)按字形盒 gh 居中,text_origin 按行高 th 居中会让
      * caret 比文字高 (th-gh)/2(垂直修正后 caret 仍偏上)。 */

@@ -1121,7 +1121,6 @@ std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
     void* st = &stb;
 #endif
     TextLayout L = layout_text(text, wrap_w, lh, gw, st);
-    const size_t nc = L.map.size();
     for (size_t li = 0; li < L.lines.size(); ++li) {
         const TextLayoutLine& ln = L.lines[li];
         int xacc = 0;

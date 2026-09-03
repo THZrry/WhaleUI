@@ -20,6 +20,7 @@
 #include <functional>
 #include <algorithm>
 #include <vector>
+#include <mutex>
 
 namespace {
 
@@ -1010,6 +1011,21 @@ static const char* const kPseudoBoxProps[] = {
     "padding", "box-shadow", "pointer-events",
 };
 
+/* ::before/::after rule index: build() probes pseudo content/box for EVERY
+ * element (4 full-rule scans per element before this index), so the scan
+ * cost scales with the whole stylesheet. Bucketing the pseudo rules once
+ * per rule set (keyed like style.cpp's g_rule_index) turns the per-element
+ * probe into "iterate only the ::before / ::after rules". */
+struct PseudoRuleIndex
+{
+    const whaleui_css_rule_t* rules = nullptr;
+    size_t count = 0;
+    std::vector<size_t> before; /* rules whose selector contains ::before */
+    std::vector<size_t> after;  /* rules whose selector contains ::after */
+};
+PseudoRuleIndex g_pseudo_idx;
+std::mutex g_pseudo_mtx;
+
 struct Builder
 {
     whaleui_layout_tree_t* tree;
@@ -1017,6 +1033,31 @@ struct Builder
     size_t rule_count;
     std::map<std::string, std::string> vars;
     whaleui_style_state st;
+
+    /* bucket of rule indices carrying the pseudo-element `which` (1/2) */
+    const std::vector<size_t>* pseudo_bucket(int which)
+    {
+        std::lock_guard<std::mutex> lk(g_pseudo_mtx);
+        if (g_pseudo_idx.rules != rules || g_pseudo_idx.count != rule_count) {
+            g_pseudo_idx.rules = rules;
+            g_pseudo_idx.count = rule_count;
+            g_pseudo_idx.before.clear();
+            g_pseudo_idx.after.clear();
+            for (size_t i = 0; i < rule_count; ++i) {
+                const char* sel = rules[i].selector;
+                if (!sel) {
+                    continue;
+                }
+                if (std::strstr(sel, "::before") != nullptr) {
+                    g_pseudo_idx.before.push_back(i);
+                }
+                if (std::strstr(sel, "::after") != nullptr) {
+                    g_pseudo_idx.after.push_back(i);
+                }
+            }
+        }
+        return which == 1 ? &g_pseudo_idx.before : &g_pseudo_idx.after;
+    }
     const std::map<lxb_dom_element*, int>* scrolls;
     whaleui_anim_t* anim;
     float text_scale;
@@ -1035,21 +1076,15 @@ struct Builder
         if (!el || !rules) {
             return;
         }
-        for (size_t i = 0; i < rule_count; ++i) {
-            const char* sel = rules[i].selector;
-            /* fast filter: only pseudo rules can produce content */
-            if (!sel || (std::strstr(sel, "::before") == nullptr &&
-                         std::strstr(sel, "::after") == nullptr)) {
-                continue;
-            }
+        const std::vector<size_t>* bucket = pseudo_bucket(which);
+        for (size_t bi = 0; bi < bucket->size(); ++bi) {
+            const whaleui_css_rule_t* rl = &rules[(*bucket)[bi]];
             int pseudo = 0;
-            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo)) {
+            if (!whaleui_style_match_pseudo(rl->selector, el, &st, &pseudo) ||
+                pseudo != which) {
                 continue;
             }
-            if (pseudo != which) {
-                continue;
-            }
-            const char* c = whaleui_css_get_property(&rules[i], "content");
+            const char* c = whaleui_css_get_property(rl, "content");
             if (!c || !*c || std::strcmp(c, "none") == 0) {
                 continue;
             }
@@ -1072,20 +1107,16 @@ struct Builder
         if (!el || !rules) {
             return s;
         }
-        for (size_t i = 0; i < rule_count; ++i) {
-            const char* sel = rules[i].selector;
-            /* fast filter: only pseudo rules carry paint for this merge */
-            if (!sel || (std::strstr(sel, "::before") == nullptr &&
-                         std::strstr(sel, "::after") == nullptr)) {
-                continue;
-            }
+        const std::vector<size_t>* bucket = pseudo_bucket(which);
+        for (size_t bi = 0; bi < bucket->size(); ++bi) {
+            const whaleui_css_rule_t* rl = &rules[(*bucket)[bi]];
             int pseudo = 0;
-            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+            if (!whaleui_style_match_pseudo(rl->selector, el, &st, &pseudo) ||
                 pseudo != which) {
                 continue;
             }
-            for (size_t d = 0; d < rules[i].decl_count; ++d) {
-                char* kv = rules[i].decls[d];
+            for (size_t d = 0; d < rl->decl_count; ++d) {
+                char* kv = rl->decls[d];
                 char* eq = std::strchr(kv, '=');
                 if (!eq) {
                     continue;
@@ -1162,19 +1193,16 @@ struct Builder
         if (!el || !rules) {
             return false;
         }
-        for (size_t i = 0; i < rule_count; ++i) {
-            const char* sel = rules[i].selector;
-            if (!sel || (std::strstr(sel, "::before") == nullptr &&
-                         std::strstr(sel, "::after") == nullptr)) {
-                continue;
-            }
+        const std::vector<size_t>* bucket = pseudo_bucket(which);
+        for (size_t bi = 0; bi < bucket->size(); ++bi) {
+            const whaleui_css_rule_t* rl = &rules[(*bucket)[bi]];
             int pseudo = 0;
-            if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+            if (!whaleui_style_match_pseudo(rl->selector, el, &st, &pseudo) ||
                 pseudo != which) {
                 continue;
             }
-            for (size_t d = 0; d < rules[i].decl_count; ++d) {
-                char* kv = rules[i].decls[d];
+            for (size_t d = 0; d < rl->decl_count; ++d) {
+                char* kv = rl->decls[d];
                 char* eq = std::strchr(kv, '=');
                 if (!eq) {
                     continue;
@@ -1216,19 +1244,17 @@ struct Builder
             s.erase(kInheritClear[i]);
         }
         if (el && rules) {
-            for (size_t i = 0; i < rule_count; ++i) {
-                const char* sel = rules[i].selector;
-                if (!sel || (std::strstr(sel, "::before") == nullptr &&
-                             std::strstr(sel, "::after") == nullptr)) {
-                    continue;
-                }
+            const std::vector<size_t>* bucket = pseudo_bucket(which);
+            for (size_t bi = 0; bi < bucket->size(); ++bi) {
+                const whaleui_css_rule_t* rl = &rules[(*bucket)[bi]];
                 int pseudo = 0;
-                if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+                if (!whaleui_style_match_pseudo(rl->selector, el, &st,
+                                                &pseudo) ||
                     pseudo != which) {
                     continue;
                 }
-                for (size_t d = 0; d < rules[i].decl_count; ++d) {
-                    char* kv = rules[i].decls[d];
+                for (size_t d = 0; d < rl->decl_count; ++d) {
+                    char* kv = rl->decls[d];
                     char* eq = std::strchr(kv, '=');
                     if (!eq) {
                         continue;
@@ -1342,7 +1368,6 @@ struct Builder
             n->style = whaleui_style_compute(el, rules, rule_count, vars,
                                              &st);
         }
-
         /* <img> has intrinsic size (300x150, browser default) and is
          * inline-level when the page sets nothing; explicit CSS wins */
         size_t tlen0 = 0;
@@ -2015,7 +2040,7 @@ struct Builder
             h_auto = false;
         }
 
-        int my = m[0] + m[2], mx = m[1] + m[3];
+        int mx = m[1] + m[3];
 
         /* box width */
         int bw;

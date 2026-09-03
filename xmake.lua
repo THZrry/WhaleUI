@@ -130,6 +130,9 @@ target("whaleui-minimal")
 for _, name in ipairs({"test_api", "test_fs", "test_font", "test_dom", "test_style", "test_anim", "test_layout", "test_render", "test_window", "test_scroll"}) do
     target(name)
         set_kind("binary")
+        if is_mode("release") then
+            set_strip("all") -- release: drop symbols (demo 5.4MB -> 2.9MB)
+        end
         add_files("tests/" .. name .. ".cpp")
         add_deps("whaleui-full")
         add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
@@ -183,6 +186,9 @@ end)
 -- ======================= demo =======================
 target("demo")
     set_kind("binary")
+    if is_mode("release") then
+        set_strip("all") -- release: drop symbols (demo 5.4MB -> 2.9MB)
+    end
     add_files("examples/demo.cpp")
     add_deps("whaleui-full")
     add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")

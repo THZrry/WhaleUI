@@ -36,6 +36,15 @@ std::vector<DirtyEntry>& g_dirty()
     return d;
 }
 
+/* style-attribute edits can change --var definitions; the vars collection
+ * (whole-document walk) is then stale and must re-run once. Set only by the
+ * style-mutating APIs below, consumed by the renderer per dom_dirty frame. */
+bool& g_vars_dirty()
+{
+    static bool d = false;
+    return d;
+}
+
 lxb_dom_element* as_el(whaleui_dom_element_t* el)
 {
     return reinterpret_cast<lxb_dom_element*>(el);
@@ -268,6 +277,18 @@ extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
     d.swap(keep);
 }
 
+extern "C" void whaleui_dom_mark_vars_dirty(void)
+{
+    g_vars_dirty() = true;
+}
+
+extern "C" int whaleui_dom_take_vars_dirty(void)
+{
+    bool v = g_vars_dirty();
+    g_vars_dirty() = false;
+    return v ? 1 : 0;
+}
+
 extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size_t len)
 {
     lxb_html_document* doc = lxb_html_document_create();
@@ -456,6 +477,9 @@ extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* 
                  : -2;
     if (rc == 0) {
         whaleui_dom_mark_dirty(e);
+        if (std::strcmp(name, "style") == 0) {
+            whaleui_dom_mark_vars_dirty();
+        }
     }
     return rc;
 }
@@ -496,6 +520,9 @@ extern "C" int whaleui_dom_remove_attribute(whaleui_dom_element_t* el, const cha
                  : -2;
     if (rc == 0) {
         whaleui_dom_mark_dirty(e);
+        if (std::strcmp(name, "style") == 0) {
+            whaleui_dom_mark_vars_dirty();
+        }
     }
     return rc;
 }
@@ -522,6 +549,9 @@ extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const cha
                                          std::strlen(name));
     }
     whaleui_dom_mark_dirty(e);
+    if (std::strcmp(name, "style") == 0) {
+        whaleui_dom_mark_vars_dirty();
+    }
     return want ? 1 : 0;
 }
 
@@ -589,6 +619,9 @@ extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* prop
     int rc = style_set(as_el(el), property, value);
     if (rc == 0) {
         whaleui_dom_mark_dirty(as_el(el));
+        /* a --var definition or any style change can affect var()
+         * resolution elsewhere; re-collect vars next frame */
+        whaleui_dom_mark_vars_dirty();
     }
     return rc;
 }
@@ -1435,6 +1468,8 @@ extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
     if (!*html) {
         return 0;
     }
+    /* fresh subtree may carry style attributes with --var definitions */
+    whaleui_dom_mark_vars_dirty();
     int rc = parse_into(e, html, std::strlen(html));
     if (rc == 0) {
         whaleui_dom_mark_dirty(e);
@@ -1484,6 +1519,8 @@ extern "C" int whaleui_dom_set_outer_html(whaleui_dom_element_t* el,
     lxb_dom_node_destroy(&e->node);
     /* the element is gone: the parent's subtree must rebuild */
     whaleui_dom_mark_dirty(lxb_dom_interface_element(parent));
+    /* the fresh siblings may carry style attributes with --var definitions */
+    whaleui_dom_mark_vars_dirty();
     return 0;
 }
 

@@ -991,6 +991,14 @@ struct RuleTagIndex
     const whaleui_css_rule_t* rules = nullptr;
     size_t count = 0;
     std::map<std::string, std::vector<size_t>> tag_idx;
+    /* tag-less rules whose LAST simple selector carries a class: bucketed
+     * by that class so elements without it skip them (a .card rule can
+     * never match a class-less li). Cascade order stays exact: the Best
+     * comparison uses the rule index i as its order tiebreak, so bucket
+     * traversal order does not matter. */
+    std::map<std::string, std::vector<size_t>> class_idx;
+    /* everything else tag-less and class-less (attr / pseudo-class / *
+     * rules): still probed per element */
     std::vector<size_t> generic_idx;
 };
 RuleTagIndex g_rule_index;
@@ -1030,6 +1038,7 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
             g_rule_index.rules = rules;
             g_rule_index.count = count;
             g_rule_index.tag_idx.clear();
+            g_rule_index.class_idx.clear();
             g_rule_index.generic_idx.clear();
             for (size_t i = 0; i < count; ++i) {
                 const char* sel = rules[i].selector;
@@ -1088,7 +1097,28 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
                             static_cast<size_t>(t - seg_start))]
                         .push_back(i);
                 } else {
-                    g_rule_index.generic_idx.push_back(i);
+                    /* tag-less: index by the first class of the last simple
+                     * selector (.card, "section .card") so class-less
+                     * elements skip every class rule in one check */
+                    const char* dot = std::strchr(seg_start, '.');
+                    const char* cn = dot ? dot + 1 : nullptr;
+                    const char* ce = cn;
+                    while (ce && ce < seg_end &&
+                           ((*ce >= 'a' && *ce <= 'z') ||
+                            (*ce >= 'A' && *ce <= 'Z') ||
+                            (*ce >= '0' && *ce <= '9') || *ce == '-' ||
+                            *ce == '_')) {
+                        ++ce;
+                    }
+                    if (cn && ce > cn) {
+                        g_rule_index
+                            .class_idx[std::string(cn,
+                                                   static_cast<size_t>(
+                                                       ce - cn))]
+                            .push_back(i);
+                    } else {
+                        g_rule_index.generic_idx.push_back(i);
+                    }
                 }
             }
         }
@@ -1140,6 +1170,39 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     if (tagged) {
         for (size_t ci = 0; ci < tagged->size(); ++ci) {
             cascade_rule((*tagged)[ci]);
+        }
+    }
+    /* class rules: probe only the buckets of the element's own classes
+     * (most elements carry no class and skip every class rule here) */
+    {
+        size_t clen = 0;
+        const lxb_char_t* cattr = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"class", 5, &clen);
+        if (cattr && clen) {
+            const char* p = reinterpret_cast<const char*>(cattr);
+            const char* end = p + clen;
+            while (p < end) {
+                while (p < end &&
+                       (*p == ' ' || *p == '\t' || *p == '\n' ||
+                        *p == '\r')) {
+                    ++p;
+                }
+                const char* tok = p;
+                while (p < end && *p != ' ' && *p != '\t' && *p != '\n' &&
+                       *p != '\r') {
+                    ++p;
+                }
+                if (p > tok) {
+                    std::map<std::string, std::vector<size_t>>::iterator it =
+                        g_rule_index.class_idx.find(
+                            std::string(tok, static_cast<size_t>(p - tok)));
+                    if (it != g_rule_index.class_idx.end()) {
+                        for (size_t ci = 0; ci < it->second.size(); ++ci) {
+                            cascade_rule(it->second[ci]);
+                        }
+                    }
+                }
+            }
         }
     }
     for (size_t ci = 0; ci < g_rule_index.generic_idx.size(); ++ci) {
