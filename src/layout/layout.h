@@ -263,6 +263,12 @@ int whaleui_layout_relayout_multi(
 int whaleui_layout_relayout_geometry(whaleui_layout_tree_t* tree,
                                      int viewport_w, int viewport_h);
 
+/* Global font-scale change (demo +/-): multiply every node's and text
+ * run's font-size by ratio IN PLACE - no cascade, no node rebuild (the
+ * stylesheet did not change, only the final font-size values). The caller
+ * then runs relayout_geometry to reflow with the new sizes. */
+void whaleui_layout_scale_fonts(whaleui_layout_tree_t* tree, float ratio);
+
 /* Text-width metric hook: the renderer installs this so layout measures
  * REAL glyph widths (inline-line x positions, wrap points, flex sizing)
  * instead of the built-in estimate. letter_spacing_px is the resolved

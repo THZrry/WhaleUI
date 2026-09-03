@@ -4000,6 +4000,41 @@ extern "C" int whaleui_layout_relayout_geometry(whaleui_layout_tree_t* tree,
     return 0;
 }
 
+static void scale_style_font(std::string& fs, float ratio)
+{
+    if (fs.empty() || fs.find('(') != std::string::npos) {
+        return; /* function values (clamp() etc.) are left alone */
+    }
+    char* endp = nullptr;
+    float v = std::strtof(fs.c_str(), &endp);
+    if (endp == fs.c_str()) {
+        return; /* not a leading number */
+    }
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%g%s", v * ratio, endp);
+    fs = buf;
+}
+
+extern "C" void whaleui_layout_scale_fonts(whaleui_layout_tree_t* tree,
+                                           float ratio)
+{
+    if (!tree || !tree->root || ratio <= 0.0f) {
+        return;
+    }
+    std::function<void(whaleui_layout_node_t*)> walk =
+        [&](whaleui_layout_node_t* n) {
+            WhaleUIComputedStyle::iterator it = n->style.find("font-size");
+            if (it != n->style.end()) {
+                scale_style_font(it->second, ratio);
+            }
+            for (whaleui_layout_node_t* c = n->first_child; c;
+                 c = c->next) {
+                walk(c);
+            }
+        };
+    walk(tree->root);
+}
+
 static int relayout_impl(
     whaleui_layout_tree_t* tree,
     lxb_dom_element* el,

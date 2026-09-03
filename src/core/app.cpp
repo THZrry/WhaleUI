@@ -782,8 +782,11 @@ extern "C" int whaleui_app_set_text_scale(whaleui_app_t* app, float scale)
     }
     for (whaleui_window_t* win : app->windows) {
         if (win->render) {
+            /* applied by the frame IN PLACE on the existing tree (font
+             * scale + geometry reflow) - NOT a whole-tree rebuild */
+            std::lock_guard<std::recursive_mutex> lk(win->render->tree_mx);
             win->render->text_scale = scale;
-            win->render->has_dirty = 1;
+            win->render->font_scale_pending = 1;
         }
     }
     return 0;

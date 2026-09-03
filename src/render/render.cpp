@@ -3927,7 +3927,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * repaint (hover_old_el set by set_hover / the state-relayout pass). */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !r->edit_el && !r->hover_old_el &&
-        !r->focus_old_el && !r->pressed_old_el &&
+        !r->focus_old_el && !r->pressed_old_el && !r->font_scale_pending &&
         !r->fill_dirty.load() && dom_dirty.empty()) {
         if (r->fill_running.load()) {
             /* background fill active: cheap poll frames (no paint) so a
@@ -3963,6 +3963,30 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             render_fsr_create(r);
             r->has_dirty = 1;
         }
+    }
+    /* global font-scale change (+/-): apply IN PLACE on the existing tree
+     * (multiply font-size values, reflow geometry) - the stylesheet did
+     * not change, so a whole-tree rebuild (re-cascade 34k elements, ~5s)
+     * would be pure waste. */
+    if (r->font_scale_pending && r->tree && r->tree->root) {
+        r->font_scale_pending = 0;
+        float cur = r->text_scale > 0.0f ? r->text_scale : 1.0f;
+        float prev = r->font_scale_applied > 0.0f ? r->font_scale_applied
+                                                  : 1.0f;
+        if (cur != prev) {
+            whaleui_layout_scale_fonts(r->tree, cur / prev);
+            whaleui_layout_relayout_geometry(r->tree, r->fb_w, r->fb_h);
+            fix_run_heights(r);
+            fix_scroll_max(r);
+            r->bounds_valid = 0; /* every box moved */
+            r->drag_scroll_node = nullptr;
+            r->scroll_max_el = nullptr;
+            r->wheel_node = nullptr;
+            r->has_dirty = 0; /* the in-place pass already reflowed */
+            r->scroll_dirty = 1;
+            r->alive = 1;
+        }
+        r->font_scale_applied = cur;
     }
     /* layout rebuild needed when the document is dirty (or no tree yet).
      * Layout-affecting animations rebuild only the animated elements'

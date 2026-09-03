@@ -322,6 +322,14 @@ struct whaleui_render
     /* global text scale (font-size multiplier, 1.0 = 100%) */
     float text_scale;
 
+    /* pending global font-scale change (demo +/-): the frame applies it
+     * IN PLACE on the existing tree (whaleui_layout_scale_fonts, no
+     * cascade/rebuild) + a geometry reflow instead of a whole-tree
+     * rebuild. font_scale_applied = the scale the tree's font-size values
+     * currently carry (ratio = text_scale / font_scale_applied). */
+    float font_scale_applied = 1.0f;
+    int font_scale_pending = 0;
+
     /* dirty-rect repaint: when partial is set, only this region is cleared,
      * painted and uploaded (small animations no longer repaint the whole
      * framebuffer every frame) */
