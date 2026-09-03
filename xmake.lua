@@ -3,7 +3,7 @@
 -- Toolchain: MinGW (Windows) / clang (macOS) / gcc (Linux)
 
 set_project("whaleui")
-set_version("0.95")
+set_version("0.96")
 set_languages("c++14")
 
 -- ============================================================
