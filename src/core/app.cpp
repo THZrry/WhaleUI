@@ -99,7 +99,16 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
  * No SDL calls here (would deadlock inside the watch); just queue + ping. */
 static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
 {
-    if (!e || e->type != SDL_EVENT_WINDOW_RESIZED) {
+    if (!e) {
+        return false;
+    }
+    /* RESIZED (size changed) and MOVED (window dragged by its title bar):
+     * both come from inside the OS modal loop where SDL_PollEvent blocks.
+     * Resized needs the worker to re-layout; MOVED needs it too, or an
+     * animated page freezes while the window is being dragged (nothing
+     * requests frames during the modal loop). */
+    if (e->type != SDL_EVENT_WINDOW_RESIZED &&
+        e->type != SDL_EVENT_WINDOW_MOVED) {
         return false;
     }
     whaleui_app_t* app = static_cast<whaleui_app_t*>(userdata);
