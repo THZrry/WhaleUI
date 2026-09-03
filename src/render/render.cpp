@@ -2895,6 +2895,8 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         return;
     }
     fb_coords(r, x, y);
+    lxb_dom_element* old_focus = r->focus_el;
+    lxb_dom_element* old_pressed = r->pressed_el;
     if (down) {
         /* the expanded list is a modal overlay: a press picks an option
          * (handle_click) or closes the list - it must not press/focus the
@@ -3056,7 +3058,21 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         }
         r->selecting = 0;
     }
-    r->has_dirty = 1;
+    /* focus/pressed state change on a NON-editing path goes through the
+     * unified interaction-state relayout (state_pending): :active / :focus
+     * styles apply to the new element and revert on the old one via the
+     * same layout-key diff -> style-only path as :hover. Editing (caret /
+     * selection / popup) keeps the full repaint - those paths carry their
+     * own state and repaint needs. */
+    bool st_changed = r->focus_el != old_focus || r->pressed_el != old_pressed;
+    if (st_changed && !r->edit_el && !r->open_select && !r->drag_sel &&
+        !r->drag_sel_active && r->has_interact_rules && r->rule_count > 0) {
+        r->focus_old_el = old_focus;
+        r->pressed_old_el = old_pressed;
+        r->state_pending = 1;
+    } else {
+        r->has_dirty = 1;
+    }
 }
 
 /* drop the dragged selection at (x, y): move it (ctrl: copy) into the
@@ -3503,12 +3519,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * set must keep the frame alive so the incremental relayout below runs */
     std::vector<lxb_dom_element*> dom_dirty;
     whaleui_dom_take_dirty(doc, dom_dirty);
-    /* interaction-state change (:hover) on a rule-bearing page: relayout
-     * only the previous + current state elements (was a whole-tree rebuild
-     * on every mouse move - a 22k-node page froze for seconds per hover
-     * change). A :hover that changes no layout property (color/transform/
-     * background are the common cases) rebuilds the element's styles and
-     * copies the old geometry - no whole-tree box pass (relayout_style). */
+    /* interaction-state change (:hover/:active/:focus) on a rule-bearing
+     * page: relayout only the previous + current state elements of every
+     * pseudo-class state (was a whole-tree rebuild on every change - a
+     * 22k-node page froze for seconds per hover). A change that touches no
+     * layout property (color/transform/background/underline are the common
+     * cases) rebuilds the element's styles and copies the old geometry -
+     * no whole-tree box pass (relayout_style). Unified for all states: the
+     * per-state difference is only WHICH element entered/left (hover vs
+     * focus vs pressed below), the relayout/repaint decision is shared. */
     if (r->state_pending) {
         r->state_pending = 0;
         if (r->has_interact_rules && r->rule_count > 0 && r->tree) {
@@ -3539,7 +3558,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             for (auto& kv : r->tree->vars) {
                 vars2[kv.first] = kv.second;
             }
-            lxb_dom_element* sa[] = {r->hover_old_el, r->hover_el};
+            lxb_dom_element* sa[] = {r->hover_old_el, r->hover_el,
+                                     r->focus_old_el, r->focus_el,
+                                     r->pressed_old_el, r->pressed_el};
             for (lxb_dom_element* el : sa) {
                 if (!el ||
                     std::find(dom_dirty.begin(), dom_dirty.end(), el) !=
@@ -3611,7 +3632,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             compute_paint_bounds(fnode);
                         }
                     }
-                    if (!r->hover_old_el) {
+                    /* a first hover (no previous target) still needs the
+                     * partial-repaint machinery: pin the hovered element */
+                    if (el == r->hover_el && !r->hover_old_el) {
                         r->hover_old_el = el;
                     }
                 }
@@ -3674,6 +3697,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * repaint (hover_old_el set by set_hover / the state-relayout pass). */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !r->edit_el && !r->hover_old_el &&
+        !r->focus_old_el && !r->pressed_old_el &&
         dom_dirty.empty()) {
         r->alive = 0; /* static page: the app loop can park idle */
         return 0;
@@ -3714,6 +3738,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * (style cascade + box layout) is gone. */
     const bool need_layout = r->has_dirty || !r->tree;
     if (need_layout) {
+        /* full rebuild covers every interaction state: drop the pending
+         * partial-repaint markers so they cannot stall the idle check */
+        r->hover_old_el = nullptr;
+        r->focus_old_el = nullptr;
+        r->pressed_old_el = nullptr;
         whaleui_layout_destroy(r->tree);
         whaleui_style_state st;
         st.hover = r->hover_el;
@@ -4084,16 +4113,23 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->scroll_el || r->drag_scroll_el) {
         r->scroll_el = nullptr;
         r->hover_old_el = nullptr;
+        r->focus_old_el = nullptr;
+        r->pressed_old_el = nullptr;
     } else if (!animating && !r->edit_el && !r->open_select &&
-               r->hover_old_el) {
-        /* hover change: repaint only the previous and current hover
-         * targets (their :hover style changed). The relayout already
-         * re-cascaded the styles; the geometry is stable. */
+               (r->hover_old_el || r->focus_old_el ||
+                r->pressed_old_el)) {
+        /* interaction-state change: repaint only the old + new elements of
+         * every pseudo-class state (their :hover/:focus/:active styles
+         * changed; the state relayout already re-cascaded the styles, the
+         * geometry is stable). */
+        auto is_state_el = [&](lxb_dom_element* e) {
+            return e == r->hover_old_el || e == r->hover_el ||
+                   e == r->focus_old_el || e == r->focus_el ||
+                   e == r->pressed_old_el || e == r->pressed_el;
+        };
         std::function<void(whaleui_layout_node_t*)> acc =
             [&](whaleui_layout_node_t* nd) {
-                if (nd->el &&
-                    (nd->el == r->hover_old_el ||
-                     nd->el == r->hover_el)) {
+                if (nd->el && is_state_el(nd->el)) {
                     /* visual position: the layout bounds are pre-scroll;
                      * the paint pass draws at bounds + ancestor scroll */
                     int off = 0;
@@ -4123,6 +4159,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             partial = true;
         }
         r->hover_old_el = nullptr;
+        r->focus_old_el = nullptr;
+        r->pressed_old_el = nullptr;
     } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
                !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes

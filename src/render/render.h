@@ -166,6 +166,11 @@ struct whaleui_render
      * held down on (:active) */
     struct lxb_dom_element* focus_el;
     struct lxb_dom_element* pressed_el;
+    /* previous focus/pressed targets: the unified interaction-state
+     * relayout (state_pending) re-cascades the old + new elements so
+     * :focus-visible / :active styles apply and revert like :hover */
+    struct lxb_dom_element* focus_old_el;
+    struct lxb_dom_element* pressed_old_el;
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
