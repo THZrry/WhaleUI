@@ -3757,10 +3757,20 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * frame's relayout (below, budgeted via tree->pending_budget) built
      * the viewport rows; append_rows brings the tail in batch by batch
      * until the DOM rows are exhausted. Each batch grows the list and
-     * shifts what follows, so the frame repaints. */
+     * shifts what follows, so the frame repaints.
+     *
+     * Idle-time filling: this step runs ONLY on frames with nothing
+     * interactive pending (animations, a queued hover/focus/pressed state
+     * change, a blinking caret). Interaction frames then stay short
+     * (input + local repaint only, no batch build), so hover/click
+     * feedback never waits behind a 20-30ms layout batch - the "full
+     * render" is just a signal; viewport-sized chunks fill in when the
+     * user is not interacting (idle), exactly like eepp's invalidated
+     * single-loop (update -> draw only when invalidated). */
     if (r->stream_expand.active && r->tree && r->tree->root &&
         r->stream_expand.list && !r->has_dirty && !animating &&
-        dom_dirty.empty()) {
+        !r->hover_old_el && !r->focus_old_el && !r->pressed_old_el &&
+        !r->edit_el && dom_dirty.empty()) {
         auto dom_li_rows = [](lxb_dom_element* le) -> size_t {
             size_t n = 0;
             for (lxb_dom_node* c = le->node.first_child; c; c = c->next) {
