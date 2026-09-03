@@ -397,10 +397,27 @@ void render_worker_fn(whaleui_app_t* app)
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(app->render_lock);
-            app->frame_cv.wait(lk, [&] {
-                return !app->input_queue.empty() ||
-                       app->frame_request.load() || !app->running.load();
-            });
+            /* timeout: the soonest pending coalesced resize, else 100ms
+             * (cheap wakeups keep a pending resize applied even while the
+             * main thread is stuck in the OS modal resize loop - mouse
+             * held still sends no events) */
+            Uint64 wnow = SDL_GetTicks();
+            Uint64 rem_ms = 100;
+            for (whaleui_window_t* w : app->windows) {
+                if (w->resize_pending && w->render) {
+                    Uint64 due = w->resize_last + kResizeCoalesceMs;
+                    Uint64 r = due > wnow ? due - wnow : 0;
+                    if (r < rem_ms) {
+                        rem_ms = r;
+                    }
+                }
+            }
+            app->frame_cv.wait_for(
+                lk, std::chrono::milliseconds(rem_ms), [&] {
+                    return !app->input_queue.empty() ||
+                           app->frame_request.load() ||
+                           !app->running.load();
+                });
             if (!app->running.load() && app->input_queue.empty()) {
                 return;
             }
@@ -430,6 +447,9 @@ void render_worker_fn(whaleui_app_t* app)
                     whaleui_window_refresh_css(win);
                     win->resize_last = now;
                     win->resize_pending = 0;
+                    /* force a render of the new size (the event stream may
+                     * be empty - mouse held still after the drag) */
+                    app->frame_request.store(1);
                 }
             }
             if (app->frame_request.load()) {
