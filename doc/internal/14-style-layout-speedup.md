@@ -53,8 +53,6 @@
 ## 4. 先决小实验（实施第一步，决策 A vs B）
 
 ## 4. 先决分析结论（2026-06 静态审查 + 前几轮插桩数据）
-
-- style_compute 单次 25us（已近下限）。
 - **继承 merge 是"仅差异写入"**（layout.cpp ~1596：只在 n->style 缺键且
   parent 有键时写 font-size/color/font-family/line-height/
   letter-spacing/cursor）——每元素实际 ~2-3 键，非全量。
@@ -78,8 +76,26 @@
    允许共享）。
 
 方案 B（COW 全 map detach）因继承写仅差异而**不必要**（detach 拷贝 50
-键只会抵消收益）——放弃。倾向 4.1a（run 回退父）先验证，收益
-~25us/行（补齐 4.5s -> ~3s），风险可控。
+键只会抵消收益）——放弃。
+
+## 4.2 实施路径选型（2026-06 定稿）
+
+- 4.1a（run 空 style + 读点回退父）**受阻**：style 读点 ~103 处且
+  get/sget 签名只收 style 引用（无节点/parent 上下文），逐点改造
+  风险与工作量不成比例。
+- **选定：WhaleUIComputedStyle 改共享句柄 struct**：
+  `struct StyleHandle { std::shared_ptr<const map> shared; /* cascade */
+   std::unique_ptr<map> own; /* 特判/继承差异写 */ }`——
+  - get/sget 等**集中访问器签名不变**（仍收 style 引用），内部改为
+    "own 优先 + shared 兜底"（own 空时一次 shared find）——~103 读点
+    中走 get/sget 的**零改动**；直读（`.style.find`/`[k]`）逐点改访问器
+    （数量先 grep 确认，估计 <30）。
+  - node style 与 run style 共享同一 shared cascade（compute/move 一次、
+    add_run 传引用共享），特判/继承差异写进 own（每元素 ~2-3 键，
+    own 分配按需）——run 拷贝墙（~25us/行）消除。
+  - cache 命中直接共享 shared（整树 rebuild 免深拷贝）。
+  - 风险与缓解见 §6；**实施需完整轮 + 全量回归**（继承键一致性测试、
+    像素断言、fill/±/hover/stress）。
 
 ## 5. 方案 C（零 style 改动，并行兜底）
 
