@@ -649,12 +649,7 @@ bool is_high_root(const whaleui_layout_node_t* n)
     if (!n->el || n->is_text) {
         return false;
     }
-    std::string z = sget(n->style, "z-index");
-    if (!z.empty() && z != "auto" && std::atoi(z.c_str()) > 0) {
-        return true;
-    }
-    std::string pos = sget(n->style, "position");
-    return pos == "fixed" || pos == "sticky";
+    return n->hz || n->fx || n->sk;
 }
 
 /* should a high root clear the old text under it? Only when its own
@@ -711,11 +706,9 @@ void clear_subtree_text(whaleui_render_t* r,
         return;
     }
     int nox = off_x, noy = off_y;
-    if (nd->el && !nd->is_text) {
-        if (sget(nd->style, "position") == "fixed") {
-            nox = 0;
-            noy = 0;
-        }
+    if (nd->el && !nd->is_text && nd->fx) {
+        nox = 0;
+        noy = 0;
     }
     text_layer_clear(r, nd->border.x + nox, nd->border.y + noy,
                      nd->border.w, nd->border.h);
@@ -756,13 +749,13 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     std::string ntv; /* "transform" value of this node ("" = none) */
     bool has_xf = false;
     if (n->el && !n->is_text) {
-        ntv = sget(n->style, "transform");
-        has_xf = !ntv.empty() && ntv != "none";
+        has_xf = n->xf != 0;
         if (!tc && has_xf) {
+            ntv = sget(n->style, "transform");
             tc = true;
-        } else if (!tc && sget(n->style, "position") == "fixed") {
+        } else if (!tc && n->fx) {
             tc = true;
-        } else if (!tc && sget(n->style, "position") == "sticky") {
+        } else if (!tc && n->sk) {
             /* sticky pins the box at top:N while scrolling, so its painted
              * box leaves the layout bounds - culling on the laid-out
              * position would drop it (and its subtree) mid-scroll */
@@ -789,7 +782,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* position:fixed elements are laid out against the viewport and must
      * not move with ancestor scroll offsets */
-    if (sget(n->style, "position") == "fixed") {
+    if (n->fx) {
         off_x = 0;
         off_y = 0;
     }
@@ -798,7 +791,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * the scroll amount, so border.y + off_y is the current viewport
      * position). Simplified to the page/root scroll; container-bottom
      * clamping is skipped (ponytail: add when a page needs it). */
-    if (sget(n->style, "position") == "sticky") {
+    if (n->sk) {
         /* top is usually px; %/vh are rare on sticky (ponytail) */
         int st = std::atoi(sget(n->style, "top").c_str());
         int cur = n->border.y + off_y;

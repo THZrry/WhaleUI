@@ -1621,6 +1621,17 @@ struct Builder
         if (!zs.empty()) {
             n->z = std::atoi(zs.c_str());
         }
+        n->hz = n->z > 0;
+        /* paint-path flags: transform/position are tested on every node
+         * during the paint walk - cache them here so paint reads bits
+         * instead of std::map lookups */
+        {
+            std::string tfv = get(n->style, "transform");
+            n->xf = !tfv.empty() && tfv != "none";
+            std::string pv = get(n->style, "position");
+            n->fx = pv == "fixed";
+            n->sk = pv == "sticky";
+        }
         std::string op = get(n->style, "opacity");
         if (!op.empty()) {
             float o = std::strtof(op.c_str(), nullptr);

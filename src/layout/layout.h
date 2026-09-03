@@ -74,6 +74,14 @@ struct whaleui_layout_node
                                 box (a pseudo-element with box properties
                                 such as background/position/transform).
                                 pointer-events:none: hit-testing skips them */
+    /* paint-path style flags (computed at build time): the paint tree walk
+     * tests transform/position on EVERY node (a 34k-node page costs ~30ms
+     * of std::map finds per frame even for a tiny partial repaint), so the
+     * flags live on the node and paint reads bits, not the style map. */
+    unsigned xf : 1;         /* transform != none (offsets the subtree) */
+    unsigned fx : 1;         /* position: fixed */
+    unsigned sk : 1;         /* position: sticky */
+    unsigned hz : 1;         /* z-index > 0 (high-root layer) */
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 
