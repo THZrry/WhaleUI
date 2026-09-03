@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <algorithm>
 #include <vector>
 #include <mutex>
@@ -1034,6 +1035,13 @@ struct Builder
     std::map<std::string, std::string> vars;
     whaleui_style_state st;
 
+    /* progressive-expand row budget: how many leading <li> rows of a list
+     * container (ul/ol) this build may create. SIZE_MAX = unlimited.
+     * Consumed in the children loop below - when it hits zero the rest of
+     * the list's DOM rows are skipped (the renderer appends them with
+     * whaleui_layout_append_rows on later frames). */
+    size_t row_budget = std::numeric_limits<size_t>::max();
+
     /* bucket of rule indices carrying the pseudo-element `which` (1/2) */
     const std::vector<size_t>* pseudo_bucket(int which)
     {
@@ -1796,6 +1804,18 @@ struct Builder
                 if (ename && elen == 2 && std::memcmp(ename, "br", 2) == 0) {
                     cur_run += '\n'; /* line break inside the run */
                 } else {
+                    /* progressive expand: a list container with a row
+                     * budget builds only the leading rows - stop the rest
+                     * (append_rows brings them in on later frames) */
+                    if (row_budget != std::numeric_limits<size_t>::max() &&
+                        (n->tag_id == WUI_TAG_UL || n->tag_id == WUI_TAG_OL) &&
+                        ename && elen == 2 && ename[0] == 'l' &&
+                        ename[1] == 'i') {
+                        if (row_budget == 0) {
+                            break; /* budget spent: leave the tail unbuilt */
+                        }
+                        --row_budget;
+                    }
                     flush_run();
                     whaleui_layout_node_t* child = build(e, n);
                     if (!*link) {
@@ -4005,6 +4025,14 @@ static int relayout_impl(
     b.scrolls = scrolls;
     b.anim = anim;
     b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    /* one-shot progressive-expand budget (renderer sets it before the
+     * first expand frame; consumed by the FULL relayout here, reset for
+     * every later relayout - style-only passes (skip_box) must not eat
+     * the budget meant for the expand relayout) */
+    if (!skip_box) {
+        b.row_budget = tree->pending_budget;
+        tree->pending_budget = std::numeric_limits<size_t>::max();
+    }
     if (theme_vars) {
         b.vars = *theme_vars;
     }
@@ -4149,7 +4177,7 @@ extern "C" int whaleui_layout_append_rows(
     const std::map<std::string, std::string>* theme_vars,
     const whaleui_style_state* st,
     const std::map<lxb_dom_element*, int>* scrolls,
-    struct whaleui_anim* anim, float text_scale)
+    struct whaleui_anim* anim, float text_scale, size_t max_rows)
 {
     if (!tree || !list_el || !tree->root) {
         return -1;
@@ -4293,6 +4321,9 @@ extern "C" int whaleui_layout_append_rows(
             continue;
         }
         int c0 = cursor;
+        if (built >= max_rows) {
+            break; /* frame budget spent: the rest comes next frame */
+        }
         whaleui_layout_node_t* li = b.build(e, list);
         if (!li) {
             break;
@@ -4322,7 +4353,7 @@ extern "C" int whaleui_layout_append_rows(
     }
     shift_following(list, delta);
     tree->root->scroll_max += delta;
-    return 0;
+    return (int)built;
 }
 
 /* batch relayout for a layout-affecting animation: rebuild each animated

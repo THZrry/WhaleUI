@@ -339,6 +339,20 @@ struct whaleui_render
     int layout_w, layout_h;
     float layout_text_scale;
 
+    /* progressive <details> expand in flight: the first frame relayouts
+     * the details subtree with a row budget (viewport rows only, set via
+     * tree->pending_budget); every later frame appends one append_rows
+     * batch (list's ul/ol tail) until the DOM rows are exhausted, then
+     * clears. paint keeps running between steps, so the viewport shows the
+     * first rows almost immediately and the rest fills in frame by frame
+     * while input stays responsive. */
+    struct StreamExpand
+    {
+        lxb_dom_element* det = nullptr;  /* the <details> element */
+        lxb_dom_element* list = nullptr; /* its ul/ol (DOM) */
+        bool active = false;
+    } stream_expand;
+
     /* subtree paint bounds are computed once per layout pass and reused by
      * every paint (and the selection sequence walk); invalidated whenever
      * the layout tree is rebuilt */

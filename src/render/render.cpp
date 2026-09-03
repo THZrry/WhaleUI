@@ -2546,10 +2546,45 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                             det, (const lxb_char_t*)"open", 4)) {
                         lxb_dom_element_remove_attribute(
                             det, (const lxb_char_t*)"open", 4);
+                        r->stream_expand.active = false;
                     } else {
                         lxb_dom_element_set_attribute(
                             det, (const lxb_char_t*)"open", 4,
                             (const lxb_char_t*)"", 0);
+                        /* progressive expand: the first relayout below
+                         * builds only the viewport's worth of rows (the
+                         * Builder consumes tree->pending_budget); the rest
+                         * streams in via append_rows on later frames */
+                        lxb_dom_element* ul_el = nullptr;
+                        for (lxb_dom_node* dn = det->node.first_child; dn;
+                             dn = dn->next) {
+                            if (dn->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                                continue;
+                            }
+                            lxb_dom_element* de =
+                                lxb_dom_interface_element(dn);
+                            size_t ulen = 0;
+                            const lxb_char_t* uname =
+                                lxb_dom_element_local_name(de, &ulen);
+                            if (uname && ulen == 2 && uname[0] == 'u' &&
+                                uname[1] == 'l') {
+                                ul_el = de;
+                                break;
+                            }
+                        }
+                        if (r->tree) {
+                            /* one row per viewport line: the first paint
+                             * shows the whole viewport filled */
+                            size_t rows = 1;
+                            if (r->tree->root && r->height > 0) {
+                                rows = static_cast<size_t>(r->height / 25) +
+                                       8;
+                            }
+                            r->tree->pending_budget = rows;
+                        }
+                        r->stream_expand.det = det;
+                        r->stream_expand.list = ul_el;
+                        r->stream_expand.active = true;
                     }
                     /* incremental relayout, not a full-tree rebuild: the
                      * dirty set below rebuilds only this <details> subtree
@@ -2561,7 +2596,11 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                      * details subtree with the current hover state, so the
                      * full rebuild is redundant). */
                     r->has_dirty = 0;
-                    whaleui_dom_mark_dirty(det);
+                    /* expand/collapse changes the subtree shape (the
+                     * <ul> rows appear/disappear): structural dirty, so
+                     * the expand relayout consumes the progressive budget
+                     * (viewport rows first, rest appended per frame) */
+                    whaleui_dom_mark_dirty_struct(det);
                 }
             }
         }
@@ -3714,6 +3753,77 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->alive = 1; /* stay in the frame loop until the layout lands */
         return 0;
     }
+    /* progressive <details> expand: append the next row batch. The first
+     * frame's relayout (below, budgeted via tree->pending_budget) built
+     * the viewport rows; append_rows brings the tail in batch by batch
+     * until the DOM rows are exhausted. Each batch grows the list and
+     * shifts what follows, so the frame repaints. */
+    if (r->stream_expand.active && r->tree && r->tree->root &&
+        r->stream_expand.list && !r->has_dirty && !animating &&
+        dom_dirty.empty()) {
+        auto dom_li_rows = [](lxb_dom_element* le) -> size_t {
+            size_t n = 0;
+            for (lxb_dom_node* c = le->node.first_child; c; c = c->next) {
+                if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                    continue;
+                }
+                lxb_dom_element* e = lxb_dom_interface_element(c);
+                size_t elen = 0;
+                const lxb_char_t* ename = lxb_dom_element_local_name(e,
+                                                                      &elen);
+                if (ename && elen == 2 && ename[0] == 'l' &&
+                    ename[1] == 'i') {
+                    ++n;
+                }
+            }
+            return n;
+        };
+        const size_t kBudget = 150; /* rows per streaming frame */
+        int n = whaleui_layout_append_rows(
+            r->tree, r->stream_expand.list, r->rules, r->rule_count,
+            &r->theme_vars, nullptr, &r->scrolls, r->anim, r->text_scale,
+            kBudget);
+        bool done = false;
+        if (n < 0) {
+            /* nothing appendable: complete only when the DOM rows are all
+             * laid out; otherwise (flex ancestor etc.) finish with one
+             * full relayout of the details */
+            size_t laid = 0;
+            auto found = r->tree->by_el.find(r->stream_expand.list);
+            if (found != r->tree->by_el.end()) {
+                for (whaleui_layout_node_t* c = found->second->first_child;
+                     c; c = c->next) {
+                    if (c->el && !c->is_text) {
+                        ++laid;
+                    }
+                }
+            }
+            done = dom_li_rows(r->stream_expand.list) == laid;
+            if (!done) {
+                whaleui_style_state st;
+                st.hover = r->hover_el;
+                st.focus = r->focus_el;
+                st.pressed = r->pressed_el;
+                whaleui_layout_relayout(r->tree, r->stream_expand.det,
+                                        r->rules, r->rule_count,
+                                        &r->theme_vars, &st, &r->scrolls,
+                                        r->anim, r->text_scale);
+            }
+        } else if (static_cast<size_t>(n) < kBudget) {
+            done = true; /* built the remaining rows */
+        }
+        if (done) {
+            r->stream_expand.active = false;
+            r->stream_expand.det = nullptr;
+            r->stream_expand.list = nullptr;
+        }
+        if (n >= 0) {
+            r->bounds_valid = 0; /* rows grew / shifted: repaint */
+            r->scroll_dirty = 1; /* repaint ONLY - has_dirty would trigger
+                                  * a whole-tree relayout (need_layout) */
+            r->alive = 1;
+        }
+    }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
      * animation/transition is running, an editable caret is blinking, the
@@ -4012,7 +4122,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (whaleui_layout_append_rows(
                         r->tree, el, r->rules, r->rule_count,
                         &r->theme_vars, &st, &r->scrolls, r->anim,
-                        r->text_scale) == 0) {
+                        r->text_scale,
+                        std::numeric_limits<size_t>::max()) > 0) {
                     continue; /* incremental: geometry grew, no subtree
                                * rebuild; wide repaint below covers it */
                 }

@@ -14,6 +14,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <limits>
 #include <unordered_map>
 
 /* lexbor element type */
@@ -157,6 +158,14 @@ struct whaleui_layout_tree
      * on top afterwards), so keying on (el, hover, focus, pressed) makes
      * stable frames O(1). Cleared alongside vars when the DOM changes. */
     std::map<whaleui_layout_style_key, WhaleUIComputedStyle> style_cache;
+
+    /* progressive-expand budget, one-shot: when the renderer starts a
+     * <details> expand it sets this to the number of leading <li> rows the
+     * next relayout may build (the viewport's worth); the Builder of that
+     * relayout consumes it (row_budget) and resets it to SIZE_MAX. The
+     * remaining rows are appended by whaleui_layout_append_rows on later
+     * frames. 0/SIZE_MAX = no limit (regular relayouts). */
+    size_t pending_budget = std::numeric_limits<size_t>::max();
 };
 
 typedef struct whaleui_layout_tree whaleui_layout_tree_t;
@@ -219,7 +228,10 @@ int whaleui_layout_relayout_style(
  * "append one row to a 10k-row list" edit drops from a full relayout of
  * the whole subtree (seconds) to the new rows only.
  *
- * Returns 0 when the append path applied; <0 when the container has no
+ * Returns the number of rows built this call (0 when nothing new was
+ * appendable, e.g. already complete; >= 0). When `max_rows` limited the
+ * call, a result == max_rows means more DOM rows remain - call again on
+ * the next frame (progressive expand). <0 when the container has no
  * laid-out rows / the DOM tail did not grow / the container sits inside a
  * flex/grid/table/absolutely-positioned ancestor (shifting is unsafe) -
  * the caller then runs the regular full relayout. */
@@ -229,7 +241,8 @@ int whaleui_layout_append_rows(
     const std::map<std::string, std::string>* theme_vars,
     const whaleui_style_state* st,
     const std::map<struct lxb_dom_element*, int>* scrolls,
-    struct whaleui_anim* anim, float text_scale);
+    struct whaleui_anim* anim, float text_scale,
+    size_t max_rows);
 
 /* Batch relayout for a layout-affecting animation: ~same as relayout but
  * rebuilds several animated subtrees before a single whole-tree box pass
