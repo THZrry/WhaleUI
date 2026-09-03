@@ -3759,6 +3759,25 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (layout_changed) {
                     dom_dirty.push_back(el); /* full relayout + box pass */
                 } else {
+                    /* the state move changed no style on this element (no
+                     * :hover/:active/:focus rule selects it - e.g. the
+                     * body when the mouse leaves a link): rebuilding it is
+                     * pure waste (body on a 34k-node page = seconds).
+                     * Compare the new cascade against the current style on
+                     * the cascade's own keys (the state rules' outputs)
+                     * and skip when identical. */
+                    bool cascade_changed = false;
+                    for (auto& kv : ns) {
+                        auto sit = node->style.find(kv.first);
+                        if (sit == node->style.end() ||
+                            sit->second != kv.second) {
+                            cascade_changed = true;
+                            break;
+                        }
+                    }
+                    if (!cascade_changed) {
+                        continue;
+                    }
                     whaleui_layout_relayout_style(
                         r->tree, el, r->rules, r->rule_count,
                         &r->theme_vars, &st2, &r->scrolls, r->anim,
