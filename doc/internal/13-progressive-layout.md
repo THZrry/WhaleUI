@@ -50,6 +50,12 @@
   子树。布局树最终高度 = box 估高，与同步 relayout 一致（同步路径同样不跑
   fix_run_heights，仅首帧/全量后跑）。待验证：layout() 元素分支对 li 的定位细节
   （inline/块级分支、cursor 语义）。
+  **实现发现（2026 轮，temp/append_probe/append_min）**：在**已布局树**上对单个新
+  `<li>` 调 `Builder::build(li_el, list_node)` 崩溃（build 假定"整树构建"上下文——
+  崩在 build 内、子元素构建前；anim=null 与 anim 路径同样崩；用 DOM create_element
+  新建的 li）。下一轮先诊断 build 单元素复用的崩溃点（create_element 元素与解析元素
+  的差异 / build 对旧 parent 节点的假设 / new_node + by_el 在已建树上的行为），再做
+  whaleui_layout_append_rows。期间 DOM 尾部 append 仍走全 relayout（结构 dirty 路径）。
 - **M3 diff paint**：脏区 = 每块新增行视口交集；帧循环每块就绪触发一次局部 repaint
   （复用现有 partial strip）。滚动到未就绪区显示占位。验收：点击后 <100ms 视口出现首块，
   滚动流畅，最终画面与同步一致。
