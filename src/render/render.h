@@ -368,7 +368,7 @@ struct whaleui_render
      * batches and frames never interleave on the tree. It lives on the
      * RENDER (not the tree) so a whole-tree rebuild inside a locked frame
      * does not destroy the lock out from under the fill thread. */
-    std::mutex tree_mx;
+    std::recursive_mutex tree_mx;
     std::thread* fill_thread = nullptr;
     std::atomic<int> fill_stop{0};     /* request the thread to exit */
     std::atomic<int> fill_running{0};  /* 1 once the thread is running */

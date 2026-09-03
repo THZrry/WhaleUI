@@ -2255,6 +2255,10 @@ extern "C" void whaleui_render_set_css(whaleui_render_t* r,
     if (!r) {
         return;
     }
+    /* replacing the stylesheet while the background fill thread is
+     * appending rows (it reads r->rules under tree_mx) must take the same
+     * lock - otherwise the fill can touch rules that were just freed */
+    std::unique_lock<std::recursive_mutex> lk(r->tree_mx);
     if (r->rules) {
         whaleui_css_rules_destroy(r->rules, r->rule_count);
         r->rules = nullptr;
@@ -2342,6 +2346,8 @@ extern "C" whaleui_dom_element_t* whaleui_render_hit_element(whaleui_render_t* r
     if (!r || !r->tree) {
         return nullptr;
     }
+    /* serialized against the background fill thread (reads the layout tree) */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     return hit ? reinterpret_cast<whaleui_dom_element_t*>(hit->el) : nullptr;
@@ -2493,6 +2499,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     if (!r || !r->tree) {
         return 0;
     }
+    /* serialized against the background fill thread (reads the layout tree) */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
     /* 1. clicking inside the expanded list chooses an option */
     if (r->open_select) {
@@ -2567,6 +2575,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                         r->fill_stop.store(1);
                         r->stream_expand.active = false;
                     } else {
+                        /* (the whole handler runs under tree_mx, see
+                         * handle_click) */
                         lxb_dom_element_set_attribute(
                             det, (const lxb_char_t*)"open", 4,
                             (const lxb_char_t*)"", 0);
@@ -2719,6 +2729,8 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     if (!r || !r->tree) {
         return;
     }
+    /* serialized against the background fill thread (reads the layout tree) */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
     /* dragging a scrollbar: the thumb follows the mouse y. Skipping the
      * hover update keeps the layout tree stable while dragging (hover
@@ -2988,6 +3000,8 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
     if (!r || !r->tree) {
         return;
     }
+    /* serialized against the background fill thread (reads the layout tree) */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
     lxb_dom_element* old_focus = r->focus_el;
     lxb_dom_element* old_pressed = r->pressed_el;
@@ -3223,6 +3237,8 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
     if (!r || !r->tree) {
         return;
     }
+    /* serialized against the background fill thread (reads the layout tree) */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
     /* wheel units: discrete notches come as small integers (1-3), touchpad
      * precision scrolling as larger pixel deltas. Scale only the notches so
@@ -3575,7 +3591,7 @@ static void fill_worker_fn(whaleui_render_t* r)
             break;
         }
         {
-            std::unique_lock<std::mutex> lk(r->tree_mx);
+            std::unique_lock<std::recursive_mutex> lk(r->tree_mx);
             if (r->fill_stop.load()) {
                 break;
             }
@@ -3910,7 +3926,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* the frame now touches the layout tree (relayout/paint/hit-test):
      * serialize against the background fill thread's append batches
      * (RAII releases the lock at every return below). */
-    std::unique_lock<std::mutex> tree_lk(r->tree_mx);
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
 #ifdef WHALEUI_BUILD_FULL
     /* the layout pass measures real glyph widths through this context */
     g_metric_render = r;
