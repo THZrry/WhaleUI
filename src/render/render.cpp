@@ -3778,7 +3778,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             }
             return n;
         };
-        const size_t kBudget = 150; /* rows per streaming frame */
+        const size_t kBudget = 60; /* rows per streaming frame (~16-20ms) */
         int n = whaleui_layout_append_rows(
             r->tree, r->stream_expand.list, r->rules, r->rule_count,
             &r->theme_vars, nullptr, &r->scrolls, r->anim, r->text_scale,
@@ -4671,7 +4671,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                                &sw, &sh) ||
         !swapchain) {
         SDL_SubmitGPUCommandBuffer(cmd);
-        r->alive = (animating || r->edit_el) ? 1 : 0;
+        r->alive = (animating || r->edit_el || r->stream_expand.active) ? 1 : 0;
         return 0;
     }
     /* FSR 1.0 upscale: EASU (target2 low-res -> fsr_up) + RCAS sharpen
@@ -4728,7 +4728,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     SDL_SubmitGPUCommandBuffer(cmd);
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). */
-    r->alive = (animating || r->edit_el) ? 1 : 0;
+    r->alive = (animating || r->edit_el || r->stream_expand.active) ? 1 : 0;
     return 0;
 }
 
