@@ -38,13 +38,18 @@
 
 ## 3. 里程碑（每步独立提交+测试+验证）
 
-- **M1 并发安全树基础**：layout arena/by_el 的追加语义确认；渲染读遍历的"链尾即止"
-  约定落地（paint/hit 遍历在树增长时无崩溃——现有代码已按链表遍历，主要验证 + 补
-  by_el 读锁）。验收：测试页 worker 追加 N 块同时渲染线程持续 paint/hit，无崩溃无撕裂。
-- **M2 分块 build + 局部 box + y 平移**：`whaleui_layout_relayout_stream`（逐块）：
-  每块 build 完成 → 局部行定位 + 从插入点向后 y 平移 delta → 脏区记录。块级/简单流
-  场景先支持；flex/grid/复杂 inline 回退全量同步 relayout。验收：WPT CSS2 展开分 N 块，
-  每块完成 <16ms，最终树与同步路径几何一致（像素 diff 相等）。
+- **M1 并发安全树基础**（**已验证，temp/stream_probe.cpp**）：写线程 2s 追加 17,317
+  节点（先完整构造后单指针链入），读线程 15,278 次遍历（链尾即止）：无崩溃无撕裂。
+  追加式约定成立（arena 只 push_back 不移动、节点先构造后链入、读方链尾即止）。
+  待办：by_el / style_cache 的读写访问点逐个定锁或调度约束（几何查询与 layout 分时）。
+- **M2 分块 build + 局部 box + y 平移**（预研结论）：单 li 的几何可直接复用
+  `Builder::layout(li_node, ...)`（run 分支 `n->border.y = *cursor_y` + cursor 累加，
+  行高 `line_height_px`）——**不必手算行高**。做法：首块先建 ul 节点并链入 details
+  （y = summary 底），对块内每个 li：`build(li_el, ul_node)` 建子树 → 链入 ul →
+  `layout(li, ...)` 独立定位（局部 cursor）。块完成 delta_y 平移 details 后续兄弟
+  子树。布局树最终高度 = box 估高，与同步 relayout 一致（同步路径同样不跑
+  fix_run_heights，仅首帧/全量后跑）。待验证：layout() 元素分支对 li 的定位细节
+  （inline/块级分支、cursor 语义）。
 - **M3 diff paint**：脏区 = 每块新增行视口交集；帧循环每块就绪触发一次局部 repaint
   （复用现有 partial strip）。滚动到未就绪区显示占位。验收：点击后 <100ms 视口出现首块，
   滚动流畅，最终画面与同步一致。
