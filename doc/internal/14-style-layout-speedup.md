@@ -78,7 +78,16 @@
 方案 B（COW 全 map detach）因继承写仅差异而**不必要**（detach 拷贝 50
 键只会抵消收益）——放弃。
 
-## 4.2 实施路径选型（2026-06 定稿）
+## 4.3 量化推翻（2026-06, 插桩实测后）: StyleHandle 重构叫停
+
+add_run 拷贝实测: 平均 3.1us/次, WPT style 仅 8 键(map 小) - 占行成本
+0.2ms 的 ~1.5%。StyleHandle 全引擎语义重构(shared cascade + own 差异,
+~30-100 访问点)收益 <5% 风险全引擎 -> 按反弹预案叫停, 不改 style 表示。
+行 build 0.2ms 的真实构成(compute 50us + run 3us + 结构 ~150us)仍需
+精确分段插桩(下轮第一动作) - 若结构 150us 属实, 优化点在 build 结构
+(new_node/特判 get/继承 find 次数), 非 style 拷贝。
+
+## 4.2 实施路径选型（2026-06 定稿, 已被 4.3 叫停 - 仅存档）
 
 - 4.1a（run 空 style + 读点回退父）**受阻**：style 读点 ~103 处且
   get/sget 签名只收 style 引用（无节点/parent 上下文），逐点改造
