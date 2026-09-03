@@ -2181,6 +2181,14 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
     if (!r) {
         return;
     }
+    /* join the background expand-fill thread before freeing anything it
+     * reads (rules, DOM, tree, vars) */
+    if (r->fill_thread) {
+        r->fill_stop.store(1);
+        r->fill_thread->join();
+        delete r->fill_thread;
+        r->fill_thread = nullptr;
+    }
     /* join a running async layout worker before freeing anything it reads
      * (rules, DOM, vars). The worker only reads; join is safe. */
     if (r->layout_thread) {
@@ -2553,6 +2561,10 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                             det, (const lxb_char_t*)"open", 4)) {
                         lxb_dom_element_remove_attribute(
                             det, (const lxb_char_t*)"open", 4);
+                        /* collapse: stop the background fill thread (it
+                         * appends rows to a subtree that is about to be
+                         * rebuilt away); the frame below reaps it */
+                        r->fill_stop.store(1);
                         r->stream_expand.active = false;
                     } else {
                         lxb_dom_element_set_attribute(
@@ -3545,6 +3557,61 @@ extern "C" void whaleui_render_set_fsr(whaleui_render_t* r, int mode,
     r->has_dirty = 1;
 }
 
+/* background <details> expand fill thread (spawned by the render frame):
+ * appends one append_rows batch per tree_mx acquisition. The render frame
+ * holds tree_mx while it touches the tree, so a batch never interleaves
+ * with a frame; frames parked idle leave the lock free and the fill runs
+ * at full speed. The text-metric context (g_metric_render) is only
+ * touched under tree_mx, so the fill measures glyphs exactly like the
+ * frame does. Exits when the DOM rows are exhausted, the expand was
+ * cancelled (fill_stop / stream_expand cleared) or the tree was rebuilt. */
+static const size_t kFillBatch = 200; /* rows per append_rows batch */
+static void fill_worker_fn(whaleui_render_t* r)
+{
+    r->fill_finished.store(0);
+    r->fill_running.store(1);
+    for (;;) {
+        if (r->fill_stop.load()) {
+            break;
+        }
+        {
+            std::unique_lock<std::mutex> lk(r->tree_mx);
+            if (r->fill_stop.load()) {
+                break;
+            }
+            if (!r->tree || !r->tree->root || !r->stream_expand.active ||
+                !r->stream_expand.list) {
+                break; /* tree rebuilt / expand finished elsewhere */
+            }
+#ifdef WHALEUI_BUILD_FULL
+            g_metric_render = r; /* real glyph metrics (same as frame) */
+#endif
+            int n = whaleui_layout_append_rows(
+                r->tree, r->stream_expand.list, r->rules, r->rule_count,
+                &r->theme_vars, nullptr, &r->scrolls, r->anim,
+                r->text_scale, kFillBatch);
+            {
+                auto fz = r->tree->by_el.find(r->stream_expand.list);
+                if (fz != r->tree->by_el.end()) {
+                    size_t tr = 0;
+                    for (whaleui_layout_node_t* cc = fz->second->first_child;
+                         cc; cc = cc->next) {
+                        if (cc->el && !cc->is_text) ++tr;
+                    }
+                } else {
+                }
+            }
+            if (n <= 0) {
+                break; /* DOM rows exhausted or append blocked */
+            }
+        }
+        r->fill_dirty.store(1); /* a batch landed: repaint it */
+        std::this_thread::yield();
+    }
+    r->fill_running.store(0);
+    r->fill_finished.store(1);
+}
+
 extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
 {
     if (!r || !doc) {
@@ -3760,86 +3827,66 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->alive = 1; /* stay in the frame loop until the layout lands */
         return 0;
     }
-    /* progressive <details> expand: append the next row batch. The first
+    /* progressive <details> expand - BACKGROUND fill thread. The first
      * frame's relayout (below, budgeted via tree->pending_budget) built
-     * the viewport rows; append_rows brings the tail in batch by batch
-     * until the DOM rows are exhausted. Each batch grows the list and
-     * shifts what follows, so the frame repaints.
-     *
-     * Idle-time filling: this step runs ONLY on frames with nothing
-     * interactive pending (animations, a queued hover/focus/pressed state
-     * change, a blinking caret). Interaction frames then stay short
-     * (input + local repaint only, no batch build), so hover/click
-     * feedback never waits behind a 20-30ms layout batch - the "full
-     * render" is just a signal; viewport-sized chunks fill in when the
-     * user is not interacting (idle), exactly like eepp's invalidated
-     * single-loop (update -> draw only when invalidated). */
+     * the viewport rows; a dedicated thread appends the remaining rows in
+     * batches (append_rows under tree_mx), so the render frame never
+     * blocks on a 20-30ms layout batch. Interaction frames stay short
+     * (input + local repaint only); the fill runs between them (idle-time
+     * filling - "full render" is just a signal) and at full speed while
+     * the frame loop is parked. fill_dirty wakes a repaint per batch. */
     if (r->stream_expand.active && r->tree && r->tree->root &&
-        r->stream_expand.list && !r->has_dirty && !animating &&
-        !r->hover_old_el && !r->focus_old_el && !r->pressed_old_el &&
-        !r->edit_el && dom_dirty.empty()) {
-        auto dom_li_rows = [](lxb_dom_element* le) -> size_t {
-            size_t n = 0;
-            for (lxb_dom_node* c = le->node.first_child; c; c = c->next) {
-                if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
-                    continue;
-                }
-                lxb_dom_element* e = lxb_dom_interface_element(c);
-                size_t elen = 0;
-                const lxb_char_t* ename = lxb_dom_element_local_name(e,
-                                                                      &elen);
-                if (ename && elen == 2 && ename[0] == 'l' &&
-                    ename[1] == 'i') {
-                    ++n;
-                }
-            }
-            return n;
-        };
-        const size_t kBudget = 60; /* rows per streaming frame (~16-20ms) */
-        int n = whaleui_layout_append_rows(
-            r->tree, r->stream_expand.list, r->rules, r->rule_count,
-            &r->theme_vars, nullptr, &r->scrolls, r->anim, r->text_scale,
-            kBudget);
-        bool done = false;
-        if (n < 0) {
-            /* nothing appendable: complete only when the DOM rows are all
-             * laid out; otherwise (flex ancestor etc.) finish with one
-             * full relayout of the details */
-            size_t laid = 0;
-            auto found = r->tree->by_el.find(r->stream_expand.list);
-            if (found != r->tree->by_el.end()) {
-                for (whaleui_layout_node_t* c = found->second->first_child;
+        r->stream_expand.list && !r->fill_running.load() &&
+        r->fill_thread == nullptr &&
+        r->tree->by_el.count(r->stream_expand.list) != 0) {
+        /* the first frame's relayout has landed (the list is in the tree):
+         * start appending the remaining rows in the background */
+        r->fill_stop.store(0);
+        r->fill_finished.store(0);
+        r->fill_thread = new std::thread(fill_worker_fn, r);
+    }
+    if (r->fill_thread && r->fill_finished.load()) {
+        /* the fill thread exited: reap it and finish the expand */
+        r->fill_thread->join();
+        delete r->fill_thread;
+        r->fill_thread = nullptr;
+        r->fill_dirty.store(1); /* show the last landed rows */
+        if (r->stream_expand.active) {
+            bool exhausted = false;
+            auto fnd = r->tree->by_el.find(r->stream_expand.list);
+            if (fnd != r->tree->by_el.end()) {
+                size_t laid = 0;
+                for (whaleui_layout_node_t* c = fnd->second->first_child;
                      c; c = c->next) {
                     if (c->el && !c->is_text) {
                         ++laid;
                     }
                 }
+                size_t dom = 0;
+                for (lxb_dom_node* nd =
+                         r->stream_expand.list->node.first_child;
+                     nd; nd = nd->next) {
+                    if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                        ++dom;
+                    }
+                }
+                exhausted = laid == dom;
             }
-            done = dom_li_rows(r->stream_expand.list) == laid;
-            if (!done) {
-                whaleui_style_state st;
-                st.hover = r->hover_el;
-                st.focus = r->focus_el;
-                st.pressed = r->pressed_el;
-                whaleui_layout_relayout(r->tree, r->stream_expand.det,
-                                        r->rules, r->rule_count,
-                                        &r->theme_vars, &st, &r->scrolls,
-                                        r->anim, r->text_scale);
-            }
-        } else if (static_cast<size_t>(n) < kBudget) {
-            done = true; /* built the remaining rows */
-        }
-        if (done) {
             r->stream_expand.active = false;
             r->stream_expand.det = nullptr;
             r->stream_expand.list = nullptr;
+            if (!exhausted) {
+                /* it stopped early (tree rebuilt mid-fill / append
+                 * blocked): finish with a full rebuild */
+                r->has_dirty = 1;
+            }
         }
-        if (n >= 0) {
-            r->bounds_valid = 0; /* rows grew / shifted: repaint */
-            r->scroll_dirty = 1; /* repaint ONLY - has_dirty would trigger
-                                  * a whole-tree relayout (need_layout) */
-            r->alive = 1;
-        }
+    }
+    if (r->fill_dirty.load()) {
+        r->fill_dirty.store(0);
+        r->bounds_valid = 0; /* new rows landed / content shifted */
+        r->scroll_dirty = 1; /* repaint only (no whole-tree relayout) */
+        r->alive = 1;
     }
     /* skip the whole frame when nothing changed: idle frames cost ~0.
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
@@ -3849,11 +3896,21 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !r->edit_el && !r->hover_old_el &&
         !r->focus_old_el && !r->pressed_old_el &&
-        dom_dirty.empty()) {
-        r->alive = 0; /* static page: the app loop can park idle */
+        !r->fill_dirty.load() && dom_dirty.empty()) {
+        if (r->fill_running.load()) {
+            /* background fill active: cheap poll frames (no paint) so a
+             * batch's fill_dirty wakes a repaint without needing input */
+            r->alive = 1;
+        } else {
+            r->alive = 0; /* static page: the app loop can park idle */
+        }
         return 0;
     }
     r->scroll_dirty = 0;
+    /* the frame now touches the layout tree (relayout/paint/hit-test):
+     * serialize against the background fill thread's append batches
+     * (RAII releases the lock at every return below). */
+    std::unique_lock<std::mutex> tree_lk(r->tree_mx);
 #ifdef WHALEUI_BUILD_FULL
     /* the layout pass measures real glyph widths through this context */
     g_metric_render = r;

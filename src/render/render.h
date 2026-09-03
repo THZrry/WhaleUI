@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 /* SDL3 opaque types; never dereferenced in this header. */
 typedef struct SDL_Window SDL_Window;
@@ -355,8 +356,24 @@ struct whaleui_render
     {
         lxb_dom_element* det = nullptr;  /* the <details> element */
         lxb_dom_element* list = nullptr; /* its ul/ol (DOM) */
-        bool active = false;
+        std::atomic<bool> active{false};
     } stream_expand;
+
+    /* background <details> expand fill thread: appends the remaining rows
+     * (one append_rows batch per lock acquisition) so the render frame
+     * never blocks on a 20-30ms layout batch - interaction frames stay
+     * short and the fill happens between them (or at full speed while the
+     * frame loop is parked). tree_mx serializes every fill batch against
+     * the frame's own tree access (paint/hit-test/relayout/rebuild), so
+     * batches and frames never interleave on the tree. It lives on the
+     * RENDER (not the tree) so a whole-tree rebuild inside a locked frame
+     * does not destroy the lock out from under the fill thread. */
+    std::mutex tree_mx;
+    std::thread* fill_thread = nullptr;
+    std::atomic<int> fill_stop{0};     /* request the thread to exit */
+    std::atomic<int> fill_running{0};  /* 1 once the thread is running */
+    std::atomic<int> fill_finished{0}; /* 1 once the thread has exited */
+    std::atomic<int> fill_dirty{0};    /* a batch landed: repaint needed */
 
     /* subtree paint bounds are computed once per layout pass and reused by
      * every paint (and the selection sequence walk); invalidated whenever
