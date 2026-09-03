@@ -4327,6 +4327,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             } else {
                 r->bounds_valid = 0; /* subtree paint bounds are stale */
+                /* geometry changed tree-wide: a stale interaction-state
+                 * partial repaint (hover_old_el etc.) would redraw only a
+                 * small strip and leave the shifted/collapsed areas frozen
+                 * until the next mouse move - full repaint instead */
+                r->hover_old_el = nullptr;
+                r->focus_old_el = nullptr;
+                r->pressed_old_el = nullptr;
                 std::function<void(whaleui_layout_node_t*)> clamp_sc =
                     [&](whaleui_layout_node_t* nd) {
                         if (nd->el) {
