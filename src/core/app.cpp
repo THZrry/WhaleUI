@@ -254,6 +254,12 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                     whaleui_dom_element_t* hit = whaleui_render_hit_element(
                         win->render, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y));
+                    /* a successful navigation destroys the old document:
+                     * `hit` (and the tree it came from) is gone, so the
+                     * mousedown/click dispatch below must be skipped or it
+                     * dereferences freed lexbor nodes (the click "freezes"
+                     * - typically a garbage-pointer walk in the dispatch). */
+                    bool navigated = false;
                     /* <a href> navigation: walk up from the hit to the
                      * nearest anchor, resolve the (possibly relative) href
                      * against the document's base URI and load it (the
@@ -295,20 +301,25 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                                              reinterpret_cast<const char*>(href),
                                              hlen).c_str());
                                 if (!target.empty()) {
-                                    whaleui_window_load_uri(win, target.c_str());
+                                    if (whaleui_window_load_uri(
+                                            win, target.c_str()) == 0) {
+                                        navigated = true;
+                                    }
                                     break;
                                 }
                             }
                         }
                     }
-                    dom_dispatch(hit, "mousedown", 0,
-                                 static_cast<int>(e.button.x),
-                                 static_cast<int>(e.button.y),
-                                 e.button.button, 0, 0);
-                    dom_dispatch(hit, "click", 0,
-                                 static_cast<int>(e.button.x),
-                                 static_cast<int>(e.button.y),
-                                 e.button.button, 0, 0);
+                    if (!navigated) {
+                        dom_dispatch(hit, "mousedown", 0,
+                                     static_cast<int>(e.button.x),
+                                     static_cast<int>(e.button.y),
+                                     e.button.button, 0, 0);
+                        dom_dispatch(hit, "click", 0,
+                                     static_cast<int>(e.button.x),
+                                     static_cast<int>(e.button.y),
+                                     e.button.button, 0, 0);
+                    }
                     break;
                 }
             }

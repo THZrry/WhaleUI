@@ -2344,6 +2344,9 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->last_scrolls.clear();
     r->hover_el = nullptr;
     r->hover_old_el = nullptr;
+    r->focus_old_el = nullptr;
+    r->pressed_old_el = nullptr;
+    r->state_pending = 0;
     r->edit_scroll_need = 0;
     r->focus_el = nullptr;
     r->pressed_el = nullptr;
@@ -2360,6 +2363,21 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->drag_scroll_node = nullptr;
     r->scroll_max_el = nullptr;
     r->wheel_node = nullptr;
+    /* the old layout tree holds pointers into the destroyed document (and
+     * the animation state keys elements of it): drop both now, not on the
+     * next frame - events processed in the same batch (a mouse-up right
+     * after the navigating click) hit-test the tree and would walk freed
+     * lexbor nodes. */
+    if (r->tree) {
+        if (g_last_tree == r->tree) {
+            g_last_tree = nullptr;
+        }
+        whaleui_layout_destroy(r->tree);
+        r->tree = nullptr;
+    }
+    if (r->anim) {
+        whaleui_anim_reset(r->anim);
+    }
     r->has_dirty = 1;
 }
 
