@@ -152,6 +152,12 @@ struct whaleui_render
     struct lxb_dom_element* hover_el;
     /* previous hover target, dirtied for a partial repaint on change */
     struct lxb_dom_element* hover_old_el;
+    /* an interaction-state change (:hover/:focus/:active on a stylesheet
+     * with such rules) is pending: the next frame relayouts only the
+     * previous + current state elements through the DOM-dirty incremental
+     * path instead of a whole-tree rebuild (a 22k-node page rebuilt every
+     * tree on each mouse move - seconds of freeze per hover change). */
+    int state_pending;
     /* an edit/caret move happened: the frame's relayout pass should
      * scroll the caret visible ONCE. User scrolls (wheel/drag) never set
      * this, so a focused textarea is not locked to the caret line. */

@@ -3949,14 +3949,14 @@ extern "C" void whaleui_layout_destroy(whaleui_layout_tree_t* tree)
     delete tree;
 }
 
-extern "C" int whaleui_layout_relayout(
+static int relayout_impl(
     whaleui_layout_tree_t* tree,
     lxb_dom_element* el,
     const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>* theme_vars,
     const whaleui_style_state* st,
     const std::map<lxb_dom_element*, int>* scrolls,
-    struct whaleui_anim* anim, float text_scale)
+    struct whaleui_anim* anim, float text_scale, int skip_box)
 {
     if (!tree || !el) {
         return 1; /* nothing to do for this element */
@@ -4026,17 +4026,81 @@ extern "C" int whaleui_layout_relayout(
     }
 
     /* re-run the box pass; untouched branches keep their computed styles
-     * and are only re-positioned. Same tail as whaleui_layout_compute. */
-    int cursor = 0;
-    b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
-             &cursor);
-    tree->root->border.h = tree->viewport_h;
-    tree->root->content.h = tree->viewport_h;
-    {
-        int cmax = cursor - tree->viewport_h;
-        tree->root->scroll_max = cmax > 0 ? cmax : 0;
+     * and are only re-positioned. Same tail as whaleui_layout_compute.
+     * skip_box (style-only relayout): geometry is unchanged, copy it from
+     * the old subtree instead of re-boxing the whole tree - the dominant
+     * relayout cost on a 34k-node page (~1.5s) for a paint-only hover. */
+    bool boxed = !skip_box;
+    if (skip_box) {
+        /* old nodes stay alive in the arena (unmap only dropped the by_el
+         * entries), so walk both trees in the same DOM order and copy */
+        std::function<bool(whaleui_layout_node_t*, whaleui_layout_node_t*)>
+            copy_geo = [&](whaleui_layout_node_t* a,
+                           whaleui_layout_node_t* b) -> bool {
+                b->border = a->border;
+                b->content = a->content;
+                for (int i = 0; i < 4; ++i) {
+                    b->margin[i] = a->margin[i];
+                    b->padding[i] = a->padding[i];
+                    b->border_w[i] = a->border_w[i];
+                }
+                b->scroll_y = a->scroll_y;
+                b->scroll_max = a->scroll_max;
+                b->z = a->z;
+                whaleui_layout_node_t* ca = a->first_child;
+                whaleui_layout_node_t* cb = b->first_child;
+                while (ca || cb) {
+                    if (!ca || !cb) {
+                        return false; /* structure mismatch: full box pass */
+                    }
+                    if (!copy_geo(ca, cb)) {
+                        return false;
+                    }
+                    ca = ca->next;
+                    cb = cb->next;
+                }
+                return true;
+            };
+        boxed = !copy_geo(old, fresh);
+    }
+    if (boxed) {
+        int cursor = 0;
+        b.layout(tree->root, 0, 0, tree->viewport_w, tree->viewport_h, 16,
+                 &cursor);
+        tree->root->border.h = tree->viewport_h;
+        tree->root->content.h = tree->viewport_h;
+        {
+            int cmax = cursor - tree->viewport_h;
+            tree->root->scroll_max = cmax > 0 ? cmax : 0;
+        }
     }
     return 0;
+}
+
+extern "C" int whaleui_layout_relayout(
+    whaleui_layout_tree_t* tree,
+    lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale)
+{
+    return relayout_impl(tree, el, rules, count, theme_vars, st, scrolls,
+                         anim, text_scale, 0);
+}
+
+extern "C" int whaleui_layout_relayout_style(
+    whaleui_layout_tree_t* tree,
+    lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale)
+{
+    return relayout_impl(tree, el, rules, count, theme_vars, st, scrolls,
+                         anim, text_scale, 1);
 }
 
 /* batch relayout for a layout-affecting animation: rebuild each animated

@@ -2748,11 +2748,11 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         }
         SDL_SetCursor(want);
         /* interaction-state rules present -> a hover change can alter
-         * styles, rebuild. Without them (most plain/form pages) hover is
-         * only the cursor switch above: skip the whole-tree rebuild that
-         * would otherwise run on every element the mouse crosses. */
+         * styles: relayout only the previous + current element (incremental
+         * DOM-dirty path in the frame loop). Without such rules hover is
+         * only the cursor switch above - nothing to relayout. */
         if (r->has_interact_rules && r->rule_count > 0) {
-            r->has_dirty = 1;
+            r->state_pending = 1;
         }
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
@@ -3503,6 +3503,103 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * set must keep the frame alive so the incremental relayout below runs */
     std::vector<lxb_dom_element*> dom_dirty;
     whaleui_dom_take_dirty(doc, dom_dirty);
+    /* interaction-state change (:hover) on a rule-bearing page: relayout
+     * only the previous + current state elements (was a whole-tree rebuild
+     * on every mouse move - a 22k-node page froze for seconds per hover
+     * change). A :hover that changes no layout property (color/transform/
+     * background are the common cases) rebuilds the element's styles and
+     * copies the old geometry - no whole-tree box pass (relayout_style). */
+    if (r->state_pending) {
+        r->state_pending = 0;
+        if (r->has_interact_rules && r->rule_count > 0 && r->tree) {
+            /* layout-affecting properties: a change means the box pass
+             * must re-run (geometry moved), everything else is paint */
+            static const char* const kStateLayoutKeys[] = {
+                "display", "position", "width", "height", "min-width",
+                "min-height", "max-width", "max-height", "margin",
+                "margin-top", "margin-right", "margin-bottom", "margin-left",
+                "padding", "padding-top", "padding-right", "padding-bottom",
+                "padding-left", "border-width", "border-top-width",
+                "border-right-width", "border-bottom-width",
+                "border-left-width", "inset", "top", "right", "bottom",
+                "left", "box-sizing", "float", "clear", "flex",
+                "flex-grow", "flex-shrink", "flex-basis", "flex-direction",
+                "flex-wrap", "gap", "row-gap", "column-gap", "order",
+                "font-size", "line-height", "letter-spacing", "white-space",
+                "overflow", "overflow-x", "overflow-y", "text-align",
+                "vertical-align", "word-break",
+            };
+            std::map<std::string, std::string> vars2 = r->theme_vars;
+            if (!r->tree->vars_collected && r->tree->root) {
+                whaleui_style_collect_vars_full(
+                    r->tree->root->el, r->rules, r->rule_count,
+                    r->tree->vars);
+                r->tree->vars_collected = true;
+            }
+            for (auto& kv : r->tree->vars) {
+                vars2[kv.first] = kv.second;
+            }
+            lxb_dom_element* sa[] = {r->hover_old_el, r->hover_el};
+            for (lxb_dom_element* el : sa) {
+                if (!el ||
+                    std::find(dom_dirty.begin(), dom_dirty.end(), el) !=
+                        dom_dirty.end()) {
+                    continue; /* DOM-dirty element: the DOM path rebuilds it */
+                }
+                whaleui_layout_node_t* node =
+                    find_node_by_el(r->tree, el);
+                if (!node) {
+                    continue;
+                }
+                whaleui_style_state st2;
+                st2.hover = r->hover_el;
+                st2.focus = r->focus_el;
+                st2.pressed = r->pressed_el;
+                WhaleUIComputedStyle ns = whaleui_style_compute(
+                    el, r->rules, r->rule_count, vars2, &st2);
+                bool layout_changed = false;
+                /* style_compute returns the cascade without the parent
+                 * inheritance merge (build does that), so inherited keys
+                 * (font-size/line-height/...) are absent from `ns` when no
+                 * rule set them - compare only keys the new cascade
+                 * actually carries, those are the ones :hover rules wrote */
+                for (const char* k : kStateLayoutKeys) {
+                    WhaleUIComputedStyle::const_iterator it = ns.find(k);
+                    if (it == ns.end()) {
+                        continue;
+                    }
+                    if (sget(node->style, k) != it->second) {
+                        layout_changed = true;
+                        break;
+                    }
+                }
+                /* stale cached style for this element (keyed on the old
+                 * interaction state) would feed relayout's style cache */
+                {
+                    auto& sc = r->tree->style_cache;
+                    for (auto it = sc.begin(); it != sc.end();) {
+                        if (it->first.el == el) {
+                            it = sc.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+                if (layout_changed) {
+                    dom_dirty.push_back(el); /* full relayout + box pass */
+                } else {
+                    whaleui_layout_relayout_style(
+                        r->tree, el, r->rules, r->rule_count,
+                        &r->theme_vars, &st2, &r->scrolls, r->anim,
+                        r->text_scale);
+                    /* the style-only pass leaves dom_dirty/has_dirty empty,
+                     * which would hit the frame's idle early-return and
+                     * never repaint the hovered box - force a repaint */
+                    r->scroll_dirty = 1;
+                }
+            }
+        }
+    }
 
     /* async first layout (opt-in): no tree yet -> build on a worker so a
      * large page does not freeze the window while it lays out; the frame

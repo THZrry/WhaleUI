@@ -187,6 +187,21 @@ int whaleui_layout_relayout(whaleui_layout_tree_t* tree,
                             struct whaleui_anim* anim,
                             float text_scale);
 
+/* Style-only relayout: same subtree rebuild + splice as relayout, but the
+ * caller guarantees no layout-affecting property changed (e.g. a :hover
+ * that only swaps color/transform), so the rebuilt subtree's geometry is
+ * copied from the old nodes and the whole-tree box pass is skipped - the
+ * dominant cost of relayout on a 34k-node tree (~1.5s) drops to ~nothing
+ * for a paint-only hover change. Falls back to the full box pass when the
+ * old/new subtree structures mismatch. Returns like relayout. */
+int whaleui_layout_relayout_style(
+    whaleui_layout_tree_t* tree, struct lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st,
+    const std::map<struct lxb_dom_element*, int>* scrolls,
+    struct whaleui_anim* anim, float text_scale);
+
 /* Batch relayout for a layout-affecting animation: ~same as relayout but
  * rebuilds several animated subtrees before a single whole-tree box pass
  * (per-element relayout would box-pass the whole tree per element). */
