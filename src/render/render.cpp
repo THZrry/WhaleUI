@@ -3581,7 +3581,7 @@ extern "C" void whaleui_render_set_fsr(whaleui_render_t* r, int mode,
  * touched under tree_mx, so the fill measures glyphs exactly like the
  * frame does. Exits when the DOM rows are exhausted, the expand was
  * cancelled (fill_stop / stream_expand cleared) or the tree was rebuilt. */
-static const size_t kFillBatch = 200; /* rows per append_rows batch */
+static const size_t kFillBatch = 100; /* rows per append_rows batch (~28ms) */
 static void fill_worker_fn(whaleui_render_t* r)
 {
     r->fill_finished.store(0);
@@ -3606,17 +3606,6 @@ static void fill_worker_fn(whaleui_render_t* r)
                 r->tree, r->stream_expand.list, r->rules, r->rule_count,
                 &r->theme_vars, nullptr, &r->scrolls, r->anim,
                 r->text_scale, kFillBatch);
-            {
-                auto fz = r->tree->by_el.find(r->stream_expand.list);
-                if (fz != r->tree->by_el.end()) {
-                    size_t tr = 0;
-                    for (whaleui_layout_node_t* cc = fz->second->first_child;
-                         cc; cc = cc->next) {
-                        if (cc->el && !cc->is_text) ++tr;
-                    }
-                } else {
-                }
-            }
             if (n <= 0) {
                 break; /* DOM rows exhausted or append blocked */
             }
@@ -3633,6 +3622,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (!r || !doc) {
         return -1;
     }
+    /* the whole frame (state relayout, fill management, DOM relayout,
+     * scroll application, paint) touches the layout tree; hold tree_mx
+     * from the top so the background fill thread's append batches never
+     * interleave with ANY of it (a hover-away state relayout previously
+     * ran unlocked before the idle check and raced the fill -> corrupted
+     * style maps / intermittent crash on big lists). Idle/parked frames
+     * release it immediately (return below). */
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
 
     /* advance all running animations and collect the current values (the
      * paint-only fast path below applies them without relaying out) */
@@ -3923,10 +3920,6 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return 0;
     }
     r->scroll_dirty = 0;
-    /* the frame now touches the layout tree (relayout/paint/hit-test):
-     * serialize against the background fill thread's append batches
-     * (RAII releases the lock at every return below). */
-    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
 #ifdef WHALEUI_BUILD_FULL
     /* the layout pass measures real glyph widths through this context */
     g_metric_render = r;
