@@ -32,7 +32,17 @@ struct whaleui_app
     int max_fps;
     int battery_saver;
     int vsync;
-    std::atomic<int> running; /* cross-thread: worker sets 0 on QUIT/close */
+    std::atomic<int> running; /* event loop flag; QUIT/close clears it */
+    /* Single-threaded event + render model (since 0.97): whaleui_app_run
+     * handles SDL events and renders frames on the SAME thread, in one
+     * loop, so input handling and rendering are serialized by construction
+     * (no queue, no render lock, no cross-thread GPU swapchain handoff -
+     * the old two-thread worker made every frame ~5x slower on the D3D12
+     * backend once the swapchain had been presented from another thread).
+     * The atomics/queue/cv fields below are retained (zero-cost, keep the
+     * destroy paths and tests compiling) but no longer drive the loop:
+     * `running` is the only live flag, `frames_alive` is set per frame so
+     * the loop keeps animating windows alive and parks static ones. */
     /* async first layout (WHALEUI_RENDER_ASYNC_LAYOUT): the initial full
      * layout of each window runs on a worker thread so a large page does
      * not freeze the window while it lays out. Off by default - the frame
@@ -59,28 +69,16 @@ struct whaleui_app
 
     std::vector<whaleui_window_t*> windows;
 
-    /* render worker thread: whaleui_render_frame runs here so a slow frame
-     * never blocks the event loop (input stays responsive). The main thread
-     * polls SDL events and POSTS them to input_queue (no render-state
-     * access); the worker consumes the queue and processes input + renders
-     * serially under render_lock - so input and rendering never race. */
+    /* --- retained two-thread fields (inert since 0.97, see above) --- */
     std::thread render_thread;
-    std::atomic<int> frame_request{0}; /* main -> worker: render now */
-    std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
-    /* worker -> main: at least one window still needs continuous frames
-     * (running animation, blinking caret). The event loop keeps requesting
-     * frames while set; when clear it parks in SDL_WaitEventTimeout and the
-     * worker sleeps - an idle static page costs ~0 CPU. */
+    std::atomic<int> frame_request{0};
+    std::atomic<int> frame_done{0};
     std::atomic<int> frames_alive{0};
-    /* display refresh rate (Hz) of the first shown window, queried at
-     * window show. The worker throttles itself to it (60Hz -> 60fps,
-     * 144Hz -> 144fps) because the D3D12 backend's VSYNC present mode does
-     * not actually wait for vblank (an animation loop ran at ~186fps). */
     int display_refresh;
     unsigned long long last_frame_tick; /* worker frame pacing */
-    std::mutex render_lock;            /* protects input_queue + render state */
-    std::condition_variable frame_cv;  /* worker waits on queue/frame_request */
-    std::deque<SDL_Event> input_queue; /* main posts, worker consumes */
+    std::mutex render_lock;
+    std::condition_variable frame_cv;
+    std::deque<SDL_Event> input_queue;
 };
 
 /* resolved theme (SYSTEM -> platform detection); internal, used by window. */

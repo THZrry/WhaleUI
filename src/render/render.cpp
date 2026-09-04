@@ -4713,6 +4713,20 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         acc(r->tree->root);
         if (strip.w > 0 && strip.h > 0) {
             partial = true;
+        } else if (!r->scroll_dirty && !r->hover_old_el &&
+                   !r->focus_old_el && !r->pressed_old_el &&
+                   dom_dirty.empty()) {
+            /* every animating element is clipped out of the viewport (or
+             * has an empty box): the frame carries no visible damage.
+             * Skip the paint instead of falling back to a full-window
+             * repaint - an animation below the fold (e.g. a hero
+             * animation 1000px down a long page) previously repainted the
+             * whole window every frame (full CPU paint + full text-layer
+             * upload), which is the "animated page crawls at fps<1"
+             * report. The animation keeps ticking (alive=1) so the loop
+             * paints again the moment the element scrolls into view. */
+            r->alive = 1;
+            return 0;
         }
     }
     if (partial) {
