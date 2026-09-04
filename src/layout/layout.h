@@ -127,7 +127,8 @@ struct whaleui_layout_style_key
 struct whaleui_layout_tree
 {
     whaleui_layout_tree()
-        : root(nullptr), viewport_w(0), viewport_h(0), vars_collected(false)
+        : root(nullptr), viewport_w(0), viewport_h(0), vars_collected(false),
+          geom_relaid(0)
     {
     }
 
@@ -158,6 +159,17 @@ struct whaleui_layout_tree
      * on top afterwards), so keying on (el, hover, focus, pressed) makes
      * stable frames O(1). Cleared alongside vars when the DOM changes. */
     std::map<whaleui_layout_style_key, WhaleUIComputedStyle> style_cache;
+
+    /* set when a relayout re-ran the whole-tree box pass even though the
+     * caller asked for a style-only/local relayout (whaleui_layout_
+     * relayout_style falls back to a full box pass when the rebuilt
+     * subtree does not structurally match the old one - font metric
+     * changes can re-split text runs). Every node's geometry was
+     * recomputed, so the renderer must also recompute paint bounds
+     * (r->bounds_valid = 0) and drop geometry caches; the style-only
+     * contract assumed nothing moved. Cleared by the renderer when it
+     * reacts. */
+    int geom_relaid;
 
     /* progressive-expand budget, one-shot: when the renderer starts a
      * <details> expand it sets this to the number of leading <li> rows the

@@ -4167,6 +4167,12 @@ static int relayout_impl(
             int cmax = cursor - tree->viewport_h;
             tree->root->scroll_max = cmax > 0 ? cmax : 0;
         }
+        /* a style-only/local relayout silently ran the whole-tree box
+         * pass (copy_geo failed - e.g. the rebuilt subtree's text runs
+         * re-split under different font metrics): every node's geometry
+         * was recomputed, so paint bounds and geometry caches are stale
+         * until the renderer reacts (geom_relaid -> bounds_valid = 0). */
+        tree->geom_relaid = 1;
     }
     return 0;
 }

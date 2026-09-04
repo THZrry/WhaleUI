@@ -4572,6 +4572,22 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * empty and a hover change repainted nothing (background-color :hover
      * "娑撳秴鎼锋惔?; the relayout had applied the style, the paint just never
      * covered the box). */
+    if (r->tree && r->tree->geom_relaid) {
+        /* a style-only/local relayout fell back to a whole-tree box pass
+         * (relayout_impl set this): every node's geometry was recomputed,
+         * so paint bounds AND the geometry-dependent caches are stale.
+         * Without this the partial-repaint strips (hover / animation)
+         * were computed from old bounds and repainted the wrong boxes -
+         * hover changes on pages whose text re-flows differently could
+         * leave elements painted at a shifted spot that no later frame
+         * corrected until a full repaint ("hover lifts, stays, click
+         * snaps back"). */
+        r->tree->geom_relaid = 0;
+        r->bounds_valid = 0;
+        r->drag_scroll_node = nullptr;
+        r->scroll_max_el = nullptr;
+        r->wheel_node = nullptr;
+    }
     if (!r->bounds_valid) {
         compute_paint_bounds(r->tree->root);
         r->bounds_valid = 1;
