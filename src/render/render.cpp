@@ -4586,13 +4586,20 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * branch below would then repaint ONLY the two hover boxes and the
      * scrolled content stayed frozen until mouse-up ("half the page does
      * not move while dragging the scrollbar"). */
-    if (r->scroll_el || r->drag_scroll_el) {
+    const bool scroll_frame = r->scroll_el || r->drag_scroll_el;
+    if (scroll_frame) {
         r->scroll_el = nullptr;
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
         r->hover_prev.clear();
         dom_repaint.clear();
+        /* a scroll frame repaints the WHOLE viewport at the new offset;
+         * it must NOT fall into the animation/strip branches below (they
+         * would shrink the paint to the animated boxes and leave the
+         * scrolled content unrepainted - "scrolling leaves trails on
+         * animated pages"). Rendering behavior is independent of whether
+         * an animation is running. */
     } else if (!r->edit_el && !r->open_select &&
                (r->hover_old_el || r->focus_old_el ||
                 r->pressed_old_el || !r->hover_prev.empty() ||
@@ -4653,8 +4660,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_prev.clear();
         dom_repaint.clear();
     }
-    if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
-        !r->open_select) {
+    /* animation damage accumulates into the same strip, but only when the
+     * frame is NOT a scroll frame (scroll repaints the whole viewport -
+     * an animation strip would shrink it to the animated boxes and leave
+     * the scrolled content unrepainted - "scrolling leaves trails / the
+     * page freezes mid-scroll on animated pages"). Rendering behavior is
+     * independent of whether an animation is running. */
+    if (!scroll_frame && animating && !need_layout && !r->has_dirty &&
+        !r->edit_el && !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes
          * (dirty-rect, keeps the rest of the frame). Covers BOTH paint-only
          * animations (opacity/transform) and layout animations (width/
