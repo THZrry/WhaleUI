@@ -32,17 +32,19 @@ struct whaleui_app
     int max_fps;
     int battery_saver;
     int vsync;
-    std::atomic<int> running; /* event loop flag; QUIT/close clears it */
-    /* Single-threaded event + render model (since 0.97): whaleui_app_run
-     * handles SDL events and renders frames on the SAME thread, in one
-     * loop, so input handling and rendering are serialized by construction
-     * (no queue, no render lock, no cross-thread GPU swapchain handoff -
-     * the old two-thread worker made every frame ~5x slower on the D3D12
-     * backend once the swapchain had been presented from another thread).
-     * The atomics/queue/cv fields below are retained (zero-cost, keep the
-     * destroy paths and tests compiling) but no longer drive the loop:
-     * `running` is the only live flag, `frames_alive` is set per frame so
-     * the loop keeps animating windows alive and parks static ones. */
+    /* Render worker thread model: whaleui_render_frame runs on a worker
+     * that ALSO handles input (process_event) - input and rendering are
+     * serialized on that thread, the main thread only polls SDL events
+     * and pushes them under render_lock (a short queue critical section).
+     * Rendering must live off the main thread so an animated page and a
+     * live window drag keep updating while SDL_PollEvent is parked inside
+     * the OS modal drag loop. The lock guards ONLY input_queue; the frame
+     * pacing sleep happens outside it (holding it across the sleep made
+     * the old worker block every event push for a frame - 25-45ms/frame).
+     * `running` is the shutdown flag, `frames_alive` tells the main loop
+     * an animation is running (keep polling), `frame_request` wakes the
+     * worker (animation self-drive + the modal-drag event watch). */
+    std::atomic<int> running; /* shutdown flag: QUIT/close/app_quit clear */
     /* async first layout (WHALEUI_RENDER_ASYNC_LAYOUT): the initial full
      * layout of each window runs on a worker thread so a large page does
      * not freeze the window while it lays out. Off by default - the frame
@@ -69,16 +71,16 @@ struct whaleui_app
 
     std::vector<whaleui_window_t*> windows;
 
-    /* --- retained two-thread fields (inert since 0.97, see above) --- */
+    /* render worker thread (see model comment above) */
     std::thread render_thread;
-    std::atomic<int> frame_request{0};
-    std::atomic<int> frame_done{0};
-    std::atomic<int> frames_alive{0};
-    int display_refresh;
-    unsigned long long last_frame_tick; /* worker frame pacing */
-    std::mutex render_lock;
-    std::condition_variable frame_cv;
-    std::deque<SDL_Event> input_queue;
+    std::atomic<int> frame_request{0}; /* wake worker: render now */
+    std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
+    std::atomic<int> frames_alive{0};  /* an animation needs frames */
+    int display_refresh;               /* Hz of the first shown window */
+    unsigned long long last_frame_tick;
+    std::mutex render_lock;            /* guards input_queue ONLY */
+    std::condition_variable frame_cv;  /* worker waits on queue/request */
+    std::deque<SDL_Event> input_queue; /* main posts, worker consumes */
 };
 
 /* resolved theme (SYSTEM -> platform detection); internal, used by window. */

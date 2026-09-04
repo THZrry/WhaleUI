@@ -2379,6 +2379,7 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->last_scrolls.clear();
     r->hover_el = nullptr;
     r->hover_old_el = nullptr;
+    r->hover_prev.clear();
     r->focus_old_el = nullptr;
     r->pressed_old_el = nullptr;
     r->state_pending = 0;
@@ -2823,9 +2824,20 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
-        r->hover_old_el =
-            (r->has_interact_rules && r->rule_count > 0) ? r->hover_el
-                                                         : nullptr;
+        if (r->has_interact_rules && r->rule_count > 0) {
+            /* the mouse crossed more than one element since the last
+             * frame: every previous target must lose its :hover styles,
+             * not just the most recent one - queue the earlier ones so
+             * the state relayout reverts them all (a fast move used to
+             * leave every intermediate element stuck in :hover). */
+            if (r->hover_old_el) {
+                r->hover_prev.push_back(r->hover_old_el);
+            }
+            r->hover_old_el = r->hover_el;
+        } else {
+            r->hover_old_el = nullptr;
+            r->hover_prev.clear(); /* no state rules: nothing to revert */
+        }
         r->hover_el = el;
         /* switch the system cursor: I-beam over editable text, pointer
          * over links/clickable controls, arrow otherwise */
@@ -3723,10 +3735,29 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             for (auto& kv : r->tree->vars) {
                 vars2[kv.first] = kv.second;
             }
+            /* unified interaction-state relayout: every element that
+             * entered OR left a state since the last frame is re-cascaded
+             * with the CURRENT state (an old target's :hover/:focus/:active
+             * no longer matches, so it reverts through the same path).
+             * hover_prev carries the elements crossed within the same
+             * frame (fast mouse moves) - without it only the last crossing
+             * pair was reverted and intermediate targets kept :hover. */
+            std::vector<lxb_dom_element*> targets;
+            for (lxb_dom_element* e : r->hover_prev) {
+                targets.push_back(e);
+            }
             lxb_dom_element* sa[] = {r->hover_old_el, r->hover_el,
                                      r->focus_old_el, r->focus_el,
                                      r->pressed_old_el, r->pressed_el};
-            for (lxb_dom_element* el : sa) {
+            for (lxb_dom_element* e : sa) {
+                if (e) {
+                    targets.push_back(e);
+                }
+            }
+            /* hover_prev is NOT cleared here: the partial-repaint branch
+             * below still needs it to redraw the reverted boxes (cleared
+             * together with hover_old_el at the repaint sites). */
+            for (lxb_dom_element* el : targets) {
                 if (!el ||
                     std::find(dom_dirty.begin(), dom_dirty.end(), el) !=
                         dom_dirty.end()) {
@@ -3821,6 +3852,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     if (el == r->hover_el && !r->hover_old_el) {
                         r->hover_old_el = el;
                     }
+                    /* the style-only relayout changed this element: its box
+                     * must be repainted this frame. hover_el/hover_old_el
+                     * already drive the partial repaint below; hover_prev
+                     * elements (crossed within the frame) are checked by
+                     * the same partial branch and cleared there. */
                 }
             }
         }
@@ -3942,8 +3978,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * repaint (hover_old_el set by set_hover / the state-relayout pass). */
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !r->edit_el && !r->hover_old_el &&
-        !r->focus_old_el && !r->pressed_old_el && !r->font_scale_pending &&
-        !r->fill_dirty.load() && dom_dirty.empty()) {
+        !r->focus_old_el && !r->pressed_old_el && r->hover_prev.empty() &&
+        !r->font_scale_pending && !r->fill_dirty.load() &&
+        dom_dirty.empty()) {
         if (r->fill_running.load()) {
             /* background fill active: cheap poll frames (no paint) so a
              * batch's fill_dirty wakes a repaint without needing input */
@@ -4044,6 +4081,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
+        r->hover_prev.clear();
         whaleui_layout_destroy(r->tree);
         /* Build with an interaction-NEUTRAL state so every element hits the
          * style cache (keyed per element + state): the cascade does not
@@ -4401,6 +4439,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 r->hover_old_el = nullptr;
                 r->focus_old_el = nullptr;
                 r->pressed_old_el = nullptr;
+                r->hover_prev.clear();
                 std::function<void(whaleui_layout_node_t*)> clamp_sc =
                     [&](whaleui_layout_node_t* nd) {
                         if (nd->el) {
@@ -4552,18 +4591,27 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
+        r->hover_prev.clear();
         dom_repaint.clear();
-    } else if (!animating && !r->edit_el && !r->open_select &&
+    } else if (!r->edit_el && !r->open_select &&
                (r->hover_old_el || r->focus_old_el ||
-                r->pressed_old_el || !dom_repaint.empty())) {
+                r->pressed_old_el || !r->hover_prev.empty() ||
+                !dom_repaint.empty())) {
         /* interaction-state / paint-only DOM edits: repaint only the old +
          * new state elements and the changed DOM elements (their styles
-         * changed; the relayout already re-cascaded, geometry is stable). */
+         * changed; the relayout already re-cascaded, geometry is stable).
+         * NOT gated on !animating: an animation running while the mouse
+         * moves must still repaint the hovered box - the animation branch
+         * below accumulates its boxes into the SAME strip. */
         auto is_state_el = [&](lxb_dom_element* e) {
             if (e == r->hover_old_el || e == r->hover_el ||
                 e == r->focus_old_el || e == r->focus_el ||
                 e == r->pressed_old_el || e == r->pressed_el) {
                 return true;
+            }
+            if (std::find(r->hover_prev.begin(), r->hover_prev.end(), e) !=
+                r->hover_prev.end()) {
+                return true; /* crossed within the frame: revert repaint */
             }
             return std::find(dom_repaint.begin(), dom_repaint.end(), e) !=
                    dom_repaint.end();
@@ -4602,9 +4650,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->hover_old_el = nullptr;
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
+        r->hover_prev.clear();
         dom_repaint.clear();
-    } else if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
-               !r->open_select) {
+    }
+    if (animating && !need_layout && !r->has_dirty && !r->edit_el &&
+        !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes
          * (dirty-rect, keeps the rest of the frame). Covers BOTH paint-only
          * animations (opacity/transform) and layout animations (width/
@@ -4615,7 +4665,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * An open <select> dropdown is drawn OUTSIDE the tree (last, full
          * viewport); a dirty-rect frame covers only the animating boxes, so
          * the dropdown repaints over stale pixels and jitters - repaint
-         * fully while a dropdown is open. */
+         * fully while a dropdown is open. Runs AFTER (not instead of) the
+         * interaction-state branch above: both damage sources share one
+         * strip, so a hover change during an animation repaints the
+         * hovered box AND the animated boxes (the old else-if chain let
+         * the animation branch win and swallowed hover feedback). */
         const bool lay_anim = whaleui_anim_needs_layout(r->anim);
         /* anim-travel margin: per-element, derived from the actual
          * transform - a width/opacity animation (no transform) needs only
@@ -4715,7 +4769,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             partial = true;
         } else if (!r->scroll_dirty && !r->hover_old_el &&
                    !r->focus_old_el && !r->pressed_old_el &&
-                   dom_dirty.empty()) {
+                   r->hover_prev.empty() && dom_dirty.empty()) {
             /* every animating element is clipped out of the viewport (or
              * has an empty box): the frame carries no visible damage.
              * Skip the paint instead of falling back to a full-window

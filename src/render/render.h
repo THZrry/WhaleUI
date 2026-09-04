@@ -151,8 +151,15 @@ struct whaleui_render
 
     /* element under the mouse (for :hover rules) */
     struct lxb_dom_element* hover_el;
-    /* previous hover target, dirtied for a partial repaint on change */
+    /* previous hover target, dirtied for a partial repaint on change.
+     * The mouse can cross several elements between two frames (fast
+     * moves), so every element that LEFT :hover since the last frame is
+     * recorded: hover_old_el is the most recent, hover_prev the earlier
+     * ones of the same frame - the unified state relayout reverts them
+     * all, or an intermediate element keeps its :hover styles forever
+     * ("quick mouse moves leave the previous hover stuck"). */
     struct lxb_dom_element* hover_old_el;
+    std::vector<struct lxb_dom_element*> hover_prev;
     /* an interaction-state change (:hover/:focus/:active on a stylesheet
      * with such rules) is pending: the next frame relayouts only the
      * previous + current state elements through the DOM-dirty incremental

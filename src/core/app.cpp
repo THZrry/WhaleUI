@@ -90,13 +90,15 @@ whaleui_window_t* window_for(whaleui_app_t* app, SDL_WindowID id)
     return nullptr;
 }
 
-/* process one SDL event on the app-run thread (single-threaded model:
- * the same thread renders frames, so input handlers and the render pass
- * are serialized by construction - no data race possible). */
+/* process one SDL event on the render worker thread (the same thread that
+ * renders frames, so input handlers and the render pass are serialized by
+ * construction - no data race possible). */
 /* SDL event watch: invoked from inside the OS modal resize/drag loop
  * where SDL_PollEvent blocks (Windows AppFreezeDuringDrag). The watch runs
- * under SDL's own event lock, so NO SDL calls here. Resized sizes go into
- * lock-free atomic slots; the main loop folds them (fold_resize_watch). */
+ * under SDL's own event lock, so NO SDL calls and NO render_lock here.
+ * Resized sizes go into lock-free atomic slots; a frame request wakes the
+ * render worker (outside SDL's lock) so it folds + applies them live while
+ * the main thread is still inside the modal loop. */
 static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
 {
     if (!e) {
@@ -118,8 +120,14 @@ static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
             }
         }
     }
-    /* the main loop folds these slots (fold_resize_watch) once the OS
-     * modal resize/drag loop returns and SDL_PollEvent unblocks */
+    if (e->type == SDL_EVENT_WINDOW_RESIZED ||
+        e->type == SDL_EVENT_WINDOW_MOVED) {
+        /* wake the render worker: during a drag the main thread cannot
+         * poll/notify (it is inside the OS modal loop), so the worker
+         * keeps rendering + applying the folded resize sizes live */
+        app->frame_request.store(1);
+        app->frame_cv.notify_one();
+    }
     return false;
 }
 
@@ -445,6 +453,99 @@ static int render_all_windows(whaleui_app_t* app)
     }
     return alive;
 }
+
+/* render worker thread: owns input handling + rendering (they share the
+ * render state, so both run HERE, serially - never on the main thread).
+ * The main thread only polls SDL events and pushes them onto input_queue
+ * under render_lock (a short critical section); the worker pops the whole
+ * queue and processes + renders lock-free. Keeping rendering off the main
+ * thread is what lets an animated/resizing window keep updating while the
+ * main thread is parked inside the OS modal drag loop (SDL_PollEvent
+ * blocks during a Windows drag/resize - the resize slots folded below are
+ * written by the event watch from inside that loop).
+ *
+ * The old two-thread design held render_lock across the whole loop body
+ * INCLUDING the frame-pacing SDL_Delay, so the main thread's event push
+ * blocked ~16ms per frame and frames ran ~25-45ms; the lock now guards
+ * only the queue, and the pacing sleep happens outside it. */
+void render_worker_fn(whaleui_app_t* app)
+{
+    for (;;) {
+        /* wait for queued events / a frame request / shutdown. The timeout
+         * is the soonest pending coalesced resize (cheap wakeups keep a
+         * pending resize applied even while the main thread is stuck in
+         * the OS modal resize loop - mouse held still sends no events). */
+        std::vector<SDL_Event> evs;
+        {
+            std::unique_lock<std::mutex> lk(app->render_lock);
+            Uint64 wnow = SDL_GetTicks();
+            Uint64 rem_ms = 100;
+            for (whaleui_window_t* w : app->windows) {
+                if (w->resize_pending && w->render) {
+                    Uint64 due = w->resize_last + kResizeCoalesceMs;
+                    Uint64 r = due > wnow ? due - wnow : 0;
+                    if (r < rem_ms) {
+                        rem_ms = r;
+                    }
+                }
+            }
+            app->frame_cv.wait_for(
+                lk, std::chrono::milliseconds(rem_ms), [&] {
+                    return !app->input_queue.empty() ||
+                           app->frame_request.load() ||
+                           !app->running.load();
+                });
+            if (!app->running.load() && app->input_queue.empty()) {
+                return;
+            }
+            while (!app->input_queue.empty()) {
+                evs.push_back(app->input_queue.front());
+                app->input_queue.pop_front();
+            }
+        }
+        /* process + render outside the queue lock: the worker owns the
+         * render state, the main thread only touches the queue */
+        for (const SDL_Event& e : evs) {
+            process_event(app, e);
+        }
+        /* fold event-watch resize slots (written lock-free from inside the
+         * OS modal drag loop) into the coalesced resize state */
+        fold_resize_watch(app);
+        Uint64 now = SDL_GetTicks();
+        bool want = !evs.empty() || app->frame_request.load() ||
+                    app->frames_alive.load();
+        if (apply_resizes(app, now)) {
+            want = true;
+        }
+        if (want) {
+            Uint64 f0 = SDL_GetTicks();
+            app->frame_done.store(0); /* per-frame completion signal */
+            int alive = render_all_windows(app);
+            Uint64 fdt = SDL_GetTicks() - f0;
+            app->frames_alive.store(alive);
+            app->frame_done.store(1);
+            app->frame_request.store(0);
+            /* an animated window keeps requesting its own frames (the
+             * main thread is inside the OS modal drag loop and cannot
+             * poll/set frame_request - without this the animation
+             * freezes the moment the mouse stops mid-drag) */
+            if (alive) {
+                app->frame_request.store(1);
+            }
+            /* frame cap: max_fps wins; default 60 on battery and AC alike.
+             * Sleep OUTSIDE the queue lock so event pushes stay cheap. */
+            int fps = app->max_fps > 0 ? app->max_fps : 60;
+            if (fps < 1) {
+                fps = 60;
+            }
+            Uint64 budget = 1000 / static_cast<Uint64>(fps);
+            Uint64 spent = SDL_GetTicks() - f0;
+            if (spent < budget) {
+                SDL_Delay(static_cast<Uint32>(budget - spent));
+            }
+        }
+    }
+}
 } // namespace
 
 whaleui_theme_t whaleui_app_resolved_theme(const whaleui_app_t* app)
@@ -507,6 +608,11 @@ extern "C" void whaleui_app_destroy(whaleui_app_t* app)
     }
     SDL_RemoveEventWatch(app_resize_watch, app);
     app->running = 0;
+    app->frame_request.store(1);
+    app->frame_cv.notify_one();
+    if (app->render_thread.joinable()) {
+        app->render_thread.join();
+    }
     for (whaleui_window_t* win : app->windows) {
         whaleui_window_destroy(win);
     }
@@ -538,61 +644,38 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
         return 0;
     }
 
-    /* Single-threaded event + render loop. Input handling and rendering
-     * share this thread, so they are serialized by construction: no input
-     * queue, no render lock, no cross-thread swapchain handoff. The old
-     * two-thread design (worker rendered, main thread polled events) had
-     * the SDL/GPU swapchain handed from the main thread (first frame in
-     * window_show) to the worker - on the D3D12 backend every frame
-     * rendered on the worker after that ran ~5x slower (~25-45ms vs
-     * ~5ms same-thread), which is the "animated pages crawl" report.
-     * Frames here are rendered right after the events that caused them;
-     * a slow frame delays input by at most one frame (~16ms at 60fps).
-     * The modal-drag event watch (fold_resize_watch below) still records
-     * resizes while SDL_PollEvent is blocked in the OS modal loop; the
-     * animation itself pauses during an OS drag, like most non-composited
-     * toolkits. */
-    bool wake = true; /* force the very first frame */
-    auto present = [&]() {
-        if (!app->running) {
-            return;
-        }
-        Uint64 f0 = SDL_GetTicks();
-        int alive = render_all_windows(app);
-        app->frames_alive.store(alive);
-        /* frame cap: max_fps wins; default 60 on battery and AC alike.
-         * The renderer's per-frame cost times the frame rate is the CPU
-         * bill, and on a 240Hz display an uncapped animation loop burns
-         * most of a core for little visual gain - power-first. */
-        int fps = app->max_fps > 0 ? app->max_fps : 60;
-        if (fps < 1) {
-            fps = 60;
-        }
-        Uint64 budget = 1000 / static_cast<Uint64>(fps);
-        Uint64 spent = SDL_GetTicks() - f0;
-        if (spent < budget) {
-            SDL_Delay(static_cast<Uint32>(budget - spent));
-        }
-    };
+    /* Main thread: event pump. The render worker owns input handling AND
+     * rendering (render_worker_fn): events are pushed here under a short
+     * queue lock, the worker pops them and processes + renders serially.
+     * Keeping rendering off this thread is what lets an animated page and
+     * a live window drag keep updating while SDL_PollEvent is parked in
+     * the OS modal drag loop (a resize/move drag never reached the loop
+     * before the event-watch + worker design). Frames are paced by the
+     * worker (60fps default); the main thread never touches render state,
+     * so there is no lock contention between event pushes and frames. */
+    app->render_thread = std::thread(render_worker_fn, app);
+    /* force the first frame: with no events and no animation there is
+     * nothing to wake the worker otherwise (it would park idle). */
+    app->frame_request.store(1);
+    app->frame_cv.notify_one();
     while (app->running) {
         SDL_Event e;
-        /* poll + handle every pending event; whatever they changed is
-         * rendered below in this same iteration */
+        bool got = false;
         while (SDL_PollEvent(&e)) {
-            process_event(app, e);
-            wake = true;
+            {
+                std::lock_guard<std::mutex> lk(app->render_lock);
+                app->input_queue.push_back(e);
+            }
+            got = true;
         }
-        /* fold event-watch resize slots (written lock-free from inside the
-         * OS modal resize/drag loop) and apply due coalesced resizes; a
-         * pending resize must render at the new size even with no events */
-        fold_resize_watch(app);
-        Uint64 now = SDL_GetTicks();
-        if (apply_resizes(app, now)) {
-            wake = true;
+        if (got) {
+            app->frame_cv.notify_one();
+            continue;
         }
-        /* run SDL window/IME tasks: SDL_StartTextInput/StopTextInput/
-         * SetTextInputArea touch the Windows IMM/TSF context, which is
-         * bound to the window's message thread (this thread). */
+        /* run SDL window/IME tasks posted for the MAIN thread:
+         * SDL_StartTextInput/StopTextInput/SetTextInputArea touch the
+         * Windows IMM/TSF context, which is bound to the window's message
+         * thread - never call them from the render worker. */
         {
             std::vector<std::function<void()>> todo;
             {
@@ -607,21 +690,22 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
          * battery-saver cap, plugging back in uncaps it. SDL3 3.4 has no
          * power-change event to listen for, so poll cheaply (one system
          * call; 2s is plenty - battery transitions are not time-critical). */
+        Uint64 now = SDL_GetTicks();
         if (now - app->power_check_ticks > 2000) {
             app->power_check_ticks = now;
             app->on_battery =
                 (SDL_GetPowerInfo(nullptr, nullptr) == SDL_POWERSTATE_ON_BATTERY) ? 1 : 0;
         }
-        if (wake || app->frames_alive.load()) {
-            /* events arrived, a resize landed, an animation is running, or
-             * the very first frame is due: render one frame */
-            wake = false;
-            present();
+        /* park between polls. While an animation runs (frames_alive) the
+         * worker self-drives frames, so this thread just waits a frame
+         * interval (keeps QUIT/window events responsive and avoids busy-
+         * spinning); when fully idle it blocks in WaitEventTimeout until
+         * an event arrives (plus the 2s power poll / a pending coalesced
+         * resize wake via the timeout below). */
+        if (app->frames_alive.load()) {
+            SDL_Delay(16);
             continue;
         }
-        /* idle: park until an event arrives. The timeout also wakes us for
-         * the 2s power poll and for a pending coalesced resize (which
-         * otherwise has no event to trigger its application). */
         Uint32 timeout = 100;
         for (whaleui_window_t* win : app->windows) {
             if (win->resize_pending && win->render) {
@@ -637,13 +721,19 @@ extern "C" int whaleui_app_run(whaleui_app_t* app)
             }
         }
         if (SDL_WaitEventTimeout(&e, static_cast<int>(timeout))) {
-            process_event(app, e);
-            wake = true; /* handled above; render after the poll drains */
-        } else if (timeout == 0) {
-            wake = true; /* resize due: apply + render on the next pass */
+            {
+                std::lock_guard<std::mutex> lk(app->render_lock);
+                app->input_queue.push_back(e);
+            }
+            app->frame_cv.notify_one();
         }
     }
+    /* worker exits on running==0 (its wait wakes within 100ms); join it
+     * so no frame is torn down mid-render during destroy */
     app->running = 0;
+    app->frame_request.store(1);
+    app->frame_cv.notify_one();
+    app->render_thread.join();
     return 0;
 }
 
