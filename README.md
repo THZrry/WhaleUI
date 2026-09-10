@@ -2,17 +2,11 @@
 
 > [English](README.en.md) | **中文**
 
-轻量级 HTML/CSS 渲染引擎与 GUI 工具包。用 C++14 编写,暴露纯 C API,可在多语言、多系统中复用。目标是小巧、快速、开箱即用的桌面小工具界面。
+这是一个完全使用DeepSeek开发的项目。我（人）仅作为测试和BUG分析。
 
-## 特性
+本项目致力于打造一个轻量级 HTML/CSS 渲染引擎与 GUI 工具包。用 C++14 编写,暴露纯 C API,可在多语言、多系统中复用。目标是小巧、快速、开箱即用的桌面小工具界面，成为可嵌入程序的复杂界面工具。
 
-- **HTML + CSS**:DOM 解析由 [lexbor](https://github.com/lexbor/lexbor) 提供;自研轻量 CSS 解析器与样式引擎,支持选择器匹配(标签 / `#id` / `.class` / 后代 / 子代 / 相邻兄弟、`:hover`/`:active`/`:focus`、`:nth-child`、`::before`/`::after`)、级联(specificity + `!important`)、`var()` 自定义属性、`@media`、`@keyframes`。
-- **布局**:自研盒模型 + flex + 基础 grid 引擎——margin / padding / border / content、`content-box` 与 `border-box`、`px` / `%` / `em` / `vw/vh` / `auto` 长度、`clamp()/min()/max()`、block 流与 inline 混排、flex(`direction` / `wrap` / `justify-content` / `align-items` / `gap` / `flex-grow`)、grid(`repeat()` / `fr` / 整行跨越)、`position`(static / relative / absolute / fixed / sticky)、`z-index`、`opacity`、`overflow` 滚动。
-- **渲染**:SDL3 GPU(`SDL_GPU` 离屏纹理 + blit 呈现,底层 D3D12 / Vulkan 由 SDL 自动选择;着色器走中间 shader 方案)。文本由 SDL3_ttf 栅格化(CJK/emoji 自动回退),字体经虚拟文件系统注册。滚动截取、脏矩形与子树包围盒剔除、文本位图缓存。
-- **交互**:`<select>` 下拉、`<details>/<summary>` 折叠、checkbox/radio、`progress/meter`、列表 marker、文本编辑与选择、IME 输入、滚轮滚动、`:hover/:active/:focus` 状态。
-- **主题**:内置 7 套系统风格样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,跟随系统或手动切换,支持热切换。
-- **虚拟文件系统**:所有资源(HTML / CSS / 字体)读取走统一 VFS,默认磁盘实现,可整体替换(如 HTTP CDN)。
-- **三种构建目标**:`full`(SDL3 + SDL_Image + SDL3_ttf + lexbor + stb + utf8proc)、`lite`(无 SDL_Image / SDL3_ttf)、`minimal`(仅布局与渲染核心)。
+9月10日前使用DeepSeek-V4Flash-0731生成，接下来有可能换成V4.1Flash
 
 ## 构建
 
@@ -43,6 +37,7 @@ xmake run test_api test_fs test_font test_dom test_style test_anim test_layout t
 全部为无框架的 `assert` 风格单测,退出码 0 即通过。
 
 ## 快速上手
+标记为过时内容
 
 ```c
 #include "whaleui.h"
@@ -88,13 +83,7 @@ examples/demo.cpp       # 演示程序
 
 ## 文档
 
-- [doc/external/00-index.md](doc/external/00-index.md) — 外部调用文档总览(API 手册 / 标准支持 / 用例)
-- [doc/external/html-css-support.md](doc/external/html-css-support.md) — HTML/CSS 标准支持情况与用例
-- [doc/internal/css-priority.md](doc/internal/css-priority.md) — CSS 属性支持清单与优先级
-- [doc/internal/09-implementation.md](doc/internal/09-implementation.md) — 实现状态与已知限制
-- [doc/internal/00-structure.md](doc/internal/00-structure.md) — 项目结构
-- [doc/internal/01-architecture.md](doc/internal/01-architecture.md) — 底层设计
-- 各模块 API 手册见 `doc/external/02-*.md` ~ `doc/external/07-*.md`
+待更新
 
 ## 平台
 
@@ -104,6 +93,7 @@ examples/demo.cpp       # 演示程序
 | Linux(Wayland/X11) | 🚧 SDL3 跨平台,平台后端待实现 |
 | macOS | 🚧 同上 |
 | Android / iOS | 🔲 预留 |
+Windows以外的平台未测试。
 
 ## License
 
