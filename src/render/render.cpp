@@ -5025,6 +5025,45 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). */
     r->alive = (animating || r->edit_el || r->stream_expand.active) ? 1 : 0;
+    /* TEMP diag (WHALEUI_DBG_HOV=1): per-frame snapshot of the hovered
+     * element's box + interaction/relayout flags. Catches the frame where
+     * a hover/active/focus state change moves the target on real
+     * hardware (local WARP cannot reproduce the 9px lift). */
+    if (getenv("WHALEUI_DBG_HOV") && r->tree) {
+        static int hv_f = 0;
+        bool chg = r->state_pending || r->hover_old_el ||
+                   r->focus_old_el || r->pressed_old_el;
+        if (chg || r->hover_el || (hv_f % 30) == 0) {
+            auto f = r->tree->by_el.find(r->hover_el);
+            std::string tag = "none";
+            int hx = -1, hy = -1, hw = 0, hh = 0;
+            std::string xf = "-";
+            if (f != r->tree->by_el.end() && f->second) {
+                whaleui_layout_node_t* nd = f->second;
+                hx = nd->border.x;
+                hy = nd->border.y;
+                hw = nd->border.w;
+                hh = nd->border.h;
+                size_t tlen = 0;
+                if (nd->el) {
+                    const lxb_char_t* tn =
+                        lxb_dom_element_local_name(nd->el, &tlen);
+                    if (tn) {
+                        tag.assign(reinterpret_cast<const char*>(tn), tlen);
+                    }
+                }
+                xf = nd->style.count("transform") ? nd->style["transform"]
+                                                  : "-";
+            }
+            std::fprintf(stderr,
+                         "[hv] f=%d hover=%s xy=(%d,%d %dx%d) xf=[%s] "
+                         "sp=%d anim=%d part=%d scroll=%d\n",
+                         hv_f, tag.c_str(), hx, hy, hw, hh, xf.c_str(),
+                         r->state_pending, animating, partial,
+                         r->tree->root ? r->tree->root->scroll_y : 0);
+        }
+        ++hv_f;
+    }
     return 0;
 }
 
