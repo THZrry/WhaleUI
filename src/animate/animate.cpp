@@ -1583,6 +1583,33 @@ extern "C" int whaleui_anim_has_el(const whaleui_anim_t* a,
     return a && el && a->act.count(el) != 0;
 }
 
+/* 1 if `el` has a RUNNING animation/transition touching a layout-affecting
+ * property. relayout_multi only reflows the flex/grid ancestors of such
+ * elements; a paint-only transition (e.g. the UA
+ * `select { transition: border-color }` firing on :hover) must NOT be fed
+ * to it - the reflow of its flex ancestor (the page header) recomputed the
+ * container's height and shifted every centered child ("hover lifts the
+ * header row by a few px and it stays there"). */
+extern "C" int whaleui_anim_has_layout_el(const whaleui_anim_t* a,
+                                          lxb_dom_element* el)
+{
+    if (!a || !el) {
+        return 0;
+    }
+    std::map<lxb_dom_element*, std::set<std::string> >::const_iterator it =
+        a->act.find(el);
+    if (it == a->act.end()) {
+        return 0;
+    }
+    for (std::set<std::string>::const_iterator p = it->second.begin();
+         p != it->second.end(); ++p) {
+        if (is_layout_prop(*p)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 extern "C" void whaleui_anim_apply_ov(const whaleui_anim_t* a,
                                       lxb_dom_element* el,
                                       WhaleUIComputedStyle& style)

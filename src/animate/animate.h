@@ -74,6 +74,15 @@ int whaleui_anim_needs_layout(const whaleui_anim_t* a);
 /* 1 if `el` has any running animation (for the paint fast path). */
 int whaleui_anim_has_el(const whaleui_anim_t* a, struct lxb_dom_element* el);
 
+/* 1 if `el`'s running animations touch a LAYOUT-affecting property (width,
+ * margin, font-size, ...). relayout_multi must only reflow the flex/grid
+ * ancestors of such elements - a paint-only transition (UA
+ * `select { transition: border-color }` on :hover) reflowing its flex
+ * ancestor (the page header) recomputed the container height and shifted
+ * every centered child ("hover lifts the header row and it stays"). */
+int whaleui_anim_has_layout_el(const whaleui_anim_t* a,
+                               struct lxb_dom_element* el);
+
 /* Overwrite `style` with the current animated values for `el` (recorded by
  * whaleui_anim_tick). Used by the repaint-only fast path. */
 void whaleui_anim_apply_ov(const whaleui_anim_t* a, struct lxb_dom_element* el,
