@@ -79,6 +79,79 @@ bool value_lerp(const std::string& from, const std::string& to, float t,
     return false;
 }
 
+/* split "linear-gradient(...)" into its top-level comma parts (the angle
+ * header, when present, is parts[0]); nested rgb()/rgba() keep their own
+ * commas. Returns false when v is not a gradient call. */
+bool grad_parts(const std::string& v, std::vector<std::string>& out)
+{
+    size_t open = v.find('(');
+    if (open == std::string::npos || v.find("gradient") == std::string::npos) {
+        return false;
+    }
+    size_t depth = 0, start = open + 1, end = std::string::npos;
+    for (size_t i = open + 1; i < v.size(); ++i) {
+        if (v[i] == '(') {
+            ++depth;
+        } else if (v[i] == ')') {
+            if (depth == 0) {
+                end = i;
+                break;
+            }
+            --depth;
+        }
+    }
+    if (end == std::string::npos) {
+        return false;
+    }
+    depth = 0;
+    for (size_t i = start; i <= end; ++i) {
+        const char ch = v[i];
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')') {
+            if (depth) {
+                --depth;
+            }
+        }
+        if (i == end || (ch == ',' && depth == 0)) {
+            std::string seg = v.substr(start, i - start);
+            size_t b = seg.find_first_not_of(" \t");
+            size_t e = seg.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                out.push_back(seg.substr(b, e - b + 1));
+            }
+            start = i + 1;
+        }
+    }
+    return out.size() >= 2;
+}
+
+/* Interpolate two gradients stop by stop. A gradient has no numeric form,
+ * so value_lerp cannot touch it and the switch was instant; matching stop
+ * lists now cross-fade (themes animate background-image on hover).
+ * Differing stop counts, or a stop with a position suffix, snap. */
+bool gradient_lerp(const std::string& from, const std::string& to, float t,
+                   std::string& out)
+{
+    std::vector<std::string> fa, ta;
+    if (!grad_parts(from, fa) || !grad_parts(to, ta) || fa.size() != ta.size()) {
+        return false;
+    }
+    std::string res = from.substr(0, from.find('(') + 1);
+    for (size_t i = 0; i < fa.size(); ++i) {
+        unsigned int c1 = 0, c2 = 0;
+        if (whaleui_render_parse_color(fa[i].c_str(), &c1) == 0 &&
+            whaleui_render_parse_color(ta[i].c_str(), &c2) == 0) {
+            res += color_str(lerp_color(c1, c2, t));
+        } else {
+            res += t < 0.5f ? fa[i] : ta[i];
+        }
+        res += i + 1 < fa.size() ? ", " : ")";
+    }
+    out = res;
+    return true;
+}
+
 /* --- timing functions -> progress in [0,1] --- */
 
 float bez(float t, float p1, float p2)
@@ -528,8 +601,8 @@ bool trans_in_props(const TransSpec& ts, const std::string& prop)
 
 struct TransformOp
 {
-    int op;     /* 0=translate, 1=scale, 2=scaleX, 3=scaleY */
-    float a, b; /* translate: x,y; scale: sx,sy */
+    int op;     /* 0=translate, 1=scale, 2=scaleX, 3=scaleY, 4=rotate */
+    float a, b; /* translate: x,y; scale: sx,sy; rotate: degrees in a */
     int au, bu; /* 0=px/number, 1=% (translate only) */
 };
 
@@ -676,6 +749,24 @@ bool transform_parse(const char* v, std::vector<TransformOp>& out)
             skip_to_close(p);
             TransformOp op = {3, a, 1.0f, 0, 0};
             out.push_back(op);
+        } else if (std::strncmp(p, "rotate(", 7) == 0) {
+            p += 7;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            /* rotate carries an ANGLE, not a length: deg is the default,
+             * rad/turn convert (so "@keyframes spin" written either way
+             * animates). A bare number means degrees. */
+            if (std::strncmp(p, "rad", 3) == 0) {
+                a = a * 180.0f / 3.14159265f;
+            } else if (std::strncmp(p, "turn", 4) == 0) {
+                a = a * 360.0f;
+            }
+            skip_to_close(p);
+            TransformOp op = {4, a, 0.0f, 0, 0};
+            out.push_back(op);
         } else {
             return false; /* unsupported function */
         }
@@ -690,7 +781,7 @@ std::vector<TransformOp> initial_ops(const std::vector<TransformOp>& ref)
     v.reserve(ref.size());
     for (size_t i = 0; i < ref.size(); ++i) {
         TransformOp z = ref[i];
-        z.a = ref[i].op == 0 ? 0.0f : 1.0f;
+        z.a = (ref[i].op == 0 || ref[i].op == 4) ? 0.0f : 1.0f;
         z.b = ref[i].op == 0 ? 0.0f : 1.0f;
         v.push_back(z);
     }
@@ -735,8 +826,10 @@ bool transform_lerp(const std::string& from, const std::string& to, float t,
             std::snprintf(buf, sizeof(buf), "scale(%g, %g)", av, bv);
         } else if (a[i].op == 2) {
             std::snprintf(buf, sizeof(buf), "scaleX(%g)", av);
-        } else {
+        } else if (a[i].op == 3) {
             std::snprintf(buf, sizeof(buf), "scaleY(%g)", av);
+        } else {
+            std::snprintf(buf, sizeof(buf), "rotate(%gdeg)", av);
         }
         res += buf;
         if (i + 1 < a.size()) {
@@ -753,6 +846,14 @@ bool any_lerp(const std::string& prop, const std::string& from,
 {
     if (prop == "transform") {
         return transform_lerp(from, to, t, out);
+    }
+    /* a gradient value has no numeric form: cross-fade the stop lists
+     * before falling back to the plain value rules (a plain background
+     * colour is handled by value_lerp either way) */
+    if (prop == "background-image" || prop == "background") {
+        if (gradient_lerp(from, to, t, out)) {
+            return true;
+        }
     }
     return value_lerp(from, to, t, out);
 }
@@ -1033,6 +1134,7 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
     out->ty = 0.0f;
     out->sx = 1.0f;
     out->sy = 1.0f;
+    out->rot = 0.0f;
     if (!value || !*value || std::strcmp(value, "none") == 0) {
         return 0;
     }
@@ -1050,8 +1152,10 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
             out->sy *= op.b;
         } else if (op.op == 2) {
             out->sx *= op.a;
-        } else {
+        } else if (op.op == 3) {
             out->sy *= op.a;
+        } else {
+            out->rot += op.a; /* 4 = rotate, degrees */
         }
     }
     return 0;

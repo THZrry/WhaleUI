@@ -30,6 +30,8 @@ struct SelPart
     bool active;        /* ":active" present */
     bool focus;         /* ":focus" / ":focus-visible" present */
     bool disabled;      /* ":disabled" present */
+    bool checked;       /* ":checked" present (checked / selected attr) */
+    bool indeterminate; /* ":indeterminate" present */
     bool last_child;    /* ":last-child" present */
     bool first_child;   /* ":first-child" present */
     bool nth;           /* ":nth-child(An+B)" present */
@@ -200,6 +202,10 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 out.focus = true;
             } else if (v == "disabled") {
                 out.disabled = true;
+            } else if (v == "checked") {
+                out.checked = true;
+            } else if (v == "indeterminate") {
+                out.indeterminate = true;
             } else if (v == "last-child") {
                 out.last_child = true;
             } else if (v == "first-child") {
@@ -237,6 +243,7 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     return !out.pseudo_el &&
            (!out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
             out.hover || out.active || out.focus || out.disabled ||
+            out.checked || out.indeterminate ||
             out.last_child || out.first_child || out.nth || out.has_attr);
 }
 
@@ -306,25 +313,51 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
         }
     }
     if (p.disabled) {
-        size_t alen = 0;
-        const lxb_char_t* d = lxb_dom_element_get_attribute(el,
-                                                            (const lxb_char_t*)"disabled", 8, &alen);
-        if (!d || alen == 0) {
+        /* has_attribute, not get_attribute: a value-less boolean attribute
+         * (disabled/checked/selected) stores no value in lexbor and
+         * get_attribute returns NULL for it, so every [attr]/:disabled/
+         * :checked test silently failed on exactly the attributes HTML
+         * writes without a value. */
+        if (!lxb_dom_element_has_attribute(el, (const lxb_char_t*)"disabled",
+                                           8)) {
+            return false;
+        }
+    }
+    if (p.checked) {
+        /* the checked/selected *attribute* (the DOM property a page sets
+         * with JS; the paint path keeps its own state for clicks) */
+        if (!lxb_dom_element_has_attribute(el, (const lxb_char_t*)"checked", 7) &&
+            !lxb_dom_element_has_attribute(el, (const lxb_char_t*)"selected",
+                                           8)) {
+            return false;
+        }
+    }
+    if (p.indeterminate) {
+        /* :indeterminate is a DOM property with no attribute equivalent;
+         * accept an "indeterminate" attribute so a page can express it */
+        if (!lxb_dom_element_has_attribute(
+                el, (const lxb_char_t*)"indeterminate", 13)) {
             return false;
         }
     }
     if (p.has_attr) {
-        size_t alen = 0;
-        const lxb_char_t* a = lxb_dom_element_get_attribute(
-            el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
-            p.attr.size(), &alen);
-        if (!a) {
+        /* presence must go through has_attribute (a value-less attribute
+         * has no value to return); only the [name="value"] form needs the
+         * value itself */
+        if (!lxb_dom_element_has_attribute(
+                el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
+                p.attr.size())) {
             return false; /* [name]: the attribute must exist */
         }
-        if (!p.attr_val.empty() &&
-            (alen != p.attr_val.size() ||
-             std::memcmp(a, p.attr_val.data(), p.attr_val.size()) != 0)) {
-            return false; /* [name="value"]: exact match */
+        if (!p.attr_val.empty()) {
+            size_t alen = 0;
+            const lxb_char_t* a = lxb_dom_element_get_attribute(
+                el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
+                p.attr.size(), &alen);
+            if (!a || alen != p.attr_val.size() ||
+                std::memcmp(a, p.attr_val.data(), p.attr_val.size()) != 0) {
+                return false; /* [name="value"]: exact match */
+            }
         }
     }
     if (p.last_child) {

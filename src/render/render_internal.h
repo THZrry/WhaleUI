@@ -85,6 +85,10 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
 unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop,
                       unsigned int def);
 unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def);
+/* one border side's color (0=top 1=right 2=bottom 3=left): longhand, then
+ * the border-color TRBL shorthand, then the border shorthand's color */
+unsigned int border_side_color(const WhaleUIComputedStyle& s, int side,
+                               unsigned int def);
 
 /* --- paint primitives (render_paint.cpp) --- */
 
@@ -105,7 +109,7 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
                    const unsigned int* tint);
 std::vector<std::string> split_space2(const std::string& v);
 int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
-                 unsigned int& col);
+                 unsigned int& col, int* spread = nullptr);
 int parse_shadow_any(const std::string& v, int& ox, int& oy, int& blur,
                      unsigned int& col);
 void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,

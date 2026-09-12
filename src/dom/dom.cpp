@@ -322,6 +322,16 @@ extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size
         if (len == 0) {
             len = std::strlen(html);
         }
+        /* a UTF-8 BOM (EF BB BF, what Windows editors write) reaching the
+         * parser becomes a leading TEXT node before <html>: the page then
+         * renders that text AND its stylesheets stop applying (the sheet
+         * is parsed into the wrong tree scope). Skip it. */
+        if (len >= 3 && static_cast<unsigned char>(html[0]) == 0xEF &&
+            static_cast<unsigned char>(html[1]) == 0xBB &&
+            static_cast<unsigned char>(html[2]) == 0xBF) {
+            html += 3;
+            len -= 3;
+        }
         lxb_html_document_parse(doc, reinterpret_cast<const lxb_char_t*>(html), len);
     }
     return reinterpret_cast<whaleui_dom_document_t*>(doc);

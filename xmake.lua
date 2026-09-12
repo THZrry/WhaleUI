@@ -197,4 +197,37 @@ target("demo")
     on_load(function (target)
         use_sdl3(target)
     end)
+target_end()
+
+-- ======================= temp verification target (optional) ==============
+-- Offscreen renderer + colour probes used to verify the theme stylesheets
+-- against the reference screenshots: it renders a page to a PPM without a GPU
+-- window. The tool itself lives in temp/ (gitignored), so the target is only
+-- defined when that file is present - a fresh checkout builds unaffected.
+--   Build:  xmake b -y render_shot
+--   Run:    render_shot <uri> <out.ppm> <style> <light|dark> <h> [dump] <frames> [delay_ms]
+if os.isfile("temp/render_shot.cpp") then
+    target("render_shot")
+        set_kind("binary")
+        if is_mode("release") then
+            set_strip("all")
+        end
+        add_files("temp/render_shot.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
 

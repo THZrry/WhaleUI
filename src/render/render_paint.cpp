@@ -308,11 +308,48 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
     }
 }
 
+/* one background-size component: "auto" keeps the box size, "%" resolves
+ * against it, anything else is px */
+float bg_len_px(const std::string& v, int base)
+{
+    if (v.empty() || v == "auto") {
+        return static_cast<float>(base);
+    }
+    if (v[v.size() - 1] == '%') {
+        return std::strtof(v.c_str(), nullptr) * base / 100.0f;
+    }
+    return std::strtof(v.c_str(), nullptr);
+}
+
+/* one background-position component (keyword, % or px). A percentage
+ * offsets by (box - tile) like the spec, so "100%" is the right/bottom
+ * edge rather than the box width. */
+float bg_pos_px(const std::string& v, int base, float tile)
+{
+    if (v == "center") {
+        return (static_cast<float>(base) - tile) / 2.0f;
+    }
+    if (v == "right" || v == "bottom") {
+        return static_cast<float>(base) - tile;
+    }
+    if (v == "left" || v == "top") {
+        return 0;
+    }
+    if (!v.empty() && v[v.size() - 1] == '%') {
+        return (static_cast<float>(base) - tile) *
+               std::strtof(v.c_str(), nullptr) / 100.0f;
+    }
+    return std::strtof(v.c_str(), nullptr);
+}
+
 int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
-                 unsigned int& col)
+                 unsigned int& col, int* spread)
 {
     ox = oy = blur = 0;
     col = 0;
+    if (spread) {
+        *spread = 0;
+    }
     std::vector<std::string> tok;
     const char* p = v.c_str();
     while (*p) {
@@ -328,12 +365,12 @@ int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
         }
         tok.emplace_back(s, static_cast<size_t>(p - s));
     }
-    int nums[3] = {0, 0, 0};
+    int nums[4] = {0, 0, 0, 0};
     size_t ni = 0;
     std::string colstr;
     for (size_t i = 0; i < tok.size(); ++i) {
         const std::string& t = tok[i];
-        if (ni < 3 && !t.empty() &&
+        if (ni < 4 && !t.empty() &&
             (t[0] == '-' || (t[0] >= '0' && t[0] <= '9'))) {
             nums[ni++] = std::atoi(t.c_str());
         } else if (!colstr.empty()) {
@@ -346,7 +383,12 @@ int parse_shadow(const std::string& v, int& ox, int& oy, int& blur,
     ox = nums[0];
     oy = nums[1];
     blur = nums[2];
-    if (blur <= 0 || colstr.empty()) {
+    if (spread) {
+        *spread = nums[3];
+    }
+    /* blur 0 is legal and common: "0 0 0 3px rgba(...)" is how the themes
+     * write a focus ring */
+    if (colstr.empty()) {
         return -1;
     }
     return whaleui_render_parse_color(colstr.c_str(), &col);
@@ -421,23 +463,45 @@ std::vector<std::string> split_space2(const std::string& v)
     return out;
 }
 
-void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
-                  int off_x, int off_y, const Clip* clip)
+/* One box-shadow layer: "ox oy blur [spread] color" (the caller strips an
+ * optional leading "inset"). */
+void paint_one_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
+                      int off_x, int off_y, const Clip* clip,
+                      const std::string& v, bool inset)
 {
-    std::string v = sget(n->style, "box-shadow");
-    if (v.empty() || v == "none") {
+    int ox = 0, oy = 0, blur = 0, spread = 0;
+    unsigned int col = 0;
+    if (parse_shadow(v, ox, oy, blur, col, &spread) != 0) {
         return;
     }
-    /* "inset" prefix: the shadow projects inward from the box edges */
-    bool inset = false;
-    if (v.compare(0, 5, "inset") == 0 &&
-        (v.size() == 5 || v[5] == ' ' || v[5] == '\t')) {
-        inset = true;
-        v = v.substr(5);
-    }
-    int ox = 0, oy = 0, blur = 0;
-    unsigned int col = 0;
-    if (parse_shadow(v, ox, oy, blur, col) != 0) {
+    if (blur <= 0) {
+        /* hard shadow (blur 0): one fill grown by spread - this is the
+         * "0 0 0 3px rgba(...)" focus ring the themes write */
+        int hx = n->border.x + off_x + ox - spread;
+        int hy = n->border.y + off_y + oy - spread;
+        int hw = n->border.w + 2 * spread;
+        int hh = n->border.h + 2 * spread;
+        if (hw <= 0 || hh <= 0 || col == 0) {
+            return;
+        }
+        int rad0 = 0;
+        std::string br0 = sget(n->style, "border-radius");
+        if (!br0.empty()) {
+            rad0 = std::atoi(br0.c_str());
+        }
+        unsigned int a0 = (col >> 24) & 0xFF;
+        unsigned int aa = static_cast<unsigned>(a0 * n->opacity);
+        if (aa == 0) {
+            return;
+        }
+        unsigned int hc = (aa << 24) | (col & 0x00FFFFFF);
+        if (rad0 > 0) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh,
+                            rad0, hc, clip);
+        } else {
+            fill_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh, hc,
+                      clip);
+        }
         return;
     }
     /* off-screen shadows cost nothing */
@@ -471,10 +535,10 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
                               static_cast<float>(blur), col);
         } else {
             whaleui_gpu_shadow(g_gpu,
-                               static_cast<float>(n->border.x + off_x + ox),
-                               static_cast<float>(n->border.y + off_y + oy),
-                               static_cast<float>(n->border.w),
-                               static_cast<float>(n->border.h),
+                               static_cast<float>(n->border.x + off_x + ox - spread),
+                               static_cast<float>(n->border.y + off_y + oy - spread),
+                               static_cast<float>(n->border.w + 2 * spread),
+                               static_cast<float>(n->border.h + 2 * spread),
                                static_cast<float>(radius),
                                static_cast<float>(blur), col);
         }
@@ -483,7 +547,7 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     /* concentric layers, alpha fading outwards (inset: inwards); skip the
      * near-invisible outermost ring and step by 2px (half the fill cost,
      * gradient still smooth) */
-    for (int k = (blur > 0 ? blur - 1 : 0); k >= 1; k -= 2) {
+    for (int k = blur - 1; k >= 1; k -= 2) {
         unsigned int ka = static_cast<unsigned>(a * (blur - k + 1) / (blur + 1));
         if (ka < 4) {
             continue;
@@ -491,19 +555,19 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
         int sx, sy, sw, sh;
         if (inset) {
-            /* inward: each layer is the box shrunk by k */
-            sx = n->border.x + off_x + k;
-            sy = n->border.y + off_y + k;
-            sw = n->border.w - 2 * k;
-            sh = n->border.h - 2 * k;
+            /* inward: each layer is the box shrunk by spread + k */
+            sx = n->border.x + off_x + spread + k;
+            sy = n->border.y + off_y + spread + k;
+            sw = n->border.w - 2 * spread - 2 * k;
+            sh = n->border.h - 2 * spread - 2 * k;
             if (sw <= 0 || sh <= 0) {
                 continue;
             }
         } else {
-            sx = n->border.x + off_x + ox - k;
-            sy = n->border.y + off_y + oy - k;
-            sw = n->border.w + 2 * k;
-            sh = n->border.h + 2 * k;
+            sx = n->border.x + off_x + ox - spread - k;
+            sy = n->border.y + off_y + oy - spread - k;
+            sw = n->border.w + 2 * spread + 2 * k;
+            sh = n->border.h + 2 * spread + 2 * k;
         }
         if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh,
@@ -511,6 +575,173 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         } else {
             fill_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, sw, sh, c, clip);
         }
+    }
+}
+
+/* box-shadow: a comma-separated layer list. Per CSS the FIRST layer is on
+ * top, so they are painted back to front. Previously only the first layer
+ * was read - which for the themes' "ambient + key" pairs dropped the key
+ * shadow, the visible one. */
+void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
+                  int off_x, int off_y, const Clip* clip)
+{
+    std::string v = sget(n->style, "box-shadow");
+    if (v.empty() || v == "none") {
+        return;
+    }
+    /* split on top-level commas (rgba(0,0,0,.2) keeps its own) */
+    std::vector<std::string> layers;
+    size_t depth = 0, start = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+        char ch = v[i];
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')') {
+            if (depth) {
+                --depth;
+            }
+        } else if (ch == ',' && depth == 0) {
+            layers.push_back(v.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    layers.push_back(v.substr(start));
+    for (size_t li = layers.size(); li-- > 0;) {
+        std::string layer = layers[li];
+        size_t b = layer.find_first_not_of(" \t");
+        if (b == std::string::npos) {
+            continue;
+        }
+        size_t e = layer.find_last_not_of(" \t");
+        layer = layer.substr(b, e - b + 1);
+        if (layer.empty()) {
+            continue;
+        }
+        /* "inset" prefix: the shadow projects inward from the box edges */
+        bool inset = false;
+        if (layer.compare(0, 5, "inset") == 0 &&
+            (layer.size() == 5 || layer[5] == ' ' || layer[5] == '\t')) {
+            inset = true;
+            layer = layer.substr(5);
+        }
+        paint_one_shadow(r, n, off_x, off_y, clip, layer, inset);
+    }
+}
+
+/* outline: [width] [style] [color] plus outline-offset. Drawn just OUTSIDE
+ * the border box (it never affects layout, which is why every theme reaches
+ * for it on :focus). Width defaults to 3px (CSS "medium") when the
+ * shorthand carries only a color/style; the color defaults to the text
+ * color (currentColor). dotted/dashed are approximated with dashes - a
+ * focus ring only needs to be visible, and the aero/metro themes write
+ * "dotted". */
+void paint_outline(whaleui_render_t* r, whaleui_layout_node_t* n,
+                   int off_x, int off_y, int bw, int bh, const Clip* clip)
+{
+    std::string v = sget(n->style, "outline");
+    if (v == "none") {
+        return;
+    }
+    std::string lw = sget(n->style, "outline-width");
+    std::string ls = sget(n->style, "outline-style");
+    std::string lc = sget(n->style, "outline-color");
+    if (v.empty() && lw.empty() && ls.empty() && lc.empty()) {
+        return;
+    }
+    int width = 0;
+    bool width_set = false;
+    std::string style_k = ls;
+    std::string color_k = lc;
+    if (!v.empty() && v != "none") {
+        const char* p = v.c_str();
+        while (*p) {
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (!*p) {
+                break;
+            }
+            const char* b = p;
+            while (*p && *p != ' ' && *p != '\t') {
+                ++p;
+            }
+            std::string t(b, static_cast<size_t>(p - b));
+            if (t[0] == '-' || (t[0] >= '0' && t[0] <= '9')) {
+                width = std::atoi(t.c_str());
+                width_set = true;
+            } else if (t == "solid" || t == "dashed" || t == "dotted" ||
+                       t == "double" || t == "groove" || t == "ridge" ||
+                       t == "inset" || t == "outset" || t == "none" ||
+                       t == "auto") {
+                style_k = t;
+            } else {
+                color_k = t;
+            }
+        }
+    }
+    if (style_k == "none") {
+        return;
+    }
+    if (!width_set) {
+        width = lw.empty() ? 3 : std::atoi(lw.c_str());
+    }
+    if (width <= 0) {
+        return;
+    }
+    unsigned int col = 0;
+    if (!color_k.empty()) {
+        whaleui_render_parse_color(color_k.c_str(), &col);
+    }
+    if (col == 0) {
+        col = color_of(n->style, "color", 0xFF000000);
+    }
+    unsigned int a = (col >> 24) & 0xFF;
+    if (a == 0) {
+        return;
+    }
+    unsigned int a8 = static_cast<unsigned>(a * n->opacity);
+    unsigned int c = (a8 << 24) | (col & 0x00FFFFFF);
+    int off = 0;
+    std::string osv = sget(n->style, "outline-offset");
+    if (!osv.empty()) {
+        off = std::atoi(osv.c_str());
+    }
+    int x = n->border.x + off_x - off - width;
+    int y = n->border.y + off_y - off - width;
+    int w = bw + 2 * (off + width);
+    int h = bh + 2 * (off + width);
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    bool dashed = style_k == "dotted" || style_k == "dashed";
+    int seg = style_k == "dotted" ? 2 : 4;
+    const int skip = 2;
+    if (!dashed) {
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x, y, w, width, c, clip);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x, y + h - width, w, width,
+                  c, clip);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x, y, width, h, c, clip);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x + w - width, y, width, h,
+                  c, clip);
+        return;
+    }
+    for (int i = 0; i < w; i += seg + skip) {
+        int s = seg;
+        if (i + s > w) {
+            s = w - i;
+        }
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x + i, y, s, width, c, clip);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x + i, y + h - width, s,
+                  width, c, clip);
+    }
+    for (int i = 0; i < h; i += seg + skip) {
+        int s = seg;
+        if (i + s > h) {
+            s = h - i;
+        }
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x, y + i, width, s, c, clip);
+        fill_rect(r->pixels, r->fb_w, r->fb_h, x + w - width, y + i, width,
+                  s, c, clip);
     }
 }
 
@@ -934,16 +1165,98 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             /* gradients ignore the corner arcs (ponytail: fill the full
              * rect; clipped inside rounded containers already) */
         }
-        fill_gradient(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
-                      n->border.y + noy, bw, bh, grad, eff);
+        /* background-size / -position / -repeat: one tile box, then tiled
+         * (or a single tile for no-repeat). Absent size -> the whole
+         * padding box, which is the common case. */
+        float tw = static_cast<float>(bw);
+        float th = static_cast<float>(bh);
+        std::vector<std::string> sz = split_space2(sget(n->style, "background-size"));
+        if (!sz.empty()) {
+            if (sz[0] == "cover" || sz[0] == "contain") {
+                /* the visible box, not the aspect-true fit: a cover-fit
+                 * would need the image's intrinsic size */
+                tw = static_cast<float>(bw);
+                th = static_cast<float>(bh);
+            } else {
+                tw = bg_len_px(sz[0], bw);
+                th = sz.size() > 1 ? bg_len_px(sz[1], bh) : th;
+            }
+        }
+        if (tw < 1.0f) {
+            tw = 1.0f;
+        }
+        if (th < 1.0f) {
+            th = 1.0f;
+        }
+        float ox = 0, oy = 0;
+        std::vector<std::string> ps = split_space2(sget(n->style, "background-position"));
+        if (ps.size() == 1) {
+            if (ps[0] == "top" || ps[0] == "bottom") {
+                oy = bg_pos_px(ps[0], bh, th);
+            } else {
+                ox = bg_pos_px(ps[0], bw, tw);
+            }
+        } else if (ps.size() >= 2) {
+            ox = bg_pos_px(ps[0], bw, tw);
+            oy = bg_pos_px(ps[1], bh, th);
+        }
+        const int gx = n->border.x + nox;
+        const int gy = n->border.y + noy;
+        std::string rpv = sget(n->style, "background-repeat");
+        if (rpv.find("no-repeat") != std::string::npos) {
+            fill_gradient(r->pixels, r->fb_w, r->fb_h,
+                          gx + static_cast<int>(ox),
+                          gy + static_cast<int>(oy), static_cast<int>(tw),
+                          static_cast<int>(th), grad, eff);
+        } else {
+            /* repeat (default) / repeat-x / repeat-y: tile from the
+             * position back to the box edge, then forward */
+            const bool rx = rpv.find("repeat-y") == std::string::npos;
+            const bool ry = rpv.find("repeat-x") == std::string::npos;
+            int x0 = gx + static_cast<int>(ox);
+            int y0 = gy + static_cast<int>(oy);
+            if (rx) {
+                while (x0 > gx) {
+                    x0 -= static_cast<int>(tw);
+                }
+            }
+            if (ry) {
+                while (y0 > gy) {
+                    y0 -= static_cast<int>(th);
+                }
+            }
+            const int xi = rx ? static_cast<int>(tw) : bw + 1;
+            const int yi = ry ? static_cast<int>(th) : bh + 1;
+            for (int yy = ry ? y0 : gy + static_cast<int>(oy);
+                 yy < gy + bh; yy += yi) {
+                for (int xx = rx ? x0 : gx + static_cast<int>(ox);
+                     xx < gx + bw; xx += xi) {
+                    fill_gradient(r->pixels, r->fb_w, r->fb_h, xx, yy,
+                                  static_cast<int>(tw), static_cast<int>(th),
+                                  grad, eff);
+                }
+            }
+        }
     }
     /* border (follows the corner arcs when border-radius is set) */
     int bw2[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
     bool any = bw2[0] || bw2[1] || bw2[2] || bw2[3];
     if (any) {
-        unsigned int bc = color_of(n->style, "border-color",
-                                   border_color_of(n->style, 0xFF000000));
-        if (bc != 0) {
+        unsigned int def_c = color_of(n->style, "border-color",
+                                      border_color_of(n->style, 0xFF000000));
+        /* per-side colors: several themes set four different sides (aero's
+         * bevel inputs, photon's dark bottom edge) - the single-color path
+         * flattened them. When they agree, keep the rounded ring path. */
+        unsigned int sc[4];
+        bool same = true;
+        for (int i = 0; i < 4; ++i) {
+            sc[i] = border_side_color(n->style, i, def_c);
+            if (sc[i] != sc[0]) {
+                same = false;
+            }
+        }
+        if (same && sc[0] != 0) {
+            unsigned int bc = sc[0];
             unsigned int a = (bc >> 24) & 0xFF;
             unsigned int a8 = static_cast<unsigned>(a * n->opacity);
             unsigned int c = (a8 << 24) | (bc & 0x00FFFFFF);
@@ -977,10 +1290,41 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                               n->border.y + noy, bw2[3], bh, c, eff);
                 }
             }
+        } else if (!same) {
+            /* four different colors: one fill per side, corner arcs are
+             * dropped (a browser miters them; the difference is 1-2px at
+             * the corners of a beveled control) */
+            const int sx = n->border.x + nox;
+            const int sy = n->border.y + noy;
+            for (int i = 0; i < 4; ++i) {
+                if (!bw2[i] || sc[i] == 0) {
+                    continue;
+                }
+                unsigned int a = (sc[i] >> 24) & 0xFF;
+                unsigned int a8 = static_cast<unsigned>(a * n->opacity);
+                unsigned int c = (a8 << 24) | (sc[i] & 0x00FFFFFF);
+                if (i == 0) {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, bw,
+                              bw2[0], c, eff);
+                } else if (i == 2) {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, sx,
+                              sy + bh - bw2[2], bw, bw2[2], c, eff);
+                } else if (i == 1) {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, sx + bw - bw2[1],
+                              sy, bw2[1], bh, c, eff);
+                } else {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, sx, sy, bw2[3],
+                              bh, c, eff);
+                }
+            }
         }
     }
     } /* end if(!native_ctrl): native controls paint their own box */
     } /* end else: plain body paint (skipped for GPU backdrop-filter) */
+    /* the outline is independent of the box painting (a focus ring must
+     * also sit over a native checkbox/select), so it is drawn here - after
+     * this element's own content, before its children */
+    paint_outline(r, n, nox, noy, bw, bh, eff);
     int child_off_y = noy + scroll_delta(r, n);
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff, tc);

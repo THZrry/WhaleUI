@@ -423,17 +423,17 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                                   SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
                                   SDL_GPU_TEXTUREUSAGE_SAMPLER);
 
-    /* CPU-rasterized text layer. R8G8B8A8 to match the geometry target:
-     * SDL's DXIL reflection decodes Load/Sample channel order from the
-     * format NAME, so a B8G8R8A8 layer composited into an R8G8B8A8 target
-     * swapped R/B (red text came out blue). */
-    /* CPU-rasterized text layer. B8G8R8A8 so the upload is a straight
-     * memcpy: the CPU pixels are 0xAARRGGBB, whose little-endian bytes are
-     * B,G,R,A - exactly B8G8R8A8. The composite shader swaps R/B back when
-     * it reads this texture (it composites over the R8G8B8A8 geometry). */
+    /* CPU-rasterized text layer. R8G8B8A8, and the upload swaps R/B into
+     * that order (whaleui_gpu_text_layer). The layer format must NOT be
+     * B8G8R8A8: SDL's DXIL reflection decodes Load/Sample channel order
+     * from the format NAME, so a B8G8R8A8 layer carries a second swap on
+     * the D3D12 backend and the two cancel out (red text came out blue on
+     * Windows while Vulkan was correct - a cross-backend difference no
+     * single shader line can express). Swapping once on the CPU keeps every
+     * backend reading plain RGBA. */
     g->text_layer = make_texture(device, static_cast<uint32_t>(w),
                                  static_cast<uint32_t>(h),
-                                 SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+                                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER);
 
     /* blur source: half-res, mipmapped (box-shadow shapes + backdrop
@@ -1098,16 +1098,20 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
     if (!mapped) {
         return;
     }
-    /* CPU pixels are 0xAARRGGBB whose little-endian bytes are B,G,R,A -
-     * exactly the B8G8R8A8 layer format, so the region is a straight
-     * memcpy (no per-pixel R/B swap; the swap moved into the composite
-     * shader). This is the hot loop on wide dirty strips at 2k. */
-    const unsigned char* src = reinterpret_cast<const unsigned char*>(pixels);
+    /* CPU pixels are 0xAARRGGBB, the layer is R8G8B8A8: swap R/B per pixel
+     * on the way in. Doing it here, once, on the dirty region keeps every
+     * backend reading plain RGBA - a B8G8R8A8 layer plus a shader swap
+     * cancels out on D3D12, whose Load already decodes by the format name. */
     unsigned char* dst = static_cast<unsigned char*>(mapped);
     for (int yy = ry; yy < ry + rh; ++yy) {
-        const unsigned char* s = src + (static_cast<size_t>(yy) * w + rx) * 4;
-        unsigned char* d = dst + (static_cast<size_t>(yy - ry) * w) * 4;
-        std::memcpy(d, s, static_cast<size_t>(rw) * 4);
+        const unsigned int* s = pixels + static_cast<size_t>(yy) * w + rx;
+        unsigned int* d = reinterpret_cast<unsigned int*>(
+            dst + static_cast<size_t>(yy - ry) * w * 4);
+        for (int xx = 0; xx < rw; ++xx) {
+            const unsigned int v = s[xx];
+            d[xx] = (v & 0xFF00FF00u) | ((v & 0x00FF0000u) >> 16) |
+                    ((v & 0x000000FFu) << 16);
+        }
     }
     SDL_UnmapGPUTransferBuffer(g->device, lt);
     g->layer_cur = 1 - g->layer_cur; /* next frame uploads into the other */

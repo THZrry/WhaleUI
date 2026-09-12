@@ -288,7 +288,7 @@ int main(void)
      * accent) */
     {
         int n = whaleui_theme_count();
-        assert(n >= 8); /* fluent metro material classic aero gtk macos browser */
+        assert(n >= 7); /* fluent metro material aero gtk macos browser */
         for (int i = 0; i < n; ++i) {
             const char* name = whaleui_theme_name(i);
             assert(name && *name);

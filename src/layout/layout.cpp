@@ -419,6 +419,16 @@ int display_kind(const std::string& d)
     return 3; /* block (default) */
 }
 
+/* inline-LEVEL boxes shrink to fit their content; display_kind alone
+ * cannot tell "inline-flex" from "flex" (both are flex containers), so
+ * the outer level is read off the display string. Without this an
+ * inline-flex box (a themed button) took the whole line: bw=avail_w. */
+bool inline_level_display(const std::string& d)
+{
+    return d == "inline" || d == "inline-block" || d == "inline-flex" ||
+           d == "inline-grid" || d == "inline-table";
+}
+
 /* "flex: [grow] [shrink] [basis]" shorthand + the three longhands.
  * PureLayout's flex algorithm starts from flex-basis, so all three must
  * resolve together. Defaults: grow 0, shrink 1, basis auto (-1).
@@ -2099,11 +2109,12 @@ struct Builder
                            mx;
                 int cap = avail_w - mx;
                 bw = pref < cap ? pref : cap;
-            } else if (display_kind(get(n->style, "display")) == 2) {
-                /* inline / inline-block shrink to content: the preferred
-                 * width is the unwrapped content, capped to the available
-                 * width so long editable text wraps instead of stretching
-                 * the box (width follows the longest wrapped line) */
+            } else if (inline_level_display(get(n->style, "display"))) {
+                /* inline / inline-block / inline-flex shrink to content:
+                 * the preferred width is the unwrapped content, capped to
+                 * the available width so long editable text wraps instead
+                 * of stretching the box. An inline-flex box measures its
+                 * flex row (estimate_content_width's flex_row case). */
                 int pref = static_cast<int>(estimate_content_width(n, em)) +
                            mx;
                 int cap = avail_w - mx;
@@ -2169,10 +2180,16 @@ struct Builder
             x += static_cast<int>(off_left);
             y = *cursor_y + static_cast<int>(off_top);
         }
-        n->border.x = x + m[1];
+        /* m[]/p[]/border_w[] are indexed [top,right,bottom,left]: the left
+         * edge takes index 3. It used index 1 (the RIGHT value), so a
+         * one-sided left margin/padding landed at the wrong x while a
+         * symmetric value masked it - "padding: 0 0 0 60px" left the text
+         * at x=0, "padding: 0 60px 0 0" put it at x=60, and
+         * "margin-left:60px" only shrank the width without moving the box. */
+        n->border.x = x + m[3];
         n->border.y = y + m[0];
         n->border.w = bw;
-        n->content.x = n->border.x + p[1] + n->border_w[1];
+        n->content.x = n->border.x + p[3] + n->border_w[3];
         n->content.y = n->border.y + p[0] + n->border_w[0];
 
         /* min/max-width clamp the box BEFORE children are laid out: a
@@ -2328,6 +2345,35 @@ struct Builder
         if (!mxh.empty() && n->border.h > static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh))) {
             n->border.h = static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh));
         }
+        /* the min/max clamp above can change the border height: keep the
+         * content box in sync (scroll ranges read content.h) */
+        n->content.h = n->border.h - p[0] - p[2] - n->border_w[0] -
+                       n->border_w[2];
+        if (n->content.h < 0) {
+            n->content.h = 0;
+        }
+
+        /* Re-place out-of-flow children against the FINAL padding box.
+         * An absolutely positioned box with inset:0 / height:100% (a
+         * button's state layer, a fixed badge) resolves against the
+         * container's used size - but an auto-height container only knows
+         * that size after its children were laid out, so they were placed
+         * against inner_h = 0 and came out 2px tall. */
+        if (n->content.h != inner_h) {
+            for (whaleui_layout_node_t* cc = n->first_child; cc;
+                 cc = cc->next) {
+                if (!cc->visible) {
+                    continue;
+                }
+                int ck2 = position_kind(get(cc->style, "position"));
+                if (ck2 != 1 && ck2 != 2) {
+                    continue;
+                }
+                int oc = n->content.y;
+                layout(cc, n->content.x, n->content.y, inner_w, n->content.h,
+                       font_px, &oc);
+            }
+        }
 
         /* advance flow cursor for block flow (static/relative/sticky) */
         if (pkind == 0 || pkind == 3 || pkind == 4) {
@@ -2346,6 +2392,16 @@ struct Builder
                (c->is_text ||
                 (position_kind(get(c->style, "position")) == 0 &&
                  display_kind(get(c->style, "display")) == 2));
+    }
+
+    /* an inline member with an explicit height KEEPS it: the line box used
+     * to stretch every member to the line height, so a checkbox with
+     * `height: 20px` in a text line laid out 32px tall (the line-height
+     * won) and paint/hit-test disagreed about the control's box. */
+    bool has_explicit_height(const whaleui_layout_node_t* c)
+    {
+        std::string h = get(c->style, "height");
+        return !h.empty() && h != "auto";
     }
 
     /* estimated inline width of a line-flow node (text run or inline
@@ -2455,7 +2511,9 @@ struct Builder
                     x = n->content.x;
                     max_h = 0;
                     for (size_t mi = 0; mi < line_members.size(); ++mi) {
-                        line_members[mi]->border.h = max_h;
+                        if (!has_explicit_height(line_members[mi])) {
+                            line_members[mi]->border.h = max_h;
+                        }
                     }
                     line_members.clear();
                     /* wrapped line: also honor text-align */
@@ -2500,7 +2558,13 @@ struct Builder
                 c = c->next;
             }
             for (size_t mi = 0; mi < line_members.size(); ++mi) {
-                line_members[mi]->border.h = max_h;
+                whaleui_layout_node_t* m = line_members[mi];
+                if (has_explicit_height(m)) {
+                    /* keep the member's own box; the line is already at
+                     * least as tall as it (max_h took its height above) */
+                    continue;
+                }
+                m->border.h = max_h;
             }
             cursor = line_top + max_h;
         }
@@ -2523,12 +2587,20 @@ struct Builder
     void layout_flex(whaleui_layout_node_t* n, int inner_w, int inner_h,
                      int font_px, int& kid_cursor)
     {
-        /* collect visible children */
+        /* collect the IN-FLOW children: absolutely positioned ones are OUT
+         * OF FLOW (CSS: they do not participate in flex layout). Laying
+         * them out as items sized a button's state layer (::before with
+         * position:absolute;inset:0) to a fraction of the row - (49,2)
+         * inside a 97x42 button. The box pass places every out-of-flow
+         * child against the container's final padding box. */
         std::vector<whaleui_layout_node_t*> kids;
         whaleui_layout_node_t* c = n->first_child;
         while (c) {
             if (c->visible) {
-                kids.push_back(c);
+                int cpk = position_kind(get(c->style, "position"));
+                if (cpk != 1 && cpk != 2) {
+                    kids.push_back(c);
+                }
             }
             c = c->next;
         }
@@ -2615,12 +2687,18 @@ struct Builder
                 minc = static_cast<int>(
                     len_px(mn, static_cast<float>(inner_w), em));
             }
-            std::string ovf = get(k->style, "overflow");
-            if (ovf == "auto" || ovf == "scroll" || ovf == "hidden") {
-                /* overflow clips/scolls: the min-content floor drops to 0
-                 * (a flex:1 scroll pane must not be pushed by its content,
-                 * matching the spec's min-height:auto rule) */
-                if (mn.empty()) {
+            /* overflow clips/scolls: the min-content floor drops to 0
+             * (a flex:1 scroll pane must not be pushed by its content,
+             * matching the spec's min-height:auto rule). A text RUN is not
+             * a container - it carries its element's computed style (so it
+             * inherits overflow:hidden) but it is the content itself: the
+             * floor collapsed a run inside an overflow:hidden flex button
+             * to main size 1px and the painter wrapped it one character
+             * per line (32x19 -> 1x95). */
+            if (!k->is_text) {
+                std::string ovf = get(k->style, "overflow");
+                if ((ovf == "auto" || ovf == "scroll" || ovf == "hidden") &&
+                    mn.empty()) {
                     minc = 0;
                 }
             }
@@ -3082,7 +3160,9 @@ struct Builder
                          * width, not the content width, or a content-box
                          * item re-measures narrower (366 -> 330) and the
                          * flex share is lost */
-                        layout(k, k->border.x - k->margin[1], c1,
+                        /* undo the left margin the box pass added at
+                         * border.x (index 3 = left, as there) */
+                        layout(k, k->border.x - k->margin[3], c1,
                                k->border.w, content_h, font_px, &c1);
                         /* force the exact border height (int rounding) */
                         k->border.h = target_h;

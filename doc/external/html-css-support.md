@@ -19,18 +19,19 @@
 
 ### 1.2 标签支持(全部 tag 视为"带默认样式的 div")
 
-**UA 默认样式**(`src/style/theme.cpp` `base_css`,参照 WHATWG UA stylesheet)按 display 分组:
+**UA 默认样式**(`src/style/theme_css.cpp` `kWhaleuiUaCss`,参照 WHATWG UA stylesheet)按 display 分组:
 
 | display | 标签 |
 |---------|------|
 | `none`(不渲染) | `head style script title meta link base template noscript source track param area wbr dialog option` |
-| `block` | `div section article nav aside header footer main address p hr pre blockquote ol ul menu li dl dt dd figure figcaption table caption colgroup col thead tbody tfoot tr td th form fieldset details picture map iframe embed object video audio canvas` |
+| `block` | `div section article nav aside header footer main address p hr pre blockquote ol ul menu li dl dt dd figure figcaption caption colgroup col form fieldset details picture map iframe embed object video audio canvas` |
+| `table` 家族 | `table`(table) / `thead tbody tfoot`(table-row-group) / `tr`(table-row) / `td th`(table-cell) —— **引擎有真正的表格布局**(实测三个 `td` 横排等分) |
 | `inline` | `a em strong small s cite q dfn abbr data time code var samp kbd sub sup i b u mark ruby rt rp bdi bdo span label` |
 | `inline-block` | `img input button select textarea output progress meter datalist` |
 
 **排版默认值**:`h1`-`h6` 字号/字重、`strong/b` 加粗、`em/i`/`var/cite/dfn` 斜体、`small`/`sub/sup` 相对字号、`s` 删除线、`u` 下划线、`mark` 高亮底色、`code/kbd/samp/pre` 等宽字体、`blockquote` 左边框引用样式、`ul/ol/li/dl/dt/dd/figure/figcaption/hr/summary` 的 margin/缩进/padding。
 
-**通用 class 预设**:`.card .row .column .center .app .header .badge .hidden .muted .select-open`。
+**通用 class 预设**:`.card .row .column .center .app .header .toolbar .pane .sidebar .tabs .tab .badge .size-sm .size-lg .btn-primary .btn-secondary .btn-subtle .btn-outline .btn-danger .hidden .muted .small .disabled .anim-*`,以及 select 弹层的虚拟类 `.select-popup .select-option .select-option-hover .select-option-selected`。
 
 ### 1.3 标签特殊行为(C++ 层实现,非纯 CSS)
 
@@ -44,7 +45,7 @@
 | `progress` / `meter` | 轨道+填充绘制;meter 不区分 low/optimum/high 色区间 |
 | `img` | 本地图片解码 + 固有尺寸;`object-fit: cover/contain/fill`;远程/缺失显示占位框 |
 | `br` | 文本换行;`hr` 分隔线 |
-| `table/tr/td/th` | 仅按 block 垂直堆叠,**无表格布局**(`display:table` 未实现) |
+| `table/tr/td/th` | 有**真正的表格布局**(`display:table`/`table-row`/`table-cell` 均生效);引擎需要 UA 给出这些 display,否则会按 block 堆叠 |
 
 `tag_id` 组件(ECS 第一步,`src/layout/layout.cpp` `tag_id_of`):每个元素在布局期算一次 `WUI_TAG_*` 整数类别,绘制/命中热路径用 O(1) 比较替代字符串比较。
 
@@ -166,7 +167,9 @@ position:sticky 容器底部钳制
 
 ### 2.6 主题
 
-7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效;`whaleui_app_set_theme_style` 或页面 `<select>` 热切换;默认跟随系统深浅色。
+7 套主题样式(Fluent / Metro / Material / Aero / GTK / macOS / Browser-Simple),各含深浅色变量与整套控件外观,全局生效;`whaleui_app_set_theme_style` 或页面 `<select>` 热切换;默认跟随系统深浅色。主题色由 `whaleui_app_set_accent` 覆盖各主题的默认 `--accent`(留空则用主题自带值)。
+
+样式分三处存放:`src/style/theme_css.cpp`(UA 基线 + 组件类 + 各主题结构覆盖)、`src/style/theme_colors.cpp`(深浅色调色板)、`src/style/theme.cpp`(字号/圆角/控件尺寸表 + 组装 + C API)。样式表只使用引擎真正渲染的写法,依赖未实现特性的写法一律改用等效写法,清单见 `../internal/10-theme-gaps.md`。
 
 ---
 

@@ -427,7 +427,18 @@ int main(void)
         assert(whaleui_transform_eval("scale(1.09) translate(1.5%, -1%)", 100, 50, &t) == 0);
         assert(t.sx > 1.08f && t.sx < 1.10f && t.tx > 1.4f && t.tx < 1.6f);
         assert(t.ty > -0.6f && t.ty < -0.4f);
-        assert(whaleui_transform_eval("rotate(45deg)", 100, 50, &t) != 0);
+        /* rotate is parsed now (op=4) instead of failing the whole value:
+         * the angle comes back in degrees, deg/rad/turn all resolve, and a
+         * rotate inside a chain no longer drops the other functions. The
+         * painter still draws the box unrotated (see
+         * doc/internal/16-engine-support.md). */
+        assert(whaleui_transform_eval("rotate(45deg)", 100, 50, &t) == 0);
+        assert(t.rot == 45.0f);
+        assert(whaleui_transform_eval("rotate(0.5turn)", 100, 50, &t) == 0);
+        assert(t.rot == 180.0f);
+        assert(whaleui_transform_eval("translateY(16px) rotate(90deg)", 100,
+                                      50, &t) == 0);
+        assert(t.ty == 16.0f && t.rot == 90.0f);
     }
     /* paint-only vs layout animation classification (tick fast path) */
     {

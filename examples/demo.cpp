@@ -53,7 +53,6 @@ static const char* kHtml =
     "<option value=\"fluent\">Fluent (Win11)</option>"
     "<option value=\"metro\">Metro (Win8)</option>"
     "<option value=\"material\">Material Design</option>"
-    "<option value=\"classic\">Windows Classic</option>"
     "<option value=\"aero\">Windows 7 Aero</option>"
     "<option value=\"gtk\">GTK (Adwaita)</option>"
     "<option value=\"macos\">macOS</option>"

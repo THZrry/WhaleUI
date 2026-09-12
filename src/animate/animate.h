@@ -91,12 +91,14 @@ void whaleui_anim_apply_ov(const whaleui_anim_t* a, struct lxb_dom_element* el,
 /* Milliseconds clock (SDL_GetTicks). */
 uint64_t whaleui_anim_now(void);
 
-/* Evaluated transform: translation in pixels + uniform/axis scale.
- * scale applies around the element's center (default transform-origin). */
+/* Evaluated transform: translation in pixels + uniform/axis scale + a
+ * clockwise rotation in degrees. scale/rot apply around the element's
+ * center (default transform-origin). */
 struct whaleui_transform
 {
     float tx, ty; /* translate result, px */
     float sx, sy; /* scale result */
+    float rot;    /* rotate result, degrees (0 = none) */
 };
 typedef struct whaleui_transform whaleui_transform_t;
 

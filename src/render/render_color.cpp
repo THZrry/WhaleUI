@@ -119,7 +119,7 @@ int parse_gradient(const std::string& v, Gradient& out)
     if (parts.empty()) {
         return 0;
     }
-    size_t first = 0;
+    size_t first = 1;
     if (!lin) {
         /* radial first part: "1100px 560px at 72% -12%" / "circle 200px" */
         const std::string& head = parts[0];
@@ -147,7 +147,6 @@ int parse_gradient(const std::string& v, Gradient& out)
                 out.rx = out.ry = static_cast<float>(std::atof(c));
             }
         }
-        first = 1;
     } else {
         /* linear first part: "90deg" / "to right" */
         const std::string& head = parts[0];
@@ -160,7 +159,16 @@ int parse_gradient(const std::string& v, Gradient& out)
         } else if (head == "to top") {
             out.angle_deg = 0.0f;
         } /* "to bottom" = default 180 */
-        first = 1;
+    }
+    /* a first part that parses as a colour is ALREADY a colour stop
+     * ("linear-gradient(#f00, #00f)", "radial-gradient(#f00, #00f)"):
+     * only a direction / size / position header is skipped. Skipping
+     * parts[0] unconditionally left a single-stop gradient that painted
+     * nothing at all - which read as "background-size is ignored" because
+     * the probe that carried it was also a dir-less gradient. */
+    unsigned int probe = 0;
+    if (whaleui_render_parse_color(parts[0].c_str(), &probe) == 0) {
+        first = 0;
     }
     /* stops: "color pos" / "color" */
     std::vector<size_t> auto_pos;
@@ -462,7 +470,7 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
     if (std::strncmp(s, "rgba(", 5) == 0 || std::strncmp(s, "rgb(", 4) == 0) {
         int rr = 0, gg = 0, bb = 0;
         float faf = -1.0f;
-        if (std::sscanf(s, "rgba(%d,%d,%d,%f)", &rr, &gg, &bb, &faf) >= 4) {
+        if (std::sscanf(s, "rgba( %d , %d , %d , %f )", &rr, &gg, &bb, &faf) >= 4) {
             unsigned int r = rr < 0 ? 0 : static_cast<unsigned>(rr);
             unsigned int g = gg < 0 ? 0 : static_cast<unsigned>(gg);
             unsigned int b = bb < 0 ? 0 : static_cast<unsigned>(bb);
@@ -477,7 +485,7 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
             *out = (a << 24) | (r << 16) | (g << 8) | b;
             return 0;
         }
-        if (std::sscanf(s, "rgb(%d,%d,%d)", &rr, &gg, &bb) >= 3) {
+        if (std::sscanf(s, "rgb( %d , %d , %d )", &rr, &gg, &bb) >= 3) {
             unsigned int r = rr < 0 ? 0 : static_cast<unsigned>(rr);
             unsigned int g = gg < 0 ? 0 : static_cast<unsigned>(gg);
             unsigned int b = bb < 0 ? 0 : static_cast<unsigned>(bb);
@@ -488,6 +496,70 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
             return 0;
         }
         return -4;
+    }
+    if (std::strncmp(s, "hsl(", 4) == 0 || std::strncmp(s, "hsla(", 5) == 0) {
+        /* hsl()/hsla(): H in degrees (deg/grad/rad/turn accepted), S/L in %.
+         * 80%-bucket function that pages reach for constantly; without it
+         * the declaration fell through to "not a colour" and painted the
+         * default. */
+        float h = 0, sat = 0, li = 0, faf = -1.0f;
+        int n = 0;
+        /* the format spaces make sscanf tolerate "hsl(210, 50%, 40%)" as
+         * well as the compact form */
+        if (std::strncmp(s, "hsla(", 5) == 0) {
+            n = std::sscanf(s, "hsla( %f , %f %% , %f %% , %f )", &h, &sat, &li,
+                            &faf);
+        } else {
+            n = std::sscanf(s, "hsl( %f , %f %% , %f %% )", &h, &sat, &li);
+            if (n == 3) {
+                faf = 1.0f;
+            }
+        }
+        if (n >= 3) {
+            /* H unit: deg (default) / grad / rad / turn - checked in that
+             * order because "grad" contains "rad" */
+            if (std::strstr(s, "turn")) {
+                h *= 360.0f;
+            } else if (std::strstr(s, "grad")) {
+                h = h * 0.9f;
+            } else if (std::strstr(s, "rad")) {
+                h = h * 180.0f / 3.14159265f;
+            }
+            h = std::fmod(h, 360.0f);
+            if (h < 0) {
+                h += 360.0f;
+            }
+            if (sat < 0) { sat = 0; }
+            if (sat > 100) { sat = 100; }
+            if (li < 0) { li = 0; }
+            if (li > 100) { li = 100; }
+            const float sf = sat / 100.0f, lf = li / 100.0f;
+            const float c = (1.0f - std::fabs(2.0f * lf - 1.0f)) * sf;
+            const float hp = h / 60.0f;
+            const float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+            float r = 0, g = 0, b = 0;
+            if (hp < 1) { r = c; g = x; }
+            else if (hp < 2) { r = x; g = c; }
+            else if (hp < 3) { g = c; b = x; }
+            else if (hp < 4) { g = x; b = c; }
+            else if (hp < 5) { r = x; b = c; }
+            else { r = c; b = x; }
+            const float m = lf - c / 2.0f;
+            unsigned int rr = static_cast<unsigned>((r + m) * 255.0f + 0.5f);
+            unsigned int gg = static_cast<unsigned>((g + m) * 255.0f + 0.5f);
+            unsigned int bb = static_cast<unsigned>((b + m) * 255.0f + 0.5f);
+            if (faf < 0) { faf = 1.0f; }
+            unsigned int a = faf <= 1.0f
+                                 ? static_cast<unsigned>(faf * 255.0f + 0.5f)
+                                 : static_cast<unsigned>(faf);
+            if (rr > 255) { rr = 255; }
+            if (gg > 255) { gg = 255; }
+            if (bb > 255) { bb = 255; }
+            if (a > 255) { a = 255; }
+            *out = (a << 24) | (rr << 16) | (gg << 8) | bb;
+            return 0;
+        }
+        return -5;
     }
     for (const NamedColor& nc : k_named) {
         if (std::strcmp(s, nc.name) == 0) {
@@ -537,4 +609,55 @@ unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def)
         p = s;
     }
     return def;
+}
+
+/* Color of ONE border side (0=top 1=right 2=bottom 3=left). Resolution
+ * order matches CSS: the border-<side>-color longhand, then the
+ * "border-color" TRBL shorthand (1 value = all, 2 = tb/lr, 3 = t/lr/b,
+ * 4 = t/r/b/l), then the color inside the "border" shorthand. Themes
+ * (aero's bevel inputs, photon's buttons) set four different sides and
+ * the single-color path flattened them to one. */
+unsigned int border_side_color(const WhaleUIComputedStyle& s, int side,
+                               unsigned int def)
+{
+    static const char* kSide[4] = {"border-top-color", "border-right-color",
+                                   "border-bottom-color", "border-left-color"};
+    unsigned int c = 0;
+    std::string lh = sget(s, kSide[side]);
+    if (!lh.empty() && whaleui_render_parse_color(lh.c_str(), &c) == 0) {
+        return c;
+    }
+    std::string v = sget(s, "border-color");
+    if (!v.empty()) {
+        std::vector<std::string> tok;
+        const char* p = v.c_str();
+        while (*p) {
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (!*p) {
+                break;
+            }
+            const char* b = p;
+            while (*p && *p != ' ' && *p != '\t') {
+                ++p;
+            }
+            tok.emplace_back(b, static_cast<size_t>(p - b));
+        }
+        size_t n = tok.size();
+        const std::string* pick = nullptr;
+        if (n == 1) {
+            pick = &tok[0];
+        } else if (n == 2) {
+            pick = &tok[side == 1 || side == 3 ? 1 : 0];
+        } else if (n == 3) {
+            pick = &tok[side == 0 ? 0 : (side == 2 ? 2 : 1)];
+        } else if (n >= 4) {
+            pick = &tok[static_cast<size_t>(side)];
+        }
+        if (pick && whaleui_render_parse_color(pick->c_str(), &c) == 0) {
+            return c;
+        }
+    }
+    return border_color_of(s, def);
 }
