@@ -22,3 +22,15 @@ doc/internal/16-engine-support.md,修复前数据留在 temp/engine-gaps.md
 `backdrop-filter` 仅 GPU 路径;`conic/repeating-gradient`、`hwb/oklab/color-mix`、
 `attr()/counter()`、`::first-line`、`:has()`、容器查询、`filter`/混合模式未实现 ——
 见 doc/internal/16-engine-support.md 与 notes/current.md
+<6>(SOLVED): hover 让页面上下跳 / flex 盒子悄悄变长 20px —— 两个根因, 都已修:
+(1) state relayout 段与 DOM-dirty 增量重排段跑在全量布局分支的文本度量上下文
+(`g_metric_render`)之外, 真实字宽 251px 被算成 0.6em 估计值 231px, flex 的
+min-content 跟着变小 -> h1 的可用宽被压到 231 -> 换行 -> header 变高 33px、整页下移;
+(2) 重排前的布局键 diff 拿"重新 cascade 的 display"(`inline`)与"节点的归一值"
+(`inline-block`, layout.cpp 给 contenteditable/select 做的归一)比对, 于是**每次
+hover 都误判为布局变化**, 白跑一次全树盒 pass —— 把 (1) 放大成"hover 必跳"。
+修法: 两条重排段各自在段首设 `g_metric_render = r`、段末清空(各段自洽不依赖全局
+顺序); display 按布局类别等值比较(`same_layout_display` / `layout_key_differs`),
+两条路径共用。复现/验证: `temp/probe_hover.cpp`(整树 xy/wh diff), 修复后 hover 段
+只剩进度条动画、`scroll_max` 全程不变; 机制、探针用法、回归测试的覆盖边界见
+doc/internal/17-interaction-state.md

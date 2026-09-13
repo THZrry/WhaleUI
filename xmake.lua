@@ -199,6 +199,34 @@ target("demo")
     end)
 target_end()
 
+-- ======================= hover 布局 diff 探针（临时） ======================
+-- 与 render_shot 同样只在 temp/probe_hover.cpp 存在时定义。
+--   Build:  xmake b -y probe_hover
+--   Run:    probe_hover [uri] [theme]
+if os.isfile("temp/probe_hover.cpp") then
+    target("probe_hover")
+        set_kind("binary")
+        if is_mode("release") then
+            set_strip("all")
+        end
+        add_files("temp/probe_hover.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
 -- ======================= temp verification target (optional) ==============
 -- Offscreen renderer + colour probes used to verify the theme stylesheets
 -- against the reference screenshots: it renders a page to a PPM without a GPU

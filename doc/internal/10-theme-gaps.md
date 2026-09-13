@@ -112,4 +112,4 @@
 - [x] ~~引擎修好 `flex-rel` / `overflow-clip` / 四边 border / `outline` /
       多阴影 / 伪元素百分比尺寸之后，重新渲染并删掉 material/aero 的
       `inline-block` workaround~~ —— 已完成，见 `16-engine-support.md`；
-      7 主题 × 深浅 15 张离屏自检全部通过。
+      7 主题 × 深浅 14 张离屏自检全部通过。

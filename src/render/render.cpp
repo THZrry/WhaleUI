@@ -70,6 +70,47 @@ static const char* const kLayoutKeys[] = {
     "vertical-align", "word-break",
 };
 
+/* Same box KIND for layout, even when the strings differ. layout.cpp's build
+ * pass normalizes several inline boxes to inline-block (a <select> gets
+ * inline-block, a contenteditable span gets `width:12em; display:inline-
+ * block`), while a re-cascade returns the stylesheet's original value. The
+ * state/DOM relayout diff compares the new cascade against the NODE's style,
+ * so "inline-block" vs "inline" read as a layout change on EVERY hover: the
+ * element was pushed to the full relayout + whole-tree box pass each time
+ * (slow, and it re-measured every run on the page). layout.cpp display_kind()
+ * maps each pair below to one kind - compare on that. */
+static bool same_layout_display(const std::string& a, const std::string& b)
+{
+    if (a == b) {
+        return true;
+    }
+    struct Pair { const char* x; const char* y; };
+    static const Pair kSame[] = {
+        {"inline", "inline-block"},
+        {"flex", "inline-flex"},
+        {"grid", "inline-grid"},
+        {"table", "inline-table"},
+    };
+    for (size_t i = 0; i < sizeof(kSame) / sizeof(kSame[0]); ++i) {
+        if ((a == kSame[i].x && b == kSame[i].y) ||
+            (a == kSame[i].y && b == kSame[i].x)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* one layout-key comparison shared by both relayout diffs */
+static bool layout_key_differs(const char* k, const std::string& old_v,
+                               const std::string& new_v)
+{
+    if (std::strcmp(k, "display") == 0 &&
+        same_layout_display(old_v, new_v)) {
+        return false;
+    }
+    return old_v != new_v;
+}
+
 
 #ifdef WHALEUI_BUILD_FULL
 /* real text width for the layout pass: measure with the actual TTF font
@@ -3724,6 +3765,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * focus vs pressed below), the relayout/repaint decision is shared. */
     if (r->state_pending) {
         r->state_pending = 0;
+#ifdef WHALEUI_BUILD_FULL
+        /* the state relayout below rebuilds subtrees, and when a :hover rule
+         * touches a layout key it re-runs the whole-tree box pass. Both
+         * measure text through render_text_metric, which needs
+         * g_metric_render; that pointer is only set around the full-layout
+         * path further down (and cleared after it), so this branch measured
+         * with the 0.6em ESTIMATE: hovering an element re-wrapped an h1 from
+         * its real 251px to an estimated 231px, changed the flex line and
+         * shifted the whole page ("hover moves everything / the flex box grew
+         * 20px"). */
+        g_metric_render = r;
+#endif
         if (r->has_interact_rules && r->rule_count > 0 && r->tree) {
             std::map<std::string, std::string> vars2 = r->theme_vars;
             if (!r->tree->vars_collected && r->tree->root) {
@@ -3785,7 +3838,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     if (it == ns.end()) {
                         continue;
                     }
-                    if (sget(node->style, k) != it->second) {
+                    if (layout_key_differs(k, sget(node->style, k),
+                                           it->second)) {
                         layout_changed = true;
                         break;
                     }
@@ -3860,6 +3914,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             }
         }
+#ifdef WHALEUI_BUILD_FULL
+        g_metric_render = nullptr; /* state layout done; paint re-rasterizes */
+#endif
     }
 
     /* async first layout (opt-in): no tree yet -> build on a worker so a
@@ -4301,6 +4358,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     bool dom_geom_changed = false;
     std::vector<lxb_dom_element*> dom_repaint;
     if (!need_layout && !dom_dirty.empty()) {
+#ifdef WHALEUI_BUILD_FULL
+        /* the incremental relayouts in this branch (append_rows /
+         * relayout_style / relayout) rebuild subtrees and run box passes:
+         * without the metric context they measured text with the 0.6em
+         * estimate and re-wrapped runs (real 251px -> estimated 231px), which
+         * is what shifted the layout on a hover or a click. The matching
+         * clear sits at the end of this branch. */
+        g_metric_render = r;
+#endif
         /* DOM mutated. Invalidate ONLY the mutated elements' cached
          * computed styles: untouched branches keep theirs (the cascade for
          * them is unchanged). The vars collection also stays - re-run only
@@ -4391,7 +4457,8 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (it == ns.end()) {
                     continue; /* inherited-only key: not set by the edit */
                 }
-                if (sget(node->style, k) != it->second) {
+                if (layout_key_differs(k, sget(node->style, k),
+                                       it->second)) {
                     lay_changed = true;
                     break;
                 }

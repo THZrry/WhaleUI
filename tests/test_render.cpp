@@ -110,6 +110,100 @@ int main(void)
     }
     assert(win->render != nullptr);
 
+    /* --- interaction state must not move the layout ---------------------
+     * A :hover change re-cascades the element and diffs the layout keys.
+     * Two separate bugs both re-ran the whole-tree box pass on a plain hover
+     * (the demo slid the page whenever the contenteditable was hovered):
+     *   1. that pass measured text without the render frame's metric context
+     *      and fell back to the 0.6em estimate (real 251px -> estimated
+     *      231px), re-wrapping runs and shifting everything below;
+     *   2. the diff compared the re-cascaded `display` against the node's,
+     *      which layout.cpp normalizes to inline-block for a contenteditable
+     *      span - so "inline" vs "inline-block" read as a layout change on
+     *      every single hover.
+     * The invariant: a hover that changes no layout-affecting property leaves
+     * every node's box exactly where it was.
+     * (deeper per-node repro: temp/probe_hover.cpp) */
+    {
+        whaleui_window_t* hw =
+            whaleui_window_create(app, "hover-layout", 400, 300);
+        assert(hw != nullptr);
+        const char* hhtml =
+            "<html><head><style>"
+            "body{margin:0;padding:0}"
+            ".header{display:flex;align-items:center;"
+            "justify-content:space-between;gap:16px}"
+            "h1{font-size:32px;margin:0.8em 0 0.4em}"
+            "#card{padding:8px}"
+            "/* paint-only: a LAYOUT key here would legitimately reflow */"
+            "#ce:hover{background-color:#eeeeee}"
+            "</style></head><body>"
+            "<div class=\"header\"><h1 id=\"head\">WhaleUI Demo</h1>"
+            "<span>x</span></div>"
+            "<div id=\"card\"><span id=\"ce\" contenteditable=\"true\" "
+            "style=\"border:1px solid #cccccc;padding:5px 10px\">"
+            "contenteditable</span></div>"
+            "</body></html>";
+        assert(whaleui_window_load_html(hw, hhtml) == 0);
+        if (whaleui_window_show(hw) == 0 && hw->render != nullptr) {
+            for (int i = 0; i < 6; ++i) {
+                assert(whaleui_render_frame(hw->render, hw->document) == 0);
+            }
+            lxb_dom_element* ce_el = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(hw->document, "ce"));
+            assert(ce_el != nullptr);
+            std::unordered_map<lxb_dom_element*,
+                               whaleui_layout_node_t*>::const_iterator it =
+                hw->render->tree->by_el.find(ce_el);
+            assert(it != hw->render->tree->by_el.end());
+
+            /* snapshot every node's box (pre-order walk) */
+            std::vector<int> before;
+            std::function<void(whaleui_layout_node_t*)> walk =
+                [&](whaleui_layout_node_t* nd) {
+                    if (!nd) {
+                        return;
+                    }
+                    before.push_back(nd->border.x);
+                    before.push_back(nd->border.y);
+                    before.push_back(nd->border.w);
+                    before.push_back(nd->border.h);
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        walk(c);
+                    }
+                };
+            walk(hw->render->tree->root);
+
+            whaleui_render_set_hover(hw->render, it->second->border.x + 5,
+                                     it->second->border.y + 5);
+            for (int i = 0; i < 6; ++i) {
+                assert(whaleui_render_frame(hw->render, hw->document) == 0);
+            }
+
+            size_t idx = 0;
+            std::function<void(whaleui_layout_node_t*)> check =
+                [&](whaleui_layout_node_t* nd) {
+                    if (!nd) {
+                        return;
+                    }
+                    assert(idx + 3 < before.size());
+                    assert(nd->border.x == before[idx + 0]);
+                    assert(nd->border.y == before[idx + 1]);
+                    assert(nd->border.w == before[idx + 2]);
+                    assert(nd->border.h == before[idx + 3]);
+                    idx += 4;
+                    for (whaleui_layout_node_t* c = nd->first_child; c;
+                         c = c->next) {
+                        check(c);
+                    }
+                };
+            check(hw->render->tree->root);
+            assert(idx == before.size());
+        }
+        whaleui_window_destroy(hw);
+    }
+
 #if 0 /* historical regression tests - disabled for fast scroll iteration;
        * see test_scroll.cpp for the focused checks */
     /* one frame */
