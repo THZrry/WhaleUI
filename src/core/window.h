@@ -64,6 +64,17 @@ struct whaleui_window
     int watch_seq_last = 0;
     int resize_h;
     unsigned long long resize_last; /* last time resize was actually applied */
+
+    /* coalesced mouse motion: a fast mouse produces dozens of MOTION events
+     * per frame, and each one used to run whaleui_render_set_hover - a
+     * whole-tree hit_test plus an SDL_SetCursor system call. On a large page
+     * the queue drained slower than the mouse moved, so :hover only caught
+     * up ~1s later (and often looked like it reacted when the pointer had
+     * already left). The event now only records the newest position; the
+     * worker runs the hit-test ONCE per frame with it. */
+    int mouse_pending;
+    float mouse_x;
+    float mouse_y;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

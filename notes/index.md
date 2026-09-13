@@ -34,3 +34,17 @@ hover 都误判为布局变化**, 白跑一次全树盒 pass —— 把 (1) 放�
 两条路径共用。复现/验证: `temp/probe_hover.cpp`(整树 xy/wh diff), 修复后 hover 段
 只剩进度条动画、`scroll_max` 全程不变; 机制、探针用法、回归测试的覆盖边界见
 doc/internal/17-interaction-state.md
+<7>(SOLVED): 超长文本闪退 + hover 延迟 ~1s ——
+(1) 22 万字符单 text node 段错误: `draw_text_at` 里 (a) miss 路径的 raster buffer
+是块内局部变量, `src = &buf` 出了块就悬垂(每个未缓存 run 都在读已释放内存);
+(b) 单条 raster 远超 16MB 缓存预算时, 逐出循环在"map 里只有这一条"的情况下把它
+自己 erase 掉, 紧接着 `src = &e.px` 读已释放内存。修: buf 提到函数作用域 +
+单条超预算不入缓存 + 逐出跳过正在交付的 key。
+(2) 同一页面的 raster 从"整个 run"改成"只光栅化可见行"(可见行区间 + 1 行 slack,
+blit 起点偏移 ty_shift; 部分光栅依赖滚动位置故不进缓存): 9.2s+崩溃 -> 3.4s 正常。
+(3) hover 延迟: `SDL_EVENT_MOUSE_MOTION` **每个事件**都做一次全树 hit_test +
+SDL_SetCursor, 快速移动时一帧几十个事件 -> hover 滞后约 1s("移开才反应")。修:
+motion 只记录最新位置, worker 每次唤醒做一次命中测试(window.h 的 mouse_pending)。
+注意"帧慢"是被排除的(1/2/5 帧总耗时恒定 ~2.9s = 进程启动开销)。
+未做: 布局仍是 O(文本长度)(3.4s 的大头); 异步首帧布局默认关; 分块/断点机制;
+滚轮与触控板手感差异。见 doc/internal/18-long-text-and-input.md

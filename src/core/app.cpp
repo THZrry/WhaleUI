@@ -262,11 +262,14 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         break;
     }
     case SDL_EVENT_MOUSE_MOTION:
+        /* coalesced: record the newest position only (window.h has the
+         * rationale) - the render worker runs the hit-test once per frame
+         * instead of once per event */
         for (whaleui_window_t* win : app->windows) {
             if (win->render && SDL_GetWindowID(win->sdl) == e.motion.windowID) {
-                whaleui_render_set_hover(win->render,
-                                         static_cast<int>(e.motion.x),
-                                         static_cast<int>(e.motion.y));
+                win->mouse_x = e.motion.x;
+                win->mouse_y = e.motion.y;
+                win->mouse_pending = 1;
                 break;
             }
         }
@@ -511,9 +514,22 @@ void render_worker_fn(whaleui_app_t* app)
         /* fold event-watch resize slots (written lock-free from inside the
          * OS modal drag loop) into the coalesced resize state */
         fold_resize_watch(app);
+        /* apply the newest mouse position ONCE per wake-up (the motion events
+         * above only recorded it): one whole-tree hit-test + one cursor
+         * update per frame instead of per event. */
+        bool hover_dirty = false;
+        for (whaleui_window_t* win : app->windows) {
+            if (win->render && win->mouse_pending) {
+                win->mouse_pending = 0;
+                hover_dirty = true;
+                whaleui_render_set_hover(win->render,
+                                         static_cast<int>(win->mouse_x),
+                                         static_cast<int>(win->mouse_y));
+            }
+        }
         Uint64 now = SDL_GetTicks();
         bool want = !evs.empty() || app->frame_request.load() ||
-                    app->frames_alive.load();
+                    app->frames_alive.load() || hover_dirty;
         if (apply_resizes(app, now)) {
             want = true;
         }

@@ -1289,6 +1289,12 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
      * 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鐗堟緲缁狀喗鎱ㄥΟ鍨厫闁绘挸鍊婚埀顒€绠嶉崕閬嶅箯鐎ｎ€絾绻濆顓炰化婵炴挻鑹鹃敃锔惧閸ф鐓?闂傚倷鑳堕崑銊╁磿閺屻儱钃熼柨鐔哄Т閻?闂傚倷绀侀幉锟犲蓟閿濆绀夐幖娣妼閺嬩線鏌涢幘妤€瀚▓浼存偡濠婂啰效妞ゃ垺宀搁、娆愬緞鐟欏嫬绗╃紒鐘崇⊕閹棃濡搁妷锔炬澓 run 闂傚倸鍊烽悞锕併亹閸愵亞鐭撻柣銏㈩焾閽冪喎鈹戦悩鍙夋悙缂佺姵濞婇弻鐔兼倻濡崵鍙嗗銈忕到閵堟悂寮婚敓鐘茬倞闁宠桨妞掓竟鏇炩攽?42ms 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸撶喐淇婇悽绋跨倞闁靛鍎崇粣鐐测攽閻戝洨绉甸柛蹇旓耿瀹?
      * 闂傚倷绀侀幉锛勭矙閹烘鍨傛繝闈涱儐閸ゅ牓鏌熸潏楣冩闁稿骸閰ｉ幃妤€鈽夊▍顓т簼瀵板嫬顓兼径瀣幗濡炪値鍋掗崜娆愪繆鐠恒劎纾奸柟鎻掝儏椤╊剟鏌嶈閸撴氨绮欓幒妞烩偓锕傚炊瑜夐弸鏃堟煙鐎电浠﹀┑顖氼嚟閳ь剙绠嶉崕閬嶅箠韫囨洜鐭夐柛顐ｇ妇濡插牓鏌熼悙顒€鈻曟い搴㈩殜閺岋繝宕熼鈶╁亾婵犳艾鐒?闂備礁鎼ˇ顐﹀疾濠靛纾绘繛鎴欏灪閸嬨倗鎲告惔銊ョ闁告稒娼欑粻濠氭煛婢跺鐏嶉柛娆愭そ閹鈻撻崹顔界亐闂?闂備浇宕甸崑鐐电矙閹达附鍎楅柛宀€鍋為崑鐔搞亜閺冣偓缁佸綊宕烽娑樹壕闁挎繂楠搁弸娑欑箾閸涱偄鈧繂顫忓ú顏嶆晩閻忓繑鐗曟禍楣冩煟閺傛寧鎯堥柛鏃€绮撻弻鈩冨緞閸℃ɑ鐝斿┑鐐茬湴閸ㄤ粙宕洪埀?*/
     std::vector<unsigned int>* src = nullptr;
+    /* the miss-path raster lives HERE, not inside the cache-miss block: the
+     * block-scoped version left `src = &buf` dangling the moment the block
+     * ended (every uncached run painted from freed memory) */
+    std::vector<unsigned int> buf;
+    int th_buf = 0;   /* raster height (visible rows only) */
+    int ty_shift = 0; /* y offset of the first rastered row inside the run */
     int tw = 0, th = 0;
     int tx = bx, ty = by; /* paint origin (align/center applied below) */
     std::string ckey_str; /* cache key to write on miss ("" = no caching) */
@@ -1390,10 +1396,49 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         /* 闂傚倸鍊风欢锟犲磻閸涙潙绀夐柡鍥ュ灪閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存⒔閸ヮ兙鈧懘顢曢敂鐣屽幐?闂傚倷绀侀幗婊堝磿閹版澘鍨傛い鏍ㄧ矌閸楁岸鏌℃径瀣劸闁搞倖顨嗛妵鍕疀閹炬惌妫炵紓?:闂備浇顕х€涒晝绮欓幒妞尖偓鍐川鐎涙ê娈濋梺缁橆殔閻楀﹥鍒婄€电硶鍋撻獮鍨姎闁瑰啿绻掔划?RGBA,闂佽娴烽幊鎾诲箟闄囬妵鎰板礃椤旇偐鐣鹃梺鍓插亖閸庤京绮堥崼鈶╁亾楠炲灝鍔氭俊顐ｇ懇閹敻顢涢悙瀵稿幘闂佽崵鍠愬妯肩棯瑜旈弻娑㈠Ω閿濆懎顫呴梺闈涙处閸旀瑩宕洪敓鐘茬妞ゆ劦鍋呴ˉ?emoji
          * 闂傚倷鑳堕崢褔銆冩惔銏㈩洸闁挎繂顦伴ˉ濠囨煃閸濆嫬浜扮紒鎲嬬稻缁绘繃绻濋崒娑辨濡?src-over 闂傚倷绀侀幉锛勬暜閻愬瓨娅犳俊銈呮噹閸戠娀鏌涢幇闈涙灈閻庢艾顦伴妵鍕箳閹存績鍋撶紒妯虹窞闁告洦鍨遍悡鏇㈡煙闁箑澧版繝鈧幘顔界厓鐟滄粓宕楀☉銏☆棃闁绘牗浜?闂傚倷绀侀幖顐﹀疮閻楀牊鍙忛柟缁㈠枛缁犳牠骞栧ǎ顒€濡肩紒鐙呯秮閺岀喖鏌囬敃鈧弸銈夋煟閹炬潙濮囬棁?闂傚倷绀侀幖顐﹀箯鐎ｎ喖闂柨婵嗩槸閻掑灚銇勯幒宥嗙グ濠㈣锕㈤弻锝夊煀濞嗗繑顥撳ù婊冪秺閺屾洝绠涢弴鐐愩垻绱掗埀顒佹媴閾忓湱锛?
          * 1px 闂傚倷绀侀幉锟犲礉閺囩姷鐭撻柛顐ｆ礀閺嬩線鏌ｉ幇闈涘闁崇粯妫冮弻宥堫檨闁告挻鐟╅崺?fake bold);full 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸ｏ綁骞嗗畝鍕唨闁靛绠戦鎾绘⒑鐟欏嫬绀冮柛鈺傜墵瀵?FreeType 闂傚倷绶氬鑽ゆ嫻閻旂厧绀夌€光偓閸曨剙浠遍悷婊勫灴婵＄敻骞囬弶娆炬綂闂佺粯锚瀵爼寮抽妷鈺傜厽閹艰揪绲鹃崵鈧梺鍝勭墱閸撶喎鐣烽悷閭︽僵閻犺桨缍?*/
-        std::vector<unsigned int> buf(static_cast<size_t>(tw) * th, 0);
-        for (size_t li = 0; li < L.lines.size(); ++li) {
+        /* Raster only the rows that can reach the screen. One text run can
+         * hold an entire pasted transcript (tens of thousands of lines):
+         * rasterizing all of it allocates a tw*th buffer AND runs a per-glyph
+         * TTF pass over every line - the memory blow-up and the crash on such
+         * pages. The blit below already skips rows outside the framebuffer,
+         * so nothing outside this range can ever be sampled. */
+        const int fh_paint = g_gpu ? r->fb_h : r->height;
+        size_t first_line = 0;
+        size_t last_line = L.lines.size();
+        if (lh > 0 && !L.lines.empty()) {
+            if (ty < 0) {
+                first_line = static_cast<size_t>((-ty) / lh);
+            }
+            if (ty + th > fh_paint) {
+                int vis = (fh_paint - ty + lh - 1) / lh;
+                if (vis < 0) {
+                    vis = 0;
+                }
+                last_line = static_cast<size_t>(vis);
+            }
+            if (first_line > L.lines.size()) {
+                first_line = L.lines.size();
+            }
+            if (last_line > L.lines.size()) {
+                last_line = L.lines.size();
+            }
+            if (last_line < first_line) {
+                last_line = first_line;
+            }
+        }
+        /* a partial raster depends on the scroll position: it must NOT go
+         * into the (position-blind) cache */
+        if (first_line != 0 || last_line != L.lines.size()) {
+            ckey_str.clear();
+        }
+        ty_shift = static_cast<int>(first_line) * lh;
+        /* + one line of slack: a glyph's ink starts above the line box */
+        th_buf = static_cast<int>((last_line - first_line) * lh) + lh;
+        buf.assign(static_cast<size_t>(tw) * th_buf, 0);
+        for (size_t li = first_line; li < last_line; ++li) {
             const TextLayoutLine& ln = L.lines[li];
-            const int baseline = static_cast<int>(li * lh) + baseline_off;
+            const int baseline = static_cast<int>((li - first_line) * lh) +
+                                 baseline_off;
             int px = 0;
             for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
                 GlyphImg g = {};
@@ -1504,21 +1549,38 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * the total raster bytes and evict the least-recently-used entries
          * so it cannot grow unbounded. */
         const size_t kMaxBytes = 16 * 1024 * 1024; /* 16MB */
-        while (r->tc_bytes > kMaxBytes) {
-            auto victim = r->text_cache.begin();
-            for (auto it = r->text_cache.begin(); it != r->text_cache.end();
-                 ++it) {
-                if (it->second.last_use < victim->second.last_use) {
-                    victim = it;
+        const size_t e_bytes = e.px.size() * sizeof(unsigned int);
+        if (e_bytes > kMaxBytes) {
+            /* ONE run bigger than the whole budget: caching it would evict
+             * every other run, and right after such a draw this entry is the
+             * ONLY one in the map - the eviction loop then picks it, erases
+             * it, and `src = &e.px` reads freed memory. That is the crash on a
+             * page whose whole content is a single huge text node (a pasted
+             * agent transcript). Draw from `buf` instead. */
+            r->tc_bytes -= e_bytes;
+            r->text_cache.erase(ckey_str);
+            src = &buf;
+        } else {
+            while (r->tc_bytes > kMaxBytes) {
+                auto victim = r->text_cache.end();
+                for (auto it = r->text_cache.begin();
+                     it != r->text_cache.end(); ++it) {
+                    if (it->first == ckey_str) {
+                        continue; /* never evict the entry we hand out */
+                    }
+                    if (victim == r->text_cache.end() ||
+                        it->second.last_use < victim->second.last_use) {
+                        victim = it;
+                    }
                 }
+                if (victim == r->text_cache.end()) {
+                    break;
+                }
+                r->tc_bytes -= victim->second.px.size() * sizeof(unsigned int);
+                r->text_cache.erase(victim);
             }
-            if (victim == r->text_cache.end()) {
-                break;
-            }
-            r->tc_bytes -= victim->second.px.size() * sizeof(unsigned int);
-            r->text_cache.erase(victim);
+            src = &e.px;
         }
-        src = &e.px;
     } else {
         src = &buf;
     }
@@ -1542,8 +1604,12 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     const int fw = g_gpu ? r->fb_w : r->width;
     const int fh = g_gpu ? r->fb_h : r->height;
     const bool fade = opacity < 1.0f;
-    for (int yy = 0; yy < th; ++yy) {
-        const int fy = ty + yy;
+    /* the raster covers only the visible rows (see the raster pass): its
+     * height is th_buf and it starts ty_shift past the run's top */
+    const int th_draw = th_buf > 0 ? th_buf : th;
+    const int ty_draw = ty + ty_shift;
+    for (int yy = 0; yy < th_draw; ++yy) {
+        const int fy = ty_draw + yy;
         if (fy < 0 || fy >= fh) {
             continue;
         }
