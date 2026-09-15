@@ -251,7 +251,8 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               const whaleui_style_state* st,
                                               const std::map<struct lxb_dom_element*, int>* scrolls,
                                               struct whaleui_anim* anim,
-                                              float text_scale);
+                                              float text_scale,
+                                              size_t max_rows = 0);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
 /* Incremental relayout: rebuild the layout subtree of `el` (computed style

@@ -3971,7 +3971,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->layout_pending = whaleui_layout_compute(
                 doc, r->rules, r->rule_count, &r->layout_vars,
                 r->layout_w, r->layout_h, &st0, nullptr, nullptr,
-                r->layout_text_scale);
+                r->layout_text_scale, 0);
             r->layout_done.store(1, std::memory_order_release);
         });
     }

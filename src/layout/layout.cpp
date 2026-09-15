@@ -4029,7 +4029,7 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     int viewport_w, int viewport_h,
     const whaleui_style_state* st,
     const std::map<lxb_dom_element*, int>* scrolls,
-    struct whaleui_anim* anim, float text_scale)
+    struct whaleui_anim* anim, float text_scale, size_t max_rows)
 {
     if (!doc || viewport_w <= 0 || viewport_h <= 0) {
         return nullptr;
@@ -4052,6 +4052,10 @@ extern "C" whaleui_layout_tree_t* whaleui_layout_compute(
     b.scrolls = scrolls;
     b.anim = anim;
     b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    /* first-layout slice: 0 = build everything (see LayoutResume) */
+    if (max_rows > 0) {
+        b.row_budget = max_rows;
+    }
     if (theme_vars) {
         b.vars = *theme_vars;
     }
