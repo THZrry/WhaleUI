@@ -78,13 +78,30 @@ rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transfo
 `::first-line` / `:has()` / 容器查询 / `filter` 与混合模式 / CPU 路径的
 `backdrop-filter`)逐条列在 `doc/internal/16-engine-support.md` 末尾。
 
-# <13>: 子节点"分块/树"存储 —— 收益需要重新评估(未做)
+# <13>: 子节点"分块/树"存储 —— 收益点与正确切口(未做)
 
-用户方案: 子节点用数组块, 块间连成树; 不设阈值, 小的不生长; 对外
-`first_child`/`next` 语义不变(读点 ~280 处全部保住, 写入点只有 ~10 处)。
+用户方案: 子节点用数组块, 块间连成树; 不设阈值, 小的不生长; 对外 first_child/
+next 语义不变(读点 ~280 处全部保住, 写入点只有 ~10 处)。补充指导: 不做严格长度
+控制, 超过/不足一定数量自然裂解/合并; 大小不靠遍历, 元素脏了再更新并逐层向上冒泡。
 
-实测前提: 布局节点已经在 `std::deque<whaleui_layout_node_t> arena` 里分配
-(layout.h:144), 同一父元素的子节点按分配顺序相邻 —— `first_child`/`next` 遍历
-本来就是顺序内存访问, deque 已经提供了分块。所以"分块"对遍历的 cache 局部性
-几乎没有增量收益; 真正能拿到的只有超大子列表的 O(1) 随机访问/尾插(罕见场景),
-以及一个 O(1) 的 `child_count`(对 `:nth-child()` 之类有用)。
+实测前提(重要):
+- 布局节点在 `std::deque<whaleui_layout_node_t> arena` 里(layout.h:144), 同一父元素
+  的子节点按分配顺序相邻 -> `first_child`/`next` 遍历本来就是顺序内存访问, deque
+  已提供分块。分块对遍历 cache 局部性几乎无增量收益。
+- **真正的收益在遍历次数**: 父元素挂几万个孩子时(agent 聊天历史、wpt-css index
+  每个 summary 下几十到几万个对象), viewport 只需要"合并后的位置和大小"。按块存
+  合并盒 -> 遍历从 O(子节点数) 降到 O(块数)。
+- `bounds`(子树合并盒)与 `r->bounds_valid` **已经存在**且已经惰性: 滚动帧不重算,
+  只有"几何变了"才 `compute_paint_bounds`(O(n) 后序一次); paint-only 的改动走
+  `dom_repaint` + 局部 `compute_paint_bounds(nd)`。
+
+已尝试并回退: 把 `bounds_valid` 全树标志换成逐节点脏位 + 冒泡
+(`mark_bounds_dirty` / `mark_bounds_dirty_all`, 布局节点加 `bd` 位)。
+`test_scroll` 抓到它破坏了 hover 的部分重绘 —— 设了 `bounds_valid = 1` 之后那一帧
+不会再重算, 刚改样式的盒子被剔除逻辑剔掉。结论: **bounds 的失效机制已经是对的,
+别再动它**。
+
+正确切口(下次实现): 在**遍历**里用"块的合并盒"跳过 —— 给父元素的子节点分块
+(每块 N 个, 松弛分裂/合并), 每块维护一个合并盒; `paint_cull` / `hit_test` /
+`compute_paint_bounds` 的循环按块判断, 不相交就整块跳过。这与 `first_child`/`next`
+语义兼容(块内仍是 next 链), 写入点只有那 ~10 处。
