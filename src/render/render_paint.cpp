@@ -846,8 +846,35 @@ void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     fill_rect(r->pixels, r->fb_w, r->fb_h, x + w - 1, y, 1, h, edge, clip);
 }
 
+/* Mark a node's subtree bounds stale and BUBBLE the mark to the root. Only the
+ * path to the root is touched, so a local relayout no longer invalidates every
+ * node's bounds in a 30k-node tree. */
+void mark_bounds_dirty(whaleui_layout_node_t* n)
+{
+    for (; n && !n->bd; n = n->parent) {
+        n->bd = 1;
+    }
+}
+
+/* when the WHOLE tree moved (full relayout, scroll, new rows) every node's
+ * bounds are stale - distinct from mark_bounds_dirty(), which is for a local
+ * relayout and only walks up to the root */
+void mark_bounds_dirty_all(whaleui_layout_node_t* n)
+{
+    if (!n) {
+        return;
+    }
+    n->bd = 1;
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        mark_bounds_dirty_all(c);
+    }
+}
+
 void compute_paint_bounds(whaleui_layout_node_t* n)
 {
+    if (!n->bd) {
+        return; /* still valid: nothing under here moved */
+    }
     whaleui_rect_t b = n->border;
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         if (!c->visible) {
@@ -867,6 +894,7 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
         b.h = y1 - y0;
     }
     n->bounds = b;
+    n->bd = 0;
 }
 
 const int kCullMargin = 64;

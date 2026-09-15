@@ -3972,6 +3972,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         if (r->tree) {
             g_last_tree = r->tree;
             r->bounds_valid = 0;
+            mark_bounds_dirty_all(r->tree->root);
             r->scroll_dirty = 1;
             fix_run_heights(r);  /* real glyph heights + ranges */
             fix_scroll_max(r);
@@ -4041,6 +4042,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->fill_dirty.load()) {
         r->fill_dirty.store(0);
         r->bounds_valid = 0; /* new rows landed / content shifted */
+        mark_bounds_dirty_all(r->tree->root);
         r->scroll_dirty = 1; /* repaint only (no whole-tree relayout) */
         r->alive = 1;
     }
@@ -4104,6 +4106,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             fix_run_heights(r);
             fix_scroll_max(r);
             r->bounds_valid = 0; /* every box moved */
+            mark_bounds_dirty_all(r->tree->root);
             r->drag_scroll_node = nullptr;
             r->scroll_max_el = nullptr;
             r->wheel_node = nullptr;
@@ -4139,6 +4142,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 r->has_dirty = 0;
                 g_last_tree = r->tree;
                 r->bounds_valid = 0; /* every box moved */
+                mark_bounds_dirty_all(r->tree->root);
                 r->drag_scroll_node = nullptr;
                 r->scroll_max_el = nullptr;
                 r->wheel_node = nullptr;
@@ -4191,6 +4195,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                           r->text_scale);
         }
         r->bounds_valid = 0; /* subtree paint bounds are stale */
+        mark_bounds_dirty_all(r->tree->root);
         r->drag_scroll_node = nullptr; /* layout nodes were recreated */
         r->scroll_max_el = nullptr;    /* scroll_max may have changed */
         r->wheel_node = nullptr;       /* hit cache is stale */
@@ -4269,6 +4274,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         if (ok) {
             g_last_tree = r->tree;
             r->bounds_valid = 0; /* subtree paint bounds are stale */
+            mark_bounds_dirty_all(r->tree->root);
             r->drag_scroll_node = nullptr; /* nodes were recreated */
             r->scroll_max_el = nullptr;    /* scroll_max may have changed */
             r->wheel_node = nullptr;       /* hit cache is stale */
@@ -4514,16 +4520,24 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 /* paint-only edits: recompute the changed subtrees' bounds
                  * locally (ancestors unchanged -> still valid); paint
                  * partial-repaints their boxes (dom_repaint) */
-                r->bounds_valid = 1;
+                /* paint-only edits: mark the edited subtrees dirty (the mark
+                 * bubbles to the root) and recompute from the ROOT - the walk
+                 * early-returns on unmarked nodes, so only the marked paths are
+                 * visited. Recomputing just 
+d here leaves its ancestors'
+                 * merged bounds stale and the cull then uses stale boxes. */
                 for (lxb_dom_element* el : dom_repaint) {
                     whaleui_layout_node_t* nd =
                         find_node_by_el(r->tree, el);
                     if (nd) {
-                        compute_paint_bounds(nd);
+                        mark_bounds_dirty(nd);
                     }
                 }
+                compute_paint_bounds(r->tree->root);
+                r->bounds_valid = 1;
             } else {
                 r->bounds_valid = 0; /* subtree paint bounds are stale */
+                mark_bounds_dirty_all(r->tree->root);
                 /* geometry changed tree-wide: a stale interaction-state
                  * partial repaint (hover_old_el etc.) would redraw only a
                  * small strip and leave the shifted/collapsed areas frozen
@@ -4676,6 +4690,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * snaps back"). */
         r->tree->geom_relaid = 0;
         r->bounds_valid = 0;
+        mark_bounds_dirty_all(r->tree->root);
         r->drag_scroll_node = nullptr;
         r->scroll_max_el = nullptr;
         r->wheel_node = nullptr;

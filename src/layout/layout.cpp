@@ -1,4 +1,4 @@
-﻿/* Layout: small box/flex engine.
+/* Layout: small box/flex engine.
  *
  * Lexbor parses HTML/CSS but computes no layout, so this module implements
  * the layout pass itself: box model (margin/border/padding/content),
@@ -1083,6 +1083,7 @@ struct Builder
     whaleui_layout_node_t* new_node()
     {
         tree->arena.emplace_back();
+        tree->arena.back().bd = 1; /* bounds not computed yet */
         return &tree->arena.back();
     }
 
@@ -1634,6 +1635,10 @@ struct Builder
         std::string disp = get(n->style, "display");
         if (display_kind(disp) == 0) {
             n->visible = 0;
+            /* left the paint tree: cached ancestor bounds still include it */
+            for (whaleui_layout_node_t* ba = n; ba && !ba->bd; ba = ba->parent) {
+                ba->bd = 1;
+            }
         }
         std::string zs = get(n->style, "z-index");
         if (!zs.empty()) {

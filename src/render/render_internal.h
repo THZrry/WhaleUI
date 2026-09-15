@@ -1,4 +1,4 @@
-﻿#ifndef WHALEUI_RENDER_INTERNAL_H
+#ifndef WHALEUI_RENDER_INTERNAL_H
 #define WHALEUI_RENDER_INTERNAL_H
 
 /* Shared helpers between the split render sources: render.cpp (context +
@@ -118,6 +118,8 @@ SDL_Surface* img_surface(whaleui_render_t* r, const std::string& src);
 void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                int off_y, const Clip* clip);
 void compute_paint_bounds(whaleui_layout_node_t* n);
+void mark_bounds_dirty(whaleui_layout_node_t* n);
+void mark_bounds_dirty_all(whaleui_layout_node_t* n);
 bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, const Clip* clip);
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,

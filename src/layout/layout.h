@@ -87,9 +87,12 @@ struct whaleui_layout_node
     float opacity;           /* cascaded opacity (1 default) */
 
     /* subtree paint bounds (absolute viewport coords, union of this node's
-     * border box and all descendants; computed lazily by the renderer).
-     * Lets partial repaints cull whole subtrees instead of walking them. */
+     * border box and all descendants). Lets partial repaints cull whole
+     * subtrees instead of walking them. d is the dirty bit: geometry
+     * changes mark the node and BUBBLE the mark to the root, and the recompute
+     * starts at the root so it walks only the marked paths. */
     whaleui_rect_t bounds;
+    unsigned bd : 1;         /* bounds stale (self or a descendant moved) */
 
     /* vertical scroll of an overflow:auto/scroll container. The children
      * are laid out shifted up by scroll_y (absolute coords stay consistent
