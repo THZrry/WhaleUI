@@ -66,3 +66,11 @@ doc/internal/18-long-text-and-input.md
 window.cpp 抽出 window_load_html_len() 让 load_uri 传真实字节数(C API 语义不变)。
 回归: tests/test_dom.cpp::test_dom_utf16_and_bom_input(UTF-16LE/BE + UTF-8 BOM)。
 未做: 无 BOM 的 UTF-16 嗅探(记事本存 UTF-16 一定带 BOM)。commit b8f3cbf。
+<10>(SOLVED): 长文本滚动真正的 5 倍在 xmake.lua —— release 构建从未开优化。
+xmake 不会因 -m release 自动加 -O, g++ 停在默认 -O0(demo 也一样)。加
+set_optimize("fastest")(-O3)后: 292k 字符单节点 46-54ms/帧 -> 10-16ms/帧
+(60fps 以内), showcase 8ms。之前分段测量(entry/tlkey 各 5-6ms 的 FNV、raster 15ms)
+全是 -O0 的产物; 基准: 292k 字符 FNV 每遍 -O0 3.85ms / -O2 0.51ms。
+叠加 commit 5651aca 的两个缓存, 相对最初 215ms/帧 共约 14-17 倍。
+-O3 下 10 项测试全绿 + 14 张主题自检 OK(未暴露 UB)。
+教训: 性能测量前先确认优化级别。见 doc/internal/18-long-text-and-input.md 第七节。

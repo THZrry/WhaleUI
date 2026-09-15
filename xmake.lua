@@ -6,6 +6,16 @@ set_project("whaleui")
 set_version("0.96")
 set_languages("c++14")
 
+-- Release must actually optimize. xmake leaves the compiler at its default
+-- (-O0 for gcc/clang) unless told otherwise, and an unoptimized engine is
+-- several times slower on exactly the loops that matter: byte-wise hashing of
+-- long text runs (a 292k-char run's FNV measured 3.85ms at -O0 vs 0.51ms at
+-- -O2), per-pixel glyph blits, and the layout walk. Debug keeps -O0 on
+-- purpose, for debuggability.
+if is_mode("release") then
+    set_optimize("fastest")
+end
+
 -- ============================================================
 -- Third-party strategy (per README: link, don't vendor; keep only
 -- include/ in git, ignore binaries).
