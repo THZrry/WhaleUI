@@ -4803,24 +4803,33 @@ d here leaves its ancestors'
                     int y0 = nd->bounds.y + off - 2;
                     int x1 = x0 + nd->bounds.w + 4;
                     int y1 = y0 + nd->bounds.h + 4;
-                    /* A transformed state element is PAINTED offset from its
-                     * layout box (see paint_node's translate handling), so the
-                     * strip must cover BOTH positions. Without this a
-                     * :hover{transform:translateY(-Npx)} showed only the part
-                     * that happened to stay inside the layout box - the border
-                     * appeared but the element never visibly lifted. */
-                    if (nd->xf) {
-                        whaleui_transform_t tf;
-                        const std::string tv = sget(nd->style, "transform");
-                        if (whaleui_transform_eval(tv.c_str(), nd->border.w,
-                                                   nd->border.h, &tf) == 0) {
-                            const int ddx = static_cast<int>(tf.tx);
-                            const int ddy = static_cast<int>(tf.ty);
-                            if (x0 + ddx < x0) x0 += ddx;
-                            if (y0 + ddy < y0) y0 += ddy;
-                            if (x1 + ddx > x1) x1 += ddx;
-                            if (y1 + ddy > y1) y1 += ddy;
+                    /* A transformed node - or one inside a transformed ANCESTOR
+                     * - is PAINTED offset from its layout box (see paint_node's
+                     * translate handling), so the strip must cover BOTH the old
+                     * and the new position. The ancestor case is the common one:
+                     * a card lifts on :hover but the pointer usually sits on a
+                     * child (text/icon), so hover_el is that child while the
+                     * transform lives on the card above it. Checking only the
+                     * node itself extended nothing, and the lift only completed
+                     * once the pointer swept the card body and hover_el became
+                     * the card ("moves a bit, completes while the mouse keeps
+                     * moving"). */
+                    for (whaleui_layout_node_t* a = nd; a; a = a->parent) {
+                        if (!a->xf) {
+                            continue;
                         }
+                        whaleui_transform_t tf;
+                        const std::string tv = sget(a->style, "transform");
+                        if (whaleui_transform_eval(tv.c_str(), a->border.w,
+                                                   a->border.h, &tf) != 0) {
+                            continue;
+                        }
+                        const int ddx = static_cast<int>(tf.tx);
+                        const int ddy = static_cast<int>(tf.ty);
+                        if (x0 + ddx < x0) x0 += ddx;
+                        if (y0 + ddy < y0) y0 += ddy;
+                        if (x1 + ddx > x1) x1 += ddx;
+                        if (y1 + ddy > y1) y1 += ddy;
                     }
                     if (x0 < 0) x0 = 0;
                     if (y0 < 0) y0 = 0;
