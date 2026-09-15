@@ -2797,6 +2797,33 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     return 0;
 }
 
+/* The pointer left the window: no further motion events arrive, so the last
+ * hovered element would stay stuck in :hover ("moving away sometimes does not
+ * react - especially when the mouse leaves quickly"). Same bookkeeping
+ * set_hover does on a miss, but with no hit-test (there is no position). */
+extern "C" void whaleui_render_clear_hover(whaleui_render_t* r)
+{
+    if (!r || !r->tree) {
+        return;
+    }
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    if (!r->hover_el) {
+        return;
+    }
+    if (r->has_interact_rules && r->rule_count > 0) {
+        if (r->hover_old_el) {
+            r->hover_prev.push_back(r->hover_old_el);
+        }
+        r->hover_old_el = r->hover_el;
+        r->state_pending = 1;
+    } else {
+        r->hover_old_el = nullptr;
+        r->hover_prev.clear();
+    }
+    r->hover_el = nullptr;
+    r->has_dirty = 1;
+}
+
 extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
 {
     if (!r || !r->tree) {

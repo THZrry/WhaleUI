@@ -419,6 +419,11 @@ int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
 /* Update the hovered element from a mouse position; repaints when changed. */
 void whaleui_render_set_hover(whaleui_render_t* r, int x, int y);
 
+/* The pointer left the window: SDL sends no further motion events, so the last
+ * hovered element would stay stuck in :hover ("moving away sometimes does not
+ * react - especially when the mouse leaves quickly"). No hit-test. */
+void whaleui_render_clear_hover(whaleui_render_t* r);
+
 /* Left-button press/release: hit-tests and tracks the pressed element
  * (:active) and the focused element (:focus, set on press). Also starts a
  * text selection / caret placement on editable elements. */

@@ -143,6 +143,49 @@ int main(void)
         }
         whaleui_window_destroy(lw);
     }
+
+    /* Regression: leaving a hovered element must REVERT its :hover, even when
+     * the pointer crosses several targets quickly. The crossed elements are
+     * carried in hover_prev (only the most recent one fits in hover_old_el),
+     * so a fast move that loses one of them leaves that element stuck in its
+     * hover style - reported as "moving away sometimes does not react (seems
+     * to happen when the mouse moves quickly)". */
+    {
+        whaleui_window_t* hw2 =
+            whaleui_window_create(app, "hover-revert", 300, 120);
+        assert(hw2 != nullptr);
+        assert(whaleui_window_load_html(
+                   hw2,
+                   "<html><head><style>body{margin:0}"
+                   "div{position:absolute;top:20px;width:60px;height:40px;"
+                   "background-color:#ff0000}"
+                   "#a{left:20px}#b{left:100px}#c{left:180px}"
+                   "div:hover{background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"a\"></div><div id=\"b\"></div>"
+                   "<div id=\"c\"></div></body></html>") == 0);
+        if (whaleui_window_show(hw2) == 0 && hw2->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(hw2->render, hw2->document) == 0);
+            }
+            unsigned int px = 30; /* inside A (x 20..80) */
+            unsigned int py = 40;
+            unsigned int a_plain = gpixel(hw2->render, px, py);
+            whaleui_render_set_hover(hw2->render, px, py);
+            assert(whaleui_render_frame(hw2->render, hw2->document) == 0);
+            unsigned int a_hover = gpixel(hw2->render, px, py);
+            assert(a_hover != a_plain); /* A is hovered */
+            /* move to B: A must revert in THIS frame */
+            whaleui_render_set_hover(hw2->render, 110, py);
+            assert(whaleui_render_frame(hw2->render, hw2->document) == 0);
+            unsigned int a_after = gpixel(hw2->render, px, py);
+            std::printf("[hover-revert] plain=%08X hover=%08X after=%08X\n",
+                        a_plain, a_hover, a_after);
+            std::fflush(stdout);
+            assert(a_after == a_plain); /* A reverted */
+        }
+        whaleui_window_destroy(hw2);
+    }
     }
 
     /* 2. textarea with wrapped content: scroll_max reflects the real

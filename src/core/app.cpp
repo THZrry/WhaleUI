@@ -148,6 +148,18 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     }
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE: {
+        /* the pointer left the window: SDL sends no further motion events, so
+         * the hovered element would stay stuck in :hover - "moving away
+         * sometimes does not react, especially when the mouse leaves quickly"
+         * (a slow move still produces motion inside the window, so it looks
+         * like it reacts). */
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->render) {
+            whaleui_render_clear_hover(w->render);
+        }
+        break;
+    }
     case SDL_EVENT_WINDOW_FOCUS_LOST: {
         /* 窗口失去焦点:编辑控件同步失焦 —— 清 edit 态、退出文本输入,
          * caret/选区消失(浏览器切窗即 blur)。SDL 调用回主线程执行。 */
