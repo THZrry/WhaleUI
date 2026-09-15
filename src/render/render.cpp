@@ -3838,16 +3838,33 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
              * frame (fast mouse moves) - without it only the last crossing
              * pair was reverted and intermediate targets kept :hover. */
             std::vector<lxb_dom_element*> targets;
-            for (lxb_dom_element* e : r->hover_prev) {
+            /* add `e` and its ancestor chain: :hover/:active BUBBLE (see the
+             * cascade in style.cpp), so a card with :hover{transform} has to be
+             * re-cascaded when the pointer sits on one of its children. The
+             * state list below only carries the hit element itself, so the card
+             * never received its hover style and never lifted - reported as
+             * "moves a bit, and only completes while the mouse keeps sweeping
+             * the card". */
+            auto add_with_ancestors = [&](lxb_dom_element* e) {
+                if (!e) {
+                    return;
+                }
                 targets.push_back(e);
+                for (lxb_dom_node* a = e->node.parent; a;
+                     a = a->parent) {
+                    if (a->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                        targets.push_back(lxb_dom_interface_element(a));
+                    }
+                }
+            };
+            for (lxb_dom_element* e : r->hover_prev) {
+                add_with_ancestors(e);
             }
             lxb_dom_element* sa[] = {r->hover_old_el, r->hover_el,
                                      r->focus_old_el, r->focus_el,
                                      r->pressed_old_el, r->pressed_el};
             for (lxb_dom_element* e : sa) {
-                if (e) {
-                    targets.push_back(e);
-                }
+                add_with_ancestors(e);
             }
             /* hover_prev is NOT cleared here: the partial-repaint branch
              * below still needs it to redraw the reverted boxes (cleared
