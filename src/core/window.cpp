@@ -417,7 +417,8 @@ extern "C" int whaleui_window_get_size(const whaleui_window_t* win, int* w, int*
     return 0;
 }
 
-extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
+static int window_load_html_len(whaleui_window_t* win, const char* html,
+                                size_t len)
 {
     if (!win || !html) {
         return -1;
@@ -431,7 +432,10 @@ extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
     if (win->render) {
         whaleui_render_reset_dom(win->render);
     }
-    win->document = whaleui_dom_parse_html(html, std::strlen(html));
+    /* the REAL byte count, not strlen(): a UTF-16 file carries NUL bytes
+     * after every ASCII character, so strlen() stops at the first one and
+     * the rest of the document is lost (a UTF-16 log rendered as one "C") */
+    win->document = whaleui_dom_parse_html(html, len);
     if (!win->document) {
         return -2;
     }
@@ -439,6 +443,11 @@ extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
     window_reveal_apply(win->document);
     window_reload_css(win);
     return 0;
+}
+
+extern "C" int whaleui_window_load_html(whaleui_window_t* win, const char* html)
+{
+    return window_load_html_len(win, html, html ? std::strlen(html) : 0);
 }
 
 extern "C" int whaleui_window_load_uri(whaleui_window_t* win, const char* uri)
@@ -451,7 +460,7 @@ extern "C" int whaleui_window_load_uri(whaleui_window_t* win, const char* uri)
     if (whaleui_fs_load(uri, &buf, &len) != 0) {
         return -2;
     }
-    int rc = whaleui_window_load_html(win, buf);
+    int rc = window_load_html_len(win, buf, len);
     std::free(buf);
     /* load_html clears the base (in-memory html); set it AFTER so the
      * loaded document keeps its URI for resolving relative <a href> */

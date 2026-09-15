@@ -4,6 +4,59 @@
 #include <cassert>
 #include <cstring>
 
+/* Regression: document/stylesheet encodings that Windows editors write.
+ *
+ * A UTF-16 file ("Unicode" in Notepad) used to be decoded as UTF-8: 0xFF/0xFE
+ * are illegal lead bytes, every 0x00 suffix reads as a string terminator, so
+ * the whole buffer collapsed to its first ASCII character (a 414-line UTF-16
+ * log rendered as a single "C"). The length handed to the parser must be the
+ * REAL byte count too - strlen() stops at the first NUL, which is how the
+ * conversion saw only three bytes and produced exactly one character.
+ *
+ * The two cases below cover both halves: the BOM conversion at the parser
+ * edge and the byte count surviving the load path. */
+static void test_dom_utf16_and_bom_input(void)
+{
+    /* "<p id=\"u\">A你</p>" as UTF-16LE + BOM (what Notepad writes) */
+    static const unsigned char u16le[] = {
+        0xFF, 0xFE, '<', 0, 'p', 0, ' ', 0, 'i', 0, 'd', 0, '=', 0, '"', 0,
+        'u',  0,    '"', 0, '>', 0, 'A', 0, 0x60, 0x4F, '<', 0, '/', 0, 'p',
+        0,    '>',  0};
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            reinterpret_cast<const char*>(u16le), sizeof(u16le));
+        assert(doc != nullptr);
+        /* before the fix this document degenerated to a single "C"-style
+         * character and the element never existed */
+        assert(whaleui_dom_get_element_by_id(doc, "u") != nullptr);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* same markup as UTF-16BE + BOM */
+    static const unsigned char u16be[] = {
+        0xFE, 0xFF, 0, '<', 0, 'p', 0, ' ', 0, 'i', 0, 'd', 0, '=', 0, '"',
+        0,    'u',  0,   '"', 0, '>', 0, 'A', 0x4F, 0x60, 0, '<', 0, '/', 0,
+        'p',  0,    '>', 0};
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            reinterpret_cast<const char*>(u16be), sizeof(u16be));
+        assert(doc != nullptr);
+        assert(whaleui_dom_get_element_by_id(doc, "u") != nullptr);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* UTF-8 BOM: the bytes must be skipped, not parsed as leading text (a
+     * leading text node before <html> also broke stylesheet scoping) */
+    {
+        const char* utf8bom = "\xEF\xBB\xBF<p id=\"b\">hi</p>";
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html(utf8bom, std::strlen(utf8bom));
+        assert(doc != nullptr);
+        assert(whaleui_dom_get_element_by_id(doc, "b") != nullptr);
+        whaleui_dom_document_destroy(doc);
+    }
+}
+
 int main(void)
 {
     /* parse + document element */
@@ -303,6 +356,8 @@ int main(void)
 
         whaleui_dom_document_destroy(doc);
     }
+
+    test_dom_utf16_and_bom_input();
 
     return 0;
 }

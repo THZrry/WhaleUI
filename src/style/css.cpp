@@ -7,6 +7,7 @@
  * matching and the cascade stay in style.cpp. */
 
 #include "style/css.h"
+#include "core/utf.h"
 #include "style/style.h"
 #include "fs/fs.h"
 
@@ -389,15 +390,13 @@ extern "C" int whaleui_css_parse_full(const char* css, size_t len,
     *count = 0;
     keyframes->items = nullptr;
     keyframes->count = 0;
-    /* skip a UTF-8 BOM (a leading EF BB BF makes lexbor's CSS tokenizer
-     * emit the BOM as a selector token and the FIRST rule is dropped) */
-    if (len >= 3 && static_cast<unsigned char>(css[0]) == 0xEF &&
-        static_cast<unsigned char>(css[1]) == 0xBB &&
-        static_cast<unsigned char>(css[2]) == 0xBF) {
-        css += 3;
-        len -= 3;
-    }
-    return parse_all(css, len, rules, count, keyframes);
+    /* Encoding at the edge - a UTF-8 BOM would be tokenized as a selector and
+     * drop the FIRST rule; a UTF-16 sheet would collapse to one character.
+     * See core/utf.h. */
+    std::string scratch;
+    size_t view_len = 0;
+    const char* view = wui_utf8_view(css, len, scratch, &view_len);
+    return parse_all(view, view_len, rules, count, keyframes);
 }
 
 extern "C" int whaleui_css_parse(whaleui_css_rule_t** rules, size_t* count,

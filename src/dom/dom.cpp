@@ -5,6 +5,7 @@
  * parsing/query/mutation is delegated to lexbor. */
 
 #include "dom/dom.h"
+#include "core/utf.h"
 #include "dom/events.h"
 
 /* whaleui_render_last_tree (get_bounding_client_rect) */
@@ -322,17 +323,15 @@ extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size
         if (len == 0) {
             len = std::strlen(html);
         }
-        /* a UTF-8 BOM (EF BB BF, what Windows editors write) reaching the
-         * parser becomes a leading TEXT node before <html>: the page then
-         * renders that text AND its stylesheets stop applying (the sheet
-         * is parsed into the wrong tree scope). Skip it. */
-        if (len >= 3 && static_cast<unsigned char>(html[0]) == 0xEF &&
-            static_cast<unsigned char>(html[1]) == 0xBB &&
-            static_cast<unsigned char>(html[2]) == 0xBF) {
-            html += 3;
-            len -= 3;
-        }
-        lxb_html_document_parse(doc, reinterpret_cast<const lxb_char_t*>(html), len);
+        /* Encoding at the edge: a UTF-8 BOM reaching the parser becomes a
+         * leading TEXT node before <html> (the page then renders that text
+         * AND its stylesheets stop applying), and a UTF-16 file decoded as
+         * UTF-8 collapses to its first ASCII character. See core/utf.h. */
+        std::string scratch;
+        size_t view_len = 0;
+        const char* view = wui_utf8_view(html, len, scratch, &view_len);
+        lxb_html_document_parse(doc, reinterpret_cast<const lxb_char_t*>(view),
+                                view_len);
     }
     return reinterpret_cast<whaleui_dom_document_t*>(doc);
 }
