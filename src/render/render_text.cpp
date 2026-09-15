@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <unordered_map>
 #include <string>
 #include <vector>
 std::vector<std::string> split_families(const std::string& s)
@@ -74,6 +75,91 @@ struct TextLayout {
     std::vector<TextLayoutLine> lines;
     int tw, th;
 };
+
+/* --- line-layout TABLE cache -------------------------------------------
+ * layout_decode + layout_wrap walk EVERY glyph of the run, and the
+ * viewport-culled raster still needs the whole line table. Without this
+ * cache a long run re-measured hundreds of thousands of glyphs on EVERY
+ * frame while scrolling: a 292k-char single run measured 215ms/frame
+ * (temp/probe_hover.cpp) while a 10k one was fine. The table is a pure
+ * function of (text, family, size, weight, letter-spacing, wrap width, line
+ * height), so it is keyed on exactly those. */
+struct TlEntry
+{
+    TextLayout L;
+    size_t bytes;
+    uint64_t last_use;
+};
+static std::unordered_map<uint64_t, TlEntry> g_tl_cache;
+static size_t g_tl_bytes = 0;
+static uint64_t g_tl_tick = 0;
+static const size_t kTlMaxBytes = 24 * 1024 * 1024;
+
+static uint64_t tl_fnv(uint64_t h, uint64_t v)
+{
+    h ^= v;
+    h *= 1099511628211ull;
+    return h;
+}
+
+static uint64_t tl_key(const std::string& text, int fs,
+                       const std::string& family, bool bold, float lsp,
+                       int wrap_w, int lh)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < text.size(); ++i) {
+        h = tl_fnv(h, static_cast<unsigned char>(text[i]));
+    }
+    for (size_t i = 0; i < family.size(); ++i) {
+        h = tl_fnv(h, static_cast<unsigned char>(family[i]));
+    }
+    h = tl_fnv(h, static_cast<uint64_t>(fs));
+    h = tl_fnv(h, static_cast<uint64_t>(wrap_w));
+    h = tl_fnv(h, static_cast<uint64_t>(lh));
+    h = tl_fnv(h, bold ? 1u : 0u);
+    h = tl_fnv(h, static_cast<uint64_t>(static_cast<int>(lsp * 64.0f)));
+    return h;
+}
+
+static size_t tl_bytes_of(const TextLayout& L)
+{
+    return L.disp.size() + L.map.size() * sizeof(size_t) +
+           L.dbytes.size() * sizeof(size_t) +
+           L.lines.size() * sizeof(TextLayoutLine) + 64;
+}
+
+/* Pointer, not a copy: a long run's table is megabytes (disp + map + dbytes
+ * + lines) and copying it per frame cost 17ms. Entries are never erased (an
+ * over-budget insert is skipped), so a handed-out pointer stays valid. */
+static const TextLayout* tl_lookup(uint64_t key)
+{
+    std::unordered_map<uint64_t, TlEntry>::iterator it = g_tl_cache.find(key);
+    if (it == g_tl_cache.end()) {
+        return nullptr;
+    }
+    it->second.last_use = ++g_tl_tick;
+    return &it->second.L;
+}
+
+static const TextLayout* tl_insert(uint64_t key, const TextLayout& L)
+{
+    std::unordered_map<uint64_t, TlEntry>::iterator it = g_tl_cache.find(key);
+    if (it != g_tl_cache.end()) {
+        g_tl_bytes -= it->second.bytes;
+        it->second.L = L;
+        it->second.bytes = tl_bytes_of(L);
+        g_tl_bytes += it->second.bytes;
+        return &it->second.L;
+    }
+    TlEntry e;
+    e.L = L;
+    e.bytes = tl_bytes_of(L);
+    e.last_use = ++g_tl_tick;
+    if (g_tl_bytes + e.bytes <= kTlMaxBytes) {
+        g_tl_bytes += e.bytes;
+    }
+    return &g_tl_cache.emplace(key, std::move(e)).first->second.L;
+}
 /* 闂傚倷绀侀幉锟犮€冮崱妞曟椽寮介鐔蜂槐閻熸粌绻掗崚鎺楊敇閵忊剝娅囬梺閫炲苯澧寸€规洘娲栭～婵囨綇椤垶缍楅梻浣虹帛閿氭俊顖氾躬瀹?濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴″幐婵炲矈浜弻娑氫沪閻愵剛娈ら梺鍝勵槷缁瑩寮?闂備焦鐪归崺鍕垂娴兼潙鐤い鎰堕檮閸庢垶銇勯幒鎴濐仾闁稿﹦绮妵鍕箼閸曨厾锛熼梺缁樻煥閹虫劙鍩€?ASCII 闂備浇宕垫慨宥夊礋椤愵偅顥嬬紓鍌欑劍閸炵粯淇婇崶顒€鐒? */
 typedef int (*TextGlyphFn)(unsigned int cp, void* st);
 
@@ -246,6 +332,76 @@ struct GlyphImg
     bool colored;
     std::vector<unsigned int> px;
 };
+
+/* --- glyph image cache -------------------------------------------------
+ * glyph_img_ttf does ensure_fallback + ensure_font_state + TTF_GetGlyphImage
+ * plus a per-pixel pre-multiply pass PER GLYPH, and rasterizing the visible
+ * lines of a long run is thousands of glyphs per scrolled frame. A rasterized
+ * glyph depends only on (family, size, style, codepoint, tint) and a page
+ * reuses a small alphabet, so cache the images. */
+struct GlyphCacheEntry
+{
+    GlyphImg g;
+    size_t bytes;
+    uint64_t last_use;
+};
+/* Only the render thread rasterizes (glyph_img is called from paint), so no
+ * lock is needed. Entries are never erased - an over-budget insert is skipped
+ * - so a returned pointer stays valid for the caller. */
+static std::unordered_map<uint64_t, GlyphCacheEntry> g_gl_cache;
+static size_t g_gl_bytes = 0;
+static uint64_t g_gl_tick = 0;
+static const size_t kGlMaxBytes = 8 * 1024 * 1024;
+
+static uint64_t glyph_cache_key(const std::string& family, int fs, int style,
+                                unsigned int cp, unsigned int fg)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < family.size(); ++i) {
+        h = tl_fnv(h, static_cast<unsigned char>(family[i]));
+    }
+    h = tl_fnv(h, static_cast<uint64_t>(fs));
+    h = tl_fnv(h, static_cast<uint64_t>(style));
+    h = tl_fnv(h, static_cast<uint64_t>(cp));
+    h = tl_fnv(h, static_cast<uint64_t>(fg));
+    return h;
+}
+
+/* pointer, not a copy: handing back a 1KB GlyphImg by value cost more than
+ * the lookup it was meant to save */
+static bool glyph_cache_lookup(uint64_t key, const GlyphImg** out)
+{
+    std::unordered_map<uint64_t, GlyphCacheEntry>::iterator it =
+        g_gl_cache.find(key);
+    if (it == g_gl_cache.end()) {
+        return false;
+    }
+    it->second.last_use = ++g_gl_tick;
+    *out = &it->second.g;
+    return true;
+}
+
+static const GlyphImg* glyph_cache_insert(uint64_t key, const GlyphImg& g)
+{
+    std::unordered_map<uint64_t, GlyphCacheEntry>::iterator it =
+        g_gl_cache.find(key);
+    if (it != g_gl_cache.end()) {
+        g_gl_bytes -= it->second.bytes;
+        it->second.g = g;
+        it->second.bytes = g.px.size() * sizeof(unsigned int) + 32;
+        g_gl_bytes += it->second.bytes;
+        return &it->second.g;
+    }
+    const size_t b = g.px.size() * sizeof(unsigned int) + 32;
+    GlyphCacheEntry e;
+    e.g = g;
+    e.bytes = b;
+    e.last_use = ++g_gl_tick;
+    if (g_gl_bytes + b <= kGlMaxBytes) {
+        g_gl_bytes += b;
+    }
+    return &g_gl_cache.emplace(key, std::move(e)).first->second.g;
+}
 
 /* full: 闂傚倷绀侀幉锟犮€冮崱妞曟椽寮介鐔蜂槐閻熸粌绻掗崚鎺楊敇閵忊剝娅囬梺閫炲苯澧存い銏＄懇瀵噣鍩€椤掑嫬绠氶柡鍐ㄧ墛閺呮粓鏌ｉ敐鍛邦潶闁稿鍋ゅ缁樻媴閻熸壆绁风紓浣虹帛鐢帡鍩㈤幘璇茬闁绘劗顣介弸鏍ㄧ節閻㈤潧小闁煎啿鐖奸幃鐑藉箻缂佹鍘?闂備浇顕х€涒晝绮欓幒妤€桅闁绘劗鏁哥粈濠囨倵閿濆骸浜炴い?render_get_font 闂? */
 struct TextMeasureCtx
@@ -1335,15 +1491,20 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         /* 缂傚倸鍊搁崐鐑芥嚄閸洖绐楃€广儱娲ㄩ崡姘舵倵閻㈢數銆婇柛瀣尭閳藉鈻庡Ο鑽ゆ殽闂備礁銈搁弲鏌ュ础閹剁晫宓侀柟鐑橆殔鍞梺闈涱槶閸庡磭绮?闂傚倷绀佸﹢閬嶅磿閵堝洦鏆滈柣鎰摠濞?濠电姷鏁搁崑鐐差焽濞嗘搩鏁勯柛娑欐儗閺?婵犵數鍋為崹鍫曞箰缁嬫５瑙勵槹鎼粹€崇亰濡炪倖鐗滈崑娑氱矆閸℃稒鍋ｉ柛婵嗗閹牏鎲搁悧鍫㈡噰闁哄矉缍侀敐鐐侯敆閳ь剚淇婃總鍛婄厵妞ゆ棁濮ょ亸鎵磼鐎ｎ亶妯€闁糕斁鍋撳銈嗗笒鐎氼剛鎲撮敃鍌氱閺夊牆澧界粔闈浢归悡搴♀偓鍧楀箖濡も偓閳藉鈻庡Ο鑽ゆ殽闂備礁銈搁弲鏌ュ础閸愬樊鍤曢柛顐ｆ礀鍞梺鎸庢煥婢т粙宕?advance/闂傚倷鑳堕…鍫ヮ敄閸涱垱宕查柟鍝勭Ф閺?
          * 婵犵數鍋為崹鍫曞箰閸洖纾块柡灞诲劜閸嬪鏌涘☉姗堝姛闁崇粯妫冮弻宥堫檨闁告挾鍠栭獮?full 婵?stb 闂傚倷绀侀幉锟犳偡椤栨稓顩叉繝闈涙４閼板灝霉閿濆牜娼愬ù婧垮€栫换娑㈠幢濡纰嶅┑鐐叉噳閳ь剚鏋煎Σ鍫ユ煙閹咃紞鐎涙繈姊?濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴濇喚闁搞倖顨嗛妵鍕疀閹炬惌妫炵紓浣哄У瀹€鎼佸蓟濞戞ǚ鏋庢俊顖氭贡閸戠懓鈹戦悩顐壕婵炶揪绲藉﹢閬嶅煝閺冨牊鐓冪憸婊堝礈濮樿京鐭?*/
         int baseline_off;
-        TextLayout L;
+        const int wrap_w = (wrap && bw > 0) ? bw : 0;
+        const uint64_t lkey = tl_key(text, fs, family, bold, lsp, wrap_w, lh);
+        const TextLayout* Lp = tl_lookup(lkey);
+        TextLayout L_local;
 #ifdef WHALEUI_BUILD_FULL
         TTF_Font* font = render_get_font(r, family, fs, style);
         if (!font) {
             return;
         }
         baseline_off = TTF_GetFontAscent(font);
-        TextMeasureCtx mc = { r, fs, family, bold };
-        L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_ttf, &mc);
+        if (!Lp) {
+            TextMeasureCtx mc = { r, fs, family, bold };
+            L_local = layout_text(text, wrap_w, lh, glyph_ttf, &mc);
+        }
 #else
         StbFonts stb(family, fs);
         if (stb.pref == static_cast<size_t>(-1)) {
@@ -1351,8 +1512,14 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         }
         baseline_off = static_cast<int>(stb.fonts[stb.pref].asc *
                                         stb.fonts[stb.pref].scale + 0.5f);
-        L = layout_text(text, (wrap && bw > 0) ? bw : 0, lh, glyph_stb, &stb);
+        if (!Lp) {
+            L_local = layout_text(text, wrap_w, lh, glyph_stb, &stb);
+        }
 #endif
+        if (!Lp) {
+            Lp = tl_insert(lkey, L_local);
+        }
+        const TextLayout& L = *Lp;
         if (L.lines.empty()) {
             return;
         }
@@ -1386,12 +1553,24 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
         if (tw <= 0 || th <= 0) {
             return;
         }
-        auto glyph_img = [&](unsigned int cp, GlyphImg& g) {
+        /* cached (see the glyph cache above): the hit path is a hash lookup, not a 1KB copy */
+        auto glyph_img = [&](unsigned int cp, const GlyphImg** out) -> bool {
+            const uint64_t gkey = glyph_cache_key(family, fs, style, cp, color);
+            if (glyph_cache_lookup(gkey, out)) {
+                return true;
+            }
+            GlyphImg tmp;
 #ifdef WHALEUI_BUILD_FULL
-            return glyph_img_ttf(r, family, fs, style, cp, color, g);
+            if (!glyph_img_ttf(r, family, fs, style, cp, color, tmp)) {
+                return false;
+            }
 #else
-            return glyph_img_stb(stb, cp, color, g);
+            if (!glyph_img_stb(stb, cp, color, tmp)) {
+                return false;
+            }
 #endif
+            *out = glyph_cache_insert(gkey, tmp);
+            return true;
         };
         /* 闂傚倸鍊风欢锟犲磻閸涙潙绀夐柡鍥ュ灪閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存⒔閸ヮ兙鈧懘顢曢敂鐣屽幐?闂傚倷绀侀幗婊堝磿閹版澘鍨傛い鏍ㄧ矌閸楁岸鏌℃径瀣劸闁搞倖顨嗛妵鍕疀閹炬惌妫炵紓?:闂備浇顕х€涒晝绮欓幒妞尖偓鍐川鐎涙ê娈濋梺缁橆殔閻楀﹥鍒婄€电硶鍋撻獮鍨姎闁瑰啿绻掔划?RGBA,闂佽娴烽幊鎾诲箟闄囬妵鎰板礃椤旇偐鐣鹃梺鍓插亖閸庤京绮堥崼鈶╁亾楠炲灝鍔氭俊顐ｇ懇閹敻顢涢悙瀵稿幘闂佽崵鍠愬妯肩棯瑜旈弻娑㈠Ω閿濆懎顫呴梺闈涙处閸旀瑩宕洪敓鐘茬妞ゆ劦鍋呴ˉ?emoji
          * 闂傚倷鑳堕崢褔銆冩惔銏㈩洸闁挎繂顦伴ˉ濠囨煃閸濆嫬浜扮紒鎲嬬稻缁绘繃绻濋崒娑辨濡?src-over 闂傚倷绀侀幉锛勬暜閻愬瓨娅犳俊銈呮噹閸戠娀鏌涢幇闈涙灈閻庢艾顦伴妵鍕箳閹存績鍋撶紒妯虹窞闁告洦鍨遍悡鏇㈡煙闁箑澧版繝鈧幘顔界厓鐟滄粓宕楀☉銏☆棃闁绘牗浜?闂傚倷绀侀幖顐﹀疮閻楀牊鍙忛柟缁㈠枛缁犳牠骞栧ǎ顒€濡肩紒鐙呯秮閺岀喖鏌囬敃鈧弸銈夋煟閹炬潙濮囬棁?闂傚倷绀侀幖顐﹀箯鐎ｎ喖闂柨婵嗩槸閻掑灚銇勯幒宥嗙グ濠㈣锕㈤弻锝夊煀濞嗗繑顥撳ù婊冪秺閺屾洝绠涢弴鐐愩垻绱掗埀顒佹媴閾忓湱锛?
@@ -1441,8 +1620,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                                  baseline_off;
             int px = 0;
             for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
-                GlyphImg g = {};
-                if (glyph_img(disp_cp_at(L, ci), g)) {
+                const GlyphImg* gp = nullptr;
+                if (glyph_img(disp_cp_at(L, ci), &gp) && gp) {
+                    const GlyphImg& g = *gp;
                     const int passes =
 #ifndef WHALEUI_BUILD_FULL
                         (bold && !g.colored) ? 2 :
@@ -1523,7 +1703,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                     }
                 }
             }
-            px += g.advance + lsp;
+            if (gp) {
+                px += gp->advance + lsp;
+            }
         }
     }
     /* 闂備浇顕ч柊锝咁焽瑜忕槐鐐寸節閸曨厾顦?line-box 闂備浇顕х换鎺楀磻濞戙垹绠犵€广儱顦伴崵?闂備胶鍎甸崜婵堟暜閹烘绠犻幖娣妼閸氳銇勯幘鍗炵仾闁稿骸閰ｉ弻鐔兼倻濡櫣浠奸梺纭呮缁夌褰侀梺鎼炲劘閸斿海绮婚弽顓熷€甸柛顭戝亝閳锋劙鏌曢崶褍顏€规洖銈稿鎾倷閹绘崼鎾绘⒑鐠囨煡鍙勬繛浣冲懐绀婂┑鐘插缁€?select 闂傚倷鑳堕…鍫ユ晝閵婏妇鐝堕柛顐犲劚閸氳绻濇繝鍌涘櫤闁稿锕㈤幃姗€鎮欓弶鎴犱喊缂備降鍔嶆繛濠囧箖? */

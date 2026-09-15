@@ -105,3 +105,56 @@ th_buf     = (last_line - first_line) * lh + lh;   /* +1 行给字形上沿 */
   `mouse_pending` 应用与 `want` 判定
 - `src/core/window.h`：`mouse_pending/mouse_x/mouse_y`、`resize_pending`
   （同样的"事件只记录、worker 每帧应用一次"模式）
+
+## 五、视口截取之后：滚动性能（本轮继续）
+
+用逐步屏蔽绘制的办法（`WUI_NO_PAINT` / `WUI_NO_DRAWTEXT` 探针开关）量化了
+292k 字符单节点的**每帧**成本（`temp/probe_hover.cpp` 的滚动计时段）：
+
+| 阶段 | 耗时 |
+|------|------|
+| 非绘制（布局/滚动/修正） | 5ms |
+| `paint_node` 其它 | 14ms |
+| `draw_text_at` | 35ms |
+
+`draw_text_at` 内部再分（`WUI_DBG_TIME`）：
+
+| 段 | 首次 | 之后每帧 |
+|----|------|----------|
+| 键哈希 + 取缓存 + `render_get_font` | 216ms | 15ms |
+| 可见行光栅化 | 11ms | 11ms |
+
+修掉的两处，都是"每帧做整串的活"：
+
+1. **行布局表缓存**（`TextLayout`）：`layout_text` 会把整串的换行点与每行宽度
+   算一遍（292k 字符 → 2000 行、几十万次字形度量）。视口裁剪只省了**光栅化**，
+   行表仍每帧重算 → 215ms。现按
+   `(text, family, size, weight, letter-spacing, wrap width, line height)`
+   缓存，并**返回指针而不是拷贝**（表约 5MB）。
+2. **字形图像缓存**（`GlyphImg`）：每字形一次 `ensure_fallback` +
+   `ensure_font_state` + `TTF_GetGlyphImage` + 逐像素预乘。现按
+   `(family, size, style, codepoint, tint)` 缓存，命中返回**指针**（无锁
+   `unordered_map`；条目只增不删、超预算的插入直接跳过，所以交出去的指针不会
+   悬垂）。
+
+**结果**：292k 字符单节点 **215ms/帧 → 46ms/帧**；小页面仍是 9ms，未受影响。
+
+**还剩 46ms**（下一步，已定位）：
+- `keys+get` 仍 ~15ms：表拷贝已排除，嫌疑落在 `render_get_font` /
+  `ensure_font_state`（每帧对字体做 size/style 同步 + `TTF_GetFontHeight` 校验）；
+- 可见行光栅化 ~11ms；
+- `paint_node` 的其它固定开销 ~14ms。
+
+## 六、还没做的结构优化：子节点按树/分块存储
+
+用户给的方案（本轮未落地）：**不做阈值判断，直接按树组织子节点；子节点少的时候
+树不生长**（一层就够），对外遍历 API 保持 `first_child` / `next` 不变。
+
+- 现状：`whaleui_layout_node_t` 用 `first_child` + `next` 单链表，遍历散落在
+  layout / hit_test / paint / events / animate（field 访问，无函数调用）。
+- 目标：一个节点的子节点存进**数组块**，块之间连成树；小的时候就是一个根块。
+  遍历仍提供 `first_child`/`next` 的语义（用游标模拟），**调用方不用改**。
+- 收益：子节点极多的元素（10k 行列表、几百个 card 的容器）定位/插入从 O(n)
+  降到 O(log n)，块还能整体跳过（配合视口裁剪）。
+- 代价：`first_child`/`next` 现在是**字段访问**，改成游标后要么保留字段（同步
+  成本），要么全量改调用点 —— 需要单独一轮 + 全量测试，本轮没动。

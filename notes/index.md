@@ -48,3 +48,12 @@ motion 只记录最新位置, worker 每次唤醒做一次命中测试(window.h 
 注意"帧慢"是被排除的(1/2/5 帧总耗时恒定 ~2.9s = 进程启动开销)。
 未做: 布局仍是 O(文本长度)(3.4s 的大头); 异步首帧布局默认关; 分块/断点机制;
 滚轮与触控板手感差异。见 doc/internal/18-long-text-and-input.md
+<8>(SOLVED): 292k 字符单节点滚动卡(46ms/帧 -> 目标 16ms 未达) —— 视口裁剪只省了
+光栅化, 行布局表(TextLayout)与字形图像(GlyphImg)仍每帧整串重算: 加两个缓存
+(按 text/family/size/weight/lsp/wrap/lh 与 family/size/style/cp/tint 作 key),
+命中返回**指针**不拷贝, 条目只增不删(超预算跳过插入, 指针不悬垂)。
+215ms -> 46ms/帧(小页面 9ms 不受影响)。剩余: keys+get 15ms(嫌疑在
+render_get_font/ensure_font_state)、raster 11ms、paint 其它 14ms。
+未做: 子节点按树/分块存储(用户方案: 不设阈值直接按树, 小的不生长, 对外
+first_child/next 语义不变) —— 需单独一轮 + 全量验证。见
+doc/internal/18-long-text-and-input.md
