@@ -191,6 +191,13 @@ struct whaleui_layout_tree
         struct lxb_dom_node* next_dom;
         whaleui_layout_node_t** link;
         bool prev_run_space;
+        /* carried so the resumed walk behaves exactly as the interrupted one
+         * would have: the list/summary marker was already injected into the
+         * first run, and a collapsed <details> must keep skipping to its
+         * <summary>. (cur_run itself need not be carried: the stop point is
+         * always an element boundary, where the run was just flushed.) */
+        bool run_marker_done;
+        bool summary_seen;
     };
     std::vector<LayoutResume> resumes;
 

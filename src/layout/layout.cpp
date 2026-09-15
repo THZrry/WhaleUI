@@ -1856,7 +1856,7 @@ struct Builder
                     if (row_budget != std::numeric_limits<size_t>::max()) {
                         if (row_budget == 0) {
                             tree->resumes.push_back(
-                                whaleui_layout_tree_t::LayoutResume{n, c, link, prev_run_space});
+                                whaleui_layout_tree_t::LayoutResume{n, c, link, prev_run_space, run_marker_done, summary_seen});
                             return n; /* tail (::after) waits for the resume */
                         }
                         --row_budget;
