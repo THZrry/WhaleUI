@@ -34,6 +34,10 @@ struct whaleui_window
      * queries once sdl is set */
     char* title;
     int width;
+    /* byte size of the loaded document: the async-first-layout policy (see
+         * app->async_layout -1) needs it, but the render context does not exist
+         * yet at load time (it is created by window_show) */
+    size_t doc_bytes;
     int height;
     int visible;
 

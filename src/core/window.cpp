@@ -1,4 +1,4 @@
-﻿/* Window core: public C API implementation.
+/* Window core: public C API implementation.
  * The native SDL_Window is created lazily on the first show(); CSS from the
  * document (<style>/<link>) plus the built-in default stylesheet is parsed
  * and handed to the render context. */
@@ -320,7 +320,13 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
         if (!win->render) {
             return -5;
         }
-        win->render->async_layout = win->app->async_layout;
+        /* -1 (auto): decided by the document size once we know it */
+        if (win->app->async_layout < 0) {
+            win->render->async_layout =
+                win->doc_bytes >= (256u * 1024u) ? 1 : 0;
+        } else {
+            win->render->async_layout = win->app->async_layout > 0 ? 1 : 0;
+        }
         window_reload_css(win);
     }
     /* pre-render the first frame before the window becomes visible, so it
@@ -439,6 +445,7 @@ static int window_load_html_len(whaleui_window_t* win, const char* html,
     if (!win->document) {
         return -2;
     }
+    win->doc_bytes = len; /* the show-time async policy reads this */
     /* no JS engine: add .in to reveal elements so their content shows */
     window_reveal_apply(win->document);
     window_reload_css(win);

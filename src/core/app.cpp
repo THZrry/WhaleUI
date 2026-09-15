@@ -1,4 +1,4 @@
-﻿/* Application core: public C API implementation.
+/* Application core: public C API implementation.
  * Event loop polls SDL events, repaints visible windows, honors the
  * max-fps / battery-saver frame cap. */
 
@@ -585,7 +585,7 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
      * whaleui_app_set_accent_color call feeds --accent. */
     app->accent[0] = '\0';
     app->max_fps = 0;
-    app->async_layout = 0; /* async first layout: opt-in only */
+    app->async_layout = -1; /* -1 = auto by document size, 1 = force, 0 = off */
     /* battery saver is a *default*, gated on the actual system power state:
      * 60fps (and FSR, see fsr_want_active) while on battery, uncapped while
      * plugged in. The state is re-polled in the event loop, so unplugging
