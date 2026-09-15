@@ -12,6 +12,7 @@
 #include "style/style.h"
 
 #include <deque>
+#include <vector>
 #include <map>
 #include <string>
 #include <limits>
@@ -175,6 +176,23 @@ struct whaleui_layout_tree
     /* child-chunk storage (see WUI_CHUNK in the node struct above): stable
      * addresses like the node arena, so `chunk`/`chunks` pointers stay valid */
     std::deque<whaleui_child_chunk> chunk_arena;
+    /* Budgeted-build resume points. The first layout of a huge page builds
+     * only the viewport's worth of children and records where it stopped; the
+     * remaining points are drained on later frames (see
+     * whaleui_layout_resume_build). A point always sits on an ELEMENT boundary
+     * with the text run freshly flushed, so resuming needs no carried text
+     * state - just the DOM child to continue at and the sibling tail slot.
+     * (This generalizes what used to be a <ul>/<li>-only, <details>-only
+     * path: "cut the first layout into viewport-sized slices" now works for
+     * any element.) */
+    struct LayoutResume
+    {
+        whaleui_layout_node_t* parent;
+        struct lxb_dom_node* next_dom;
+        whaleui_layout_node_t** link;
+        bool prev_run_space;
+    };
+    std::vector<LayoutResume> resumes;
 
     /* CSS custom properties (--var) collected from the document. Collected
      * once per tree (vars_collected); relayout passes reuse it (the page's

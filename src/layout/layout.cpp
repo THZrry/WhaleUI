@@ -1846,15 +1846,18 @@ struct Builder
                 if (ename && elen == 2 && std::memcmp(ename, "br", 2) == 0) {
                     cur_run += '\n'; /* line break inside the run */
                 } else {
-                    /* progressive expand: a list container with a row
-                     * budget builds only the leading rows - stop the rest
-                     * (append_rows brings them in on later frames) */
-                    if (row_budget != std::numeric_limits<size_t>::max() &&
-                        (n->tag_id == WUI_TAG_UL || n->tag_id == WUI_TAG_OL) &&
-                        ename && elen == 2 && ename[0] == 'l' &&
-                        ename[1] == 'i') {
+                    /* Budgeted build: stop at an ELEMENT boundary - the text
+                     * run is flushed there, so resuming carries no text state
+                     * - and record where to continue
+                     * (tree->resumes; whaleui_layout_resume_build drains it on
+                     * later frames). This generalizes what used to be a
+                     * <ul>/<li>-only path, so "the first layout builds only
+                     * the viewport's worth" now holds for any element. */
+                    if (row_budget != std::numeric_limits<size_t>::max()) {
                         if (row_budget == 0) {
-                            break; /* budget spent: leave the tail unbuilt */
+                            tree->resumes.push_back(
+                                whaleui_layout_tree_t::LayoutResume{n, c, link, prev_run_space});
+                            return n; /* tail (::after) waits for the resume */
                         }
                         --row_budget;
                     }
