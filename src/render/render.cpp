@@ -2566,6 +2566,10 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     /* serialized against the background fill thread (reads the layout tree) */
     std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
     fb_coords(r, x, y);
+    /* the select that was open BEFORE this click decides the toggle below: the
+     * click-outside branch clears open_select, so reading it afterwards always
+     * sees null and the dropdown would re-open on every click */
+    lxb_dom_element* const was_open_select = r->open_select;
     /* 1. clicking inside the expanded list chooses an option */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
@@ -2604,7 +2608,12 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     /* 2. clicking a <select> toggles it open */
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     if (hit && is_select_node(hit)) {
-        r->open_select = hit->el;
+        /* actually TOGGLE, from the pre-click state (was_open_select): an
+         * unconditional assignment re-opened the dropdown in the very click
+         * that should have closed it, so it could never be closed ("the click
+         * does nothing") and its options stayed drawn beside the control's own
+         * value ("the text renders twice") */
+        r->open_select = (was_open_select == hit->el) ? nullptr : hit->el;
         r->open_select_hover = 0;
         r->has_dirty = 1;
     }
