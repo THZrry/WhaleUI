@@ -1464,13 +1464,13 @@ int main(void)
         assert(whaleui_window_load_html(w, html.c_str()) == 0);
         assert(whaleui_window_show(w) == 0);
         int frames = 0;
-        /* the first frame starts the worker and must NOT block: the tree
-         * is still null right after it (bounded loop guards a worker bug).
-         * A short frame delay models the real event loop - the worker
-         * needs a few ms to start + lay out. */
+        /* the first layout is now SYNCHRONOUS but SLICED: the tree exists
+         * right away (the viewport's worth of rows, paintable immediately) and
+         * the worker finishes the rest - so what drains is `resumes`, not a
+         * missing tree. A short delay models the real event loop. */
         assert(whaleui_render_frame(w->render, w->document) == 0);
-        assert(w->render->tree == nullptr); /* worker still running */
-        while (w->render->tree == nullptr && frames < 500) {
+        assert(w->render->tree != nullptr); /* sliced, already paintable */
+        while (!w->render->tree->resumes.empty() && frames < 500) {
             SDL_Delay(5); /* ~vsync frame time */
             assert(whaleui_render_frame(w->render, w->document) == 0);
             ++frames;

@@ -3959,7 +3959,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * (no user interaction exists before the first paint, so no concurrent
      * DOM write) and an anim=NULL layout (animation state is created by
      * the following synchronous frames). */
-    if (r->async_layout && !r->tree && !r->layout_thread && doc) {
+    /* A SLICED first layout (r->tree->resumes non-empty) is already on screen:
+     * finish the full build on a worker so the page catches up in the
+     * background. The old behaviour (no tree yet -> build everything on a
+     * worker) is gone: the first layout is now synchronous but budgeted, so
+     * the window shows the viewport instead of a blank clear colour. */
+    if (r->async_layout && r->tree && !r->tree->resumes.empty() &&
+        !r->layout_thread && doc) {
         r->layout_done.store(0, std::memory_order_relaxed);
         r->layout_pending = nullptr;
         r->layout_w = r->fb_w;
@@ -4177,6 +4183,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->pressed_old_el = nullptr;
         r->hover_prev.clear();
         whaleui_layout_destroy(r->tree);
+        /* was there no tree at all (first layout) vs a rebuild? The slice
+         * decision below applies only to the FIRST layout - a rebuild must
+         * stay whole, or the page would lose content. */
+        const bool wui_first_layout = (r->tree == nullptr);
         /* Build with an interaction-NEUTRAL state so every element hits the
          * style cache (keyed per element + state): the cascade does not
          * depend on which element is hovered, so a whole-tree rebuild after
@@ -4188,10 +4198,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                                   r->focus_old_el, r->focus_el,
                                   r->pressed_old_el, r->pressed_el};
         whaleui_style_state st0;
+        /* First layout of a large page: build only the viewport's worth and
+         * let the worker above catch up (r->tree->resumes stays non-empty,
+         * which is what marks the tree as sliced). */
+        size_t cut_rows = 0;
+        if (r->async_layout && wui_first_layout && r->fb_h > 0) {
+            cut_rows = static_cast<size_t>(r->fb_h / 25) + 8;
+        }
         r->tree = whaleui_layout_compute(doc, r->rules, r->rule_count,
                                          &r->theme_vars, r->fb_w, r->fb_h,
                                          &st0, &r->scrolls, r->anim,
-                                         r->text_scale);
+                                         r->text_scale, cut_rows);
         g_last_tree = r->tree; /* DOM geometry queries see this frame */
         r->has_dirty = 0;
         for (int si = 0; si < 6; ++si) {
