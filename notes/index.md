@@ -74,3 +74,10 @@ set_optimize("fastest")(-O3)后: 292k 字符单节点 46-54ms/帧 -> 10-16ms/帧
 叠加 commit 5651aca 的两个缓存, 相对最初 215ms/帧 共约 14-17 倍。
 -O3 下 10 项测试全绿 + 14 张主题自检 OK(未暴露 UB)。
 教训: 性能测量前先确认优化级别。见 doc/internal/18-long-text-and-input.md 第七节。
+<11>(SOLVED): 滚动帧里最后三处 O(文本长度) 哈希 —— text_cache 键 / 行表 tl_key /
+度量 textw_key 都在对整段文本做 FNV(292k 字符约 1.5ms/帧), 正是"视口截取开销可
+忽略"不成立的原因。加 render.h 的 text_ver: 每帧 whaleui_dom_take_dirty() 非空就
+++, 三处键改为 (buffer 指针, size, text_ver) -> O(1)。292k 单节点滚动
+10-16ms -> 7-10ms/帧, 与 showcase(7ms) 持平, 即与文档长度无关。
+回归: tests/test_render.cpp 断言 text_ver 双向(空闲不变 / DOM 变更后必变)。
+相对最初 215ms/帧 共约 21-30 倍。见 doc/internal/18-long-text-and-input.md 第八节。

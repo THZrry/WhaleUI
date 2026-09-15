@@ -1,4 +1,4 @@
-﻿// test_render: paint pipeline verification on the SDL_GPU path.
+// test_render: paint pipeline verification on the SDL_GPU path.
 // Color parsing always runs; window-level assertions run only when a GPU
 // backend is available (skipped on headless/RDP without a GPU driver).
 #include "whaleui.h"
@@ -104,6 +104,39 @@ int main(void)
     if (whaleui_window_show(win) != 0) {
         /* no GPU backend in this environment - skip the paint assertions */
         std::fprintf(stderr, "GPU backend unavailable, skipping paint checks\n");
+    /* The text raster / line-table / metric caches are keyed on
+     * (buffer, size, r->text_ver) instead of hashing each run's bytes: that
+     * hash was O(run length) on EVERY frame (a 292k-char run cost ~1.5ms
+     * across the three caches), which is what made "viewport culling is free"
+     * false. The version must move in BOTH directions - an idle frame must not
+     * invalidate (or the caches are pointless), a document mutation must (or
+     * an edit keeps painting the old raster). */
+    {
+        whaleui_window_t* tw =
+            whaleui_window_create(app, "text-ver", 300, 120);
+        assert(tw != nullptr);
+        assert(whaleui_window_load_html(
+                   tw,
+                   "<body style=\"margin:0\">"
+                   "<p id=\"t\" style=\"font-size:20px\">iiii</p></body>") == 0);
+        if (whaleui_window_show(tw) == 0 && tw->render != nullptr) {
+            assert(whaleui_render_frame(tw->render, tw->document) == 0);
+            const uint64_t v0 = tw->render->text_ver;
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(tw->render, tw->document) == 0);
+            }
+            assert(tw->render->text_ver == v0);
+            lxb_dom_element* te = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(tw->document, "t"));
+            assert(te != nullptr);
+            assert(whaleui_dom_set_text(
+                       reinterpret_cast<whaleui_dom_element_t*>(te),
+                       "WWWW") == 0);
+            assert(whaleui_render_frame(tw->render, tw->document) == 0);
+            assert(tw->render->text_ver != v0);
+        }
+        whaleui_window_destroy(tw);
+    }
         whaleui_window_destroy(win);
         whaleui_app_destroy(app);
         return 0;

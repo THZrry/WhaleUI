@@ -120,13 +120,20 @@ static bool layout_key_differs(const char* k, const std::string& old_v,
  * family + weight + letter-spacing). Hashed so the lookup never copies
  * the UTF-8 string, which is O(len) per call on a text-heavy page. */
 static uint64_t textw_key(const char* utf8, size_t len, int fs,
-                          const char* family, bool bold, float lsp)
+                          const char* family, bool bold, float lsp,
+                          uint64_t ver)
 {
     uint64_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i < len; ++i) {
-        h ^= static_cast<unsigned char>(utf8[i]);
-        h *= 1099511628211ULL;
-    }
+    /* (buffer, size, text version) instead of hashing the bytes: the box pass
+     * and fix_run_heights re-measure the same runs every frame, and hashing a
+     * 292k-char run was ~0.5ms of that. Any edit bumps the version (see
+     * r->text_ver), so the entry cannot go stale. */
+    h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(utf8));
+    h *= 1099511628211ULL;
+    h ^= static_cast<uint64_t>(len);
+    h *= 1099511628211ULL;
+    h ^= ver;
+    h *= 1099511628211ULL;
     if (family) {
         for (const char* s = family; *s; ++s) {
             h ^= static_cast<unsigned char>(*s);
@@ -161,7 +168,8 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
     /* whole-string cache: the box pass and fix_run_heights re-measure the
      * SAME stable text every frame (an animation only repositions), so the
      * per-char glyph loop below is the hot cost. A hit returns in O(1). */
-    uint64_t tkey = textw_key(utf8, len, fs, family, bold, lsp_px);
+    uint64_t tkey = textw_key(utf8, len, fs, family, bold, lsp_px,
+                              r->text_ver);
     {
         auto it = r->text_w_cache.find(tkey);
         if (it != r->text_w_cache.end()) {
@@ -2158,6 +2166,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->layout_pending = nullptr;
     r->tc_tick = 0;
     r->tc_bytes = 0;
+    r->text_ver = 0;
 #ifdef WHALEUI_BUILD_FULL
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);
@@ -3754,6 +3763,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * set must keep the frame alive so the incremental relayout below runs */
     std::vector<lxb_dom_element*> dom_dirty;
     whaleui_dom_take_dirty(doc, dom_dirty);
+    if (!dom_dirty.empty()) {
+        /* a mutation may have changed any run's text: invalidate the text
+         * raster / line-table / metric caches without hashing them (see
+         * text_ver) */
+        ++r->text_ver;
+    }
     /* interaction-state change (:hover/:active/:focus) on a rule-bearing
      * page: relayout only the previous + current state elements of every
      * pseudo-class state (was a whole-tree rebuild on every change - a
