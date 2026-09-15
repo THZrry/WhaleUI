@@ -122,6 +122,8 @@ void mark_bounds_dirty(whaleui_layout_node_t* n);
 void mark_bounds_dirty_all(whaleui_layout_node_t* n);
 bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, const Clip* clip);
+bool chunk_culled(const whaleui_child_chunk* ck, int off_x, int off_y,
+                  const Clip* clip);
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, int& seq, int sel_lo, int sel_hi,
                 const Clip* clip, bool tc);

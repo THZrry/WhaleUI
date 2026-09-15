@@ -1024,6 +1024,22 @@ bool paint_cull(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
            y1 <= clip->y || y0 >= clip->y + clip->h;
 }
 
+/* Same rule as paint_cull, applied to a whole chunk's merged box: one test
+ * decides for up to WUI_CHUNK siblings. */
+bool chunk_culled(const whaleui_child_chunk* ck, int off_x, int off_y,
+                  const Clip* clip)
+{
+    if (!ck || !clip || clip->w <= 0 || clip->h <= 0) {
+        return false;
+    }
+    int x0 = ck->box.x + off_x - kCullMargin;
+    int y0 = ck->box.y + off_y - kCullMargin;
+    int x1 = ck->box.x + ck->box.w + off_x + kCullMargin;
+    int y1 = ck->box.y + ck->box.h + off_y + kCullMargin;
+    return x1 <= clip->x || x0 >= clip->x + clip->w ||
+           y1 <= clip->y || y0 >= clip->y + clip->h;
+}
+
 void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 int off_y, int& seq, int sel_lo, int sel_hi,
                 const Clip* clip, bool tc)
@@ -1386,8 +1402,23 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * this element's own content, before its children */
     paint_outline(r, n, nox, noy, bw, bh, eff);
     int child_off_y = noy + scroll_delta(r, n);
-    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+    /* chunked child walk: one merged-box test skips WUI_CHUNK siblings at
+     * once (a parent with 100k children costs ~1500 tests, not 100k). Chunks
+     * only exist for parents built through append_child(); when they are
+     * absent (older nodes, reparented subtrees) this degenerates to the plain
+     * `next` walk. */
+    whaleui_child_chunk* ck = n->chunks;
+    for (whaleui_layout_node_t* c = n->first_child; c;) {
+        if (ck && c->chunk == ck) {
+            const whaleui_child_chunk* cur = ck;
+            ck = ck->next;
+            if (chunk_culled(cur, nox, child_off_y, eff)) {
+                c = cur->last ? cur->last->next : nullptr;
+                continue;
+            }
+        }
         paint_node(r, c, nox, child_off_y, seq, sel_lo, sel_hi, eff, tc);
+        c = c->next;
     }
     /* scrollbar sits on top of the content */
     if (n->scroll_max > 0) {
