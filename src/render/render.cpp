@@ -788,11 +788,28 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
         return nullptr;
     }
     int child_off = off_y + scroll_delta(r, n);
-    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+    /* chunked child walk (see paint_node): a chunk whose merged box does not
+     * contain the point cannot contain it in any member, so skip it whole.
+     * No cull margin here - hit testing must stay exact. */
+    whaleui_child_chunk* ck = n->chunks;
+    for (whaleui_layout_node_t* c = n->first_child; c;) {
+        if (ck && c->chunk == ck) {
+            const whaleui_child_chunk* cur = ck;
+            ck = ck->next;
+            const bool has_pt =
+                x >= cur->box.x && x < cur->box.x + cur->box.w &&
+                y >= cur->box.y + child_off &&
+                y < cur->box.y + cur->box.h + child_off;
+            if (!has_pt) {
+                c = cur->last ? cur->last->next : nullptr;
+                continue;
+            }
+        }
         whaleui_layout_node_t* hit = hit_test(r, c, x, y, child_off);
         if (hit) {
             return hit;
         }
+        c = c->next;
     }
     if (x >= n->border.x && x < n->border.x + n->border.w &&
         y >= n->border.y + off_y && y < n->border.y + off_y + n->border.h) {
