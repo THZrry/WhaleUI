@@ -57,3 +57,12 @@ render_get_font/ensure_font_state)、raster 11ms、paint 其它 14ms。
 未做: 子节点按树/分块存储(用户方案: 不设阈值直接按树, 小的不生长, 对外
 first_child/next 语义不变) —— 需单独一轮 + 全量验证。见
 doc/internal/18-long-text-and-input.md
+<9>(SOLVED): UTF-16 文档/样式表只渲染出一个字符 —— 两处缺口缺一不可:
+(1) window.cpp 加载路径用 std::strlen(html) 传长度, UTF-16 每个 ASCII 字符后跟
+0x00, strlen 立刻截断(45KB -> 3 字节到不了解析器);
+(2) 解析入口(dom/css)只跳 UTF-8 BOM, UTF-16 的 FF FE/FE FF 没处理, 按 UTF-8 解码
+时 0xFF/0xFE 非法 + 剩余 0x00 当串尾 -> 全文塌成第一个 ASCII 字符。
+修: 新增 header-only src/core/utf.h 的 wui_utf8_view() 在边缘统一处理编码;
+window.cpp 抽出 window_load_html_len() 让 load_uri 传真实字节数(C API 语义不变)。
+回归: tests/test_dom.cpp::test_dom_utf16_and_bom_input(UTF-16LE/BE + UTF-8 BOM)。
+未做: 无 BOM 的 UTF-16 嗅探(记事本存 UTF-16 一定带 BOM)。commit b8f3cbf。
