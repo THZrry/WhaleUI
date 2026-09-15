@@ -102,6 +102,45 @@ int main(void)
         /* and no vertical scrollbar range appears */
         assert(inp->scroll_max == 0);
         whaleui_window_destroy(w);
+
+    /* Regression: a :hover that only LIFTS the element (transform) must
+     * repaint the band it lifts INTO. The partial-repaint strip was built from
+     * the layout box alone, so a translateY(-Npx) hover drew the border (that
+     * part stayed inside the box) but never the lifted part - exactly the
+     * reported "the animation card responds at once but only the border, it
+     * does not lift". */
+    {
+        whaleui_window_t* lw =
+            whaleui_window_create(app, "hover-lift", 300, 200);
+        assert(lw != nullptr);
+        assert(whaleui_window_load_html(
+                   lw,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:40px;top:100px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b:hover{transform:translateY(-40px);"
+                   "background-color:#0000ff}</style></head>"
+                   "<body><div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(lw) == 0 && lw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(lw->render, lw->document) == 0);
+            }
+            /* the box occupies y=100..140; sample the band ABOVE it, which
+             * only becomes occupied once the hover lifts the box 40px up */
+            unsigned int lift_before = gpixel(lw->render, 80, 75);
+            whaleui_render_set_hover(lw->render, 80, 120);
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(lw->render, lw->document) == 0);
+            }
+            unsigned int lift_after = gpixel(lw->render, 80, 75);
+            std::printf("[hover-lift] %08X -> %08X\n", lift_before,
+                        lift_after);
+            std::fflush(stdout);
+            /* before: page background; after: the lifted (blue) box */
+            assert(lift_after != lift_before);
+        }
+        whaleui_window_destroy(lw);
+    }
     }
 
     /* 2. textarea with wrapped content: scroll_max reflects the real
