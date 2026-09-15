@@ -120,8 +120,7 @@ static bool layout_key_differs(const char* k, const std::string& old_v,
  * family + weight + letter-spacing). Hashed so the lookup never copies
  * the UTF-8 string, which is O(len) per call on a text-heavy page. */
 static uint64_t textw_key(const char* utf8, size_t len, int fs,
-                          const char* family, bool bold, float lsp,
-                          uint64_t ver)
+                          const char* family, bool bold, float lsp)
 {
     uint64_t h = 1469598103934665603ULL;
     /* (buffer, size, text version) instead of hashing the bytes: the box pass
@@ -131,8 +130,6 @@ static uint64_t textw_key(const char* utf8, size_t len, int fs,
     h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(utf8));
     h *= 1099511628211ULL;
     h ^= static_cast<uint64_t>(len);
-    h *= 1099511628211ULL;
-    h ^= ver;
     h *= 1099511628211ULL;
     if (family) {
         for (const char* s = family; *s; ++s) {
@@ -168,8 +165,7 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
     /* whole-string cache: the box pass and fix_run_heights re-measure the
      * SAME stable text every frame (an animation only repositions), so the
      * per-char glyph loop below is the hot cost. A hit returns in O(1). */
-    uint64_t tkey = textw_key(utf8, len, fs, family, bold, lsp_px,
-                              r->text_ver);
+    uint64_t tkey = textw_key(utf8, len, fs, family, bold, lsp_px);
     {
         auto it = r->text_w_cache.find(tkey);
         if (it != r->text_w_cache.end()) {
@@ -2166,7 +2162,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->layout_pending = nullptr;
     r->tc_tick = 0;
     r->tc_bytes = 0;
-    r->text_ver = 0;
+    r->el_ver_seq = 0;
 #ifdef WHALEUI_BUILD_FULL
     /* real glyph widths for the layout pass (inline x, wrap points) */
     whaleui_layout_set_text_metric(render_text_metric);
@@ -3762,12 +3758,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     /* consume this document's pending DOM mutations up front: a non-empty
      * set must keep the frame alive so the incremental relayout below runs */
     std::vector<lxb_dom_element*> dom_dirty;
-    whaleui_dom_take_dirty(doc, dom_dirty);
-    if (!dom_dirty.empty()) {
-        /* a mutation may have changed any run's text: invalidate the text
-         * raster / line-table / metric caches without hashing them (see
-         * text_ver) */
-        ++r->text_ver;
+    std::vector<int> dom_structural;
+    whaleui_dom_take_dirty_typed(doc, dom_dirty, dom_structural);
+    /* bump the text version of ONLY the structurally edited elements - those
+     * may have changed their text, while a hover/class edit cannot. A global
+     * bump here would re-rasterize the whole viewport on every DOM edit, and
+     * DOM edits are not rare (animations, editors, dynamic lists). */
+    for (size_t di = 0; di < dom_dirty.size() && di < dom_structural.size();
+         ++di) {
+        if (dom_structural[di]) {
+            r->el_ver[dom_dirty[di]] = ++r->el_ver_seq;
+        }
     }
     /* interaction-state change (:hover/:active/:focus) on a rule-bearing
      * page: relayout only the previous + current state elements of every

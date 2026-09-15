@@ -30,6 +30,11 @@ struct DirtyEntry
 {
     lxb_dom_element* el;
     lxb_dom_document* doc;
+    /* structural (children/text added, removed, moved, replaced) vs style-only
+     * (hover/focus/class/attribute): only a structural edit can change a run's
+     * TEXT, so only those should invalidate the text raster caches. See the
+     * renderer's per-element version map. */
+    bool structural;
 };
 std::vector<DirtyEntry>& g_dirty()
 {
@@ -254,7 +259,8 @@ int style_set(lxb_dom_element* e, const char* prop, const char* value)
 
 /* --- DOM mutation tracking (incremental relayout) --- */
 
-extern "C" void whaleui_dom_mark_dirty(lxb_dom_element* el)
+/* shared body: records (element, document, structural) with the upgrade rule */
+static void mark_dirty_ex(lxb_dom_element* el, bool structural)
 {
     if (!el) {
         return;
@@ -262,16 +268,26 @@ extern "C" void whaleui_dom_mark_dirty(lxb_dom_element* el)
     lxb_dom_document* doc = el->node.owner_document;
     for (auto& d : g_dirty()) {
         if (d.el == el && d.doc == doc) {
-            return; /* already pending */
+            /* already pending: a later structural edit must still upgrade the
+             * entry, or the text caches would keep serving the old raster */
+            d.structural = d.structural || structural;
+            return;
         }
     }
-    g_dirty().push_back({el, doc});
+    g_dirty().push_back({el, doc, structural});
 }
 
-extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
-                                       std::vector<lxb_dom_element*>& out)
+/* Same drain as whaleui_dom_take_dirty, but keeps the "structural" flag per
+ * element (parallel to `out`). Only a structural edit can change a run's TEXT,
+ * and DOM edits are not rare (animations, editors, dynamic lists), so the
+ * renderer bumps just those elements' text-cache versions instead of
+ * invalidating every text cache on any mutation. */
+extern "C" void whaleui_dom_take_dirty_typed(
+    whaleui_dom_document_t* doc, std::vector<lxb_dom_element*>& out,
+    std::vector<int>& out_structural)
 {
     out.clear();
+    out_structural.clear();
     lxb_dom_document* want =
         as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
     std::vector<DirtyEntry>& d = g_dirty();
@@ -280,11 +296,24 @@ extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
     for (auto& e : d) {
         if (e.doc == want) {
             out.push_back(e.el);
+            out_structural.push_back(e.structural ? 1 : 0);
         } else {
             keep.push_back(e);
         }
     }
     d.swap(keep);
+}
+
+extern "C" void whaleui_dom_mark_dirty(lxb_dom_element* el)
+{
+    mark_dirty_ex(el, false);
+}
+
+extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
+                                       std::vector<lxb_dom_element*>& out)
+{
+    std::vector<int> structural;
+    whaleui_dom_take_dirty_typed(doc, out, structural);
 }
 
 extern "C" void whaleui_dom_mark_vars_dirty(void)
@@ -302,7 +331,7 @@ extern "C" int whaleui_dom_take_vars_dirty(void)
 extern "C" void whaleui_dom_mark_dirty_struct(lxb_dom_element* el)
 {
     g_struct_dirty() = true;
-    whaleui_dom_mark_dirty(el);
+    mark_dirty_ex(el, true);
 }
 
 extern "C" int whaleui_dom_take_struct_dirty(void)

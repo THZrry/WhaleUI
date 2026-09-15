@@ -102,20 +102,20 @@ static uint64_t tl_fnv(uint64_t h, uint64_t v)
     return h;
 }
 
-/* Key for the line-layout table. It carries (buffer, size, text version)
- * instead of hashing the bytes: the version is bumped on every document
- * mutation, so an edit can never alias, and the key costs O(1) - hashing a
- * 292k-char run here was ~0.5ms on EVERY frame (the viewport-culled raster
- * still needs the whole line table, so the cache lookup happens per frame). */
+/* Key for the line-layout table. It carries (buffer, size) instead of hashing
+ * the bytes: the layout pass hands us the node's own stable text buffer, and a
+ * document edit replaces that buffer (text_arena grows a fresh entry), so the
+ * pointer changes with the content. Hashing a 292k-char run here was ~0.5ms on
+ * EVERY frame - the viewport-culled raster still needs the whole line table, so
+ * this lookup happens per frame. */
 static uint64_t tl_key(const std::string& text, int fs,
                        const std::string& family, bool bold, float lsp,
-                       int wrap_w, int lh, uint64_t ver)
+                       int wrap_w, int lh)
 {
     uint64_t h = 1469598103934665603ull;
     h = tl_fnv(h, static_cast<uint64_t>(
                       reinterpret_cast<uintptr_t>(text.data())));
     h = tl_fnv(h, static_cast<uint64_t>(text.size()));
-    h = tl_fnv(h, ver);
     for (size_t i = 0; i < family.size(); ++i) {
         h = tl_fnv(h, static_cast<unsigned char>(family[i]));
     }
@@ -1462,15 +1462,19 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     std::string ckey_str; /* cache key to write on miss ("" = no caching) */
 #ifdef WHALEUI_BUILD_FULL
     if (ckey && !text.empty()) {
-        /* the key carries (element, geometry, text version) - the version is
-         * what makes an edit invalidate this entry (r->text_ver). Hashing the
-         * run's bytes here cost O(run length) on EVERY frame: 292k chars is
-         * ~1ms, which is exactly where "viewport culling is free" broke. */
+        /* the key carries (element, geometry, per-element version). The version
+         * is what invalidates this entry when THIS element had a structural
+         * edit; hashing the run's bytes here would cost O(run length) on every
+         * frame, and a global version would throw away every other run's raster
+         * on any DOM edit. */
         char key[160];
+        std::unordered_map<lxb_dom_element*, uint64_t>::iterator vit =
+            r->el_ver.find(ckey);
+        const unsigned long long ever =
+            vit != r->el_ver.end() ? vit->second : 0ull;
         std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu",
                       static_cast<void*>(ckey), fs, style, family.c_str(),
-                      wrap ? bw : -1, color, lsp,
-                      static_cast<unsigned long long>(r->text_ver));
+                      wrap ? bw : -1, color, lsp, ever);
         auto it = r->text_cache.find(key);
         if (it != r->text_cache.end() && !it->second.px.empty()) {
             whaleui_render_t::TextCacheEntry& e = it->second;
@@ -1497,8 +1501,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * 婵犵數鍋為崹鍫曞箰閸洖纾块柡灞诲劜閸嬪鏌涘☉姗堝姛闁崇粯妫冮弻宥堫檨闁告挾鍠栭獮?full 婵?stb 闂傚倷绀侀幉锟犳偡椤栨稓顩叉繝闈涙４閼板灝霉閿濆牜娼愬ù婧垮€栫换娑㈠幢濡纰嶅┑鐐叉噳閳ь剚鏋煎Σ鍫ユ煙閹咃紞鐎涙繈姊?濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴濇喚闁搞倖顨嗛妵鍕疀閹炬惌妫炵紓浣哄У瀹€鎼佸蓟濞戞ǚ鏋庢俊顖氭贡閸戠懓鈹戦悩顐壕婵炶揪绲藉﹢閬嶅煝閺冨牊鐓冪憸婊堝礈濮樿京鐭?*/
         int baseline_off;
         const int wrap_w = (wrap && bw > 0) ? bw : 0;
-        const uint64_t lkey =
-            tl_key(text, fs, family, bold, lsp, wrap_w, lh, r->text_ver);
+        const uint64_t lkey = tl_key(text, fs, family, bold, lsp, wrap_w, lh);
         const TextLayout* Lp = tl_lookup(lkey);
         TextLayout L_local;
 #ifdef WHALEUI_BUILD_FULL

@@ -32,6 +32,15 @@ void whaleui_dom_mark_dirty(struct lxb_dom_element* el);
 void whaleui_dom_take_dirty(struct whaleui_dom_document* doc,
                             std::vector<struct lxb_dom_element*>& out);
 
+/* Same drain, but `out_structural` (parallel to `out`) says whether each
+ * element had a STRUCTURAL edit (children/text added, removed, moved,
+ * replaced). Only those can change a run's text; style-only edits (hover,
+ * class, attribute) leave the text raster caches valid. The renderer uses this
+ * to version text caches per element instead of invalidating all of them. */
+void whaleui_dom_take_dirty_typed(struct whaleui_dom_document* doc,
+                                  std::vector<struct lxb_dom_element*>& out,
+                                  std::vector<int>& out_structural);
+
 /* Record that the document's CSS custom-property source changed (a style
  * attribute holding --var definitions was edited): the next incremental
  * relayout must re-collect vars. */

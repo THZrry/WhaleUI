@@ -216,3 +216,23 @@ DOM 变更后必须变化(否则一直画旧光栅)。
 
 至此长文本滚动相对最初的 215ms/帧 共约 **21-30 倍**: 两个缓存(4.7x) x release
 优化(~4x) x 去掉逐帧全串哈希。
+
+## 九、细粒度失效: 只有被结构改动的元素才失效
+
+第八节的 `text_ver` 是**全局**的: 任何 DOM 变更都会让所有文本缓存失效。用户指出
+这不对 —— DOM 变更不是低频事件(动画、编辑框、动态列表都在改 DOM), 而"没有修改
+的内容不该失效"。
+
+改法:
+- `whaleui_dom_take_dirty_typed(doc, out, out_structural)` 在排空 dirty 集合时带上
+  "这次改动是不是结构性的"; `DirtyEntry` 增加 `structural`, 且同一个元素先以样式
+  变更入队、后以结构变更入队时会**升级**为结构性(否则那一帧仍会画旧光栅);
+- 渲染侧改为 `r->el_ver`(元素 -> 版本) + `r->el_ver_seq`: 每帧只给**结构性改动过的
+  那些元素** `++版本`。hover/class/attribute 这类样式改动**不 bump**, 缓存照旧命中;
+- `text_cache` 的键用**该元素**的版本, 不再用全局版本;
+- 行表 `tl_key` / 度量 `textw_key` 干脆去掉版本, 改用 (文本缓冲指针, size): 布局
+  层每次重建都把 run 的文本放进 `text_arena` 的新条目, 指针随内容一起变。
+
+回归(`tests/test_render.cpp`): 空闲帧不版本化任何元素; `whaleui_dom_set_text`
+(结构性)后**恰好**版本化该元素; `whaleui_dom_set_attribute` 改 class(样式性)后
+版本集合**不变** —— 正好覆盖用户指出的那条。

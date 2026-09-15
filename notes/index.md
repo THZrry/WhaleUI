@@ -81,3 +81,10 @@ set_optimize("fastest")(-O3)后: 292k 字符单节点 46-54ms/帧 -> 10-16ms/帧
 10-16ms -> 7-10ms/帧, 与 showcase(7ms) 持平, 即与文档长度无关。
 回归: tests/test_render.cpp 断言 text_ver 双向(空闲不变 / DOM 变更后必变)。
 相对最初 215ms/帧 共约 21-30 倍。见 doc/internal/18-long-text-and-input.md 第八节。
+<12>(SOLVED): DOM 变更的文本缓存失效粒度过粗 —— <11> 用全局 text_ver, 任何 DOM
+变更都失效所有文本缓存; 但 DOM 变更很高频(动画/编辑/动态列表), 没改的内容不该失效。
+改: whaleui_dom_take_dirty_typed 带出"是否结构性改动"(_DirtyEntry.structural, 同
+元素样式->结构会升级); 渲染侧 r->el_ver 只给结构性改动的元素 ++版本, hover/class/
+attribute 不失效; text_cache 键用该元素版本; 行表/度量的键改用 (文本缓冲指针,size)
+(布局重建会换 text_arena 条目, 指针随内容变)。回归: test_render 断言空闲不版本化/
+结构改动恰好版本化该元素/样式改动不版本化。见 doc/internal/18 第九节。

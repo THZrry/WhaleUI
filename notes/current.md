@@ -77,3 +77,14 @@ rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transfo
 `oklab|oklch|lab|lch` / `color-mix()` / `attr()` / `counter()` /
 `::first-line` / `:has()` / 容器查询 / `filter` 与混合模式 / CPU 路径的
 `backdrop-filter`)逐条列在 `doc/internal/16-engine-support.md` 末尾。
+
+# <13>: 子节点"分块/树"存储 —— 收益需要重新评估(未做)
+
+用户方案: 子节点用数组块, 块间连成树; 不设阈值, 小的不生长; 对外
+`first_child`/`next` 语义不变(读点 ~280 处全部保住, 写入点只有 ~10 处)。
+
+实测前提: 布局节点已经在 `std::deque<whaleui_layout_node_t> arena` 里分配
+(layout.h:144), 同一父元素的子节点按分配顺序相邻 —— `first_child`/`next` 遍历
+本来就是顺序内存访问, deque 已经提供了分块。所以"分块"对遍历的 cache 局部性
+几乎没有增量收益; 真正能拿到的只有超大子列表的 O(1) 随机访问/尾插(罕见场景),
+以及一个 O(1) 的 `child_count`(对 `:nth-child()` 之类有用)。

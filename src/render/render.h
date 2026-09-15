@@ -136,13 +136,14 @@ struct whaleui_render
     std::map<std::string, TextCacheEntry> text_cache;
     uint64_t tc_tick;      /* monotonic use counter for LRU */
     size_t tc_bytes;       /* total raster bytes in the cache */
-    /* Text-content version. Every raster / line-table cache key used to hash
-     * the run's whole text to detect edits - O(run length) per frame, ~1.5ms
-     * for a 292k-char run, which is exactly the "viewport culling is free"
-     * assumption breaking down. Keys now carry (pointer, size, this version),
-     * and the version is bumped whenever the document reports mutations, so an
-     * edit invalidates every text cache without touching the bytes. */
-    uint64_t text_ver;
+    /* Per-element text version. A STRUCTURAL DOM edit (children/text added,
+     * removed, moved, replaced) bumps the version of exactly the elements it
+     * touched; style-only edits (hover/focus/class) bump nothing, since they
+     * cannot change text. Text caches key on this instead of hashing each
+     * run's bytes (O(run length) per frame) or of one global version (which
+     * invalidated everything - DOM edits are not rare). */
+    std::unordered_map<lxb_dom_element*, uint64_t> el_ver;
+    uint64_t el_ver_seq;
 
     /* decoded <img> bitmaps by src (owned; freed in destroy). Only local
      * file:// / relative URIs are loadable; remote or missing sources fall

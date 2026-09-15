@@ -121,11 +121,11 @@ int main(void)
                    "<p id=\"t\" style=\"font-size:20px\">iiii</p></body>") == 0);
         if (whaleui_window_show(tw) == 0 && tw->render != nullptr) {
             assert(whaleui_render_frame(tw->render, tw->document) == 0);
-            const uint64_t v0 = tw->render->text_ver;
             for (int i = 0; i < 3; ++i) {
                 assert(whaleui_render_frame(tw->render, tw->document) == 0);
             }
-            assert(tw->render->text_ver == v0);
+            /* idle frames must version nothing */
+            assert(tw->render->el_ver.empty());
             lxb_dom_element* te = reinterpret_cast<lxb_dom_element*>(
                 whaleui_dom_get_element_by_id(tw->document, "t"));
             assert(te != nullptr);
@@ -133,7 +133,18 @@ int main(void)
                        reinterpret_cast<whaleui_dom_element_t*>(te),
                        "WWWW") == 0);
             assert(whaleui_render_frame(tw->render, tw->document) == 0);
-            assert(tw->render->text_ver != v0);
+            /* the structural edit must have versioned exactly this element */
+            assert(tw->render->el_ver.size() == 1);
+            assert(tw->render->el_ver.begin()->first == te);
+            /* and a style-only edit must NOT invalidate anything: DOM edits are
+             * frequent (animations, editors, dynamic lists), so re-rasterizing
+             * the viewport on a hover/class change is what this avoids */
+            const size_t ver_before = tw->render->el_ver.size();
+            assert(whaleui_dom_set_attribute(
+                       reinterpret_cast<whaleui_dom_element_t*>(te), "class",
+                       "hl") == 0);
+            assert(whaleui_render_frame(tw->render, tw->document) == 0);
+            assert(tw->render->el_ver.size() == ver_before);
         }
         whaleui_window_destroy(tw);
     }
