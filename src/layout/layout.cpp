@@ -1722,7 +1722,38 @@ struct Builder
                 run_marker = std::to_string(idx) + ". ";
             }
         }
-        whaleui_layout_node_t** link = &n->first_child;
+        /* append `c` to parent `p`: keeps the sibling chain AND the chunk
+         * list in sync, both O(1). `link` is the caller's "next slot of the
+         * last sibling"; the caller then moves it to &c->next. Chunks exist so
+         * a parent with tens of thousands of children can be culled per chunk
+         * instead of per sibling (see WUI_CHUNK). */
+        auto append_child = [&](whaleui_layout_node_t* p,
+                                whaleui_layout_node_t** slot,
+                                whaleui_layout_node_t* c) {
+            whaleui_child_chunk* ck = p->chunks_last;
+            if (!ck || ck->count >= WUI_CHUNK) {
+                tree->chunk_arena.emplace_back();
+                whaleui_child_chunk* nk = &tree->chunk_arena.back();
+                nk->first = c;
+                nk->count = 0;
+                nk->box.x = 0;
+                nk->box.y = 0;
+                nk->box.w = 0;
+                nk->box.h = 0;
+                nk->next = nullptr;
+                if (ck) {
+                    ck->next = nk;
+                } else {
+                    p->chunks = nk;
+                }
+                p->chunks_last = nk;
+                ck = nk;
+            }
+            ck->count++;
+            ck->last = c;
+            c->chunk = ck;
+            *slot = c;
+        };        whaleui_layout_node_t** link = &n->first_child;
         while (*link && (*link)->next) {
             link = &(*link)->next;
         }
@@ -1752,11 +1783,7 @@ struct Builder
                 pb->in_inline = 0;
                 pb->opacity = n->opacity;
                 pb->style = pseudo_box_style(n->style, el, 1);
-                if (!*link) {
-                    *link = pb;
-                } else {
-                    (*link)->next = pb;
-                }
+                append_child(n, link, pb);
                 link = &pb->next;
                 if (!pre.empty()) {
                     add_run(pb, pre, pb->style);
@@ -1833,11 +1860,7 @@ struct Builder
                     }
                     flush_run();
                     whaleui_layout_node_t* child = build(e, n);
-                    if (!*link) {
-                        *link = child;
-                    } else {
-                        (*link)->next = child;
-                    }
+                    append_child(n, link, child);
                     link = &child->next;
                 }
             }
@@ -1870,11 +1893,7 @@ struct Builder
                 pb->in_inline = 0;
                 pb->opacity = n->opacity;
                 pb->style = pseudo_box_style(n->style, el, 2);
-                if (!*link) {
-                    *link = pb;
-                } else {
-                    (*link)->next = pb;
-                }
+                append_child(n, link, pb);
                 link = &pb->next;
                 if (!post.empty()) {
                     add_run(pb, post, pb->style);

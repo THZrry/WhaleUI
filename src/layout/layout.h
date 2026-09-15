@@ -106,6 +106,32 @@ struct whaleui_layout_node
     struct whaleui_layout_node* parent;
     struct whaleui_layout_node* first_child;
     struct whaleui_layout_node* next;
+
+    /* Children stay a plain `next` chain (every reader depends on it), but are
+     * ALSO grouped into fixed-size chunks carrying a merged bounds box. A
+     * parent with tens of thousands of children then culls whole chunks
+     * instead of visiting every sibling, so the paint / hit walks become
+     * O(chunks) instead of O(children) - while first_child / next keep
+     * working exactly as before. `chunk` is the chunk this node belongs to;
+     * `chunks` heads this node's chunk list. Maintained where children are
+     * appended (layout.cpp); the boxes are refreshed by compute_paint_bounds. */
+    struct whaleui_child_chunk* chunk;
+    struct whaleui_child_chunk* chunks;
+    struct whaleui_child_chunk* chunks_last; /* O(1) append tail */
+};
+
+/* Siblings per chunk. Deliberately NOT a strict B-tree: a chunk splits when it
+ * overflows and merges when it drains (relaxed bounds), so maintenance stays
+ * rare instead of rebalancing on every insert. */
+#define WUI_CHUNK 64
+
+struct whaleui_child_chunk
+{
+    struct whaleui_layout_node* first; /* first sibling in this chunk */
+    struct whaleui_layout_node* last;  /* last sibling: O(1) chunk skip */
+    int count;
+    whaleui_rect_t box;                /* union of the members' subtree bounds */
+    struct whaleui_child_chunk* next;
 };
 
 typedef struct whaleui_layout_node whaleui_layout_node_t;
@@ -146,6 +172,9 @@ struct whaleui_layout_tree
 
     std::deque<whaleui_layout_node_t> arena; /* stable node storage */
     std::deque<std::string> text_arena;      /* text-run storage */
+    /* child-chunk storage (see WUI_CHUNK in the node struct above): stable
+     * addresses like the node arena, so `chunk`/`chunks` pointers stay valid */
+    std::deque<whaleui_child_chunk> chunk_arena;
 
     /* CSS custom properties (--var) collected from the document. Collected
      * once per tree (vars_collected); relayout passes reuse it (the page's
