@@ -121,7 +121,8 @@ int main(void)
                    "#b:hover{transform:translateY(-40px);"
                    "background-color:#0000ff}"
                    "</style></head>"
-                   "<body><div id=\"b\"></div></body></html>") == 0);
+                   "<body><div id=\"b\"><span id=\"in\">x</span>"
+                   "</div></body></html>") == 0);
         if (whaleui_window_show(lw) == 0 && lw->render != nullptr) {
             for (int i = 0; i < 4; ++i) {
                 assert(whaleui_render_frame(lw->render, lw->document) == 0);
