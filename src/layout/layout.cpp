@@ -1645,16 +1645,7 @@ struct Builder
             n->z = std::atoi(zs.c_str());
         }
         n->hz = n->z > 0;
-        /* paint-path flags: transform/position are tested on every node
-         * during the paint walk - cache them here so paint reads bits
-         * instead of std::map lookups */
-        {
-            std::string tfv = get(n->style, "transform");
-            n->xf = !tfv.empty() && tfv != "none";
-            std::string pv = get(n->style, "position");
-            n->fx = pv == "fixed";
-            n->sk = pv == "sticky";
-        }
+        whaleui_layout_node_refresh_paint_flags(n);
         std::string op = get(n->style, "opacity");
         if (!op.empty()) {
             float o = std::strtof(op.c_str(), nullptr);
@@ -4144,6 +4135,32 @@ extern "C" void whaleui_layout_scale_fonts(whaleui_layout_tree_t* tree,
             }
         };
     walk(tree->root);
+}
+
+/* Refresh the cached paint-path flags (xf/fx/sk) from the node's style.
+ * THE single writer of these bits: the build cascade calls it for every
+ * node, and the renderer calls it after the per-frame animation override
+ * (whaleui_anim_apply_ov) wrote interpolated values straight into the style
+ * map behind build's back. That path is the only way a transform value can
+ * appear on an already-built node: apply_transition pins the style at the
+ * neutral value ("none") while a transform transition registers, so without
+ * this refresh xf stays 0 and paint_node never translates - a hover
+ * transform transition (and the state-repaint strip that reads xf) never
+ * sees the movement. */
+extern "C" void whaleui_layout_node_refresh_paint_flags(
+    whaleui_layout_node_t* n)
+{
+    if (!n) {
+        return;
+    }
+    /* paint-path flags: transform/position are tested on every node
+     * during the paint walk - cache them here so paint reads bits
+     * instead of std::map lookups */
+    std::string tfv = get(n->style, "transform");
+    n->xf = !tfv.empty() && tfv != "none";
+    std::string pv = get(n->style, "position");
+    n->fx = pv == "fixed";
+    n->sk = pv == "sticky";
 }
 
 static int relayout_impl(

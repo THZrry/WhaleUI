@@ -4426,6 +4426,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (nd->el && !nd->is_text &&
                     whaleui_anim_has_el(r->anim, nd->el)) {
                     whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
+                    /* apply_ov wrote interpolated values straight into the
+                     * style map, behind layout's build: refresh the cached
+                     * paint flags or an interpolated transform keeps xf=0
+                     * (apply_transition pins the style at "none" while the
+                     * transition registers) and paint_node never translates
+                     * - a hover transform transition never lifts. Opacity is
+                     * refreshed right below; position cannot arrive through
+                     * a paint-only animation (is_layout_prop), so the fx/sk
+                     * refresh only keeps the single-writer invariant. */
+                    whaleui_layout_node_refresh_paint_flags(nd);
                     float o = 1.0f;
                     std::string ov2 = sget(nd->style, "opacity");
                     if (!ov2.empty()) {

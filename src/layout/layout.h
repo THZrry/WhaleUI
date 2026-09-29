@@ -255,6 +255,15 @@ whaleui_layout_tree_t* whaleui_layout_compute(whaleui_dom_document_t* doc,
                                               size_t max_rows = 0);
 void whaleui_layout_destroy(whaleui_layout_tree_t* tree);
 
+/* Refresh the cached paint-path flags (xf/fx/sk) of one node from its
+ * current style map. The single writer of these bits: the layout build
+ * calls it while cascading each node, and the renderer must call it after
+ * the per-frame animation override (whaleui_anim_apply_ov) wrote
+ * interpolated values straight into the node's style - an interpolated
+ * transform going none -> value must flip xf or paint_node never
+ * translates (transform transitions never lift). */
+void whaleui_layout_node_refresh_paint_flags(whaleui_layout_node_t* n);
+
 /* Incremental relayout: rebuild the layout subtree of `el` (computed style
  * + children, re-read from the live DOM) inside an existing tree, splice it
  * into the parent's child chain, then re-run the box pass over the tree.

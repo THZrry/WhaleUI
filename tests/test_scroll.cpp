@@ -186,6 +186,52 @@ int main(void)
         }
         whaleui_window_destroy(hw2);
     }
+
+    /* Regression: a TRANSFORM TRANSITION ("transition:transform" + :hover
+     * transform) must lift. apply_transition pins the style at the neutral
+     * "none" while the transition registers, and the interpolated value only
+     * reaches the built node through the per-frame apply_ov - which wrote the
+     * style map behind layout's build, leaving the cached paint flag xf=0, so
+     * paint_node never translated and the card never moved. The flag refresh
+     * after apply_ov must flip xf as soon as the interpolated value is a real
+     * transform. */
+    {
+        whaleui_window_t* tw =
+            whaleui_window_create(app, "hover-transform-transition", 300, 200);
+        assert(tw != nullptr);
+        assert(whaleui_window_load_html(
+                   tw,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:40px;top:100px;width:80px;"
+                   "height:40px;background-color:#ff0000;"
+                   "transition:transform 0.2s}"
+                   "#b:hover{transform:translateY(-40px);"
+                   "background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(tw) == 0 && tw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(tw->render, tw->document) == 0);
+            }
+            /* the box occupies y=100..140; sample the band ABOVE it, which
+             * only becomes occupied once the hover lifts the box 40px up */
+            unsigned int before = gpixel(tw->render, 80, 75);
+            whaleui_render_set_hover(tw->render, 80, 120);
+            /* run the 0.2s transition to completion; poll instead of a fixed
+             * frame count so wall-clock jitter cannot end the loop early */
+            bool lifted = false;
+            for (int i = 0; i < 100 && !lifted; ++i) {
+                assert(whaleui_render_frame(tw->render, tw->document) == 0);
+                lifted = gpixel(tw->render, 80, 75) != before;
+                SDL_Delay(10); /* 1s budget > 0.2s transition */
+            }
+            std::printf("[hover-transition] before=%08X lifted=%d\n", before,
+                        static_cast<int>(lifted));
+            std::fflush(stdout);
+            assert(lifted);
+        }
+        whaleui_window_destroy(tw);
+    }
     }
 
     /* 2. textarea with wrapped content: scroll_max reflects the real
