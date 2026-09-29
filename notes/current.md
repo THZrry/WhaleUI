@@ -78,30 +78,65 @@ rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transfo
 `::first-line` / `:has()` / 容器查询 / `filter` 与混合模式 / CPU 路径的
 `backdrop-filter`)逐条列在 `doc/internal/16-engine-support.md` 末尾。
 
-# <13>: 子节点"分块/树"存储 —— 收益点与正确切口(未做)
+# <13>: 子节点"分块/树"存储
+
+SOLVED
 
 用户方案: 子节点用数组块, 块间连成树; 不设阈值, 小的不生长; 对外 first_child/
-next 语义不变(读点 ~280 处全部保住, 写入点只有 ~10 处)。补充指导: 不做严格长度
-控制, 超过/不足一定数量自然裂解/合并; 大小不靠遍历, 元素脏了再更新并逐层向上冒泡。
+next 语义不变(读点 ~280 处全部保住, 写入点只有 ~10 处)。已落地:
 
-实测前提(重要):
-- 布局节点在 `std::deque<whaleui_layout_node_t> arena` 里(layout.h:144), 同一父元素
-  的子节点按分配顺序相邻 -> `first_child`/`next` 遍历本来就是顺序内存访问, deque
-  已提供分块。分块对遍历 cache 局部性几乎无增量收益。
-- **真正的收益在遍历次数**: 父元素挂几万个孩子时(agent 聊天历史、wpt-css index
-  每个 summary 下几十到几万个对象), viewport 只需要"合并后的位置和大小"。按块存
-  合并盒 -> 遍历从 O(子节点数) 降到 O(块数)。
-- `bounds`(子树合并盒)与 `r->bounds_valid` **已经存在**且已经惰性: 滚动帧不重算,
-  只有"几何变了"才 `compute_paint_bounds`(O(n) 后序一次); paint-only 的改动走
-  `dom_repaint` + 局部 `compute_paint_bounds(nd)`。
+- 基础设施(9a43a81): layout.h 的 `WUI_CHUNK=64` + `whaleui_child_chunk`
+  (块内首尾指针 + 合并盒), `chunk_arena` deque 提供稳定地址; 追加子节点时
+  自然裂解, 无严格长度控制。
+- paint 按块跳(48d7a49): 100k 兄弟 11-14ms -> 2-4ms/帧; hit_test 同一套
+  块盒判断且无 cull margin(9851186, 命中必须精确)。
+- 切段/续建配套: 续建点携带 run_marker_done/summary_seen(594ec5e)、切段
+  预算通用化到任何元素(fb4230d)、compute 接受首帧切段预算(ec2bb8b)、
+  首帧只建视口 + worker 后台补齐(9383dca)。
 
-已尝试并回退: 把 `bounds_valid` 全树标志换成逐节点脏位 + 冒泡
-(`mark_bounds_dirty` / `mark_bounds_dirty_all`, 布局节点加 `bd` 位)。
-`test_scroll` 抓到它破坏了 hover 的部分重绘 —— 设了 `bounds_valid = 1` 之后那一帧
-不会再重算, 刚改样式的盒子被剔除逻辑剔掉。结论: **bounds 的失效机制已经是对的,
-别再动它**。
+保留的实测结论(别再踩):
 
-正确切口(下次实现): 在**遍历**里用"块的合并盒"跳过 —— 给父元素的子节点分块
-(每块 N 个, 松弛分裂/合并), 每块维护一个合并盒; `paint_cull` / `hit_test` /
-`compute_paint_bounds` 的循环按块判断, 不相交就整块跳过。这与 `first_child`/`next`
-语义兼容(块内仍是 next 链), 写入点只有那 ~10 处。
+- **分块的收益在"遍历次数"不在内存布局**: 布局节点本就在
+  `std::deque<whaleui_layout_node_t> arena` 里, 同一父元素的子节点按分配
+  顺序相邻, 顺序遍历的 cache 局部性已经够 —— 块的合并盒才是省时间的部分
+  (viewport 只需要"合并后的位置和大小", O(子节点数) -> O(块数))。
+- **bounds 失效机制的现状与铁律**: 最初把 bounds_valid 换成逐节点脏位的
+  尝试错在两处(祖先的脏没人消; 4517 段设 bounds_valid=1 又把帧内根重算
+  拱住 -> 剔除用了陈旧 bounds), test_scroll 抓到 hover 盒子被剔掉。
+  d8cbcfe 以修正版落地: 标脏只走冒泡(mark_bounds_dirty), "所有盒子都动了"
+  的全量帧用 mark_bounds_dirty_all; 重算从根开始、干净子树早退; 布局节点
+  带 bd 脏位, 创建时置 1; visible=0 也冒泡标脏。效果: 局部重排不再整树
+  重算(40k 节点滚动 4-6ms/帧)。**铁律不变**: bounds_valid=1 的语义是
+  "本帧不重算", 任何动失效机制的改动必须先过 test_scroll 的 hover 用例。
+
+# <14>: xf 预计算标志与动画逐帧写 style 脱节 —— transform 过渡不上浮
+
+SOLVED
+
+现象: hover 用 transform 过渡(`transition:transform` + `:hover{transform}`)
+时卡片完全不上浮; 同一页面去掉过渡就正常。实测期间(ced305b 调试)已有直接
+证据: 有节点 transform 非 none 而 xf=0。
+
+根因: xf/fx/sk 是 paint 路径的预计算位(build 时每节点缓存一次, 让 paint 读
+位而不是每帧 std::map 查找)。此前全项目只有 Builder::build 一个写点, 而
+transform 过渡的注册(apply_transition)会把 style 钉在中性值 "none"(插值
+起点), 之后插值只经 `whaleui_anim_apply_ov` 逐帧写进 nd->style —— 不经
+build, xf 永远停在 0:
+
+- paint_node 的 `has_xf` 门不开 -> 永不位移(渲染_paint.cpp:1059);
+- 状态重排的脏条带累加同样读 xf -> 漏掉位移后的位置(render.cpp:4862);
+- 动画脏区累加器(4907 分支)没事, 它直接读 style。
+
+修法(通用机制, 不做局部特调): 把 build 里的标志块抽成
+`whaleui_layout_node_refresh_paint_flags`(layout.cpp 定义 + layout.h 声明),
+build 每节点照旧调用; render.cpp 的 find_anim 在 `whaleui_anim_apply_ov`
+之后对被动画节点调用同一次(与紧随其后的 opacity 逐帧刷新并列)。
+fx/sk 不能经 paint-only 动画到达(transform/position 里只有 transform 不在
+is_layout_props, position 变化会走 needs_layout -> relayout -> build),
+刷新它们只是维持"单一写点"不变式。
+
+回归: tests/test_scroll.cpp 的 hover-transform-transition 用例 ——
+`#b{transition:transform 0.2s}` + `:hover{transform:translateY(-40px)}`,
+hover 后轮询帧直到盒子上方采样带变色(0.2s 过渡, 1s 预算, 抗时钟抖动);
+**修前 lifted=0 断言失败, 修后 lifted=1**(均实测)。
+验证: xmake b -y 通过; 10 项测试全绿。

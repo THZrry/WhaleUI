@@ -88,3 +88,15 @@ set_optimize("fastest")(-O3)后: 292k 字符单节点 46-54ms/帧 -> 10-16ms/帧
 attribute 不失效; text_cache 键用该元素版本; 行表/度量的键改用 (文本缓冲指针,size)
 (布局重建会换 text_arena 条目, 指针随内容变)。回归: test_render 断言空闲不版本化/
 结构改动恰好版本化该元素/样式改动不版本化。见 doc/internal/18 第九节。
+<13>(SOLVED): 子节点分块(chunk)落地 —— WUI_CHUNK=64 合并盒, paint/hit_test 按块
+剔除(100k 兄弟 11-14ms -> 2-4ms/帧), first_child/next 语义不变。保留结论: 分块
+收益在"遍历次数"不在内存布局(deque 顺序已足够); bounds 失效机制以 d8cbcfe 的
+修正版落地(标脏冒泡 + 全量帧 mark_bounds_dirty_all + 根重算早退), 铁律:
+bounds_valid="本帧不重算"的语义动前必须过 test_scroll 的 hover 用例。见
+notes/current.md
+<14>(SOLVED): xf 预计算标志与动画逐帧写 style 脱节 —— transform 过渡注册时
+style 被钉在中性值 "none", 插值只经 whaleui_anim_apply_ov 逐帧写入(不经
+build), xf 停在 0 -> paint_node 永不位移(transform 过渡不上浮)。修: 标志块抽成
+whaleui_layout_node_refresh_paint_flags 单一写点(build 与 apply_ov 后共用);
+回归 tests/test_scroll.cpp 的 hover-transform-transition(修前 FAIL 修后 PASS,
+均实测)。见 notes/current.md
