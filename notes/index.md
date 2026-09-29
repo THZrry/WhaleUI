@@ -100,3 +100,9 @@ build), xf 停在 0 -> paint_node 永不位移(transform 过渡不上浮)。修:
 whaleui_layout_node_refresh_paint_flags 单一写点(build 与 apply_ov 后共用);
 回归 tests/test_scroll.cpp 的 hover-transform-transition(修前 FAIL 修后 PASS,
 均实测)。见 notes/current.md
+<15>(SOLVED): backdrop-filter 采样错位(自引入即坏 —— uv 误用 shadow 的 *0.5
+约定, 全屏 blit 应为 px/fb, 覆盖盒采到帧左上四分之一) + blur 双档近似落地:
+blur>=8 mip 阶梯(原样), blur<8 预定义 3x3 二项式核作用于单 mip 层、octave 内
+t=log2(blur)-L 从恒等升到全核。同轮 rotate 的背景/边框改为真实旋转(GPU 顶点
+旋转, SDF 仿射不变故圆角精确), <5> 范围缩小为文本/子树/渐变/命中不转。见
+notes/current.md

@@ -60,13 +60,14 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 组 | 属性 | 状态 |
 |----|------|------|
 | 80% | `width/height/min-*/max-*`、`margin`、`padding`、`border`、`border-radius`、`box-sizing`、`color`、`font-family/size/weight`、`line-height`、`text-align`、`text-decoration`、`background(-color/-image/-repeat/-position/-size)`、`opacity`、`display`、`position`、`top/left/right/bottom`、`z-index`、`float`、`clear`、`cursor`、`overflow(-x/-y)`、`white-space`、`word-break`、`text-overflow`、`box-shadow`、`transition` | ✅ |
-| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY 生效；**rotate 只解析，不绘制**）、`transform-origin`、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
+| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY 生效；**rotate 只转背景/边框**——GPU 顶点旋转近似，文本/子树/渐变/命中不转）、`transform-origin`、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
 | 20% | `align-content/self`、`justify-self/items`、`place-*`、`row/column-gap`、`grid-template-*`、`grid-auto-*`、`inset`（含四值简写）、`writing-mode`、`direction`、`text-orientation`、`text-decoration-*`、`background-blend-mode`、`mix-blend-mode`、`filter`、`backdrop-filter`、`overscroll-behavior`、`scroll-margin/padding`、`container-*`、`all`、`animation-composition`、`transform-style` | ⚠️ 见备注 |
 
 备注：
 
-- `backdrop-filter` **只在 GPU 路径**（`whaleui_gpu_backdrop`，离屏/MipMap 近似）；
-  Minimal/纯 CPU 回退路径不画。
+- `backdrop-filter` **GPU 路径已实现**（blur 双档近似：`blur>=8` mip 阶梯、
+  `blur<8` 预定义 3x3 二项式核作用于单 mip 层，见 notes <15>）；Minimal/纯
+  CPU 回退路径不画。
 - `mix-blend-mode` / `filter` / `background-blend-mode` / `border-image` /
   `writing-mode` / `text-orientation` / `container-*` / `animation-composition`
   **未实现**（清单里保留为待办，不要当成已支持）。
@@ -98,13 +99,14 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 
 ## 仍未做（连同原因）
 
-1. **`transform: rotate()` 的绘制**：解析、插值、`rot` 字段都有了，渲染器
-   仍按未旋转的盒绘制。要真正生效需要一条矩阵 paint 路径（背景/边框/文本/
-   子树都要走同一变换），成本远超本轮其它项；`@keyframes spin` 目前不动。
+1. **`transform: rotate()` 的文本/子树/渐变/命中**：解析、插值、背景/边框
+   的旋转绘制都有了（GPU 顶点旋转，notes <15>）。文本、子元素、渐变轴、
+   hit_test 仍按未旋转处理；要全部转需要一条矩阵 paint 路径（背景/边框/
+   文本/子树走同一变换）。`::before` 状态层不随转。
 2. **`conic-gradient` / `repeating-*-gradient` / `image-set` / `hwb()` /
    `oklab/oklch/lab/lch` / `color-mix()`**：`whaleui_render_parse_color` 认
    hex、`rgb()/rgba()`、`hsl()/hsla()` 与具名色，其余不认。
-3. **`backdrop-filter` 的 CPU 回退**：GPU 有（近似模糊），Minimal/软件路径没有。
+3. **`backdrop-filter` 的 CPU 回退**：GPU 有（双档近似），Minimal/软件路径没有。
 4. **`::first-line` / `::first-letter` / `::marker`**：伪元素只支持 `::before`/`::after`。
 5. `:has()` 等高级选择器、容器查询、`filter`/混合模式。
 

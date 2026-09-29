@@ -1737,6 +1737,91 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* rotate paints the ROTATED shape: a 40x40 box rotated 45deg around
+     * its center becomes a diamond whose vertices reach half the diagonal
+     * (28px) - a sample 25px above the center sits OUTSIDE the laid-out
+     * box but INSIDE the diamond, so it must turn red only when rotate
+     * actually rotates. Points beyond 28px must stay background (only the
+     * rotated shape colors). Approximation: text/children stay upright -
+     * this is a background/border rotation only. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "rotate-diamond", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#s{position:absolute;left:80px;top:80px;width:40px;"
+                   "height:40px;background-color:#ff0000;"
+                   "transform:rotate(45deg)}"
+                   "</style></head>"
+                   "<body><div id=\"s\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int inside_diamond = gpixel(w->render, 100, 75);
+            unsigned int center = gpixel(w->render, 100, 100);
+            unsigned int outside_diamond = gpixel(w->render, 100, 60);
+            std::printf("[rotate] in=%08X mid=%08X out=%08X\n",
+                        inside_diamond, center, outside_diamond);
+            std::fflush(stdout);
+            /* center is red either way (the laid-out box covers it) */
+            assert((center & 0xFFFFFFu) == 0xFF0000u);
+            /* 25px above center: red only when the shape rotated */
+            assert((inside_diamond & 0xFFFFFFu) == 0xFF0000u);
+            /* 40px above center: past the diamond's vertex - background */
+            assert((outside_diamond & 0xFFFFFFu) != 0xFF0000u);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* backdrop-filter's SMALL-radius tier: blur(4px) over a hard red/blue
+     * edge must MIX the two colors near the boundary (the fixed 3x3 kernel
+     * path), while samples far from the boundary stay pure (the blur must
+     * not smear the whole overlay).blur(20px) exercises the mip-ladder
+     * tier the same way. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "backdrop-blur", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#l{position:absolute;left:0;top:0;width:100px;"
+                   "height:200px;background-color:#ff0000}"
+                   "#r{position:absolute;left:100px;top:0;width:100px;"
+                   "height:200px;background-color:#0000ff}"
+                   "#f{position:absolute;left:50px;top:50px;width:100px;"
+                   "height:100px;backdrop-filter:blur(4px)}"
+                   "</style></head>"
+                   "<body><div id=\"l\"></div><div id=\"r\"></div>"
+                   "<div id=\"f\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* y=100 is 50px inside the overlay (past the blur reach).
+             * x=99/100 straddle the hard edge (r starts at x=100); both
+             * samples must carry BOTH channels - red-dominant with real
+             * blue on the left of the edge, blue-dominant with real red on
+             * the right (the fixed 3x3 kernel mixes across it). */
+            unsigned int edge_l = gpixel(w->render, 99, 100);
+            unsigned int edge_r = gpixel(w->render, 100, 100);
+            unsigned int far_red = gpixel(w->render, 60, 100);
+            unsigned int far_blue = gpixel(w->render, 140, 100);
+            std::printf("[backdrop4] l=%08X r=%08X red=%08X blue=%08X\n",
+                        edge_l, edge_r, far_red, far_blue);
+            std::fflush(stdout);
+            assert(((edge_l >> 16) & 0xFF) > 0x60 && (edge_l & 0xFF) > 0x20);
+            assert(((edge_r >> 16) & 0xFF) > 0x20 && (edge_r & 0xFF) > 0x60);
+            /* far away the halves stay (nearly) pure */
+            assert(((far_red >> 16) & 0xFF) > 0xC0 && (far_red & 0xFF) < 0x40);
+            assert(((far_blue >> 16) & 0xFF) < 0x40 && (far_blue & 0xFF) > 0xC0);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

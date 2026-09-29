@@ -10,6 +10,7 @@
 #define WHALEUI_RENDER_GPU_SHADERS_H
 
 #include <cstdint>
+#include <string>
 
 /* vertex: px position, uv (0..1 within the quad), color, quad size px,
  * corner radius px. SDL 3.4's D3D12 backend maps attribute locations to
@@ -126,18 +127,66 @@ float4 main(VSOut i) : SV_Target {
 
 /* blur sampling compute passes (box-shadow / backdrop-filter), the
  * mipmap-approximation of a gaussian: the source is mipmapped into
- * blur_tex, then each pixel re-samples 3 levels (gaussian weights) with
+ * blur_tex, then each pixel re-samples (gaussian weights) with
  * explicit LOD (SampleLevel - compute rejects implicit-derivative Sample,
  * and SDL 3.4 D3D12 graphics-side SRV is broken anyway). Parameters come
  * from a StructuredBuffer: [0]={count,fb_w,fb_h,0}, then per record
  * {x,y,w,h}, {blur,r,g,b}, {a,...} (a = shadow alpha for kShadowCS,
- * backdrop body color+alpha for kBackdropCS). */
+ * backdrop body color+alpha for kBackdropCS).
+ *
+ * blur_sample is the shared two-tier approximation:
+ *  - blur >= 8: the mip ladder - 3 taps across adjacent levels (a 2x2
+ *    box-filtered level L has an equivalent radius of ~2^(L+1) px).
+ *  - blur < 8: a fixed 3x3 binomial kernel on ONE mip level. The level is
+ *    the octave floor(log2(blur)) (clamped to 2), so one texel there spans
+ *    2^(L+1) px and the kernel's sigma (1 texel) matches the octave's top
+ *    radius; inside the octave the kernel strength ramps from identity
+ *    (t=0) to the full kernel (t=1) via log2(blur)-L, keeping the blur
+ *    monotonic from ~1px up and seamless against the ladder at 8px.
+ *    9 SampleLevel taps at a fixed level, no loop. */
 
-static const char* kShadowCS = R"(
+static const std::string kBlurSampleFn = R"(
+float4 blur_sample(Texture2D tex, SamplerState s, float2 uv, float blur,
+                   float fb_w, float fb_h)
+{
+    if (blur >= 8.0) {
+        float lod = clamp(log2(max(blur, 1.0)) - 1.0, 0.0, 6.0);
+        float4 m = 0;
+        float ws = 0;
+        [unroll] for (int k = -1; k <= 1; ++k) {
+            float w = exp(-0.5 * float(k * k));
+            m += tex.SampleLevel(s, uv, max(lod + float(k), 0.0)) * w;
+            ws += w;
+        }
+        return m / ws;
+    }
+    float lb = clamp(log2(max(blur, 1.0)), 0.0, 2.0);
+    float lvl = floor(lb);
+    float t = lb - lvl; /* 0..1 inside the octave */
+    /* one-texel uv offset at that mip level (blur_tex is fb / 2) */
+    float2 tx = exp2(lvl) * 2.0 / float2(fb_w, fb_h);
+    float w_c = 1.0 - t * 0.75;  /* center: 1 -> 4/16 */
+    float w_e = t * 0.125;       /* edge:   0 -> 2/16 */
+    float w_x = t * 0.0625;      /* corner: 0 -> 1/16 */
+    float4 m = tex.SampleLevel(s, uv, lvl) * w_c;
+    m += (tex.SampleLevel(s, uv + float2(-tx.x, -tx.y), lvl) +
+          tex.SampleLevel(s, uv + float2(tx.x, -tx.y), lvl) +
+          tex.SampleLevel(s, uv + float2(-tx.x, tx.y), lvl) +
+          tex.SampleLevel(s, uv + float2(tx.x, tx.y), lvl)) * w_x;
+    m += (tex.SampleLevel(s, uv + float2(-tx.x, 0.0), lvl) +
+          tex.SampleLevel(s, uv + float2(tx.x, 0.0), lvl) +
+          tex.SampleLevel(s, uv + float2(0.0, -tx.y), lvl) +
+          tex.SampleLevel(s, uv + float2(0.0, tx.y), lvl)) * w_e;
+    return m; /* weights sum to 1 */
+}
+)";
+
+static const std::string kShadowCS = std::string(R"(
 [[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+)") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     float2 px = float2(id.xy) + 0.5;
@@ -152,17 +201,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             px.y >= r.y && px.y < r.y + r.w) {
             /* framebuffer px -> blur_tex uv (blur tex is fb / 2) */
             float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
-            /* blur radius -> mip level: a 2x2 box-filtered level L has an
-             * equivalent radius of ~2^L blur_texels = 2^(L+1) px */
-            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
-            float4 m = 0;
-            float ws = 0;
-            for (int k = -1; k <= 1; ++k) {
-                float w = exp(-0.5 * float(k * k));
-                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
-                ws += w;
-            }
-            m /= ws;
+            float4 m = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
             acc = float4(c.yzw, d.x) * m.a;
             break;
         }
@@ -171,11 +210,12 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 )";
 
-static const char* kBackdropCS = R"(
+static const std::string kBackdropCS = std::string(R"(
 [[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+)") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     float2 px = float2(id.xy) + 0.5;
@@ -189,16 +229,15 @@ void main(uint3 id : SV_DispatchThreadID) {
         float4 d = params[3 + i * 3];
         if (px.x >= r.x && px.x < r.x + r.z &&
             px.y >= r.y && px.y < r.y + r.w) {
-            float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
-            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
-            float4 m = 0;
-            float ws = 0;
-            for (int k = -1; k <= 1; ++k) {
-                float w = exp(-0.5 * float(k * k));
-                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
-                ws += w;
-            }
-            m /= ws;
+            /* framebuffer px -> blur_tex uv. The backdrop source arrives by
+             * a FULLSCREEN blit (geom_cur -> blur_tex), so a fb pixel maps
+             * to uv = px/fb - NOT the *0.5 of the shadow shapes, whose
+             * vertices are pre-divided by kBlurDiv before rasterization.
+             * With the *0.5 the sampler read the top-left QUARTER of the
+             * frame: a card near the top-left showed that area's blur (all
+             * red on the probe page) instead of what sits under it. */
+            float2 uv = px / float2(hdr.y, hdr.z);
+            float4 m = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
             /* blurred background + the element's own body color. Record
              * layout: {x,y,w,h} {blur,r,g,b} {a,br,bg,bb} - for a backdrop
              * record a = body alpha and br/bg/bb = body color (d.yzw) */
@@ -220,11 +259,12 @@ void main(uint3 id : SV_DispatchThreadID) {
  * Runs AFTER the geometry + backdrop passes, so `acc` starts from the
  * painted pixel (read+write) and the shadow color is blended on top.
  * Record layout mirrors kShadowCS: {x,y,w,h} {blur,r,g,b} {a,0,0,0}. */
-static const char* kInsetCS = R"(
+static const std::string kInsetCS = std::string(R"(
 [[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+)") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     float2 px = float2(id.xy) + 0.5;
@@ -238,15 +278,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         if (px.x >= r.x && px.x < r.x + r.z &&
             px.y >= r.y && px.y < r.y + r.w) {
             float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
-            float lod = clamp(log2(max(c.x, 1.0)) - 1.0, 0.0, 6.0);
-            float4 m = 0;
-            float ws = 0;
-            for (int k = -1; k <= 1; ++k) {
-                float w = exp(-0.5 * float(k * k));
-                m += blur_tex.SampleLevel(samp, uv, max(lod + float(k), 0.0)) * w;
-                ws += w;
-            }
-            m /= ws;
+            float4 m = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
             float sa = d.x * m.a; /* shadow alpha = color alpha * mask */
             acc = lerp(acc, float4(c.yzw, 1.0), sa);
             break;

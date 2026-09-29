@@ -189,6 +189,28 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     }
 }
 
+/* fill a box rotated by rot_deg degrees (CSS rotate, clockwise). GPU path:
+ * the rasterizer rotates (whaleui_gpu_rect_rot). CPU fallback: the
+ * unrotated box (the software path has no rotated rasterizer; parity with
+ * pre-rotate builds, never worse). */
+void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
+                   int x, int y, int w, int h, int radius,
+                   unsigned int color, float rot_deg, const Clip* clip)
+{
+    if (g_gpu) {
+        whaleui_gpu_rect_rot(g_gpu, static_cast<float>(x),
+                             static_cast<float>(y), static_cast<float>(w),
+                             static_cast<float>(h), static_cast<float>(radius),
+                             color, rot_deg, nullptr);
+        return;
+    }
+    if (radius > 0) {
+        fill_round_rect(fb, fbw, fbh, x, y, w, h, radius, color, clip);
+    } else {
+        fill_rect(fb, fbw, fbh, x, y, w, h, color, clip);
+    }
+}
+
 void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
                        int x, int y, int w, int h, int radius, int bw,
                        unsigned int color, unsigned int bg, const Clip* clip)
@@ -1107,11 +1129,14 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         }
     }
     /* transform: translate (px/%) + uniform scale around the element's
-     * center (default transform-origin). The shifted box is drawn here and
-     * off_x/off_y carry the translation into the subtree. Child coordinates
-     * are NOT scaled. ponytail: scale is visual on this box; true 2D
+     * center (default transform-origin) + clockwise rotate (approximate:
+     * the box's own background/border rotate with the rasterizer, text and
+     * children stay upright, gradients keep their unrotated axis). The
+     * shifted box is drawn here and off_x/off_y carry the translation into
+     * the subtree. Child coordinates are NOT scaled. ponytail: true 2D
      * transform stacks + hit-testing are a later step. */
     float tdx = 0.0f, tdy = 0.0f, tsx = 1.0f, tsy = 1.0f;
+    float trot = 0.0f;
     if (has_xf) {
         whaleui_transform_t tf;
         if (whaleui_transform_eval(ntv.c_str(),
@@ -1121,6 +1146,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             tdy = tf.ty;
             tsx = tf.sx;
             tsy = tf.sy;
+            trot = tf.rot;
         }
     }
     int bw = n->border.w;
@@ -1221,7 +1247,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                              static_cast<float>(radius), bblur, bg_c);
     } else {
     if (bg != 0) {
-        if (radius > 0) {
+        if (trot != 0.0f) {
+            fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                          n->border.y + noy, bw, bh, radius, bg_c, trot, eff);
+        } else if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
                             bw, bh, radius, bg_c, eff);
@@ -1343,7 +1372,21 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             }
             /* uniform border width for the ring */
             int brw = bw2[1] > 0 ? bw2[1] : (bw2[3] > 0 ? bw2[3] : (bw2[0] > 0 ? bw2[0] : bw2[2]));
-            if (radius > 0 && brw > 0) {
+            if (trot != 0.0f && brw > 0) {
+                /* rotated ring: same two-rect trick as fill_round_border's
+                 * GPU branch, with rotated corners (the inner refill keeps
+                 * the background the ring encloses) */
+                fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
+                              n->border.y + noy, bw, bh, radius, c, trot, eff);
+                int irad = radius - brw;
+                if (irad < 0) {
+                    irad = 0;
+                }
+                fill_rot_rect(r->pixels, r->fb_w, r->fb_h,
+                              n->border.x + nox + brw, n->border.y + noy + brw,
+                              bw - 2 * brw, bh - 2 * brw, irad, bg_c, trot,
+                              eff);
+            } else if (radius > 0 && brw > 0) {
                 fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                                   n->border.y + noy,
                                   bw, bh, radius, brw, c, bg_c, eff);

@@ -104,6 +104,12 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
 void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
                        int x, int y, int w, int h, int radius, int bw,
                        unsigned int color, unsigned int bg, const Clip* clip);
+/* box fill/box ring rotated by rot_deg (CSS rotate, clockwise around the
+ * box center). GPU: rotated corners on the solid pipeline (exact for the
+ * SDF shape via affine invariance); CPU fallback: unrotated. */
+void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
+                   int x, int y, int w, int h, int radius,
+                   unsigned int color, float rot_deg, const Clip* clip);
 void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
                    const SDL_Surface* surf, int dx, int dy, const Clip* clip,
                    const unsigned int* tint);

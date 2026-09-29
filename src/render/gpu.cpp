@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include <string>
 #include <cwchar>
 
@@ -548,7 +549,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     /* blur compute pipelines: blur_tex (t0) + params (t1) -> target (u0) */
     {
-        IDxcBlob* cs = compile_dxil(kShadowCS, "main", L"cs_6_0",
+        IDxcBlob* cs = compile_dxil(kShadowCS.c_str(), "main", L"cs_6_0",
                                     vulkan_driver(device), nullptr, 0);
         if (!cs) {
             goto fail;
@@ -573,7 +574,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kBackdropCS, "main", L"cs_6_0",
+        cs = compile_dxil(kBackdropCS.c_str(), "main", L"cs_6_0",
                           vulkan_driver(device), nullptr, 0);
         if (!cs) {
             goto fail;
@@ -587,7 +588,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kInsetCS, "main", L"cs_6_0",
+        cs = compile_dxil(kInsetCS.c_str(), "main", L"cs_6_0",
                           vulkan_driver(device), nullptr, 0);
         if (!cs) {
             goto fail;
@@ -793,6 +794,71 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
     v[4].x = x;         v[4].y = y + h;     v[4].u = 0; v[4].v = 1;
     v[5].x = x + w;     v[5].y = y + h;     v[5].u = 1; v[5].v = 1;
     for (int i = 0; i < 6; ++i) {
+        g->solids.push_back(v[i]);
+    }
+}
+
+void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
+                          float h, float radius, unsigned int color,
+                          float rot_deg, const int* clip)
+{
+    if (!g || w <= 0 || h <= 0) {
+        return;
+    }
+    /* no clip-rect pre-shrink here: a rotated box's intersection with the
+     * clip is not a rectangle; off-viewport pixels are dropped by the
+     * rasterizer's viewport instead */
+    if (g->solids.size() + 6 > 65536) {
+        return; /* vertex buffer cap */
+    }
+    float r = ((color >> 16) & 0xFF) / 255.0f;
+    float gg = ((color >> 8) & 0xFF) / 255.0f;
+    float b = (color & 0xFF) / 255.0f;
+    float a = ((color >> 24) & 0xFF) / 255.0f;
+    float hr = w < h ? w : h;
+    if (radius > hr * 0.5f) {
+        radius = hr * 0.5f;
+    }
+    /* rotate the local corner offsets around the center (screen coords,
+     * y down: a positive angle turns clockwise like CSS rotate) */
+    const float PI_F = 3.14159265358979f;
+    float rad = rot_deg * PI_F / 180.0f;
+    float cs = std::cos(rad);
+    float sn = std::sin(rad);
+    float cx = x + w * 0.5f;
+    float cy = y + h * 0.5f;
+    float hw = w * 0.5f;
+    float hh = h * 0.5f;
+    gpu_vert_solid v[6];
+    for (int i = 0; i < 6; ++i) {
+        v[i].r = r;
+        v[i].g = gg;
+        v[i].b = b;
+        v[i].a = a;
+        v[i].size_x = w;
+        v[i].size_y = h;
+        v[i].radius = radius;
+        v[i].fb_w = g->fb_w;
+        v[i].fb_h = g->fb_h;
+    }
+    /* corner k: (dx,dy) local offset, (u,v) its 0..1 box coordinate - the
+     * pairing must stay TL,TR,BL,TR,BL,BR so the SDF frame survives */
+    float dx[4] = {-hw, hw, -hw, hw};
+    float dy[4] = {-hh, -hh, hh, hh};
+    float uu[4] = {0, 1, 0, 1};
+    float vv[4] = {0, 0, 1, 1};
+    float px[4];
+    float py[4];
+    for (int k = 0; k < 4; ++k) {
+        px[k] = cx + dx[k] * cs - dy[k] * sn;
+        py[k] = cy + dx[k] * sn + dy[k] * cs;
+    }
+    const int idx[6] = {0, 1, 2, 1, 2, 3};
+    for (int i = 0; i < 6; ++i) {
+        v[i].x = px[idx[i]];
+        v[i].y = py[idx[i]];
+        v[i].u = uu[idx[i]];
+        v[i].v = vv[idx[i]];
         g->solids.push_back(v[i]);
     }
 }

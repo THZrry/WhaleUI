@@ -63,20 +63,60 @@ foreach ($p in @('gaps','gaps2','gaps5','gaps7','gaps18','gaps21')) {
    metro/aero 的 dotted outline、各主题双层阴影都已出现;
 4. [x] `h1..h6` 三值 margin、`blockquote`/`dd` 四值简写恢复预期留白。
 
-# <5>: transform: rotate 只解析、不绘制
+# <5>: transform: rotate 的文本/子树仍不转
 
-UNRESOLVED
+UNRESOLVED(范围缩小)
 
 rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transform_t.rot`,
-同一条 `transform` 里的 translate/scale 不再被它带崩(此前 `rotate()` 会让
-整串 `transform` 返回失败)。但**渲染器仍按未旋转的盒绘制**:b3/b4 那种
-`::before` 状态层、spinner 的 `@keyframes spin` 都不会转。要真正生效需要一条
-矩阵 paint 路径(背景/边框/文本/子树走同一变换),成本远超本轮其它项。
+并且**背景/边框随 rotate 真实旋转**(<15> 同轮):GPU 路径把 solid quad 的四个
+角点绕中心旋转(whaleui_gpu_rect_rot),u/v/size/radius 留在盒子局部坐标系,
+仿射不变性让 SDF 圆角在任意角度下保持精确(圆旋转还是圆),零额外
+纹理/draw,光栅化器免费做旋转;CPU 路径回退未旋转盒。spinner 这类纯色/
+border-radius 圆环因此可转。@keyframes spin 的逐帧插值也随 <14> 的 xf
+刷新生效。
+
+仍不转(近似边界,均为 ponytail):文本与子元素保持直立;渐变仍沿未旋转轴
+(fill_gradient 的角点投影未接 rot);命中测试(hit_test)按未旋转盒;
+`::before` 状态层不随转。要全部转需要真矩阵 paint 路径(背景/边框/文本/
+子树走同一变换),成本远超本轮。
 
 其余未实现项(`conic-gradient` / `repeating-*-gradient` / `hwb()` /
 `oklab|oklch|lab|lch` / `color-mix()` / `attr()` / `counter()` /
-`::first-line` / `:has()` / 容器查询 / `filter` 与混合模式 / CPU 路径的
-`backdrop-filter`)逐条列在 `doc/internal/16-engine-support.md` 末尾。
+`::first-line` / `:has()` / 容器查询 / `filter` 与混合模式 /
+`backdrop-filter` 的 CPU 回退路径)逐条列在
+`doc/internal/16-engine-support.md` 末尾。
+
+# <15>: backdrop-filter 采样错位(自引入即坏) + blur 双档近似
+
+SOLVED
+
+两件事,一起修/落地:
+
+**(1) GPU backdrop 采样错位 —— 历史 bug,首测即现形。** 离屏探针页
+(左红右蓝两半 + `backdrop-filter:blur(4px)` 覆盖盒)上,模糊区域整体变成
+纯红:shader 的 uv 是 `px/fb * 0.5`,这是从 shadow 路径抄的约定 —— shadow
+的形状顶点在光栅化前已除以 kBlurDiv(gpu.cpp push 时 `x/kBlurDiv`),
+uv*0.5 与之自洽;而 backdrop 的源是**全屏 blit**(geom_cur -> blur_tex),
+fb 像素应对应 `uv = px/fb`。乘 0.5 等于只采样帧左上四分之一,覆盖盒恰好
+落在那里就整片错色。基线(stash 改动后)复现同样的红 → 确认是自引入即坏,
+不是新回归。修:kBackdropCS 去掉 *0.5(kShadowCS/kInsetCS 不动,约定不同)。
+
+**(2) blur 双档近似(用户方案)。** 原来所有半径都走 mip 阶梯,小半径档位
+不足。现抽成共用 `blur_sample`(gpu_shaders.h,三个 CS 同用):
+- `blur >= 8`:原 mip 阶梯(3 tap 跨相邻层,level L 等效半径 ~2^(L+1) px);
+- `blur < 8`:**预定义 3x3 二项式卷积核,作用在单个 mip 层上**。
+  层取 octave 下整 `floor(log2(blur))`(夹到 2),该层一个 texel 跨
+  2^(L+1) px,核的 sigma(1 texel)正好等于该 octave 顶端的半径;octave
+  内按 `t = log2(blur)-L` 从恒等(t=0,blur<=1 不糊)线性升到全核
+  (t=1),权重和恒为 1(中心 1-0.75t / 边 0.125t / 角 0.0625t)。
+  9 次 SampleLevel、无循环、层内双线性平滑,1..8px 单调且在 8px 处与
+  阶梯无缝交接。
+
+回归:tests/test_scroll.cpp 的 backdrop4 用例 —— 边界两侧采样
+(l=FFBF0040 / r=FF4000BF,两通道互混)、远处保持纯色、f 外不受影响;
+rotate-diamond 用例见 <5>。探针页 temp/backdrop_probe.html +
+render_shot + temp/rect_color.py。验证:10 项测试全绿,fluent 主题
+自检(shadow 与 backdrop 同用 blur_sample,无退化)。
 
 # <13>: 子节点"分块/树"存储
 
