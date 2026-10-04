@@ -2181,6 +2181,61 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* filter: grayscale() collapses chroma, brightness() scales up,
+     * invert() mirrors. #g red box -> gray (r~=g~=b); #b blue box +
+     * brightness(2) -> brighter blue; #v green box + invert(1) -> magenta. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "filter", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#g{position:absolute;left:10px;top:10px;width:50px;"
+                   "height:50px;background-color:#ff0000;"
+                   "filter:grayscale(1)}"
+                   "#b{position:absolute;left:70px;top:10px;width:50px;"
+                   "height:50px;background-color:#000080;"
+                   "filter:brightness(2)}"
+                   "#v{position:absolute;left:130px;top:10px;width:50px;"
+                   "height:50px;background-color:#00ff00;filter:invert(1)}"
+                   "#f{position:absolute;left:10px;top:70px;width:100px;"
+                   "height:40px;background-color:#ff0000;"
+                   "filter:blur(8px)}"
+                   "</style></head>"
+                   "<body><div id=\"g\"></div><div id=\"b\"></div>"
+                   "<div id=\"v\"></div><div id=\"f\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int gr = gpixel(w->render, 35, 35);
+            unsigned int br = gpixel(w->render, 95, 35);
+            unsigned int iv = gpixel(w->render, 155, 35);
+            std::printf("[filter] gray=%08X bright=%08X inv=%08X\n", gr,
+                        br, iv);
+            std::fflush(stdout);
+            /* red (255,0,0) -> luma gray ~54: channels within 8 of it */
+            unsigned int grr = (gr >> 16) & 0xFF, grg = (gr >> 8) & 0xFF,
+                         grb = gr & 0xFF;
+            assert(grr > 0x20 && grr < 0x80 && grg > 0x20 && grg < 0x80 &&
+                   grb > 0x20 && grb < 0x80);
+            /* navy (0,0,128) x2 -> (0,0,255) saturated blue */
+            assert(((br >> 16) & 0xFF) < 0x40 &&
+                   ((br >> 8) & 0xFF) < 0x40 && (br & 0xFF) > 0xC0);
+            /* green inverted -> magenta (r+b high, g low) */
+            assert(((iv >> 16) & 0xFF) > 0x80 && (iv & 0xFF) > 0x80 &&
+                   ((iv >> 8) & 0xFF) < 0x80);
+            /* blur(8px): the hard red edge softens (pink halo just
+             * outside; the mip-ladder falloff is steep further out) */
+            unsigned int halo2 = gpixel(w->render, 9, 90);
+            std::printf("[filter] halo2=%08X\n", halo2);
+            std::fflush(stdout);
+            assert(((halo2 >> 16) & 0xFF) > 0x80 && (halo2 & 0xFF) < 0xF0);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

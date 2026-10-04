@@ -424,6 +424,199 @@ unsigned int grad_color(const Gradient& g, float t)
     return g.stops[n - 1].c;
 }
 
+/* 4x5 color matrix (row-major, input [r,g,b,a,1]): out[i] = m[i][0..3] *
+ * in[0..3] + m[i][4]. Identity by default; filter ops left-multiply in
+ * CSS order. */
+void filter_matrix_identity(float m[4][5])
+{
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            m[i][j] = (i == j) ? 1.0f : 0.0f;
+        }
+    }
+}
+
+/* out = b * a (apply a first, then b) */
+static void matrix_mul(const float b[4][5], const float a[4][5],
+                       float out[4][5])
+{
+    float t[4][5];
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            t[i][j] = b[i][0] * a[0][j] + b[i][1] * a[1][j] +
+                      b[i][2] * a[2][j] + b[i][3] * a[3][j];
+        }
+        t[i][4] = b[i][0] * a[0][4] + b[i][1] * a[1][4] +
+                  b[i][2] * a[2][4] + b[i][3] * a[3][4] + b[i][4];
+    }
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            out[i][j] = t[i][j];
+        }
+    }
+}
+
+static float filter_num(const char* s, size_t n)
+{
+    std::string t(s, n);
+    size_t b = t.find_first_not_of(" \t");
+    size_t e = t.find_last_not_of(" \t");
+    if (b == std::string::npos) {
+        return 1.0f;
+    }
+    t = t.substr(b, e - b + 1);
+    float v = static_cast<float>(std::atof(t.c_str()));
+    if (!t.empty() && t.back() == '%') {
+        v /= 100.0f;
+    }
+    return v;
+}
+
+/* Parse `filter` into a 4x5 color matrix + blur radius. Supported ops
+ * (applied left to right): blur(Npx), brightness(N), contrast(N),
+ * saturate(N), grayscale(N) (= saturate(1-N)), invert(N), sepia(N),
+ * hue-rotate(Ndeg), opacity(N). Unknown ops are skipped (the rest still
+ * applies). Returns 0 when at least one op parsed (even a no-op one). */
+int parse_filter(const char* v, float m[4][5], float* blur)
+{
+    if (blur) {
+        *blur = 0;
+    }
+    if (!v || !m) {
+        return -1;
+    }
+    filter_matrix_identity(m);
+    bool any = false;
+    const char* p = v;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* fn = p;
+        while (*p && *p != '(' && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        std::string name(fn, static_cast<size_t>(p - fn));
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (*p != '(') {
+            continue; /* bare keyword (e.g. "none"): stop */
+        }
+        ++p;
+        const char* as = p;
+        int depth = 1;
+        while (*p && depth > 0) {
+            if (*p == '(') {
+                ++depth;
+            } else if (*p == ')') {
+                --depth;
+            }
+            if (depth > 0) {
+                ++p;
+            }
+        }
+        std::string arg(as, static_cast<size_t>(p - as));
+        if (*p == ')') {
+            ++p;
+        }
+        float op[4][5];
+        filter_matrix_identity(op);
+        bool ok = true;
+        if (name == "blur") {
+            float b = filter_num(arg.c_str(), arg.size());
+            if (arg.find("px") == std::string::npos &&
+                arg.find_first_of("0123456789") == std::string::npos) {
+                b = 0;
+            }
+            if (blur && b > *blur) {
+                *blur = b;
+            }
+            any = true;
+            continue; /* blur is a radius, not a color op */
+        } else if (name == "brightness") {
+            float b = filter_num(arg.c_str(), arg.size());
+            op[0][0] = op[1][1] = op[2][2] = b;
+        } else if (name == "contrast") {
+            float c = filter_num(arg.c_str(), arg.size());
+            op[0][0] = op[1][1] = op[2][2] = c;
+            op[0][4] = op[1][4] = op[2][4] = (1.0f - c) * 0.5f;
+        } else if (name == "saturate") {
+            float s = filter_num(arg.c_str(), arg.size());
+            float l0 = 0.2126f, l1 = 0.7152f, l2 = 0.0722f;
+            op[0][0] = l0 + (1 - l0) * s;
+            op[0][1] = l1 - l1 * s;
+            op[0][2] = l2 - l2 * s;
+            op[1][0] = l0 - l0 * s;
+            op[1][1] = l1 + (1 - l1) * s;
+            op[1][2] = l2 - l2 * s;
+            op[2][0] = l0 - l0 * s;
+            op[2][1] = l1 - l1 * s;
+            op[2][2] = l2 + (1 - l2) * s;
+        } else if (name == "grayscale") {
+            float g = filter_num(arg.c_str(), arg.size());
+            float s = 1.0f - g;
+            float l0 = 0.2126f, l1 = 0.7152f, l2 = 0.0722f;
+            op[0][0] = l0 + (1 - l0) * s;
+            op[0][1] = l1 - l1 * s;
+            op[0][2] = l2 - l2 * s;
+            op[1][0] = l0 - l0 * s;
+            op[1][1] = l1 + (1 - l1) * s;
+            op[1][2] = l2 - l2 * s;
+            op[2][0] = l0 - l0 * s;
+            op[2][1] = l1 - l1 * s;
+            op[2][2] = l2 + (1 - l2) * s;
+        } else if (name == "invert") {
+            float n = filter_num(arg.c_str(), arg.size());
+            op[0][0] = op[1][1] = op[2][2] = 1.0f - 2.0f * n;
+            op[0][4] = op[1][4] = op[2][4] = n;
+        } else if (name == "sepia") {
+            float n = filter_num(arg.c_str(), arg.size());
+            float sm[3][3] = {{0.393f, 0.769f, 0.189f},
+                              {0.349f, 0.686f, 0.168f},
+                              {0.272f, 0.534f, 0.131f}};
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) {
+                    op[i][j] = (i == j ? (1.0f - n) : 0.0f) + n * sm[i][j];
+                }
+            }
+        } else if (name == "hue-rotate") {
+            float deg = static_cast<float>(std::atof(arg.c_str()));
+            float rad = deg * 3.14159265f / 180.0f;
+            float cs = std::cos(rad), sn = std::sin(rad);
+            /* CSS hue-rotate matrix (luma-axis rotation) */
+            op[0][0] = 0.2126f + cs * 0.7874f - sn * 0.2126f;
+            op[0][1] = 0.7152f - cs * 0.7152f - sn * 0.7152f;
+            op[0][2] = 0.0722f - cs * 0.0722f + sn * 0.9278f;
+            op[1][0] = 0.2126f - cs * 0.2126f + sn * 0.1430f;
+            op[1][1] = 0.7152f + cs * 0.2848f + sn * 0.1400f;
+            op[1][2] = 0.0722f - cs * 0.0722f - sn * 0.2830f;
+            op[2][0] = 0.2126f - cs * 0.2126f - sn * 0.7874f;
+            op[2][1] = 0.7152f - cs * 0.7152f + sn * 0.7152f;
+            op[2][2] = 0.0722f + cs * 0.9278f + sn * 0.0722f;
+        } else if (name == "opacity") {
+            float o = filter_num(arg.c_str(), arg.size());
+            op[3][3] = o;
+        } else {
+            ok = false;
+        }
+        if (ok) {
+            float merged[4][5];
+            matrix_mul(op, m, merged);
+            for (int i = 0; i < 4; ++i) {
+                for (int j = 0; j < 5; ++j) {
+                    m[i][j] = merged[i][j];
+                }
+            }
+            any = true;
+        }
+    }
+    return any ? 0 : -1;
+}
+
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg)

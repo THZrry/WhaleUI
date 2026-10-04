@@ -212,6 +212,23 @@ parent 底误作视口底)。
 
 验证:10 项测试全绿;14 张主题自检全 OK。
 
+# <19>: filter(元素滤镜)GPU pass E + CPU 颜色矩阵
+
+SOLVED
+
+复用 backdrop compute 模式,但作用于元素自身合成后内容:
+`parse_filter`(render_color.cpp)合并 4x5 矩阵(CSS 顺序左乘)+blur 半径;
+kFilterCS(6 float4 stride):mip blur(composite 后 blit target2→blur_tex)+
+矩阵+圆角 SDF;pass E 在 composite 后读写 target2;记录按 blur 外扩(晕出盒);
+CPU 只做颜色矩阵(blur 跳过,与 backdrop 一致)。
+支持:blur/brightness/contrast/saturate/grayscale/invert/sepia/hue-rotate/
+opacity,未知 op 跳过其余照算。
+踩坑两处:记录 28→24 floats(stride 7→6,bias 进每行 w);blur 晕只在盒内
+(记录须外扩)。
+附带修:外阴影 pass 被之前插桩 `false &&` 关掉忘恢复(一直关着,本轮恢复)。
+回归:test_scroll filter(灰/亮蓝/品红/粉晕)。
+验证:10 项测试全绿;14 张主题自检全 OK。
+
 SOLVED
 
 两件事,一起修/落地:

@@ -117,3 +117,5 @@ hit_test 逆旋转。见 notes/current.md
 object-position(+fit轴选反/RGB24修); :enabled等+attr六档+attr(); rem/vmin/
 calc乘除/radial关键字/focus-within/is-where; 多过渡timing/sticky远边/
 scrollbar/aspect-ratio/marker。见 notes/current.md
+<19>(SOLVED): filter(元素滤镜) —— GPU pass E(mip blur+4x5矩阵,记录外扩)+
+CPU颜色矩阵; 附带恢复被插桩关掉的外阴影 pass。见 notes/current.md

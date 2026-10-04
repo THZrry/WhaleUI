@@ -84,6 +84,23 @@ struct gpu_inset_param
     float pad0, pad1, pad2;
 };
 
+/* per-filter record: 24 floats = 6 float4s (kFilterCS reads the *6 stride).
+ * The filter applies to the element's own painted content (geometry + text,
+ * i.e. after the text composite): optional mip blur of the composited frame
+ * plus a 4x5 color matrix. blur 0 skips the blur tap. Each matrix row is
+ * one float4 [c0,c1,c2,bias]. */
+struct gpu_filter_param
+{
+    float x, y, w, h;    /* element box, px (framebuffer coords) */
+    float blur;          /* blur radius px (0 = color matrix only) */
+    float radius;        /* corner radius px (rounded clip) */
+    float pad0, pad1;
+    float r0[4];         /* matrix rows, bias in [3] */
+    float r1[4];
+    float r2[4];
+    float r3[4];
+};
+
 /* per-window GPU rendering state */
 struct whaleui_gpu
 {
@@ -98,6 +115,7 @@ struct whaleui_gpu
     SDL_GPUComputePipeline* pipe_shadow_cs;  /* blur_tex -> target (shadows) */
     SDL_GPUComputePipeline* pipe_backdrop_cs; /* blur_tex -> target (backdrop) */
     SDL_GPUComputePipeline* pipe_inset_cs;  /* blur_tex -> target (inset) */
+    SDL_GPUComputePipeline* pipe_filter_cs; /* blur_tex -> target2 (filter) */
 
     /* 1x1 white texture for the solid pipeline */
     SDL_GPUTexture* white_tex;
@@ -139,6 +157,7 @@ struct whaleui_gpu
     SDL_GPUBuffer* shadow_params_buf;
     SDL_GPUBuffer* backdrop_params_buf;
     SDL_GPUBuffer* inset_params_buf;
+    SDL_GPUBuffer* filter_params_buf;
     SDL_GPUTransferBuffer* shadow_transfer;
 
     /* per-frame command lists */
@@ -151,6 +170,8 @@ struct whaleui_gpu
     std::vector<gpu_blur_param> backdrops;
     /* inset box-shadow records (blended over the geometry after paint) */
     std::vector<gpu_inset_param> insets;
+    /* filter records (applied to the composited frame after text) */
+    std::vector<gpu_filter_param> filters;
     /* shadow shapes (white rounded rects) painted into blur_tex (pass A) */
     std::vector<gpu_vert_solid> shapes;
     /* inset mask shapes (spread-shrunk white rounded rects) painted into
@@ -248,6 +269,14 @@ void whaleui_gpu_late_end(whaleui_gpu_t* g);
 void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, float blur,
                           unsigned int body_color);
+
+/* push an element filter region: after the text composite (target2 holds
+ * the full frame), an optional mip blur of the composited frame plus a 4x5
+ * color matrix applies to the element's own painted content (kFilterCS).
+ * m is the merged matrix from parse_filter; blur 0 = matrix only. */
+void whaleui_gpu_filter(whaleui_gpu_t* g, float x, float y, float w,
+                        float h, float radius, float blur,
+                        const float m[4][5]);
 
 /* push a text sprite; atlas uv comes from the glyph atlas manager */
 void whaleui_gpu_text(whaleui_gpu_t* g, float x, float y, float w, float h,

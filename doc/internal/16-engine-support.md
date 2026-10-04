@@ -74,9 +74,13 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
   的 spread-收缩盒 mask（offset 精确，无四象限近似、无接缝），圆角用同一
   SDF 裁剪，`blur:0` 出实线环；CPU 路径是带 offset 的同心内缩环 /
   硬环四条边。`spread` 为负按 0 处理（收缩语义无定义扩展）。
-- `mix-blend-mode` / `filter` / `background-blend-mode` / `border-image` /
+- `mix-blend-mode` / `background-blend-mode` / `border-image` /
   `writing-mode` / `text-orientation` / `container-*` / `animation-composition`
   **未实现**（清单里保留为待办，不要当成已支持）。
+- `filter`（元素滤镜）**GPU 路径已实现**：composite 后的 pass E，mip blur
+  （记录按 blur 外扩，晕出盒）+ 4x5 颜色矩阵
+  （brightness/contrast/saturate/grayscale/invert/sepia/hue-rotate/opacity，
+  CSS 顺序左乘）；CPU 路径只做颜色矩阵（blur 跳过）。
 - `padding/margin` 的**四值简写与四条 longhand 都生效**（第 1 条修掉之后）；
   百分比 padding 按父内容宽解析，与规范一致。
 
@@ -138,7 +142,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
    的同心环近似）。
 4. **`::first-line` / `::first-letter`**：伪元素支持
    `::before`/`::after`/`::marker`/`::selection`/`::placeholder`。
-5. `:has()` 等高级选择器、容器查询、`filter`/混合模式/`clip-path`/`mask`、
+5. `:has()` 等高级选择器、容器查询、混合模式/`clip-path`/`mask`、
    `skew/matrix/3D`、`counter()`。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与

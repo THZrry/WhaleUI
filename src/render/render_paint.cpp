@@ -1387,6 +1387,38 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 #ifndef WHALEUI_BUILD_MINIMAL
     paint_shadow(r, n, nox, noy, eff);
 #endif
+    /* filter: blur + color-matrix over the element's OWN painted content
+     * (body + children + text). The record only carries the box + matrix;
+     * the compute pass (after the text composite) does the work. On the
+     * CPU path the color matrix applies to the painted pixels right here
+     * (after children paint below); blur is GPU-only (like backdrop). */
+    float filter_m[4][5];
+    float filter_blur = 0;
+    std::string filts = sget(n->style, "filter");
+    bool has_filter = false;
+#ifndef WHALEUI_BUILD_MINIMAL
+    if (!filts.empty() && filts != "none" &&
+        parse_filter(filts.c_str(), filter_m, &filter_blur) == 0) {
+        has_filter = true;
+        if (g_gpu) {
+            int frad = 0;
+            std::string fbr = sget(n->style, "border-radius");
+            if (!fbr.empty()) {
+                frad = std::atoi(fbr.c_str());
+            }
+            /* the blur halo spills outside the box: grow the record by
+             * the blur radius (the shader clips to the grown rounded box) */
+            float fb = filter_blur > 0 ? filter_blur : 0.0f;
+            whaleui_gpu_filter(g_gpu,
+                               static_cast<float>(n->border.x + nox) - fb,
+                               static_cast<float>(n->border.y + noy) - fb,
+                               static_cast<float>(bw) + 2.0f * fb,
+                               static_cast<float>(bh) + 2.0f * fb,
+                               static_cast<float>(frad) + fb, filter_blur,
+                               filter_m);
+        }
+    }
+#endif
     /* <img>: bitmap (object-fit) or placeholder replaces the background */
     if (n->el && tag_eq(n->el, "img")) {
         paint_img(r, n, nox, noy, eff);
@@ -1697,5 +1729,63 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * drew a second value+arrow offset right and down ("鍙充笅瑙掗噸澶嶆寜閽?). */
     if (!n->pseudo && is_select_node(n)) {
         paint_select_value(r, n, nox, noy, eff);
+    }
+    /* CPU filter: the 4x5 color matrix over this element's painted box
+     * (body + children above - everything this call painted). GPU path
+     * handles it in pass E instead (this would double-apply). Blur is
+     * GPU-only. */
+    if (has_filter && !g_gpu) {
+        int fx = n->border.x + nox;
+        int fy = n->border.y + noy;
+        int x0 = fx < 0 ? 0 : fx;
+        int y0 = fy < 0 ? 0 : fy;
+        int x1 = fx + bw > r->fb_w ? r->fb_w : fx + bw;
+        int y1 = fy + bh > r->fb_h ? r->fb_h : fy + bh;
+        clip_rect(x0, y0, x1, y1, eff);
+        for (int yy = y0; yy < y1; ++yy) {
+            for (int xx = x0; xx < x1; ++xx) {
+                unsigned int& d = r->pixels[static_cast<size_t>(yy) * r->fb_w + xx];
+                float fr = ((d >> 16) & 0xFF) / 255.0f;
+                float fg = ((d >> 8) & 0xFF) / 255.0f;
+                float fb = (d & 0xFF) / 255.0f;
+                float fa = ((d >> 24) & 0xFF) / 255.0f;
+                float or_ = filter_m[0][0] * fr + filter_m[0][1] * fg +
+                            filter_m[0][2] * fb + filter_m[0][3] * fa +
+                            filter_m[0][4];
+                float og = filter_m[1][0] * fr + filter_m[1][1] * fg +
+                           filter_m[1][2] * fb + filter_m[1][3] * fa +
+                           filter_m[1][4];
+                float ob = filter_m[2][0] * fr + filter_m[2][1] * fg +
+                           filter_m[2][2] * fb + filter_m[2][3] * fa +
+                           filter_m[2][4];
+                float oa = filter_m[3][0] * fr + filter_m[3][1] * fg +
+                           filter_m[3][2] * fb + filter_m[3][3] * fa +
+                           filter_m[3][4];
+                if (or_ < 0) {
+                    or_ = 0;
+                } else if (or_ > 1) {
+                    or_ = 1;
+                }
+                if (og < 0) {
+                    og = 0;
+                } else if (og > 1) {
+                    og = 1;
+                }
+                if (ob < 0) {
+                    ob = 0;
+                } else if (ob > 1) {
+                    ob = 1;
+                }
+                if (oa < 0) {
+                    oa = 0;
+                } else if (oa > 1) {
+                    oa = 1;
+                }
+                d = (static_cast<unsigned int>(oa * 255 + 0.5f) << 24) |
+                    (static_cast<unsigned int>(or_ * 255 + 0.5f) << 16) |
+                    (static_cast<unsigned int>(og * 255 + 0.5f) << 8) |
+                    static_cast<unsigned int>(ob * 255 + 0.5f);
+            }
+        }
     }
 }

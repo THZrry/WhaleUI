@@ -79,6 +79,9 @@ unsigned int hex_nib(char c, int* ok);
 void split_grad_parts(const std::string& s, std::vector<std::string>& out);
 int parse_gradient(const std::string& v, Gradient& out);
 unsigned int grad_color(const Gradient& g, float t);
+/* 4x5 color matrix (row-major, input [r,g,b,a,1]) for `filter` */
+void filter_matrix_identity(float m[4][5]);
+int parse_filter(const char* v, float m[4][5], float* blur);
 /* resolve a radial-gradient's size markers against the box: negative rx/ry
  * (-1 closest-side, -2 closest-corner, -3 farthest-side, -4 farthest-corner)
  * become px radii from the (rcx, rcy) center; positive values pass through.

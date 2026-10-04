@@ -244,6 +244,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->pipe_shadow_cs = nullptr;
     g->pipe_backdrop_cs = nullptr;
     g->pipe_inset_cs = nullptr;
+    g->pipe_filter_cs = nullptr;
     g->sampler = nullptr;
     g->sampler_mip = nullptr;
     g->white_tex = nullptr;
@@ -259,6 +260,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->shadow_params_buf = nullptr;
     g->backdrop_params_buf = nullptr;
     g->inset_params_buf = nullptr;
+    g->filter_params_buf = nullptr;
     g->vb_transfer = nullptr;
     g->atlas_transfer = nullptr;
     g->layer_transfer[0] = nullptr;
@@ -480,9 +482,10 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->vb_solid_late = make_vertex_buffer(device, 256 * 1024);
     /* blur parameter storage: header {count,fb_w,fb_h,0} + up to 64
      * records. shadow/backdrop records are 12 floats (3 float4), inset
-     * records 16 floats (4 float4) - each buffer fits its own stride, or
-     * the compute upload overruns the buffer and the D3D12 backend fails
-     * the command list close with E_INVALIDARG (a full-black frame). */
+     * records 16 floats (4 float4), filter records 28 floats (7 float4) -
+     * each buffer fits its own stride, or the compute upload overruns the
+     * buffer and the D3D12 backend fails the command list close with
+     * E_INVALIDARG (a full-black frame). */
     {
         SDL_GPUBufferCreateInfo bci;
         std::memset(&bci, 0, sizeof(bci));
@@ -492,6 +495,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         g->backdrop_params_buf = SDL_CreateGPUBuffer(device, &bci);
         bci.size = (64 * 16 + 4) * sizeof(float);
         g->inset_params_buf = SDL_CreateGPUBuffer(device, &bci);
+        bci.size = (64 * 24 + 4) * sizeof(float);
+        g->filter_params_buf = SDL_CreateGPUBuffer(device, &bci);
     }
     SDL_GPUTransferBufferCreateInfo tbi;
     std::memset(&tbi, 0, sizeof(tbi));
@@ -508,7 +513,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->layer_transfer[1] = SDL_CreateGPUTransferBuffer(device, &tbi);
     if (!g->vb_solid || !g->vb_text || !g->vb_shapes || !g->vb_solid_late ||
         !g->shadow_params_buf || !g->backdrop_params_buf ||
-        !g->inset_params_buf ||
+        !g->inset_params_buf || !g->filter_params_buf ||
         !g->vb_transfer || !g->shadow_transfer || !g->atlas_transfer ||
         !g->layer_transfer[0] || !g->layer_transfer[1]) {
         goto fail;
@@ -595,6 +600,20 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cs->Release();
         if (!g->pipe_inset_cs) {
             std::fprintf(stderr, "[gpu] inset CS pipeline failed: %s\n",
+                         SDL_GetError());
+            goto fail;
+        }
+        cs = compile_dxil(kFilterCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0);
+        if (!cs) {
+            goto fail;
+        }
+        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
+        cpi.code_size = cs->GetBufferSize();
+        g->pipe_filter_cs = SDL_CreateGPUComputePipeline(device, &cpi);
+        cs->Release();
+        if (!g->pipe_filter_cs) {
+            std::fprintf(stderr, "[gpu] filter CS pipeline failed: %s\n",
                          SDL_GetError());
             goto fail;
         }
@@ -700,6 +719,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->pipe_shadow_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_shadow_cs);
         if (g->pipe_backdrop_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_backdrop_cs);
         if (g->pipe_inset_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_inset_cs);
+        if (g->pipe_filter_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_filter_cs);
         if (g->sampler) SDL_ReleaseGPUSampler(g->device, g->sampler);
         if (g->sampler_mip) SDL_ReleaseGPUSampler(g->device, g->sampler_mip);
         if (g->white_tex) SDL_ReleaseGPUTexture(g->device, g->white_tex);
@@ -716,6 +736,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->shadow_params_buf) SDL_ReleaseGPUBuffer(g->device, g->shadow_params_buf);
         if (g->backdrop_params_buf) SDL_ReleaseGPUBuffer(g->device, g->backdrop_params_buf);
         if (g->inset_params_buf) SDL_ReleaseGPUBuffer(g->device, g->inset_params_buf);
+        if (g->filter_params_buf) SDL_ReleaseGPUBuffer(g->device, g->filter_params_buf);
         if (g->vb_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->vb_transfer);
         if (g->atlas_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->atlas_transfer);
         if (g->layer_transfer[0]) SDL_ReleaseGPUTransferBuffer(g->device, g->layer_transfer[0]);
@@ -1092,6 +1113,38 @@ void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
     g->backdrops.push_back(p);
 }
 
+void whaleui_gpu_filter(whaleui_gpu_t* g, float x, float y, float w,
+                        float h, float radius, float blur,
+                        const float m[4][5])
+{
+    if (!g || w <= 0 || h <= 0 || !m) {
+        return;
+    }
+    if (g->filters.size() >= 64) {
+        return;
+    }
+    gpu_filter_param p;
+    p.x = x;
+    p.y = y;
+    p.w = w;
+    p.h = h;
+    p.blur = blur > 0 ? blur : 0.0f;
+    p.radius = radius > 0 ? radius : 0.0f;
+    p.pad0 = p.pad1 = 0;
+    for (int i = 0; i < 4; ++i) {
+        p.r0[i] = m[0][i];
+        p.r1[i] = m[1][i];
+        p.r2[i] = m[2][i];
+        p.r3[i] = m[3][i];
+    }
+    /* bias rides in [3] (the shader reads m.w as bias) */
+    p.r0[3] = m[0][4];
+    p.r1[3] = m[1][4];
+    p.r2[3] = m[2][4];
+    p.r3[3] = m[3][4];
+    g->filters.push_back(p);
+}
+
 void whaleui_gpu_text(whaleui_gpu_t* g, float x, float y, float w, float h,
                       float u, float v, float u2, float v2,
                       unsigned int color)
@@ -1243,7 +1296,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                    g->atlas_dirty || g->layer_dirty;
     bool need_svb = !g->shapes.empty() || !g->inset_shapes.empty() ||
                     !g->shadows.empty() || !g->backdrops.empty() ||
-                    !g->insets.empty();
+                    !g->insets.empty() || !g->filters.empty();
     if (need_vb) {
         void* mapped = SDL_MapGPUTransferBuffer(g->device, g->vb_transfer, false);
         if (mapped) {
@@ -1385,6 +1438,17 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 std::memcpy(static_cast<char*>(m2) + off + 16,
                             g->insets.data(),
                             g->insets.size() * sizeof(gpu_inset_param));
+                off += 16 + g->insets.size() * sizeof(gpu_inset_param);
+            }
+            if (!g->filters.empty()) {
+                float* hdr = static_cast<float*>(m2) + off / sizeof(float);
+                hdr[0] = static_cast<float>(g->filters.size());
+                hdr[1] = g->fb_w;
+                hdr[2] = g->fb_h;
+                hdr[3] = 0;
+                std::memcpy(static_cast<char*>(m2) + off + 16,
+                            g->filters.data(),
+                            g->filters.size() * sizeof(gpu_filter_param));
             }
             SDL_UnmapGPUTransferBuffer(g->device, g->shadow_transfer);
         }
@@ -1442,6 +1506,16 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 br.size = 16 + g->insets.size() * sizeof(gpu_inset_param);
                 bti.offset = off;
                 SDL_UploadToGPUBuffer(cp, &bti, &br, false);
+                off += 16 + g->insets.size() * sizeof(gpu_inset_param);
+            }
+            if (!g->filters.empty()) {
+                SDL_GPUBufferRegion br;
+                std::memset(&br, 0, sizeof(br));
+                br.buffer = g->filter_params_buf;
+                br.offset = 0;
+                br.size = 16 + g->filters.size() * sizeof(gpu_filter_param);
+                bti.offset = off;
+                SDL_UploadToGPUBuffer(cp, &bti, &br, false);
             }
             SDL_EndGPUCopyPass(cp);
         }
@@ -1451,7 +1525,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * frame reuses the previous target and must not overwrite it
      * (ponytail: shadows briefly drop during pure scrolls; the next full
      * repaint restores them). */
-    bool do_shadow = false && !g->shadows.empty() && scroll_dy == 0 && !load_only;
+    bool do_shadow = !g->shadows.empty() && scroll_dy == 0 && !load_only;
 
     /* pass A: paint the shadow shapes into the low-res blur texture, then
      * build the mip chain (box-filtered downsamples) */
@@ -1770,11 +1844,64 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
         g->layer_dirty = 0;
     }
 
+    /* pass E: element filters. Runs AFTER the text composite (target2 holds
+     * the full frame incl. text): the filter applies to the element's own
+     * painted content. When blur > 0 the composited frame is blitted into
+     * blur_tex + mipmapped first (like the backdrop pass), then the compute
+     * pass applies blur + the 4x5 color matrix in each region. Skipped on
+     * scroll frames like the other blur passes. */
+    if (!g->filters.empty() && scroll_dy == 0) {
+        bool need_blur = false;
+        for (size_t fi = 0; fi < g->filters.size(); ++fi) {
+            if (g->filters[fi].blur > 0) {
+                need_blur = true;
+                break;
+            }
+        }
+        if (need_blur) {
+            SDL_GPUBlitInfo blit;
+            std::memset(&blit, 0, sizeof(blit));
+            blit.source.texture = g->target2;
+            blit.source.w = static_cast<Uint32>(fb_w);
+            blit.source.h = static_cast<Uint32>(fb_h);
+            blit.destination.texture = g->blur_tex;
+            blit.destination.w = static_cast<Uint32>(g->blur_w);
+            blit.destination.h = static_cast<Uint32>(g->blur_h);
+            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            blit.filter = SDL_GPU_FILTER_LINEAR;
+            SDL_BlitGPUTexture(cmd, &blit);
+            SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
+        }
+        SDL_GPUStorageTextureReadWriteBinding rw;
+        std::memset(&rw, 0, sizeof(rw));
+        rw.texture = g->target2;
+        rw.mip_level = 0;
+        rw.layer = 0;
+        rw.cycle = false;
+        SDL_GPUComputePass* cps =
+            SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+        if (cps) {
+            SDL_BindGPUComputePipeline(cps, g->pipe_filter_cs);
+            SDL_GPUTextureSamplerBinding tsb;
+            std::memset(&tsb, 0, sizeof(tsb));
+            tsb.texture = g->blur_tex;
+            tsb.sampler = g->sampler_mip;
+            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+            SDL_GPUBuffer* sbb = g->filter_params_buf;
+            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+            SDL_DispatchGPUCompute(cps,
+                                   (static_cast<Uint32>(fb_w) + 7) / 8,
+                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
+            SDL_EndGPUComputePass(cps);
+        }
+    }
+
     g->solids.clear();
     g->texts.clear();
     g->shadows.clear();
     g->backdrops.clear();
     g->insets.clear();
+    g->filters.clear();
     g->shapes.clear();
     g->inset_shapes.clear();
     g->solids_late.clear();

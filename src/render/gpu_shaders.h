@@ -307,6 +307,66 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 )";
 
+/* filter (element) compute pass: blur + 4x5 color matrix over the
+ * element's own painted content (geometry + text, i.e. AFTER the text
+ * composite into target2). blur reuses the mip pyramid (target2 is blitted
+ * into blur_tex first, like the backdrop pass); the matrix applies to the
+ * blurred sample. Rounded-corner SDF clip like the backdrop pass.
+ * Record layout (6 float4, note the *6 stride):
+ *   {x,y,w,h} {blur,radius,0,0} {r0} {r1} {r2} {r3}
+ * where each r row is [c0,c1,c2,bias]. */
+static const std::string kFilterCS = std::string(R"(
+[[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
+[[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+SamplerState samp : register(s0);
+)") + kBlurSampleFn + R"(
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float2 px = float2(id.xy) + 0.5;
+    float4 hdr = params[0];
+    int n = int(hdr.x);
+    float4 acc = out_tex[id.xy]; /* keep everything outside the regions */
+    for (int i = 0; i < n; ++i) {
+        float4 r = params[1 + i * 6];
+        float4 c = params[2 + i * 6];
+        float4 m0 = params[3 + i * 6];
+        float4 m1 = params[4 + i * 6];
+        float4 m2 = params[5 + i * 6];
+        float4 m3 = params[6 + i * 6];
+        if (px.x >= r.x && px.x < r.x + r.z &&
+            px.y >= r.y && px.y < r.y + r.w) {
+            float4 src;
+            if (c.x > 0.0) {
+                /* blurred self (fullscreen blit target2 -> blur_tex) */
+                float2 uv = px / float2(hdr.y, hdr.z);
+                src = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
+            } else {
+                src = acc;
+            }
+            float3 rgb = src.rgb;
+            float a = src.a;
+            float3 outc;
+            outc.r = dot(rgb, m0.xyz) + m0.w * a;
+            outc.g = dot(rgb, m1.xyz) + m1.w * a;
+            outc.b = dot(rgb, m2.xyz) + m2.w * a;
+            float outa = dot(float4(rgb, a), m3.xyzw);
+            float4 outv = float4(outc, outa);
+            float rad = c.y;
+            if (rad > 0.0) {
+                float2 hf = r.zw * 0.5;
+                float2 q = abs(px - (r.xy + hf)) - (hf - rad);
+                float dd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+                outv = lerp(acc, outv, 1.0 - saturate(dd + 0.5));
+            }
+            acc = outv;
+            break;
+        }
+    }
+    out_tex[id.xy] = acc;
+}
+)";
+
 /* compute: composite the CPU-rasterized text layer (RGBA8, transparent
  * where empty) over the geometry already drawn into the target. SDL 3.4
  * SPIR-V layout: set0 = sampled textures, set1 = read-write storage. The
