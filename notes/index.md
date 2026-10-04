@@ -106,3 +106,10 @@ blur>=8 mip 阶梯(原样), blur<8 预定义 3x3 二项式核作用于单 mip �
 t=log2(blur)-L 从恒等升到全核。同轮 rotate 的背景/边框改为真实旋转(GPU 顶点
 旋转, SDF 仿射不变故圆角精确), <5> 范围缩小为文本/子树/渐变/命中不转。见
 notes/current.md
+<16>(SOLVED): backdrop body 走 LATE pass 保住渐变/边框 + 圆角裁剪; inset 改
+mask 反演(1-blurred_mask(px-off),offset 精确,blur:0 实环); 外阴影 uv 采样
+位移修复; param buffer 上溢致 D3D12 整帧黑屏修复; rotate 渐变轴同转 +
+hit_test 逆旋转。见 notes/current.md
+<17>(SOLVED): P0 四项 —— transform-origin(scale/rotate/hit 锚点);
+:not() 单层+状态取反; ::selection-fg(逐字形换色); 伪元素去名单(全量合并)。
+清单 temp/css-todo.md。见 notes/current.md

@@ -1822,6 +1822,162 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* inset box-shadow, mask path: a hard ring (blur 0 + spread) colors the
+     * rim while the middle stays background; an offset ring lights only the
+     * offset side; a blurred offset shadow darkens the top edge and fades
+     * out before the middle. The GPU CS computes 1 - blurred_mask(px - off)
+     * of the spread-grown box (see kInsetCS). */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "inset-shadow", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#a{position:absolute;left:20px;top:20px;width:70px;"
+                   "height:40px;background-color:#00ff00;"
+                   "box-shadow:inset 0 0 0 8px #ff0000}"
+                   "#b{position:absolute;left:110px;top:20px;width:70px;"
+                   "height:40px;background-color:#00ff00;"
+                   "box-shadow:inset 20px 0 0 #ff0000}"
+                   "#c{position:absolute;left:20px;top:90px;width:160px;"
+                   "height:80px;background-color:#00ff00;"
+                   "box-shadow:inset 0 14px 14px #ff0000}"
+                   "</style></head>"
+                   "<body><div id=\"a\"></div><div id=\"b\"></div>"
+                   "<div id=\"c\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int ring = gpixel(w->render, 24, 40);
+            unsigned int ring_mid = gpixel(w->render, 55, 40);
+            unsigned int off_l = gpixel(w->render, 115, 40);
+            unsigned int off_r = gpixel(w->render, 170, 40);
+            unsigned int blur_top = gpixel(w->render, 100, 96);
+            unsigned int blur_mid = gpixel(w->render, 100, 130);
+            std::printf("[inset] ring=%08X mid=%08X offl=%08X offr=%08X "
+                        "top=%08X bmid=%08X\n",
+                        ring, ring_mid, off_l, off_r, blur_top, blur_mid);
+            std::fflush(stdout);
+            /* 8px hard ring: red at the rim, green in the middle */
+            assert(((ring >> 16) & 0xFF) > 0xC0 && (ring & 0xFF) < 0x40);
+            assert(((ring_mid >> 8) & 0xFF) > 0xC0 &&
+                   ((ring_mid >> 16) & 0xFF) < 0x40);
+            /* inset 20px 0: only the LEFT strip is red */
+            assert(((off_l >> 16) & 0xFF) > 0xC0 && (off_l & 0xFF) < 0x40);
+            assert(((off_r >> 8) & 0xFF) > 0xC0 &&
+                   ((off_r >> 16) & 0xFF) < 0x40);
+            /* inset 0 14px 14px: red haze at the top edge, green center */
+            assert(((blur_top >> 16) & 0xFF) > ((blur_top >> 8) & 0xFF));
+            assert(((blur_mid >> 8) & 0xFF) > ((blur_mid >> 16) & 0xFF));
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* backdrop-filter keeps the element's OWN body painting (a gradient
+     * here) on top of the blurred backdrop: the body is drawn in the late
+     * pass after the blur compute, so it must show its red->blue ramp, not
+     * the blurred (white) page underneath. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "backdrop-body", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0;"
+                   "background-color:#ffffff}"
+                   "#u{position:absolute;left:50px;top:50px;width:100px;"
+                   "height:100px;backdrop-filter:blur(4px);"
+                   "background:linear-gradient(#ff0000, #0000ff)}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int top = gpixel(w->render, 100, 60);
+            unsigned int bot = gpixel(w->render, 100, 140);
+            std::printf("[backdrop-body] top=%08X bot=%08X\n", top, bot);
+            std::fflush(stdout);
+            /* the gradient body survived the blur pass: red at the top,
+             * blue at the bottom (a clobbered body would be white here) */
+            assert(((top >> 16) & 0xFF) > (top & 0xFF) + 0x40);
+            assert((bot & 0xFF) > ((bot >> 16) & 0xFF) + 0x40);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* transform-origin moves the scale/rotate anchor: a 100px bar with
+     * scaleX(0.5) + origin left keeps its left edge (grows rightward from
+     * x=20), while the default center would pull it to x=45. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "transform-origin", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:20px;background-color:#ff0000;"
+                   "transform:scaleX(0.5);transform-origin:left center}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int at_left = gpixel(w->render, 22, 30);
+            unsigned int at_right = gpixel(w->render, 68, 30);
+            std::printf("[origin] left=%08X right=%08X\n", at_left,
+                        at_right);
+            std::fflush(stdout);
+            /* left-anchored: the bar spans x=20..70 */
+            assert((at_left & 0xFFFFFFu) == 0xFF0000u);
+            assert((at_right & 0xFFFFFFu) == 0xFF0000u);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* ::before box with off-whitelist properties: a 4-side border-color
+     * and a linear-gradient background must both reach the pseudo box
+     * (pseudo_box_style merges every declaration, no whitelist). The host
+     * is transparent, so whatever paints at the box is the ::before. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "pseudo-props", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:60px;background:transparent}"
+                   "#u::before{content:\"\";position:absolute;inset:0;"
+                   "background:linear-gradient(#ff0000, #0000ff);"
+                   "border:4px solid;border-color:#00ff00 #00ff00 #00ff00 "
+                   "#00ff00}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* green border ring (4px): inside the top edge */
+            unsigned int edge = gpixel(w->render, 70, 22);
+            /* gradient body: red at the top inside, blue at the bottom */
+            unsigned int gtop = gpixel(w->render, 70, 32);
+            unsigned int gbot = gpixel(w->render, 70, 72);
+            std::printf("[pseudo] edge=%08X top=%08X bot=%08X\n", edge,
+                        gtop, gbot);
+            std::fflush(stdout);
+            assert(((edge >> 8) & 0xFF) > 0xC0 &&
+                   ((edge >> 16) & 0xFF) < 0x40);
+            assert(((gtop >> 16) & 0xFF) > (gtop & 0xFF) + 0x40);
+            assert((gbot & 0xFF) > ((gbot >> 16) & 0xFF) + 0x40);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

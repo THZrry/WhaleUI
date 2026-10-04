@@ -81,7 +81,7 @@ int parse_gradient(const std::string& v, Gradient& out);
 unsigned int grad_color(const Gradient& g, float t);
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
-                   const Clip* clip);
+                   const Clip* clip, float rot_deg = 0.0f);
 unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop,
                       unsigned int def);
 unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def);
@@ -104,12 +104,14 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
 void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
                        int x, int y, int w, int h, int radius, int bw,
                        unsigned int color, unsigned int bg, const Clip* clip);
-/* box fill/box ring rotated by rot_deg (CSS rotate, clockwise around the
- * box center). GPU: rotated corners on the solid pipeline (exact for the
- * SDF shape via affine invariance); CPU fallback: unrotated. */
+/* box fill/box ring rotated by rot_deg (CSS rotate, clockwise) around the
+ * (ox, oy) anchor (px, in-box coords from whaleui_transform_origin_eval).
+ * GPU: rotated corners on the solid pipeline (exact for the SDF shape via
+ * affine invariance); CPU fallback: unrotated. */
 void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, int radius,
-                   unsigned int color, float rot_deg, const Clip* clip);
+                   unsigned int color, float rot_deg, const Clip* clip,
+                   float ox = 0.0f, float oy = 0.0f);
 void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
                    const SDL_Surface* surf, int dx, int dy, const Clip* clip,
                    const unsigned int* tint);
@@ -173,7 +175,9 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp = 0, bool wrap = false,
-                  float opacity = 1.0f, bool outline = false);
+                  float opacity = 1.0f, bool outline = false,
+                  size_t sel_lo = 0, size_t sel_hi = 0,
+                  unsigned int sel_fg = 0);
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
                    size_t* a, size_t* b, int seq, int sel_lo, int sel_hi);
 void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip);

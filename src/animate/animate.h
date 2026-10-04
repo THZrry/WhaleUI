@@ -109,6 +109,12 @@ typedef struct whaleui_transform whaleui_transform_t;
 int whaleui_transform_eval(const char* value, float self_w, float self_h,
                            whaleui_transform_t* out);
 
+/* Resolve a `transform-origin` value ("left", "50% 50%", "0 0") to a px
+ * anchor inside a self_w x self_h box. Missing/empty = the center.
+ * Returns 0 on success. */
+int whaleui_transform_origin_eval(const char* value, float self_w,
+                                  float self_h, float* ox, float* oy);
+
 #ifdef __cplusplus
 }
 #endif

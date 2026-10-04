@@ -11,6 +11,7 @@
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -40,6 +41,14 @@ struct SelPart
     bool has_attr;      /* "[name]" / "[name=value]" present */
     std::string attr;   /* attribute name */
     std::string attr_val; /* expected value ("" = presence only) */
+    bool has_not;       /* ":not(<simple>)" present: matches when the inner
+                         * simple selector does NOT match (single level,
+                         * no combinators inside, per CSS) */
+    std::string not_sel; /* the inner selector text */
+    bool not_hover;     /* ":not(:hover)" - state negation, checked with
+                         * the same bubble rule as :hover in match() */
+    bool not_active;    /* ":not(:active)" */
+    bool not_focus;     /* ":not(:focus)" / ":not(:focus-visible)" */
 };
 
 /* parse ":nth-child(odd|even|N|n|n+B|An+B)" into a/b. Returns false on
@@ -190,8 +199,21 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 continue;
             }
             const char* s = p;
-            while (p < end && *p != '#' && *p != '.' && *p != ':' &&
-                   *p != '[') {
+            /* ":not(...)" spans the class/id/attr/state markers inside its
+             * own parentheses (":not(.a)", ":not(:hover)"), so the
+             * delimiters only terminate at depth 0: a bare ':' starts a
+             * NEW pseudo-class there, '#' / '.' / '[' start a new
+             * id/class/attr segment */
+            int pdepth = 0;
+            while (p < end && (pdepth > 0 || (*p != '#' && *p != '.' &&
+                                             *p != '[' && *p != ':'))) {
+                if (*p == '(') {
+                    ++pdepth;
+                } else if (*p == ')') {
+                    if (pdepth > 0) {
+                        --pdepth;
+                    }
+                }
                 ++p;
             }
             std::string v(s, static_cast<size_t>(p - s));
@@ -216,6 +238,53 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 if (parse_nth(v.c_str() + 10, v.size() - 11, out.nth_a,
                               out.nth_b)) {
                     out.nth = true;
+                }
+            } else if (v.compare(0, 4, "not(") == 0 &&
+                       !v.empty() && v.back() == ')') {
+                /* ":not(<simple>)" - single-level negation (no combinators
+                 * inside per CSS). The inner text is stored raw and matched
+                 * against the same element in part_match. Malformed or
+                 * combinator-carrying arguments are ignored (the :not is
+                 * dropped, like other unknown pseudo-classes). */
+                std::string inner = v.substr(4, v.size() - 5);
+                size_t b = inner.find_first_not_of(" \t");
+                size_t e = inner.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    inner = inner.substr(b, e - b + 1);
+                    bool complex = false;
+                    int depth = 0;
+                    for (size_t k = 0; k < inner.size(); ++k) {
+                        char ch = inner[k];
+                        if (ch == '(') {
+                            ++depth;
+                        } else if (ch == ')') {
+                            if (depth > 0) {
+                                --depth;
+                            }
+                        } else if (depth == 0 &&
+                                   (ch == ' ' || ch == '\t' || ch == '>' ||
+                                    ch == '+' || ch == '~')) {
+                            complex = true;
+                            break;
+                        }
+                    }
+                    if (!complex && !inner.empty()) {
+                        /* a lone state pseudo-class negates with the same
+                         * bubble rule as the positive form (checked in
+                         * match(), where the state lives); anything else
+                         * negates statically in part_match */
+                        if (inner == ":hover") {
+                            out.not_hover = true;
+                        } else if (inner == ":active") {
+                            out.not_active = true;
+                        } else if (inner == ":focus" ||
+                                   inner == ":focus-visible") {
+                            out.not_focus = true;
+                        } else {
+                            out.has_not = true;
+                            out.not_sel = inner;
+                        }
+                    }
                 }
             }
             continue;
@@ -244,7 +313,8 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
            (!out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
             out.hover || out.active || out.focus || out.disabled ||
             out.checked || out.indeterminate ||
-            out.last_child || out.first_child || out.nth || out.has_attr);
+            out.last_child || out.first_child || out.nth || out.has_attr ||
+            out.has_not || out.not_hover || out.not_active || out.not_focus);
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -391,6 +461,25 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
                 if (d < 0 || d % p.nth_a != 0) {
                     return false;
                 }
+            }
+        }
+    }
+    if (p.has_not) {
+        /* ":not(<simple>)" - the inner selector matches the SAME element
+         * (no state: hover/active/focus negations live in match(), where
+         * the interaction state is visible). A nested :not inside :not is
+         * dropped at parse time (not_sel never carries has_not). */
+        SelPart inner;
+        if (parse_simple(p.not_sel.c_str(), p.not_sel.size(), inner)) {
+            /* strip any state flags the inner may carry (a lone state
+             * inner is routed to not_hover/active/focus at parse, but a
+             * compound like ".a:hover" still parses hover=true - the
+             * static half decides here, the state half is approximated
+             * as "inner matches" so :not() stays conservative) */
+            inner.hover = inner.active = inner.focus = false;
+            inner.not_hover = inner.not_active = inner.not_focus = false;
+            if (part_match(inner, el)) {
+                return false;
             }
         }
     }
@@ -870,6 +959,31 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
         if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
             return 0;
         }
+        /* ":not(:hover/:active/:focus)" - the same state test, inverted
+         * (with the same bubble rule as the positive form). A part like
+         * "button:not(:hover)" matches a button while the pointer is
+         * anywhere else. */
+        if (part.not_hover) {
+            for (lxb_dom_node* h = (st && st->hover) ? &st->hover->node : nullptr;
+                 h; h = h->parent) {
+                if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                    lxb_dom_interface_element(h) == cur_el) {
+                    return 0;
+                }
+            }
+        }
+        if (part.not_active) {
+            for (lxb_dom_node* h = (st && st->pressed) ? &st->pressed->node : nullptr;
+                 h; h = h->parent) {
+                if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                    lxb_dom_interface_element(h) == cur_el) {
+                    return 0;
+                }
+            }
+        }
+        if (part.not_focus && (st && st->focus && cur_el == st->focus)) {
+            return 0;
+        }
     }
     return 1;
 }
@@ -1290,18 +1404,47 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
     }
     /* expand shorthands the layout/render consume as longhands */
     expand_shorthands(out);
-    /* ::selection background (text-selection highlight color) */
-    if (out.find("selection-bg") == out.end()) {
-        for (size_t i = 0; i < count; ++i) {
+    /* ::selection colors (text-selection highlight). background and color
+     * ride as virtual "selection-bg"/"selection-fg" properties the text
+     * paint reads (render_text.cpp). Rules are theme-first/page-last, so
+     * the LAST ::selection rule wins (page overrides theme, like the
+     * cascade). Values go through resolve_var (the theme rule uses
+     * var(--selection-bg/fg)). */
+    if (out.find("selection-bg") == out.end() ||
+        out.find("selection-fg") == out.end()) {
+        for (size_t i = count; i-- > 0;) {
             const char* sel = rules[i].selector;
             size_t n2 = sel ? std::strlen(sel) : 0;
             if (n2 >= 11 &&
                 std::strcmp(sel + n2 - 11, "::selection") == 0) {
-                const char* bg = whaleui_css_get_property(&rules[i], "background");
-                if (bg && *bg) {
-                    out["selection-bg"] = bg;
+                if (out.find("selection-bg") == out.end()) {
+                    const char* bg = whaleui_css_get_property(&rules[i], "background");
+                    if (!bg || !*bg) {
+                        bg = whaleui_css_get_property(&rules[i],
+                                                      "background-color");
+                    }
+                    if (bg && *bg) {
+                        std::string bgs = bg;
+                        resolve_var(bgs, vars);
+                        if (!bgs.empty()) {
+                            out["selection-bg"] = bgs;
+                        }
+                    }
                 }
-                break;
+                if (out.find("selection-fg") == out.end()) {
+                    const char* fg = whaleui_css_get_property(&rules[i], "color");
+                    if (fg && *fg) {
+                        std::string fgs = fg;
+                        resolve_var(fgs, vars);
+                        if (!fgs.empty()) {
+                            out["selection-fg"] = fgs;
+                        }
+                    }
+                }
+                if (out.find("selection-bg") != out.end() &&
+                    out.find("selection-fg") != out.end()) {
+                    break;
+                }
             }
         }
     }

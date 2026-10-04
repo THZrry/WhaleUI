@@ -65,7 +65,7 @@ foreach ($p in @('gaps','gaps2','gaps5','gaps7','gaps18','gaps21')) {
 
 # <5>: transform: rotate 的文本/子树仍不转
 
-UNRESOLVED(范围缩小)
+UNRESOLVED(范围再缩小)
 
 rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transform_t.rot`,
 并且**背景/边框随 rotate 真实旋转**(<15> 同轮):GPU 路径把 solid quad 的四个
@@ -75,10 +75,15 @@ rotate 现在能被解析(deg/rad/turn)、参与插值、写进 `whaleui_transfo
 border-radius 圆环因此可转。@keyframes spin 的逐帧插值也随 <14> 的 xf
 刷新生效。
 
-仍不转(近似边界,均为 ponytail):文本与子元素保持直立;渐变仍沿未旋转轴
-(fill_gradient 的角点投影未接 rot);命中测试(hit_test)按未旋转盒;
-`::before` 状态层不随转。要全部转需要真矩阵 paint 路径(背景/边框/文本/
-子树走同一变换),成本远超本轮。
+<16> 同轮补齐两处(性能仍是近似解,零新增纹理/draw):
+渐变轴随 rot 旋转(fill_gradient 新增 rot_deg 参数,把投影方向转过同样角度,
+band 位置照旧从盒角投影来,CSS 语义"渐变随元素转"只需几次 ALU);
+命中测试逆旋转重测(hit_test 在 laid-out 盒未命中时,把点逆旋转回局部系再测
+一次,门控在 xf 标志 + rot!=0,菱形边角因此可点)。
+
+仍不转(近似边界,均为 ponytail):文本与子元素保持直立;
+`::before` 状态层不随转。要全部转需要真矩阵
+paint 路径(背景/边框/文本/子树走同一变换),成本远超本轮。
 
 其余未实现项(`conic-gradient` / `repeating-*-gradient` / `hwb()` /
 `oklab|oklch|lab|lch` / `color-mix()` / `attr()` / `counter()` /
@@ -86,7 +91,90 @@ border-radius 圆环因此可转。@keyframes spin 的逐帧插值也随 <14> �
 `backdrop-filter` 的 CPU 回退路径)逐条列在
 `doc/internal/16-engine-support.md` 末尾。
 
-# <15>: backdrop-filter 采样错位(自引入即坏) + blur 双档近似
+# <16>: backdrop body 丢失 + inset 新实现 + param buffer 上溢 + rotate 渐变/命中
+
+SOLVED
+
+三件事 + 一个回归,一起落地:
+
+**(1) backdrop-filter 的 body 丢失。** `paint_node` 的 backdrop 分支为了让
+compute pass"覆盖式替换"不冲掉 body,把整个 body 绘制(纯色+渐变+边框)跳过,
+只传一个单色 `bg_c` 给 shader 做盖顶。纯色场景没事,渐变背景和边框在 GPU
+模式下全走 solids——命中 backdrop 就从没发射过。修:backdrop 不再跳 body,
+照常发射但路由到 LATE 队列(`whaleui_gpu_late_begin/end`),flush 在 pass C
+与 pass A2 之间多一次 LOAD 不清的渲染(geometry → backdrop 模糊 → late
+body → inset)。另补 radius:shader 里对区域做 SDF 圆角裁剪(圆角外保持原像素,
+body 的透明角露出真实 backdrop)。
+回归:tests/test_scroll.cpp 的 backdrop-body 用例——渐变 body 盖在模糊白页上,
+顶红底蓝(被冲掉会是白色)。
+
+**(2) inset box-shadow 新实现(用户 7 步方案的 mask 反演替代)。** 4 象限梯度权重/
+接缝混合/双层裁剪的每步直译成本太高(4 套权重函数 + 拼接 + 重叠混合 + 双 mask):
+7 步的语义等价形式是"1 - 覆盖盒 mask(px - offset)"——移采样点精确实现 offset
+(正 ox 点亮左缘,CSS 方向),mask 自身边界截断Shadow(干净中间天然为零,替代
+"内缩 blur 半径挖空"),圆角用同一 SDF 做显式裁剪。`whaleui_gpu_inset` 新签名
+`(x,y,w,h,radius,blur,ox,oy,spread,color)`:mask 源是 spread-收缩白盒
+(kBlurDiv 缩放,圆角 radius-spread),kInsetCS 步长改 4 float4
+`{x,y,w,h}{blur,r,g,b}{a,ox,oy,spread}{radius,0,0,0}`。`blur:0` 合法(采样
+level-0 脆 mask,出实线环)。CPU 路径同步:硬环画四条边(带 offset),模糊环按
+offset 移层。旧四三角形路径与 kFlatPS 整条删除。
+回归:test_scroll 的 inset-shadow 用例——硬环(rim 红中绿)/offset 20px(仅左侧红)
+/模糊 14px(上缘雾化、中绿)。
+
+**(3) 外阴影 mask 采样位移(自引入,同 <15> 的 backdrop 修法)。** kShadowCS 的
+`uv = px/fb * 0.5` 把形状采到 px/4,柔边位移 2 倍。修:`uv = px/fb`(形状按
+px/kBlurDiv 推送,pass 视口即 blur_tex)。经基线对照确认改动前后主题一致。
+
+**(4) param buffer 上溢回归(本轮引入、本轮修)。** inset 改 16 floats 后曾把三
+个 buffer 统一改成 1040B,而 shadow/backdrop 的 12-float 记录在 material 页
+(34 条,1648B)越界 `UploadToGPUBuffer`——D3D12 报 `Failed to close command
+list 0x80070057`,整帧黑屏(material 深浅双崩,其余主题记录少未触发,Vulkan
+不报错)。修:各 buffer 按自家跨度独立定尺寸(4096/4096/5120)。定位过程:
+Vulkan CLEAN + solids 截断/各 pass 禁用均仍 ERROR,最后数 param 字节抓到。
+
+rotate 近似(同轮,性能优先):渐变轴随 rot 旋转(fill_gradient 新增 rot_deg 参数,
+投影方向同转,零新增纹理/draw);hit_test 逆旋转重测(xf 门控)。文本/子树/
+`::before` 仍是近似边界,见 <5>。`transform-origin` 在本轮 <17> 落地,
+不再是边界。
+
+验证:10 项测试全绿;14 张主题离屏渲染像素自检(深浅配对+text/surface)全 OK;
+探针 temp/mini*.html 分段二分过程保留在 temp/。
+
+# <17>: P0 缺口四项(transform-origin/:not()/::selection-fg/伪元素去名单)
+
+SOLVED
+
+`temp/css-todo.md` 建清单(P0 四项 + P1 分类),P0 逐项落地:
+
+**(1) `transform-origin`。** 新增 `whaleui_transform_origin_eval`
+(`animate.cpp`):关键字/%/px,单值/双值,`top left` 换位容忍,缺省 50% 50%。
+scale 锚点从居中改 `ox*(1-s)`(paint_node 的 nox/noy);rotate 锚点透进
+`whaleui_gpu_rect_rot` 新参(ax/ay,framebuffer 锚点,角偏移先换到锚点系再转,
+默认中心退化为旧式);hit_test 逆旋转用同锚点。fluent 下划线 `scaleX(0→1)`
+从左侧展开。
+回归:test_scroll 的 transform-origin 用例(左锚 scaleX(0.5) 占 x=20..70)。
+
+**(2) `:not()` 单层。** `SelPart` 加 `has_not/not_sel` + 状态取反
+`not_hover/not_active/not_focus`(`style.cpp`):伪类扫描改括号感知
+(`.`/`#`/`:`/`[` 只在 depth 0 终止——`:not(.a)` 的 `.` 不截断);
+内层裸状态走外层 match() 同冒泡取反,其余静态取反走 part_match 递归
+(剥状态保保守);复杂参数(含组合子)丢弃。aero 的 `:not(:hover)` 慢出恢复。
+回归:test_style 静态+状态断言。
+
+**(3) `::selection` 前景色。** `selection-fg` 虚属性:页面规则赢主题(从后往前
+扫,两色分头找全才停),`var()` 展开(主题用变量);光栅循环逐字形换色
+(`L.map[ci]` 判选中字节区间,字形缓存本就按色 key,不分裂;run 光栅选中时
+跳缓存——命中分支在前,光清写入 key 不够)。踩坑两处:用例误插进 `#if 0`
+历史块(预处理 246→1670 行消失,查 pp.ii 定位);主题规则排页面前被
+`break` 误取。
+回归:test_style 白盒(两色搬运)+test_render selfg 像素(red=557 black=0)。
+
+**(4) 伪元素去名单。** `pseudo_box_style` 全量合并伪规则声明(只跳 `content`);
+成盒判定改"有 content + 有其他声明"(纯文本伪元素仍走行内文本 run,语义不变);
+`kPseudoBoxProps` 删除;checkbox 的 `::after` 本就有 `nc_el` 保护。
+回归:test_scroll pseudo-props(绿边框+红蓝渐变)。
+
+验证:10 项测试全绿。清单 `temp/css-todo.md` P0 全勾,P1 待排期。
 
 SOLVED
 

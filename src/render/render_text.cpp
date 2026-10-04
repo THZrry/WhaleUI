@@ -1445,7 +1445,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int fs, const std::string& family, unsigned int color,
                   int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp, bool wrap, float opacity,
-                  bool outline)
+                  bool outline, size_t sel_lo, size_t sel_hi,
+                  unsigned int sel_fg)
 {
     /* 缂傚倸鍊搁崐鎼佸磹瑜版帒绠伴柟闂寸劍閸嬨倝鏌曟繛鐐珔闁藉啰鍠栭弻鏇熷緞濡厧甯ラ梺鎼炲€曠€氫即寮诲☉婊呯杸闁规崘娉涢埅鎻掝渻?text+闂傚倷绀侀幖顐ょ矓閹绢喖搴婇柤纰卞墯椤洟鏌嶉埡浣告殶闁崇粯姊婚埀顒€绠嶉崕閬嶅箠鎼达絿绀婂〒姘ｅ亾闁?闂傚倷绀佸﹢閬嶅磿閵堝洦鏆滈柣鎰摠濞?layout_text)婵犵數鍋為崹鍫曞箰閸涘娈介柟闂寸劍閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存煟濡绲婚弶鍫濇嚇濮婃椽宕崟顓夈垽鏌熼崘鍙夋崳闁逞屽墮閻忔岸鎮￠垾鎰佸殨?
      * 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鐗堟緲缁狀喗鎱ㄥΟ鍨厫闁绘挸鍊婚埀顒€绠嶉崕閬嶅箯鐎ｎ€絾绻濆顓炰化婵炴挻鑹鹃敃锔惧閸ф鐓?闂傚倷鑳堕崑銊╁磿閺屻儱钃熼柨鐔哄Т閻?闂傚倷绀侀幉锟犲蓟閿濆绀夐幖娣妼閺嬩線鏌涢幘妤€瀚▓浼存偡濠婂啰效妞ゃ垺宀搁、娆愬緞鐟欏嫬绗╃紒鐘崇⊕閹棃濡搁妷锔炬澓 run 闂傚倸鍊烽悞锕併亹閸愵亞鐭撻柣銏㈩焾閽冪喎鈹戦悩鍙夋悙缂佺姵濞婇弻鐔兼倻濡崵鍙嗗銈忕到閵堟悂寮婚敓鐘茬倞闁宠桨妞掓竟鏇炩攽?42ms 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸撶喐淇婇悽绋跨倞闁靛鍎崇粣鐐测攽閻戝洨绉甸柛蹇旓耿瀹?
@@ -1460,8 +1461,13 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     int tw = 0, th = 0;
     int tx = bx, ty = by; /* paint origin (align/center applied below) */
     std::string ckey_str; /* cache key to write on miss ("" = no caching) */
+    /* a selection tint is NOT part of the run-raster key (element+geometry
+     * +base color): a selected frame must neither serve the untinted raster
+     * nor poison the cache for later unselected frames - skip the cache
+     * entirely while tinting (the per-glyph cache below IS color-keyed). */
+    const bool sel_tint = sel_hi > sel_lo && sel_fg != 0;
 #ifdef WHALEUI_BUILD_FULL
-    if (ckey && !text.empty()) {
+    if (ckey && !text.empty() && !sel_tint) {
         /* the key carries (element, geometry, per-element version). The version
          * is what invalidates this entry when THIS element had a structural
          * edit; hashing the run's bytes here would cost O(run length) on every
@@ -1581,6 +1587,26 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             *out = glyph_cache_insert(gkey, tmp);
             return true;
         };
+        /* selection foreground: same glyph, tinted (the glyph cache below
+         * is color-keyed, so tinted glyphs coexist with plain ones) */
+        auto glyph_img_sel = [&](unsigned int cp, const GlyphImg** out) -> bool {
+            const uint64_t gkey = glyph_cache_key(family, fs, style, cp, sel_fg);
+            if (glyph_cache_lookup(gkey, out)) {
+                return true;
+            }
+            GlyphImg tmp;
+#ifdef WHALEUI_BUILD_FULL
+            if (!glyph_img_ttf(r, family, fs, style, cp, sel_fg, tmp)) {
+                return false;
+            }
+#else
+            if (!glyph_img_stb(stb, cp, sel_fg, tmp)) {
+                return false;
+            }
+#endif
+            *out = glyph_cache_insert(gkey, tmp);
+            return true;
+        };
         /* 闂傚倸鍊风欢锟犲磻閸涙潙绀夐柡鍥ュ灪閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存⒔閸ヮ兙鈧懘顢曢敂鐣屽幐?闂傚倷绀侀幗婊堝磿閹版澘鍨傛い鏍ㄧ矌閸楁岸鏌℃径瀣劸闁搞倖顨嗛妵鍕疀閹炬惌妫炵紓?:闂備浇顕х€涒晝绮欓幒妞尖偓鍐川鐎涙ê娈濋梺缁橆殔閻楀﹥鍒婄€电硶鍋撻獮鍨姎闁瑰啿绻掔划?RGBA,闂佽娴烽幊鎾诲箟闄囬妵鎰板礃椤旇偐鐣鹃梺鍓插亖閸庤京绮堥崼鈶╁亾楠炲灝鍔氭俊顐ｇ懇閹敻顢涢悙瀵稿幘闂佽崵鍠愬妯肩棯瑜旈弻娑㈠Ω閿濆懎顫呴梺闈涙处閸旀瑩宕洪敓鐘茬妞ゆ劦鍋呴ˉ?emoji
          * 闂傚倷鑳堕崢褔銆冩惔銏㈩洸闁挎繂顦伴ˉ濠囨煃閸濆嫬浜扮紒鎲嬬稻缁绘繃绻濋崒娑辨濡?src-over 闂傚倷绀侀幉锛勬暜閻愬瓨娅犳俊銈呮噹閸戠娀鏌涢幇闈涙灈閻庢艾顦伴妵鍕箳閹存績鍋撶紒妯虹窞闁告洦鍨遍悡鏇㈡煙闁箑澧版繝鈧幘顔界厓鐟滄粓宕楀☉銏☆棃闁绘牗浜?闂傚倷绀侀幖顐﹀疮閻楀牊鍙忛柟缁㈠枛缁犳牠骞栧ǎ顒€濡肩紒鐙呯秮閺岀喖鏌囬敃鈧弸銈夋煟閹炬潙濮囬棁?闂傚倷绀侀幖顐﹀箯鐎ｎ喖闂柨婵嗩槸閻掑灚銇勯幒宥嗙グ濠㈣锕㈤弻锝夊煀濞嗗繑顥撳ù婊冪秺閺屾洝绠涢弴鐐愩垻绱掗埀顒佹媴閾忓湱锛?
          * 1px 闂傚倷绀侀幉锟犲礉閺囩姷鐭撻柛顐ｆ礀閺嬩線鏌ｉ幇闈涘闁崇粯妫冮弻宥堫檨闁告挻鐟╅崺?fake bold);full 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸ｏ綁骞嗗畝鍕唨闁靛绠戦鎾绘⒑鐟欏嫬绀冮柛鈺傜墵瀵?FreeType 闂傚倷绶氬鑽ゆ嫻閻旂厧绀夌€光偓閸曨剙浠遍悷婊勫灴婵＄敻骞囬弶娆炬綂闂佺粯锚瀵爼寮抽妷鈺傜厽閹艰揪绲鹃崵鈧梺鍝勭墱閸撶喎鐣烽悷閭︽僵閻犺桨缍?*/
@@ -1629,8 +1655,19 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                                  baseline_off;
             int px = 0;
             for (size_t ci = ln.cstart; ci < ln.cend; ++ci) {
+                /* selection foreground: this display char's source byte in
+                 * [sel_lo, sel_hi) paints tinted (L.map[ci] is the source
+                 * byte offset; text-transform keeps the byte length so the
+                 * selection range applies directly) */
+                bool tinted = false;
+                if (sel_tint && ci < L.map.size()) {
+                    size_t sb = L.map[ci];
+                    tinted = sb >= sel_lo && sb < sel_hi;
+                }
                 const GlyphImg* gp = nullptr;
-                if (glyph_img(disp_cp_at(L, ci), &gp) && gp) {
+                const bool got = tinted ? glyph_img_sel(disp_cp_at(L, ci), &gp)
+                                        : glyph_img(disp_cp_at(L, ci), &gp);
+                if (got && gp) {
                     const GlyphImg& g = *gp;
                     const int passes =
 #ifndef WHALEUI_BUILD_FULL
@@ -2149,6 +2186,24 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     paint_text_selection(r, n, fs, family, bold, off_x, off_y, seq, sel_lo,
                          sel_hi, clip);
+    /* ::selection foreground: the selected byte range of THIS run paints
+     * tinted (draw_text_at swaps the glyph color per display char via
+     * L.map). sel_range_for resolves the run-local [a,b) from the global
+     * anchor/focus; without a selection the range is empty and the extra
+     * params are dead. */
+    size_t sela = 0, selb = 0;
+    unsigned int selfg = 0;
+    if (n->el && sel_range_for(r, n->el, n->text.size(), &sela, &selb, seq,
+                               sel_lo, sel_hi)) {
+        std::string fgv = sget(n->style, "selection-fg");
+        if (!fgv.empty() && whaleui_render_parse_color(fgv.c_str(), &selfg) == 0 &&
+            (selfg & 0x00FFFFFFu) != (color & 0x00FFFFFFu)) {
+            /* keep the tinted range (a different fg == different glyphs) */
+        } else {
+            sela = selb = 0;
+            selfg = 0;
+        }
+    }
     bool wrap = sget(n->style, "white-space") != "nowrap";
     /* paint at the run's laid-out position: block runs sit at the parent
      * content origin, inline-line runs at their accumulated x. The wrap
@@ -2247,7 +2302,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * textarea glyphs half a line below their highlight. */
     draw_text_at(r, shown, tx0, ty0, avail_w, gh_box,
                  fs, family, color, style, align, n->el, clip, lsp, wrap,
-                 n->opacity);
+                 n->opacity, false, sela, selb, selfg);
 
     /* text-decoration: underline / line-through lines over the box (width
      * = the run's own text extent, clamped to the line remainder) */

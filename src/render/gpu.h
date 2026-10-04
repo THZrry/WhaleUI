@@ -56,8 +56,9 @@ struct gpu_vert_text
  * broken: kSolidPS works around it with vertex colors).
  * Layout is 12 floats = 3 float4s as the shaders index them:
  *   {x,y,w,h} {blur,r,g,b} {a,br,bg,bb}
- * (r/g/b = shadow color, a = shadow alpha; br/bg/bb = backdrop body
- * color, a = body alpha when used as a backdrop record). */
+ * (r/g/b = shadow color, a = shadow alpha; for a backdrop record r = the
+ * corner radius px (SDF clip in kBackdropCS), a = body alpha - which is 0
+ * since the body paints in the late pass - and br/bg/bb = body color). */
 struct gpu_blur_param
 {
     float x, y, w, h;    /* region, px (framebuffer coords) */
@@ -65,6 +66,22 @@ struct gpu_blur_param
     float r, g, b;       /* shadow color (box-shadow) */
     float a;             /* shadow alpha (box-shadow) */
     float br, bg, bb;    /* backdrop body color (blended over the blur) */
+};
+
+/* per-inset-shadow record: 16 floats = 4 float4s (kInsetCS reads the *4
+ * stride). The shadow = 1 - blurred_mask(px - offset) of the spread-shrunk
+ * box mask, clipped to the element's rounded box. blur 0 is legal (crisp
+ * ring: the CS reads the unblurred level-0 mask). */
+struct gpu_inset_param
+{
+    float x, y, w, h;    /* element box, px (framebuffer coords) */
+    float blur;          /* blur radius px */
+    float r, g, b;       /* shadow color */
+    float a;             /* shadow alpha */
+    float ox, oy;        /* offset px (positive ox lights the LEFT edge) */
+    float spread;        /* spread px (>= 0, shrinks the mask source) */
+    float radius;        /* corner radius px (rounded clip) */
+    float pad0, pad1, pad2;
 };
 
 /* per-window GPU rendering state */
@@ -81,7 +98,6 @@ struct whaleui_gpu
     SDL_GPUComputePipeline* pipe_shadow_cs;  /* blur_tex -> target (shadows) */
     SDL_GPUComputePipeline* pipe_backdrop_cs; /* blur_tex -> target (backdrop) */
     SDL_GPUComputePipeline* pipe_inset_cs;  /* blur_tex -> target (inset) */
-    SDL_GPUGraphicsPipeline* pipe_solid_flat; /* vertex color only (no SDF) */
 
     /* 1x1 white texture for the solid pipeline */
     SDL_GPUTexture* white_tex;
@@ -106,6 +122,7 @@ struct whaleui_gpu
     /* dynamic vertex buffers */
     SDL_GPUBuffer* vb_solid;
     SDL_GPUBuffer* vb_text;
+    SDL_GPUBuffer* vb_solid_late; /* backdrop bodies (late draw list) */
     SDL_GPUTransferBuffer* vb_transfer;
     SDL_GPUTransferBuffer* atlas_transfer; /* full-atlas upload (4MB) */
     SDL_GPUTransferBuffer* layer_transfer[2]; /* text-layer upload, ping-pong:
@@ -115,9 +132,9 @@ struct whaleui_gpu
     int layer_cur; /* index of the buffer used by the current upload */
 
     /* blur machinery buffers: vb_shapes holds the solid quads drawn into
-     * blur_tex (shadow shapes + backdrop body fills); the param storage
-     * buffers feed the compute blur passes (one transfer buffer uploads all
-     * three) */
+     * blur_tex (shadow shapes + inset masks, two vertex runs); the param
+     * storage buffers feed the compute blur passes (one transfer buffer
+     * uploads all three) */
     SDL_GPUBuffer* vb_shapes;
     SDL_GPUBuffer* shadow_params_buf;
     SDL_GPUBuffer* backdrop_params_buf;
@@ -133,11 +150,19 @@ struct whaleui_gpu
     std::vector<gpu_blur_param> shadows;
     std::vector<gpu_blur_param> backdrops;
     /* inset box-shadow records (blended over the geometry after paint) */
-    std::vector<gpu_blur_param> insets;
+    std::vector<gpu_inset_param> insets;
     /* shadow shapes (white rounded rects) painted into blur_tex (pass A) */
     std::vector<gpu_vert_solid> shapes;
-    /* inset gradient triangles painted into blur_tex (pass A2) */
+    /* inset mask shapes (spread-shrunk white rounded rects) painted into
+     * blur_tex (pass A2; a separate vertex run of vb_shapes) */
     std::vector<gpu_vert_solid> inset_shapes;
+    /* late draw list: the body of a backdrop-filter element (solid +
+     * gradient + border), routed here so the backdrop compute pass - which
+     * REPLACES its region with the blurred geometry - cannot clobber it.
+     * Drawn after all compute passes of the frame (whaleui_gpu_late_begin/
+     * late_end bracket the body paint in render_paint.cpp). */
+    std::vector<gpu_vert_solid> solids_late;
+    int late_mode; /* routing flag: fill_* quads go to solids_late while set */
 
     /* glyph atlas CPU-side occupancy (R8) */
     std::vector<unsigned char> atlas;
@@ -171,14 +196,16 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
                       float radius, unsigned int color, const int* clip);
 
 /* push a solid quad rotated by rot_deg degrees (clockwise, CSS rotate
- * direction) around the box center. The four corner positions are rotated,
- * the per-vertex u/v/size/radius stay in the box's local frame - the SDF
- * rounding then interpolates exactly as unrotated (affine invariance), so
- * rounded corners and pills stay correct under any angle. Zero extra
- * texture/draw cost: the rasterizer does the rotation. */
+ * direction) around the (ax, ay) framebuffer anchor (from
+ * whaleui_transform_origin_eval; default the box center). The four corner
+ * positions are rotated, the per-vertex u/v/size/radius stay in the box's
+ * local frame - the SDF rounding then interpolates exactly as unrotated
+ * (affine invariance), so rounded corners and pills stay correct under any
+ * angle. Zero extra texture/draw cost: the rasterizer does the rotation. */
 void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
-                          float rot_deg, const int* clip);
+                          float rot_deg, const int* clip,
+                          float ax = -1.0f, float ay = -1.0f);
 
 /* push a quad whose four corners carry distinct colors (c0=TL, c1=TR,
  * c2=BL, c3=BR); the solid pipeline interpolates them across the quad, so
@@ -196,20 +223,28 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
 void whaleui_gpu_shadow(whaleui_gpu_t* g, float x, float y, float w, float h,
                         float radius, float blur, unsigned int color);
 
-/* push an inset box-shadow: the box interior is split along the two
- * diagonals into four triangles whose vertex alpha ramps from 1 (edges)
- * to 0 (center); the linear gradient is rasterized into blur_tex, mipmap
- * blurred (same pyramid as the outer shadow) and a compute pass blends it
- * over the painted geometry AFTER the geometry pass (inset shadows sit on
- * top of the element background). radius is ignored (angular approximation:
- * the diagonal split covers the corners). */
+/* push an inset box-shadow: the shadow is 1 - blurred_mask(px - offset) of
+ * the spread-shrunk rounded box, blended over the painted geometry inside
+ * the element's rounded box (kInsetCS). blur 0 draws a crisp ring. ox/oy
+ * shift the sample point (CSS direction: positive ox lights the LEFT
+ * edge), spread shrinks the shadow region. */
 void whaleui_gpu_inset(whaleui_gpu_t* g, float x, float y, float w, float h,
-                       float radius, float blur, unsigned int color);
+                       float radius, float blur, float ox, float oy,
+                       float spread, unsigned int color);
+
+/* bracket a backdrop-filter element's own body paint (background, gradient,
+ * border): while set, fill_* quads go to solids_late instead of solids, so
+ * the backdrop compute pass (which replaces the region with the blurred
+ * geometry) cannot clobber the body - it draws on top, after the blur. */
+void whaleui_gpu_late_begin(whaleui_gpu_t* g);
+void whaleui_gpu_late_end(whaleui_gpu_t* g);
 
 /* push a backdrop-filter region: after the geometry pass, the target is
  * copied into blur_tex, mipmapped, and a compute pass replaces the region
- * with the blurred geometry. body_color (may be 0) is blended on top
- * afterwards (the element's own background). */
+ * with the blurred geometry (clipped to `radius` when set). The element's
+ * body paints in the LATE pass on top of the blur
+ * (whaleui_gpu_late_begin); body_color is accepted for API stability and
+ * ignored. */
 void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, float blur,
                           unsigned int body_color);

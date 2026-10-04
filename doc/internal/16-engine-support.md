@@ -60,14 +60,20 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 组 | 属性 | 状态 |
 |----|------|------|
 | 80% | `width/height/min-*/max-*`、`margin`、`padding`、`border`、`border-radius`、`box-sizing`、`color`、`font-family/size/weight`、`line-height`、`text-align`、`text-decoration`、`background(-color/-image/-repeat/-position/-size)`、`opacity`、`display`、`position`、`top/left/right/bottom`、`z-index`、`float`、`clear`、`cursor`、`overflow(-x/-y)`、`white-space`、`word-break`、`text-overflow`、`box-shadow`、`transition` | ✅ |
-| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY 生效；**rotate 只转背景/边框**——GPU 顶点旋转近似，文本/子树/渐变/命中不转）、`transform-origin`、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
+| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY 生效，锚点走 `transform-origin`；**rotate 转背景/边框/渐变轴/命中**——GPU 顶点旋转近似 + 渐变投影方向同转 + hit_test 逆旋转重测，文本/子树/`::before` 不转）、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
 | 20% | `align-content/self`、`justify-self/items`、`place-*`、`row/column-gap`、`grid-template-*`、`grid-auto-*`、`inset`（含四值简写）、`writing-mode`、`direction`、`text-orientation`、`text-decoration-*`、`background-blend-mode`、`mix-blend-mode`、`filter`、`backdrop-filter`、`overscroll-behavior`、`scroll-margin/padding`、`container-*`、`all`、`animation-composition`、`transform-style` | ⚠️ 见备注 |
 
 备注：
 
 - `backdrop-filter` **GPU 路径已实现**（blur 双档近似：`blur>=8` mip 阶梯、
-  `blur<8` 预定义 3x3 二项式核作用于单 mip 层，见 notes <15>）；Minimal/纯
-  CPU 回退路径不画。
+  `blur<8` 预定义 3x3 二项式核作用于单 mip 层，见 notes <15>；元素自身
+  body——纯色/渐变/边框——走 LATE pass 画在模糊之上，不再丢失；圆角盒的
+  模糊区被 SDF 裁剪；<16> 的 param buffer 上溢回归已修）；Minimal/纯
+  CPU 回退路径只画 body、不模糊。
+- `box-shadow` 的 `inset` **GPU 路径已实现**：`1 - blurred_mask(px - off)`
+  的 spread-收缩盒 mask（offset 精确，无四象限近似、无接缝），圆角用同一
+  SDF 裁剪，`blur:0` 出实线环；CPU 路径是带 offset 的同心内缩环 /
+  硬环四条边。`spread` 为负按 0 处理（收缩语义无定义扩展）。
 - `mix-blend-mode` / `filter` / `background-blend-mode` / `border-image` /
   `writing-mode` / `text-orientation` / `container-*` / `animation-composition`
   **未实现**（清单里保留为待办，不要当成已支持）。
@@ -87,7 +93,13 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 - `:checked` 匹配 `checked` / `selected` **属性**（点击引擎画的原生 checkbox
   会 set/remove 该属性，因此动态勾选也能命中）。
 - `:indeterminate` 没有属性对应物，引擎接受一个 `indeterminate` 属性作为表达方式。
-- `:not()` 支持单层简单选择器；嵌套 / 复杂参数未验证。
+- `:not()` 支持单层简单选择器（含 `:not(:hover/:active/:focus)` 状态取反，
+  与正向同冒泡规则）；嵌套 / 复杂参数未验证。
+- `::selection` 的 `background` + `color` 都生效（`selection-bg/fg` 虚属性，
+  页面规则赢主题，`var()` 展开；光栅逐字形换色）。
+- `::before`/`::after` 盒合并伪规则的**全部声明**（无属性白名单；
+  纯 `content` 的仍走行内文本 run）；`transform-origin` 参与 scale/rotate
+  锚点（含 hit_test）。
 
 ### 函数
 
@@ -99,14 +111,17 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 
 ## 仍未做（连同原因）
 
-1. **`transform: rotate()` 的文本/子树/渐变/命中**：解析、插值、背景/边框
-   的旋转绘制都有了（GPU 顶点旋转，notes <15>）。文本、子元素、渐变轴、
-   hit_test 仍按未旋转处理；要全部转需要一条矩阵 paint 路径（背景/边框/
-   文本/子树走同一变换）。`::before` 状态层不随转。
+1. **`transform: rotate()` 的文本/子树**：解析、插值、背景/边框/渐变轴/命
+   中的旋转都有了（GPU 顶点旋转 + 渐变投影同转 + hit_test 逆旋转重测，
+   notes <15>/<16>）。文本、子元素仍直立；要全部转需要一条矩阵 paint
+   路径（文本/子树走同一变换）。`::before` 状态层不随转；`transform-origin`
+   固定中心。
 2. **`conic-gradient` / `repeating-*-gradient` / `image-set` / `hwb()` /
    `oklab/oklch/lab/lch` / `color-mix()`**：`whaleui_render_parse_color` 认
    hex、`rgb()/rgba()`、`hsl()/hsla()` 与具名色，其余不认。
-3. **`backdrop-filter` 的 CPU 回退**：GPU 有（双档近似），Minimal/软件路径没有。
+3. **`backdrop-filter` / `inset` 的 CPU 回退**：GPU 有（双档近似 / mask
+   反演），Minimal/软件路径只画 body（backdrop 不模糊；inset 是带 offset
+   的同心环近似）。
 4. **`::first-line` / `::first-letter` / `::marker`**：伪元素只支持 `::before`/`::after`。
 5. `:has()` 等高级选择器、容器查询、`filter`/混合模式。
 

@@ -267,7 +267,7 @@ unsigned int grad_color(const Gradient& g, float t)
 
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
-                   const Clip* clip)
+                   const Clip* clip, float rot_deg)
 {
     if (g_gpu) {
         /* linear gradients: corner colors (projected onto the gradient
@@ -280,6 +280,19 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         if (g.type == 0 && g.stops.size() >= 2) {
             float rad = g.angle_deg * 3.14159265f / 180.0f;
             float ddx = std::sin(rad), ddy = -std::cos(rad);
+            /* a rotated element's gradient axis rotates with it (CSS):
+             * rotate the projection direction by the box's rot; the band
+             * positions come from the same box-corner projections, so the
+             * whole gradient turns with the rotated background for a few
+             * ALU ops - no extra texture or draw */
+            if (rot_deg != 0.0f) {
+                float rr = rot_deg * 3.14159265f / 180.0f;
+                float cs = std::cos(rr), sn = std::sin(rr);
+                float nx = ddx * cs - ddy * sn;
+                float ny = ddx * sn + ddy * cs;
+                ddx = nx;
+                ddy = ny;
+            }
             float ccx = x + w * 0.5f, ccy = y + h * 0.5f;
             float t0 = 1e30f, t1 = -1e30f;
             const float corners[4][2] = {

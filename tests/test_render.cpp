@@ -1612,6 +1612,59 @@ int main(void)
     }
 #endif /* #if 0: historical tests disabled (scrolled-sel kept) */
 
+    /* ::selection foreground: the selected range paints tinted. Black text
+     * + ::selection{color:red}: after drag-selecting, glyph pixels inside
+     * the range are red, outside stay black. (Lives outside the #if 0
+     * historical block above.) */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "selfg", 300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><head><style>::selection{color:#ff0000}"
+            "p{color:#000000;font-size:24px;margin:0}</style></head>"
+            "<body><p id=\"p\">hello world</p></body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+
+        whaleui_layout_node_t* tr = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.is_text) {
+                tr = &n;
+                break;
+            }
+        }
+        assert(tr != nullptr);
+        int y = tr->border.y + tr->border.h / 2;
+        /* drag across the whole run: everything is selected */
+        whaleui_render_set_pressed(w->render, tr->border.x + 1, y, 1);
+        whaleui_render_set_hover(w->render, tr->border.x + tr->border.w - 1, y);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->sel_anchor_el != nullptr);
+        assert(w->render->sel_focus > w->render->sel_anchor);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        /* scan the run box for ink: red channel dominates on tinted glyphs */
+        int red_ink = 0, black_ink = 0;
+        for (int yy = tr->border.y; yy < tr->border.y + tr->border.h; ++yy) {
+            for (int xx = tr->border.x; xx < tr->border.x + tr->border.w; ++xx) {
+                unsigned int px = gpixel(w->render, xx, yy);
+                unsigned int rr = (px >> 16) & 0xFF;
+                unsigned int gg = (px >> 8) & 0xFF;
+                unsigned int bb = px & 0xFF;
+                if (rr > 0x80 && gg < 0x80 && bb < 0x80) {
+                    ++red_ink;
+                } else if (rr < 0x80 && gg < 0x80 && bb < 0x80 &&
+                           (rr + gg + bb) > 0) {
+                    ++black_ink;
+                }
+            }
+        }
+        std::printf("[selfg] red=%d black=%d\n", red_ink, black_ink);
+        std::fflush(stdout);
+        assert(red_ink > 0);      /* the selection tinted the glyphs */
+        assert(black_ink == 0);   /* nothing stayed black inside the range */
+        whaleui_window_destroy(w);
+    }
+
     /* selection inside a scrolled container: after the wheel scrolls the
      * box, clicking a visible text run still resolves to a valid offset
      * (the scroll correction must be applied or the click lands at 0) */

@@ -1012,16 +1012,6 @@ int tag_id_of(lxb_dom_element* el)
     }
 }
 
-/* box properties a ::before/::after can carry (beyond the paint list in
- * pseudo_style): presence of any of these turns the pseudo-element into
- * a real box (state layer, focus underline) instead of a text run */
-static const char* const kPseudoBoxProps[] = {
-    "background", "background-color", "background-image", "position",
-    "width", "height", "inset", "left", "right", "top", "bottom",
-    "transform", "opacity", "border", "border-radius", "margin",
-    "padding", "box-shadow", "pointer-events",
-};
-
 /* ::before/::after rule index: build() probes pseudo content/box for EVERY
  * element (4 full-rule scans per element before this index), so the scan
  * cost scales with the whole stylesheet. Bucketing the pseudo rules once
@@ -1204,9 +1194,12 @@ struct Builder
         }
     }
 
-    /* does any matching ::before(1)/::after(2) rule for el carry a box
-     * property? A pseudo with only text properties stays a text run; one
-     * with box properties becomes a real painted box. */
+    /* does any matching ::before(1)/::after(2) rule for el want a box?
+     * A pseudo with only `content` stays an inline text run (its text
+     * properties merge via pseudo_style); one with any further declaration
+     * becomes a real painted box (pseudo_box_style merges every declaration,
+     * so any box property the paint path understands works - no property
+     * whitelist). */
     bool pseudo_has_box(lxb_dom_element* el, int which)
     {
         if (!el || !rules) {
@@ -1220,6 +1213,10 @@ struct Builder
                 pseudo != which) {
                 continue;
             }
+            const char* c = whaleui_css_get_property(rl, "content");
+            if (!c || !*c || std::strcmp(c, "none") == 0) {
+                continue;
+            }
             for (size_t d = 0; d < rl->decl_count; ++d) {
                 char* kv = rl->decls[d];
                 char* eq = std::strchr(kv, '=');
@@ -1227,12 +1224,14 @@ struct Builder
                     continue;
                 }
                 std::string name(kv, static_cast<size_t>(eq - kv));
-                for (size_t p = 0;
-                     p < sizeof(kPseudoBoxProps) / sizeof(kPseudoBoxProps[0]);
-                     ++p) {
-                    if (name == kPseudoBoxProps[p]) {
-                        return true;
-                    }
+                size_t b = name.find_first_not_of(" \t");
+                size_t e = name.find_last_not_of(" \t");
+                if (b == std::string::npos) {
+                    continue;
+                }
+                name = name.substr(b, e - b + 1);
+                if (name != "content") {
+                    return true;
                 }
             }
         }
@@ -1240,10 +1239,14 @@ struct Builder
     }
 
     /* computed style for a pseudo-element BOX: the element's style plus
-     * every matching pseudo rule's box + paint properties. The box pins to
-     * the parent's content box (position:absolute + inset:0) unless the
-     * pseudo rule specifies offsets/dimensions itself (the focus underline
-     * sets left/right/bottom/height), and never receives pointer events. */
+     * every matching pseudo rule's declarations. The box pins to the
+     * parent's content box (position:absolute + inset:0) unless the pseudo
+     * rule specifies offsets/dimensions itself (the focus underline sets
+     * left/right/bottom/height), and never receives pointer events.
+     * All declarations merge (not a property whitelist): the pseudo box is
+     * painted by the normal paint path, so any property it understands on
+     * a real element (border-color, background-size, ...) works here too.
+     * Only `content` itself is skipped (it is the text, not a style). */
     WhaleUIComputedStyle pseudo_box_style(const WhaleUIComputedStyle& base,
                                           lxb_dom_element* el, int which)
     {
@@ -1279,19 +1282,10 @@ struct Builder
                         continue;
                     }
                     std::string name(kv, static_cast<size_t>(eq - kv));
-                    bool box = false;
-                    for (size_t p = 0;
-                         p < sizeof(kPseudoBoxProps) /
-                                 sizeof(kPseudoBoxProps[0]);
-                         ++p) {
-                        if (name == kPseudoBoxProps[p]) {
-                            box = true;
-                            break;
-                        }
+                    if (name == "content") {
+                        continue;
                     }
-                    if (box) {
-                        s[name] = resolve_var_in(eq + 1);
-                    }
+                    s[name] = resolve_var_in(eq + 1);
                 }
             }
         }

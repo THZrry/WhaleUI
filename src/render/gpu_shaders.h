@@ -108,23 +108,6 @@ float4 main(VSOut i) : SV_Target {
  * blend/format path); the pixel shader uses vertex color only. */
 static const unsigned char kSolidPixel[4] = {255, 255, 255, 255};
 
-/* flat pixel shader: interpolated vertex color only (no rounded-rect SDF).
- * Used for the inset-shadow gradient triangles drawn into blur_tex - the
- * alpha ramp falls out of the rasterizer for free. VSOut must match
- * kSolidVS's outputs exactly (D3D12 rejects mismatched signatures). */
-static const char* kFlatPS = R"(
-struct VSOut {
-    float4 pos : SV_Position;
-    float2 uv  : TEXCOORD0;
-    float4 col : TEXCOORD1;
-    float2 size : TEXCOORD2;
-    float radius : TEXCOORD3;
-};
-float4 main(VSOut i) : SV_Target {
-    return i.col;
-}
-)";
-
 /* blur sampling compute passes (box-shadow / backdrop-filter), the
  * mipmap-approximation of a gaussian: the source is mipmapped into
  * blur_tex, then each pixel re-samples (gaussian weights) with
@@ -239,14 +222,27 @@ void main(uint3 id : SV_DispatchThreadID) {
             float2 uv = px / float2(hdr.y, hdr.z);
             float4 m = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
             /* blurred background + the element's own body color. Record
-             * layout: {x,y,w,h} {blur,r,g,b} {a,br,bg,bb} - for a backdrop
-             * record a = body alpha and br/bg/bb = body color (d.yzw) */
+             * layout: {x,y,w,h} {blur,radius,0,0} {a,br,bg,bb} - for a
+             * backdrop record a = body alpha, br/bg/bb = body color. The
+             * body itself paints in the LATE pass (on top of this blur);
+             * when used the blend here must be disabled (a = 0). */
             float ba = d.x;
             float3 blurred = m.rgb;
             float3 body = float3(d.y, d.z, d.w);
             float3 outcol = lerp(blurred, body, ba);
             float outa = m.a * (1.0 - ba) + ba;
-            acc = float4(outcol, outa);
+            float4 outc = float4(outcol, outa);
+            /* rounded-corner clip: outside the rounded box the backdrop
+             * must not replace the painted pixel (the body's own SDF is
+             * transparent there and the raw backdrop has to show through) */
+            float rad = c.y;
+            if (rad > 0.0) {
+                float2 hf = r.zw * 0.5;
+                float2 q = abs(px - (r.xy + hf)) - (hf - rad);
+                float dd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+                outc = lerp(acc, outc, 1.0 - saturate(dd + 0.5));
+            }
+            acc = outc;
             break;
         }
     }
@@ -254,11 +250,19 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 )";
 
-/* inset box-shadow compute pass: blend the blurred gradient (the four
- * diagonal triangles in blur_tex) over the already-painted geometry.
- * Runs AFTER the geometry + backdrop passes, so `acc` starts from the
- * painted pixel (read+write) and the shadow color is blended on top.
- * Record layout mirrors kShadowCS: {x,y,w,h} {blur,r,g,b} {a,0,0,0}. */
+/* inset box-shadow compute pass. The shadow source is the box SHRUNK by
+ * spread, painted white into blur_tex (whaleui_gpu_inset); the shadow
+ * alpha at a pixel is 1 - blurred_mask(px - offset): the rim outside the
+ * shifted shrunk box has mask 0 -> full shadow, deep inside it saturates
+ * to 1 -> no shadow. Shifting the SAMPLE point realizes the offset exactly
+ * (positive ox lights the left edge, like CSS), which replaces the older
+ * four-diagonal-triangles approximation wholesale - no per-quadrant
+ * weights, no seams to blend. The mask itself bounds the shadow to ~blur
+ * around the covering edge (the clean middle stays at zero), which stands
+ * in for the "shrink by a blur radius" carve; the element's rounded
+ * corners are the explicit clip below (layer 1 of the double clip).
+ * Record layout (4 float4, note the *4 stride):
+ *   {x,y,w,h} {blur,r,g,b} {a,ox,oy,spread} {radius,0,0,0}. */
 static const std::string kInsetCS = std::string(R"(
 [[vk::binding(0, 0)]] Texture2D blur_tex : register(t0);
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
@@ -272,15 +276,30 @@ void main(uint3 id : SV_DispatchThreadID) {
     int n = int(hdr.x);
     float4 acc = out_tex[id.xy]; /* keep the painted background */
     for (int i = 0; i < n; ++i) {
-        float4 r = params[1 + i * 3];
-        float4 c = params[2 + i * 3];
-        float4 d = params[3 + i * 3];
+        float4 r = params[1 + i * 4];
+        float4 c = params[2 + i * 4];
+        float4 d = params[3 + i * 4];
+        float4 e = params[4 + i * 4];
         if (px.x >= r.x && px.x < r.x + r.z &&
             px.y >= r.y && px.y < r.y + r.w) {
-            float2 uv = px / float2(hdr.y, hdr.z) * (1.0 / 2.0);
+            /* sample the shrunk box mask at the offset point; the mask
+             * shapes are pushed at px / kBlurDiv, so a fb pixel maps to
+             * uv = px/fb (see kShadowCS) */
+            float2 uv = (px - float2(d.y, d.z)) / float2(hdr.y, hdr.z);
             float4 m = blur_sample(blur_tex, samp, uv, c.x, hdr.y, hdr.z);
-            float sa = d.x * m.a; /* shadow alpha = color alpha * mask */
-            acc = lerp(acc, float4(c.yzw, 1.0), sa);
+            float sh = (1.0 - m.a) * d.x;
+            /* rounded-corner clip: kill the shadow outside the element's
+             * rounded box (blur 0 still leaves the crisp SDF-AA'd edge) */
+            float rad = e.x;
+            if (rad > 0.0) {
+                float2 hf = r.zw * 0.5;
+                float2 q = abs(px - (r.xy + hf)) - (hf - rad);
+                float dd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+                sh *= 1.0 - saturate(dd + 0.5);
+            }
+            if (sh > 0.0) {
+                acc = lerp(acc, float4(c.yzw, 1.0), sh);
+            }
             break;
         }
     }

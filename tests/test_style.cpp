@@ -142,6 +142,22 @@ int main(void)
         assert(whaleui_style_match(".note:active", p_el, &st));    /* pressed active */
         st.pressed = nullptr;
         assert(!whaleui_style_match(".note:active", p_el, &st));
+        /* :not() - single-level negation (static + state forms) */
+        assert(whaleui_style_match(".note:not(.nope)", p_el, &st));
+        assert(!whaleui_style_match(".note:not(.note)", p_el, &st));
+        assert(whaleui_style_match("p:not(span)", p_el, &st));
+        assert(!whaleui_style_match("p:not(p)", p_el, &st));
+        assert(whaleui_style_match(".note:not([missing])", p_el, &st));
+        /* p is the only element child of #card: both first- and
+         * last-child, so both negations fail */
+        assert(!whaleui_style_match("p:not(:first-child)", p_el, &st));
+        assert(!whaleui_style_match("p:not(:last-child)", p_el, &st));
+        st.hover = p_el;
+        assert(!whaleui_style_match(".note:not(:hover)", p_el, &st));
+        st.hover = card_el;
+        assert(whaleui_style_match(".note:not(:hover)", p_el, &st));
+        st.hover = nullptr;
+        assert(whaleui_style_match(".note:not(:hover)", p_el, &st));
         st = whaleui_style_state();
         /* regression: a bare tag selector must NOT match descendants */
         assert(!whaleui_style_match("body", card_el, &st));
@@ -393,6 +409,29 @@ int main(void)
         assert(whaleui_style_match_pseudo("input::after", input, &st,
                                           &pseudo) == 1 && pseudo == 2);
         assert(whaleui_style_match("input::after", input, &st) == 0);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* ::selection colors ride as virtual selection-bg/selection-fg props */
+    {
+        const char* css =
+            "::selection { background: #ff0000; color: #00ff00; }\n"
+            "p { color: black; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p>hi</p></body>", 18);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* p = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "p"));
+        assert(p != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(p, rules, count, vars, nullptr);
+        assert(cs["selection-bg"] == "#ff0000");
+        assert(cs["selection-fg"] == "#00ff00");
         whaleui_css_rules_destroy(rules, count);
         whaleui_dom_document_destroy(doc);
     }

@@ -1,4 +1,4 @@
-/* GPU renderer implementation (see gpu.h). */
+﻿/* GPU renderer implementation (see gpu.h). */
 
 #include "render/gpu.h"
 #include "render/gpu_shaders.h"
@@ -244,7 +244,6 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->pipe_shadow_cs = nullptr;
     g->pipe_backdrop_cs = nullptr;
     g->pipe_inset_cs = nullptr;
-    g->pipe_solid_flat = nullptr;
     g->sampler = nullptr;
     g->sampler_mip = nullptr;
     g->white_tex = nullptr;
@@ -256,6 +255,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->vb_solid = nullptr;
     g->vb_text = nullptr;
     g->vb_shapes = nullptr;
+    g->vb_solid_late = nullptr;
     g->shadow_params_buf = nullptr;
     g->backdrop_params_buf = nullptr;
     g->inset_params_buf = nullptr;
@@ -268,6 +268,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->pipe_text_composite = nullptr;
     g->text_layer = nullptr;
     g->layer_dirty = 0;
+    g->late_mode = 0;
     g->layer_rx = g->layer_ry = g->layer_rw = g->layer_rh = 0;
     g->fb_w = static_cast<float>(w);
     g->fb_h = static_cast<float>(h);
@@ -289,10 +290,9 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     /* shaders (HLSL -> DXIL / SPIR-V at runtime) */
     SDL_GPUShader* vs_s = compile_shader(device, kSolidVS, "main", false);
     SDL_GPUShader* ps_s = compile_shader(device, kSolidPS, "main", true);
-    SDL_GPUShader* ps_flat = compile_shader(device, kFlatPS, "main", true);
     SDL_GPUShader* vs_t = compile_shader(device, kTextVS, "main", false);
     SDL_GPUShader* ps_t = compile_shader(device, kTextPS, "main", true);
-    if (!vs_s || !ps_s || !ps_flat || !vs_t || !ps_t) {
+    if (!vs_s || !ps_s || !vs_t || !ps_t) {
         goto fail;
     }
 
@@ -344,17 +344,6 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         g->pipe_solid = SDL_CreateGPUGraphicsPipeline(device, &info);
     }
     if (!g->pipe_solid) {
-        goto fail;
-    }
-
-    /* flat pipeline: same vertex layout, plain interpolated color (no
-     * rounded-rect SDF) - draws the inset-shadow gradient triangles */
-    {
-        info.vertex_shader = vs_s;
-        info.fragment_shader = ps_flat;
-        g->pipe_solid_flat = SDL_CreateGPUGraphicsPipeline(device, &info);
-    }
-    if (!g->pipe_solid_flat) {
         goto fail;
     }
 
@@ -488,20 +477,27 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->vb_solid = make_vertex_buffer(device, 256 * 1024);
     g->vb_text = make_vertex_buffer(device, 256 * 1024);
     g->vb_shapes = make_vertex_buffer(device, 128 * 1024);
-    /* blur parameter storage (one float4-per-record layout, see the CS) */
+    g->vb_solid_late = make_vertex_buffer(device, 256 * 1024);
+    /* blur parameter storage: header {count,fb_w,fb_h,0} + up to 64
+     * records. shadow/backdrop records are 12 floats (3 float4), inset
+     * records 16 floats (4 float4) - each buffer fits its own stride, or
+     * the compute upload overruns the buffer and the D3D12 backend fails
+     * the command list close with E_INVALIDARG (a full-black frame). */
     {
         SDL_GPUBufferCreateInfo bci;
         std::memset(&bci, 0, sizeof(bci));
         bci.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
-        bci.size = 64 * 4 * 4 * sizeof(float); /* 64 records * 4 float4 */
+        bci.size = (64 * 12 + 4) * sizeof(float);
         g->shadow_params_buf = SDL_CreateGPUBuffer(device, &bci);
         g->backdrop_params_buf = SDL_CreateGPUBuffer(device, &bci);
+        bci.size = (64 * 16 + 4) * sizeof(float);
         g->inset_params_buf = SDL_CreateGPUBuffer(device, &bci);
     }
     SDL_GPUTransferBufferCreateInfo tbi;
     std::memset(&tbi, 0, sizeof(tbi));
     tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbi.size = 512 * 1024;
+    /* solids + late bodies + texts segments */
+    tbi.size = 1024 * 1024;
     g->vb_transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
     tbi.size = 128 * 1024;
     g->shadow_transfer = SDL_CreateGPUTransferBuffer(device, &tbi);
@@ -510,7 +506,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     tbi.size = static_cast<uint32_t>(static_cast<size_t>(w) * h * 4);
     g->layer_transfer[0] = SDL_CreateGPUTransferBuffer(device, &tbi);
     g->layer_transfer[1] = SDL_CreateGPUTransferBuffer(device, &tbi);
-    if (!g->vb_solid || !g->vb_text || !g->vb_shapes ||
+    if (!g->vb_solid || !g->vb_text || !g->vb_shapes || !g->vb_solid_late ||
         !g->shadow_params_buf || !g->backdrop_params_buf ||
         !g->inset_params_buf ||
         !g->vb_transfer || !g->shadow_transfer || !g->atlas_transfer ||
@@ -606,7 +602,6 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     SDL_ReleaseGPUShader(device, vs_s);
     SDL_ReleaseGPUShader(device, ps_s);
-    SDL_ReleaseGPUShader(device, ps_flat);
     return g;
 
 fail:
@@ -700,7 +695,6 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
     }
     if (g->device) {
         if (g->pipe_solid) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipe_solid);
-        if (g->pipe_solid_flat) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipe_solid_flat);
         if (g->pipe_text) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipe_text);
         if (g->pipe_text_composite) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_text_composite);
         if (g->pipe_shadow_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_shadow_cs);
@@ -718,6 +712,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->vb_solid) SDL_ReleaseGPUBuffer(g->device, g->vb_solid);
         if (g->vb_text) SDL_ReleaseGPUBuffer(g->device, g->vb_text);
         if (g->vb_shapes) SDL_ReleaseGPUBuffer(g->device, g->vb_shapes);
+        if (g->vb_solid_late) SDL_ReleaseGPUBuffer(g->device, g->vb_solid_late);
         if (g->shadow_params_buf) SDL_ReleaseGPUBuffer(g->device, g->shadow_params_buf);
         if (g->backdrop_params_buf) SDL_ReleaseGPUBuffer(g->device, g->backdrop_params_buf);
         if (g->inset_params_buf) SDL_ReleaseGPUBuffer(g->device, g->inset_params_buf);
@@ -755,7 +750,11 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
         w = x1 - x0;
         h = y1 - y0;
     }
-    if (g->solids.size() + 6 > 65536) {
+    /* late_mode routes a backdrop-filter element's own body into the late
+     * draw list (drawn after the blur passes) */
+    std::vector<gpu_vert_solid>& out = g->late_mode ? g->solids_late
+                                                    : g->solids;
+    if (out.size() + 6 > 65536) {
         return; /* vertex buffer cap */
     }
     float r = ((color >> 16) & 0xFF) / 255.0f;
@@ -794,13 +793,27 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
     v[4].x = x;         v[4].y = y + h;     v[4].u = 0; v[4].v = 1;
     v[5].x = x + w;     v[5].y = y + h;     v[5].u = 1; v[5].v = 1;
     for (int i = 0; i < 6; ++i) {
-        g->solids.push_back(v[i]);
+        out.push_back(v[i]);
+    }
+}
+
+void whaleui_gpu_late_begin(whaleui_gpu_t* g)
+{
+    if (g) {
+        ++g->late_mode;
+    }
+}
+
+void whaleui_gpu_late_end(whaleui_gpu_t* g)
+{
+    if (g && g->late_mode > 0) {
+        --g->late_mode;
     }
 }
 
 void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
-                          float rot_deg, const int* clip)
+                          float rot_deg, const int* clip, float ax, float ay)
 {
     if (!g || w <= 0 || h <= 0) {
         return;
@@ -808,7 +821,9 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
     /* no clip-rect pre-shrink here: a rotated box's intersection with the
      * clip is not a rectangle; off-viewport pixels are dropped by the
      * rasterizer's viewport instead */
-    if (g->solids.size() + 6 > 65536) {
+    std::vector<gpu_vert_solid>& out = g->late_mode ? g->solids_late
+                                                    : g->solids;
+    if (out.size() + 6 > 65536) {
         return; /* vertex buffer cap */
     }
     float r = ((color >> 16) & 0xFF) / 255.0f;
@@ -819,14 +834,15 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
     if (radius > hr * 0.5f) {
         radius = hr * 0.5f;
     }
-    /* rotate the local corner offsets around the center (screen coords,
-     * y down: a positive angle turns clockwise like CSS rotate) */
+    /* rotate the local corner offsets around the anchor (screen coords,
+     * y down: a positive angle turns clockwise like CSS rotate). The
+     * default anchor is the box center; transform-origin moves it. */
     const float PI_F = 3.14159265358979f;
     float rad = rot_deg * PI_F / 180.0f;
     float cs = std::cos(rad);
     float sn = std::sin(rad);
-    float cx = x + w * 0.5f;
-    float cy = y + h * 0.5f;
+    float cx = (ax >= 0.0f) ? ax : x + w * 0.5f;
+    float cy = (ay >= 0.0f) ? ay : y + h * 0.5f;
     float hw = w * 0.5f;
     float hh = h * 0.5f;
     gpu_vert_solid v[6];
@@ -842,7 +858,11 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
         v[i].fb_h = g->fb_h;
     }
     /* corner k: (dx,dy) local offset, (u,v) its 0..1 box coordinate - the
-     * pairing must stay TL,TR,BL,TR,BL,BR so the SDF frame survives */
+     * pairing must stay TL,TR,BL,TR,BL,BR so the SDF frame survives.
+     * dx/dy are relative to the box center; (ox0, oy0) shifts them onto
+     * the anchor so an off-center origin rotates correctly. */
+    const float ox0 = cx - (x + hw);
+    const float oy0 = cy - (y + hh);
     float dx[4] = {-hw, hw, -hw, hw};
     float dy[4] = {-hh, -hh, hh, hh};
     float uu[4] = {0, 1, 0, 1};
@@ -850,8 +870,10 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
     float px[4];
     float py[4];
     for (int k = 0; k < 4; ++k) {
-        px[k] = cx + dx[k] * cs - dy[k] * sn;
-        py[k] = cy + dx[k] * sn + dy[k] * cs;
+        float rx = dx[k] - ox0;
+        float ry = dy[k] - oy0;
+        px[k] = cx + rx * cs - ry * sn;
+        py[k] = cy + rx * sn + ry * cs;
     }
     const int idx[6] = {0, 1, 2, 1, 2, 3};
     for (int i = 0; i < 6; ++i) {
@@ -859,7 +881,7 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
         v[i].y = py[idx[i]];
         v[i].u = uu[idx[i]];
         v[i].v = vv[idx[i]];
-        g->solids.push_back(v[i]);
+        out.push_back(v[i]);
     }
 }
 
@@ -871,6 +893,8 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
     if (!g || w <= 0 || h <= 0) {
         return;
     }
+    std::vector<gpu_vert_solid>& out = g->late_mode ? g->solids_late
+                                                    : g->solids;
     if (clip) {
         float x0 = x < clip[0] ? clip[0] : x;
         float y0 = y < clip[1] ? clip[1] : y;
@@ -884,7 +908,7 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
         w = x1 - x0;
         h = y1 - y0;
     }
-    if (g->solids.size() + 6 > 65536) {
+    if (out.size() + 6 > 65536) {
         return;
     }
     /* corner colors: v[0]=TL v[1]=TR v[2]=BL v[3]=TR v[4]=BL v[5]=BR */
@@ -910,7 +934,7 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
     v[4].x = x;         v[4].y = y + h;     v[4].u = 0; v[4].v = 1;
     v[5].x = x + w;     v[5].y = y + h;     v[5].u = 1; v[5].v = 1;
     for (int i = 0; i < 6; ++i) {
-        g->solids.push_back(v[i]);
+        out.push_back(v[i]);
     }
 }
 
@@ -987,70 +1011,58 @@ void whaleui_gpu_shadow(whaleui_gpu_t* g, float x, float y, float w, float h,
 }
 
 void whaleui_gpu_inset(whaleui_gpu_t* g, float x, float y, float w, float h,
-                       float radius, float blur, unsigned int color)
+                       float radius, float blur, float ox, float oy,
+                       float spread, unsigned int color)
 {
-    (void)radius; /* corner approximation comes from the diagonal split */
-    if (!g || blur <= 0 || w <= 0 || h <= 0) {
+    if (!g || w <= 0 || h <= 0) {
         return;
-    }
-    /* split the box along its two diagonals into four triangles (top /
-     * bottom / left / right). Each triangle has its two outer edge
-     * vertices at full alpha and the shared center vertex at 0, so the
-     * rasterizer interpolates a linear ramp from every edge inward; the
-     * mipmap blur below only softens it. Corners get both adjacent ramps
-     * -> naturally darker, like a real inset shadow. */
-    const float bx = x / static_cast<float>(kBlurDiv);
-    const float by = y / static_cast<float>(kBlurDiv);
-    const float bw = w / static_cast<float>(kBlurDiv);
-    const float bh = h / static_cast<float>(kBlurDiv);
-    const float cx = bx + bw * 0.5f;
-    const float cy = by + bh * 0.5f;
-    const float cr = ((color >> 16) & 0xFF) / 255.0f;
-    const float cg = ((color >> 8) & 0xFF) / 255.0f;
-    const float cb = (color & 0xFF) / 255.0f;
-    const float fbw = static_cast<float>(g->blur_w);
-    const float fbh = static_cast<float>(g->blur_h);
-    /* corner indices: 0=TL 1=TR 2=BR 3=BL */
-    const float corners[4][2] = {
-        {bx, by}, {bx + bw, by}, {bx + bw, by + bh}, {bx, by + bh}};
-    /* triangle corner pairs: top(TL,TR) bottom(BL,BR) left(TL,BL) right(TR,BR) */
-    const int tris[4][2] = {{0, 1}, {3, 2}, {0, 3}, {1, 2}};
-    for (int t = 0; t < 4 && g->inset_shapes.size() + 3 <= 65536; ++t) {
-        gpu_vert_solid v[3];
-        for (int i = 0; i < 3; ++i) {
-            const bool edge = i < 2;
-            v[i].x = edge ? corners[tris[t][i]][0] : cx;
-            v[i].y = edge ? corners[tris[t][i]][1] : cy;
-            v[i].u = 0;
-            v[i].v = 0;
-            v[i].r = cr;
-            v[i].g = cg;
-            v[i].b = cb;
-            v[i].a = edge ? 1.0f : 0.0f;
-            v[i].size_x = bw;
-            v[i].size_y = bh;
-            v[i].radius = 0;
-            v[i].fb_w = fbw;
-            v[i].fb_h = fbh;
-        }
-        g->inset_shapes.push_back(v[0]);
-        g->inset_shapes.push_back(v[1]);
-        g->inset_shapes.push_back(v[2]);
     }
     if (g->insets.size() >= 64) {
         return;
     }
-    gpu_blur_param p;
+    /* the mask source is the box SHRUNK by spread (a white rounded rect):
+     * the shadow is 1 - blurred_mask(px - offset) inside the element box
+     * (see kInsetCS) - the rim outside the covering box is the shadow.
+     * blur 0 is legal - the CS samples the crisp level-0 mask. */
+    const float s = spread > 0 ? spread : 0.0f;
+    const float gw = w - 2.0f * s;
+    const float gh = h - 2.0f * s;
+    if (gw > 0 && gh > 0) {
+        float gr = radius - s;
+        if (gr < 0) {
+            gr = 0;
+        }
+        const float ghalf = (gw < gh ? gw : gh) * 0.5f;
+        if (gr > ghalf) {
+            gr = ghalf;
+        }
+        push_solid_into(g->inset_shapes, (x + s) / static_cast<float>(kBlurDiv),
+                        (y + s) / static_cast<float>(kBlurDiv),
+                        gw / static_cast<float>(kBlurDiv),
+                        gh / static_cast<float>(kBlurDiv),
+                        gr / static_cast<float>(kBlurDiv), 0xFFFFFFFF,
+                        static_cast<float>(g->blur_w),
+                        static_cast<float>(g->blur_h));
+    } /* shrunk away entirely: no mask -> the whole box is shadow */
+    gpu_inset_param p;
     p.x = x;
     p.y = y;
     p.w = w;
     p.h = h;
-    p.blur = blur;
-    p.r = cr;
-    p.g = cg;
-    p.b = cb;
+    p.blur = blur > 0 ? blur : 0.0f;
+    p.r = ((color >> 16) & 0xFF) / 255.0f;
+    p.g = ((color >> 8) & 0xFF) / 255.0f;
+    p.b = (color & 0xFF) / 255.0f;
     p.a = ((color >> 24) & 0xFF) / 255.0f;
-    p.br = p.bg = p.bb = 0;
+    p.ox = ox;
+    p.oy = oy;
+    p.spread = s;
+    p.radius = radius;
+    const float half = (w < h ? w : h) * 0.5f;
+    if (p.radius > half) {
+        p.radius = half;
+    }
+    p.pad0 = p.pad1 = p.pad2 = 0;
     g->insets.push_back(p);
 }
 
@@ -1058,7 +1070,7 @@ void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, float blur,
                           unsigned int body_color)
 {
-    (void)radius;
+    (void)body_color; /* the body paints in the late pass, over the blur */
     if (!g || w <= 0 || h <= 0) {
         return;
     }
@@ -1071,12 +1083,12 @@ void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
     p.w = w;
     p.h = h;
     p.blur = blur > 0 ? blur : 8.0f;
+    /* radius rides in the unused record color slot (the CS SDF-clips the
+     * region to the rounded box); the body blend is off (a = 0) */
+    p.r = radius > 0 ? radius : 0.0f;
+    p.g = p.b = 0;
     p.a = 0;
-    p.br = ((body_color >> 16) & 0xFF) / 255.0f;
-    p.bg = ((body_color >> 8) & 0xFF) / 255.0f;
-    p.bb = (body_color & 0xFF) / 255.0f;
-    /* body alpha rides in p.a (the shader reads d.x for it) */
-    p.a = ((body_color >> 24) & 0xFF) / 255.0f;
+    p.br = p.bg = p.bb = 0;
     g->backdrops.push_back(p);
 }
 
@@ -1227,6 +1239,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
 
     /* upload vertex data + atlas/text layer when dirty */
     bool need_vb = !g->solids.empty() || !g->texts.empty() ||
+                   !g->solids_late.empty() ||
                    g->atlas_dirty || g->layer_dirty;
     bool need_svb = !g->shapes.empty() || !g->inset_shapes.empty() ||
                     !g->shadows.empty() || !g->backdrops.empty() ||
@@ -1243,6 +1256,12 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
             if (!g->texts.empty()) {
                 std::memcpy(static_cast<char*>(mapped) + off,
                             g->texts.data(), g->texts.size() * sizeof(gpu_vert_text));
+                off += g->texts.size() * sizeof(gpu_vert_text);
+            }
+            if (!g->solids_late.empty()) {
+                std::memcpy(static_cast<char*>(mapped) + off,
+                            g->solids_late.data(),
+                            g->solids_late.size() * sizeof(gpu_vert_solid));
             }
             SDL_UnmapGPUTransferBuffer(g->device, g->vb_transfer);
         }
@@ -1259,6 +1278,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 br.offset = 0;
                 br.size = g->solids.size() * sizeof(gpu_vert_solid);
                 SDL_UploadToGPUBuffer(cp, &bti, &br, false);
+                bti.offset = br.size;
             }
             if (!g->texts.empty()) {
                 SDL_GPUBufferRegion br;
@@ -1266,7 +1286,15 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 br.buffer = g->vb_text;
                 br.offset = 0;
                 br.size = g->texts.size() * sizeof(gpu_vert_text);
-                bti.offset = g->solids.size() * sizeof(gpu_vert_solid);
+                SDL_UploadToGPUBuffer(cp, &bti, &br, false);
+                bti.offset += br.size;
+            }
+            if (!g->solids_late.empty()) {
+                SDL_GPUBufferRegion br;
+                std::memset(&br, 0, sizeof(br));
+                br.buffer = g->vb_solid_late;
+                br.offset = 0;
+                br.size = g->solids_late.size() * sizeof(gpu_vert_solid);
                 SDL_UploadToGPUBuffer(cp, &bti, &br, false);
             }
             if (g->atlas_dirty) {
@@ -1356,7 +1384,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 hdr[3] = 0;
                 std::memcpy(static_cast<char*>(m2) + off + 16,
                             g->insets.data(),
-                            g->insets.size() * sizeof(gpu_blur_param));
+                            g->insets.size() * sizeof(gpu_inset_param));
             }
             SDL_UnmapGPUTransferBuffer(g->device, g->shadow_transfer);
         }
@@ -1411,7 +1439,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 std::memset(&br, 0, sizeof(br));
                 br.buffer = g->inset_params_buf;
                 br.offset = 0;
-                br.size = 16 + g->insets.size() * sizeof(gpu_blur_param);
+                br.size = 16 + g->insets.size() * sizeof(gpu_inset_param);
                 bti.offset = off;
                 SDL_UploadToGPUBuffer(cp, &bti, &br, false);
             }
@@ -1423,7 +1451,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * frame reuses the previous target and must not overwrite it
      * (ponytail: shadows briefly drop during pure scrolls; the next full
      * repaint restores them). */
-    bool do_shadow = !g->shadows.empty() && scroll_dy == 0 && !load_only;
+    bool do_shadow = false && !g->shadows.empty() && scroll_dy == 0 && !load_only;
 
     /* pass A: paint the shadow shapes into the low-res blur texture, then
      * build the mip chain (box-filtered downsamples) */
@@ -1546,9 +1574,9 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
 
     /* pass C: backdrop-filter. Copy the painted geometry into the blur
      * texture, mip it, then a compute pass replaces each region with the
-     * blurred copy and blends the element's own background on top. Runs on
-     * partial (animation/hover) frames too, so a fixed translucent header
-     * stays blurred while content animates under it. */
+     * blurred copy (the element's own body paints in the LATE pass after
+     * it). Runs on partial (animation/hover) frames too, so a fixed
+     * translucent header stays blurred while content animates under it. */
     if (!g->backdrops.empty() && scroll_dy == 0) {
         SDL_GPUBlitInfo blit;
         std::memset(&blit, 0, sizeof(blit));
@@ -1588,11 +1616,50 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
         }
     }
 
-    /* pass A2 + D: inset box-shadows. The four gradient triangles are
+    /* pass E: the bodies of backdrop-filter elements (solid background +
+     * gradient + border), routed here by whaleui_gpu_late_begin. They draw
+     * AFTER the backdrop compute pass (which would otherwise replace the
+     * region - and the body with it) but BEFORE the inset pass, so an
+     * element that has both still gets its inset shadow on top of its own
+     * body. load_op LOAD: this pass never clears. */
+    if (!g->solids_late.empty()) {
+        SDL_GPUColorTargetInfo lct;
+        std::memset(&lct, 0, sizeof(lct));
+        lct.texture = g->geom_cur;
+        lct.load_op = SDL_GPU_LOADOP_LOAD;
+        lct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* lrp = SDL_BeginGPURenderPass(cmd, &lct, 1, nullptr);
+        if (lrp) {
+            SDL_GPUViewport lvp;
+            std::memset(&lvp, 0, sizeof(lvp));
+            lvp.w = static_cast<float>(fb_w);
+            lvp.h = static_cast<float>(fb_h);
+            lvp.min_depth = 0;
+            lvp.max_depth = 1;
+            SDL_SetGPUViewport(lrp, &lvp);
+            SDL_BindGPUGraphicsPipeline(lrp, g->pipe_solid);
+            SDL_GPUBufferBinding lbb;
+            std::memset(&lbb, 0, sizeof(lbb));
+            lbb.buffer = g->vb_solid_late;
+            lbb.offset = 0;
+            SDL_BindGPUVertexBuffers(lrp, 0, &lbb, 1);
+            SDL_GPUTextureSamplerBinding ltsb;
+            std::memset(&ltsb, 0, sizeof(ltsb));
+            ltsb.texture = g->white_tex;
+            ltsb.sampler = g->sampler;
+            SDL_BindGPUFragmentSamplers(lrp, 0, &ltsb, 1);
+            SDL_DrawGPUPrimitives(lrp,
+                                  static_cast<int>(g->solids_late.size()), 1,
+                                  0, 0);
+            SDL_EndGPURenderPass(lrp);
+        }
+    }
+
+    /* pass A2 + D: inset box-shadows. The spread-grown white box masks are
      * rasterized into blur_tex (freshly cleared - the backdrop copy above
-     * already consumed it), mipmapped, and a compute pass blends the
-     * blurred ramp over the painted geometry (inset shadows sit on top of
-     * the element background). */
+     * already consumed it), mipmapped, and a compute pass blends
+     * 1 - blurred_mask(px - offset) over the painted geometry (inset
+     * shadows sit on top of the element background). */
     if (!g->insets.empty() && scroll_dy == 0 && !load_only) {
         SDL_GPUColorTargetInfo ict;
         std::memset(&ict, 0, sizeof(ict));
@@ -1609,11 +1676,12 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
             ivp.min_depth = 0;
             ivp.max_depth = 1;
             SDL_SetGPUViewport(irp, &ivp);
-            SDL_BindGPUGraphicsPipeline(irp, g->pipe_solid_flat);
+            SDL_BindGPUGraphicsPipeline(irp, g->pipe_solid);
             SDL_GPUBufferBinding ibb;
             std::memset(&ibb, 0, sizeof(ibb));
             ibb.buffer = g->vb_shapes;
-            ibb.offset = 0;
+            /* the mask run starts AFTER the shadow shapes in vb_shapes */
+            ibb.offset = g->shapes.size() * sizeof(gpu_vert_solid);
             SDL_BindGPUVertexBuffers(irp, 0, &ibb, 1);
             SDL_GPUTextureSamplerBinding itsb;
             std::memset(&itsb, 0, sizeof(itsb));
@@ -1709,6 +1777,7 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     g->insets.clear();
     g->shapes.clear();
     g->inset_shapes.clear();
+    g->solids_late.clear();
     return cmd;
 }
 

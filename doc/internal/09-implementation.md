@@ -21,7 +21,7 @@
 2. **CSS 解析自研**,未接 lexbor 的 CSS 语法树(接口复杂且本项目只需子集);解析器位于 `src/style/css.cpp`。
 3. **渲染统一走 SDL_GPU**:CPU framebuffer 上传离屏纹理后 blit 到 swapchain,底层 D3D12 / Vulkan 由 SDL 自动选择(官方 mingw 预编译包只编译了这两个 backend)。注意 SDL3 3.4.x 起 `SDL_CreateGPUDevice` 必须显式声明 shader 格式(`SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV`),传 0 会被 D3D12/Vulkan 后端直接拒绝。**Vulkan 已验证**(`WHALEUI_GPU=vulkan`,test_render 像素断言通过):HLSL 经 DXC 交叉编译为 SPIR-V(着色器内用 `[[vk::binding()]]` 把资源钉到 SDL 期望的 set0=采样纹理 / set1=读写 storage / set2=uniform),FSR 使用预编译 SPIR-V;注意本机 DXC 1.9.0.5402 不识别 `-fvk-bind` 命令行选项,所以绑定信息写在 HLSL attribute 里而非编译参数。**Metal 未实现/未验证**(非 Windows 的 shader 编译路径返回 nullptr 并打印提示)。**适配器选择**:`WHALEUI_GPU_LOWPOWER=1` 设置 `SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN` 偏向核显;默认不设——台式机通常该走独显,且 Windows 的按应用图形设置(设置 > 系统 > 显示 > 图形)优先级更高,让系统决定即可。
 4. **SDL3 采用官方预编译包**(`3rdparty/sdl3/` + `3rdparty/sdl3_ttf/`),因为 `SDL3_ttf.dll` 运行时依赖 `SDL3.dll`。
-5. **blur 类效果 = mipmap 模糊近似**。`box-shadow`/`backdrop-filter: blur()` 不再用逐像素高斯核(大半径下开销随半径线性增长):模糊源(圆角矩形形状 / 已绘制几何)写入半分辨率 `blur_tex`,用 `SDL_GenerateMipmapsForGPUTexture` 生成 mip 链(每级 2x2 box 过滤),compute shader 对每像素在 3 个相邻 mip 级别上 `SampleLevel`(显式 LOD,高斯权重)并叠加回 target——一次模糊 = 3 次采样。依据 SDL_gpu.h 官方 API(`num_levels`、`SDL_GPUSamplerMipmapMode`、`SDL_GenerateMipmapsForGPUTexture`、`SDL_BindGPUComputeStorageBuffers`)。**为什么走 compute**:SDL 3.4 的 D3D12 后端创建带纹理采样的 graphics pipeline 返回 `E_INVALIDARG`(`kSolidPS` 注释记录),图形管线只能采样 1x1 white 纹理 + 顶点色;compute 的 `SampleLevel` 无此限制(`kTextCompositeCS` 同样避开隐式导数 `Sample`)。box-shadow 因此从每元素 ~blur/2 个同心环 fill 降为 1 次形状绘制 + 1 次全屏 compute;backdrop-filter 为几何拷贝 + mip + compute 区域读写(target 需要 `COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE`,其格式随之从 B8G8R8A8 改为 R8G8B8A8)。纯滚动帧(复用上一帧 target)跳过模糊,滚动停止后的全量重绘恢复(见 `gpu_flush` 的 `do_shadow`)。**inset 阴影**复用同一金字塔:`whaleui_gpu_inset` 把盒子沿两条对角线分成 4 个三角形(外边顶点 alpha=1、中心顶点 0),`kFlatPS`(纯顶点色,无圆角 SDF)光栅化进 blur_tex——线性渐变由光栅器插值免费得到,角部天然叠加两个方向的渐变而更深(符合真实 inset);mip 模糊只负责软化边缘;几何 + backdrop pass 之后 `kInsetCS` 把模糊结果 `lerp` 混合到已绘制的背景上(inset 在元素背景之上),同一 blur_tex 重新 CLEAR+画三角形+mip,不新增纹理。
+5. **blur 类效果 = mipmap 模糊近似**。`box-shadow`/`backdrop-filter: blur()` 不再用逐像素高斯核(大半径下开销随半径线性增长):模糊源(圆角矩形形状 / 已绘制几何)写入半分辨率 `blur_tex`,用 `SDL_GenerateMipmapsForGPUTexture` 生成 mip 链(每级 2x2 box 过滤),compute shader 对每像素在 3 个相邻 mip 级别上 `SampleLevel`(显式 LOD,高斯权重)并叠加回 target——一次模糊 = 3 次采样,小半径(`blur<8`)用预定义 3x3 二项式核作用于单 mip 层(见 notes <15>)。依据 SDL_gpu.h 官方 API(`num_levels`、`SDL_GPUSamplerMipmapMode`、`SDL_GenerateMipmapsForGPUTexture`、`SDL_BindGPUComputeStorageBuffers`)。**为什么走 compute**:SDL 3.4 的 D3D12 后端创建带纹理采样的 graphics pipeline 返回 `E_INVALIDARG`(`kSolidPS` 注释记录),图形管线只能采样 1x1 white 纹理 + 顶点色;compute 的 `SampleLevel` 无此限制(`kTextCompositeCS` 同样避开隐式导数 `Sample`)。box-shadow 因此从每元素 ~blur/2 个同心环 fill 降为 1 次形状绘制 + 1 次全屏 compute;backdrop-filter 为几何拷贝 + mip + compute 区域替换(元素自身 body——纯色/渐变/边框——走 LATE pass 画在模糊之上,不再丢失,区域按圆角 SDF 裁剪),target 需要 `COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE`,其格式随之从 B8G8R8A8 改为 R8G8B8A8。纯滚动帧(复用上一帧 target)跳过模糊,滚动停止后的全量重绘恢复(见 `gpu_flush` 的 `do_shadow`)。**inset 阴影**复用同一金字塔:mask 源是 spread-收缩的白盒,`kInsetCS` 对每像素算 `1 - blurred_mask(px - offset)`(offset 通过移采样点精确实现,无四象限近似、无接缝),再按元素圆角 SDF 裁剪,blend 到已绘制的背景上(inset 在元素背景之上);几何 + backdrop pass 之后顺序是 late-body → inset,所以 inset 仍盖在 body 上。compute param buffer 按记录跨度独立定尺寸(shadow/backdrop 12 floats,inset 16 floats)——混用一个尺寸曾让 `UploadToGPUBuffer` 越界,D3D12 直接整帧黑屏(见 notes <16>)。
 6. **标签功能(子步骤 2)**:所有 tag 是"带默认样式的 div"——
    - **UA 默认样式全覆盖**(`src/style/theme.cpp` 的 `base_css`,参照 WHATWG HTML 标准 UA stylesheet):`display:none`(元数据/媒体源)、`display:block`(分区/表格/表单容器等)、`display:inline`(a/em/strong/span 等 23 个)、`display:inline-block`(img/input/button/select/textarea/output/progress/meter);h1-h6/small/s/u/sub/sup/code/kbd/samp/pre/var/cite/dfn/blockquote/dl/dt/dd/figure/figcaption/mark 的默认排版;外加通用 class(.card/.row/.column/.center/.app/.header/.badge/.hidden/.muted/.select-open)。项目本身不内置具体样式,由该根 CSS 指定,页面 `<style>` 可覆盖。
    - **inline 混排**(`src/layout/layout.cpp`):块流中连续的文本 run 与 inline 元素(inline/inline-block,非 absolute/fixed)在同一行按 DOM 顺序水平排列、行满折行;`<p>a <em>e</em> b</p>` 渲染为一行。文本 run 与元素子节点按 DOM 顺序交替构建(元素边界空格合并)。
@@ -43,7 +43,10 @@ flex-grow/flex 简写), grid 布局(grid-template-columns px/fr/auto/repeat(),
 grid-column 整行跨越, column/row-gap), clamp()/min()/max() 数学函数, vw/vh 单位,
 background-color/background(纯色+线性/径向渐变), background-image 渐变,
 border-radius 圆角(背景与边框均沿弧线), box-shadow(GPU:mipmap 模糊近似;
-CPU:同心环;inset GPU:对角线渐变三角形+mipmap/CPU:同心内缩环), backdrop-filter: blur()(GPU:mipmap 近似), text-shadow,
+CPU:同心环;inset GPU:收缩盒 mask 反演+offset/blurl:0 实环/CPU:带 offset 的同心内缩环
+与硬环四条边), backdrop-filter: blur()(GPU:mipmap 近似,body 走 late pass 保住渐变
+与边框,圆角裁剪), text-shadow, rotate(背景/边框真实旋转+渐变轴同转+命中逆旋转,
+文本/子树直立),
 -webkit-text-stroke, text-decoration(underline/line-through),
 color, font-size, font-family(按注册字体), font-weight(bold/≥600 合成粗体),
 font 简写, text-align(left/center/right), line-height, letter-spacing,
@@ -67,7 +70,7 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 
 ```
 媒体查询其余条件, grid 显式行轨道/命名区域/dense 打包, position:sticky 的
-容器底部钳制, backdrop-filter 的 CPU 路径, 多阴影列表(取第一个)
+容器底部钳制, backdrop-filter/inset 的 CPU 模糊路径, 多阴影列表(按规范倒序多层绘制)
 ```
 
 > 布局相关属性的完整清单见 `css-priority.md`;渲染未生效项集中在 `src/render/render.cpp` 的绘制阶段,后续增量实现。

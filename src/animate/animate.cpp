@@ -1161,6 +1161,96 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
     return 0;
 }
 
+/* one transform-origin component -> fraction of the box (0 = left/top,
+ * 0.5 = center, 1 = right/bottom). Keywords, % and px; anything else
+ * falls back to `dflt`. */
+static float origin_frac(const char* v, float base, float dflt)
+{
+    if (!v || !*v) {
+        return dflt;
+    }
+    while (*v == ' ' || *v == '\t') {
+        ++v;
+    }
+    if (std::strcmp(v, "left") == 0 || std::strcmp(v, "top") == 0) {
+        return 0.0f;
+    }
+    if (std::strcmp(v, "center") == 0) {
+        return 0.5f;
+    }
+    if (std::strcmp(v, "right") == 0 || std::strcmp(v, "bottom") == 0) {
+        return 1.0f;
+    }
+    char* end = nullptr;
+    float f = std::strtof(v, &end);
+    if (end == v) {
+        return dflt;
+    }
+    if (*end == '%') {
+        return f / 100.0f;
+    }
+    if (base > 0) {
+        return f / base; /* px */
+    }
+    return dflt;
+}
+
+/* Resolve `transform-origin` ("left top", "50% 50%", "0 0", ...) to a px
+ * anchor inside a self_w x self_h box. One value = horizontal, vertical
+ * stays centered (CSS); a lone "top"/"bottom" still resolves vertically.
+ * Missing/empty = 50% 50%. Only the X/Y pair is read (no 3D z-origin). */
+extern "C" int whaleui_transform_origin_eval(const char* value, float self_w,
+                                             float self_h, float* ox,
+                                             float* oy)
+{
+    if (!ox || !oy) {
+        return -1;
+    }
+    *ox = self_w * 0.5f;
+    *oy = self_h * 0.5f;
+    if (!value || !*value) {
+        return 0;
+    }
+    const char* p = value;
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    const char* s0 = p;
+    while (*p && *p != ' ' && *p != '\t') {
+        ++p;
+    }
+    std::string t0(s0, static_cast<size_t>(p - s0));
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    std::string t1(p);
+    size_t e = t1.find_last_not_of(" \t");
+    if (e != std::string::npos) {
+        t1.resize(e + 1);
+    } else if (!t1.empty()) {
+        t1.clear();
+    }
+    if (t1.empty()) {
+        if (t0 == "top" || t0 == "bottom") {
+            *oy = self_h * origin_frac(t0.c_str(), self_h, 0.5f);
+        } else {
+            *ox = self_w * origin_frac(t0.c_str(), self_w, 0.5f);
+        }
+        return 0;
+    }
+    /* two values: (horizontal, vertical); a swapped "top left" still
+     * resolves by swapping back onto the right axes */
+    if ((t0 == "top" || t0 == "bottom") &&
+        (t1 == "left" || t1 == "right" || t1 == "center")) {
+        *ox = self_w * origin_frac(t1.c_str(), self_w, 0.5f);
+        *oy = self_h * origin_frac(t0.c_str(), self_h, 0.5f);
+        return 0;
+    }
+    *ox = self_w * origin_frac(t0.c_str(), self_w, 0.5f);
+    *oy = self_h * origin_frac(t1.c_str(), self_h, 0.5f);
+    return 0;
+}
+
 namespace {
 
 /* direction handling for keyframe progress. dir: 0=normal, 1=reverse,

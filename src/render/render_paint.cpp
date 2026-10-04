@@ -189,19 +189,23 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     }
 }
 
-/* fill a box rotated by rot_deg degrees (CSS rotate, clockwise). GPU path:
- * the rasterizer rotates (whaleui_gpu_rect_rot). CPU fallback: the
- * unrotated box (the software path has no rotated rasterizer; parity with
- * pre-rotate builds, never worse). */
+/* fill a box rotated by rot_deg degrees (CSS rotate, clockwise) around
+ * the (ox, oy) in-box anchor. GPU path: the rasterizer rotates
+ * (whaleui_gpu_rect_rot). CPU fallback: the unrotated box (the software
+ * path has no rotated rasterizer; parity with pre-rotate builds, never
+ * worse). */
 void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, int radius,
-                   unsigned int color, float rot_deg, const Clip* clip)
+                   unsigned int color, float rot_deg, const Clip* clip,
+                   float ox, float oy)
 {
     if (g_gpu) {
+        float ax = static_cast<float>(x) + ox;
+        float ay = static_cast<float>(y) + oy;
         whaleui_gpu_rect_rot(g_gpu, static_cast<float>(x),
                              static_cast<float>(y), static_cast<float>(w),
                              static_cast<float>(h), static_cast<float>(radius),
-                             color, rot_deg, nullptr);
+                             color, rot_deg, nullptr, ax, ay);
         return;
     }
     if (radius > 0) {
@@ -496,14 +500,87 @@ void paint_one_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (parse_shadow(v, ox, oy, blur, col, &spread) != 0) {
         return;
     }
+    unsigned int a = (col >> 24) & 0xFF;
+    unsigned int aa = static_cast<unsigned>(a * n->opacity);
+    if (aa == 0) {
+        return;
+    }
+    unsigned int colc = (aa << 24) | (col & 0x00FFFFFF);
+    int radius = 0;
+    std::string br = sget(n->style, "border-radius");
+    if (!br.empty()) {
+        radius = std::atoi(br.c_str());
+    }
+    /* off-screen shadows cost nothing (inset: only the box matters) */
+    int sx0 = n->border.x + off_x + ox - blur;
+    int sy0 = n->border.y + off_y + oy - blur;
+    if (!inset &&
+        (sx0 + n->border.w + 2 * blur <= 0 || sx0 >= r->fb_w ||
+         sy0 + n->border.h + 2 * blur <= 0 || sy0 >= r->fb_h)) {
+        return;
+    }
+    int bx = n->border.x + off_x;
+    int by = n->border.y + off_y;
     if (blur <= 0) {
-        /* hard shadow (blur 0): one fill grown by spread - this is the
-         * "0 0 0 3px rgba(...)" focus ring the themes write */
-        int hx = n->border.x + off_x + ox - spread;
-        int hy = n->border.y + off_y + oy - spread;
+        if (inset) {
+            /* hard inner shadow: the box minus the (spread-shrunk, offset)
+             * inner rect - the four uncovered strips. GPU: the inset CS
+             * samples the crisp mask (blur 0 is legal there). */
+            if (g_gpu) {
+                whaleui_gpu_inset(g_gpu, static_cast<float>(bx),
+                                  static_cast<float>(by),
+                                  static_cast<float>(n->border.w),
+                                  static_cast<float>(n->border.h),
+                                  static_cast<float>(radius), 0.0f,
+                                  static_cast<float>(ox),
+                                  static_cast<float>(oy),
+                                  static_cast<float>(spread), colc);
+                return;
+            }
+            int l = spread + (ox > 0 ? ox : 0);
+            int rt = spread + (ox < 0 ? -ox : 0);
+            int t = spread + (oy > 0 ? oy : 0);
+            int b = spread + (oy < 0 ? -oy : 0);
+            if (l > n->border.w) l = n->border.w;
+            if (rt > n->border.w) rt = n->border.w;
+            if (t > n->border.h) t = n->border.h;
+            if (b > n->border.h) b = n->border.h;
+            int rad0 = 0;
+            std::string br0 = sget(n->style, "border-radius");
+            if (!br0.empty()) {
+                rad0 = std::atoi(br0.c_str());
+            }
+            /* the middle strips leave the corner arcs to the side strips
+             * (a browser miters them; blur 0 rings are hairlines) */
+            if (l > 0) {
+                fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx, by, l,
+                                n->border.h, rad0, colc, clip);
+            }
+            if (rt > 0) {
+                fill_round_rect(r->pixels, r->fb_w, r->fb_h,
+                                bx + n->border.w - rt, by, rt, n->border.h,
+                                rad0, colc, clip);
+            }
+            int midw = n->border.w - l - rt;
+            if (midw > 0) {
+                if (t > 0) {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, bx + l, by, midw,
+                              t, colc, clip);
+                }
+                if (b > 0) {
+                    fill_rect(r->pixels, r->fb_w, r->fb_h, bx + l,
+                              by + n->border.h - b, midw, b, colc, clip);
+                }
+            }
+            return;
+        }
+        /* hard OUTER shadow (blur 0): one fill grown by spread - this is
+         * the "0 0 0 3px rgba(...)" focus ring the themes write */
+        int hx = bx + ox - spread;
+        int hy = by + oy - spread;
         int hw = n->border.w + 2 * spread;
         int hh = n->border.h + 2 * spread;
-        if (hw <= 0 || hh <= 0 || col == 0) {
+        if (hw <= 0 || hh <= 0) {
             return;
         }
         int rad0 = 0;
@@ -511,64 +588,46 @@ void paint_one_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (!br0.empty()) {
             rad0 = std::atoi(br0.c_str());
         }
-        unsigned int a0 = (col >> 24) & 0xFF;
-        unsigned int aa = static_cast<unsigned>(a0 * n->opacity);
-        if (aa == 0) {
-            return;
-        }
-        unsigned int hc = (aa << 24) | (col & 0x00FFFFFF);
         if (rad0 > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh,
-                            rad0, hc, clip);
+                            rad0, colc, clip);
         } else {
-            fill_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh, hc,
+            fill_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh, colc,
                       clip);
         }
         return;
     }
-    /* off-screen shadows cost nothing */
-    int sx0 = n->border.x + off_x + ox - blur;
-    int sy0 = n->border.y + off_y + oy - blur;
-    if (sx0 + n->border.w + 2 * blur <= 0 || sx0 >= r->fb_w ||
-        sy0 + n->border.h + 2 * blur <= 0 || sy0 >= r->fb_h) {
-        return;
-    }
-    int radius = 0;
-    std::string br = sget(n->style, "border-radius");
-    if (!br.empty()) {
-        radius = std::atoi(br.c_str());
-    }
-    unsigned int a = (col >> 24) & 0xFF;
-    if (a == 0) {
-        return;
-    }
     /* GPU path: the mipmap blur approximation (blur_tex + multi-level
      * resampling) - one shape + one sampling quad instead of blur/2
-     * concentric fills. Inset shadows blend the blurred gradient over the
-     * painted geometry (after the geometry pass). */
+     * concentric fills. Inset shadows blend 1 - blurred_mask(px - offset)
+     * of the spread-shrunk box over the painted geometry (after the
+     * geometry pass). */
     if (g_gpu) {
         if (inset) {
-            whaleui_gpu_inset(g_gpu,
-                              static_cast<float>(n->border.x + off_x),
-                              static_cast<float>(n->border.y + off_y),
+            whaleui_gpu_inset(g_gpu, static_cast<float>(bx),
+                              static_cast<float>(by),
                               static_cast<float>(n->border.w),
                               static_cast<float>(n->border.h),
                               static_cast<float>(radius),
-                              static_cast<float>(blur), col);
+                              static_cast<float>(blur),
+                              static_cast<float>(ox),
+                              static_cast<float>(oy),
+                              static_cast<float>(spread), colc);
         } else {
             whaleui_gpu_shadow(g_gpu,
-                               static_cast<float>(n->border.x + off_x + ox - spread),
-                               static_cast<float>(n->border.y + off_y + oy - spread),
+                               static_cast<float>(bx + ox - spread),
+                               static_cast<float>(by + oy - spread),
                                static_cast<float>(n->border.w + 2 * spread),
                                static_cast<float>(n->border.h + 2 * spread),
                                static_cast<float>(radius),
-                               static_cast<float>(blur), col);
+                               static_cast<float>(blur), colc);
         }
         return;
     }
     /* concentric layers, alpha fading outwards (inset: inwards); skip the
      * near-invisible outermost ring and step by 2px (half the fill cost,
-     * gradient still smooth) */
+     * gradient still smooth). Inset layers shift with the offset: the
+     * strip on the offset side grows, the opposite side shrinks. */
     for (int k = blur - 1; k >= 1; k -= 2) {
         unsigned int ka = static_cast<unsigned>(a * (blur - k + 1) / (blur + 1));
         if (ka < 4) {
@@ -577,17 +636,20 @@ void paint_one_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
         unsigned int c = (ka << 24) | (col & 0x00FFFFFF);
         int sx, sy, sw, sh;
         if (inset) {
-            /* inward: each layer is the box shrunk by spread + k */
-            sx = n->border.x + off_x + spread + k;
-            sy = n->border.y + off_y + spread + k;
-            sw = n->border.w - 2 * spread - 2 * k;
-            sh = n->border.h - 2 * spread - 2 * k;
+            int l = spread + k + (ox > 0 ? ox : 0);
+            int t = spread + k + (oy > 0 ? oy : 0);
+            int rt = spread + k + (ox < 0 ? -ox : 0);
+            int b = spread + k + (oy < 0 ? -oy : 0);
+            sx = bx + l;
+            sy = by + t;
+            sw = n->border.w - l - rt;
+            sh = n->border.h - t - b;
             if (sw <= 0 || sh <= 0) {
                 continue;
             }
         } else {
-            sx = n->border.x + off_x + ox - spread - k;
-            sy = n->border.y + off_y + oy - spread - k;
+            sx = bx + ox - spread - k;
+            sy = by + oy - spread - k;
             sw = n->border.w + 2 * spread + 2 * k;
             sh = n->border.h + 2 * spread + 2 * k;
         }
@@ -1128,15 +1190,15 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             off_y += st - cur;
         }
     }
-    /* transform: translate (px/%) + uniform scale around the element's
-     * center (default transform-origin) + clockwise rotate (approximate:
-     * the box's own background/border rotate with the rasterizer, text and
-     * children stay upright, gradients keep their unrotated axis). The
-     * shifted box is drawn here and off_x/off_y carry the translation into
-     * the subtree. Child coordinates are NOT scaled. ponytail: true 2D
-     * transform stacks + hit-testing are a later step. */
+    /* transform: translate (px/%) + scale around the transform-origin +
+     * clockwise rotate around the transform-origin (approximate: the box's
+     * own background/border rotate with the rasterizer, text and children
+     * stay upright). The shifted box is drawn here and off_x/off_y carry
+     * the translation into the subtree. Child coordinates are NOT scaled.
+     * ponytail: true 2D transform stacks are a later step. */
     float tdx = 0.0f, tdy = 0.0f, tsx = 1.0f, tsy = 1.0f;
     float trot = 0.0f;
+    float toox = 0.0f, toooy = 0.0f; /* transform-origin anchor, px in-box */
     if (has_xf) {
         whaleui_transform_t tf;
         if (whaleui_transform_eval(ntv.c_str(),
@@ -1148,17 +1210,23 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             tsy = tf.sy;
             trot = tf.rot;
         }
+        whaleui_transform_origin_eval(sget(n->style, "transform-origin").c_str(),
+                                      static_cast<float>(n->border.w),
+                                      static_cast<float>(n->border.h),
+                                      &toox, &toooy);
     }
     int bw = n->border.w;
     int bh = n->border.h;
     if (tsx != 1.0f || tsy != 1.0f) {
-        /* non-uniform scale (scaleX/scaleY): the box shrinks per axis,
-         * anchored at the center like the uniform path */
+        /* scale keeps the transform-origin fixed: the box grows/shrinks
+         * away from the anchor (default center = the old behavior) */
         bw = static_cast<int>(n->border.w * tsx);
         bh = static_cast<int>(n->border.h * tsy);
     }
-    int nox = off_x + static_cast<int>(tdx) + (n->border.w - bw) / 2;
-    int noy = off_y + static_cast<int>(tdy) + (n->border.h - bh) / 2;
+    int nox = off_x + static_cast<int>(tdx) +
+              static_cast<int>(toox * (1.0f - tsx));
+    int noy = off_y + static_cast<int>(tdy) +
+              static_cast<int>(toooy * (1.0f - tsy));
     /* z-order high root with an opaque background: this element's layer
      * occludes lower layers - clear the old text under it so lower
      * glyphs do not show through its background. Unified rule; the popup
@@ -1223,18 +1291,21 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         bg_c = c;
     }
     /* backdrop-filter: blur the already-painted background under this box.
-     * GPU path: pass C (in gpu_flush) overwrites the region with the
-     * blurred geometry and blends the body color on top, so the plain body
-     * paint below is skipped - but only on full repaints (scroll/partial
-     * frames skip pass C, so the body background paints normally). CPU
-     * path has no access to the GPU geometry: the body background still
-     * paints (ponytail: real CPU backdrop blur when needed). */
+     * The element's OWN body (solid background, gradient, border) paints
+     * normally afterwards - but routed to the LATE draw list
+     * (whaleui_gpu_late_begin), so the backdrop compute pass (which
+     * REPLACES the region with the blurred geometry) cannot clobber it:
+     * the body ends up on top of the blur, with its gradients and border
+     * intact. On scroll frames (pass C skipped) and on the CPU path the
+     * body paints in the main pass instead - identical code, different
+     * queue. */
     std::string bdf = sget(n->style, "backdrop-filter");
 #ifdef WHALEUI_BUILD_MINIMAL
     bool backdrop = false; /* minimal: backdrop blur removed */
 #else
     bool backdrop = !bdf.empty() && bdf != "none";
 #endif
+    bool bdf_gpu = false;
     if (backdrop && g_gpu && g_backdrop_active) {
         float bblur = 8.0f;
         size_t bp = bdf.find("blur(");
@@ -1244,12 +1315,15 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         whaleui_gpu_backdrop(g_gpu, static_cast<float>(n->border.x + nox),
                              static_cast<float>(n->border.y + noy),
                              static_cast<float>(bw), static_cast<float>(bh),
-                             static_cast<float>(radius), bblur, bg_c);
-    } else {
+                             static_cast<float>(radius), bblur, 0);
+        whaleui_gpu_late_begin(g_gpu);
+        bdf_gpu = true;
+    }
     if (bg != 0) {
         if (trot != 0.0f) {
             fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
-                          n->border.y + noy, bw, bh, radius, bg_c, trot, eff);
+                          n->border.y + noy, bw, bh, radius, bg_c, trot, eff,
+                          toox * tsx, toooy * tsy);
         } else if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
@@ -1312,7 +1386,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             fill_gradient(r->pixels, r->fb_w, r->fb_h,
                           gx + static_cast<int>(ox),
                           gy + static_cast<int>(oy), static_cast<int>(tw),
-                          static_cast<int>(th), grad, eff);
+                          static_cast<int>(th), grad, eff, trot);
         } else {
             /* repeat (default) / repeat-x / repeat-y: tile from the
              * position back to the box edge, then forward */
@@ -1338,7 +1412,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                      xx < gx + bw; xx += xi) {
                     fill_gradient(r->pixels, r->fb_w, r->fb_h, xx, yy,
                                   static_cast<int>(tw), static_cast<int>(th),
-                                  grad, eff);
+                                  grad, eff, trot);
                 }
             }
         }
@@ -1375,9 +1449,11 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             if (trot != 0.0f && brw > 0) {
                 /* rotated ring: same two-rect trick as fill_round_border's
                  * GPU branch, with rotated corners (the inner refill keeps
-                 * the background the ring encloses) */
+                 * the background the ring encloses). The inner rect's
+                 * origin shifts by brw, so its in-box anchor shifts too. */
                 fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
-                              n->border.y + noy, bw, bh, radius, c, trot, eff);
+                              n->border.y + noy, bw, bh, radius, c, trot, eff,
+                              toox * tsx, toooy * tsy);
                 int irad = radius - brw;
                 if (irad < 0) {
                     irad = 0;
@@ -1385,7 +1461,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 fill_rot_rect(r->pixels, r->fb_w, r->fb_h,
                               n->border.x + nox + brw, n->border.y + noy + brw,
                               bw - 2 * brw, bh - 2 * brw, irad, bg_c, trot,
-                              eff);
+                              eff, toox * tsx - brw, toooy * tsy - brw);
             } else if (radius > 0 && brw > 0) {
                 fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                                   n->border.y + noy,
@@ -1438,8 +1514,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             }
         }
     }
+    if (bdf_gpu) {
+        whaleui_gpu_late_end(g_gpu);
+    }
     } /* end if(!native_ctrl): native controls paint their own box */
-    } /* end else: plain body paint (skipped for GPU backdrop-filter) */
     /* the outline is independent of the box painting (a focus ring must
      * also sit over a native checkbox/select), so it is drawn here - after
      * this element's own content, before its children */
