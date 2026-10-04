@@ -229,6 +229,23 @@ opacity,未知 op 跳过其余照算。
 回归:test_scroll filter(灰/亮蓝/品红/粉晕)。
 验证:10 项测试全绿;14 张主题自检全 OK。
 
+# <21>: 混合模式(background/mix-blend, 11种精确+4种近似)
+
+SOLVED
+
+无 element 隔离(全帧只有 target 系),走两条轻量路:
+background-blend 在 fill_gradient 发射前折角颜色(GPU 零新增 draw,CPU
+逐像素 blend_pixels);mix-blend 走 pass F compute(body 单色 vs painted
+frame,Porter-Duff,子树不参与,文档写明)。
+11 种可分离精确+dodge/burn/soft-light 全公式;hue/saturation/color/
+luminosity 亮度混合近似。CPU/GPU 共用 blend_pixels/blend_ch 逻辑。
+踩坑:mixblend pipeline num_samplers 对不上(D3D12 E_INVALIDARG,加空 sampler
+声明匹配签名)+Load 同 texture 读写(改走 out_tex,去 frame_tex 绑定)+
+测试 CSS 简写覆盖底色(改 background-image 分写)。
+附带修:resize 的 text_layer 格式 B 序(与 create R 序不一致)。
+回归:test_scroll blend(双纯黑)。
+验证:10 项测试全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

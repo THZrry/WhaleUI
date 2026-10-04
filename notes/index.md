@@ -121,3 +121,5 @@ scrollbar/aspect-ratio/marker。见 notes/current.md
 CPU颜色矩阵; 附带恢复被插桩关掉的外阴影 pass。见 notes/current.md
 <20>(SOLVED): transform skew/matrix/3D —— 顶点剪切+hit逆剪切+渐变协变;
 matrix分解; rotateX/Y透视压缩; 3D消费忽略。见 notes/current.md
+<21>(SOLVED): 混合模式 —— background-blend折角颜色+mix-blend pass F;
+11种精确+4种亮度近似。见 notes/current.md

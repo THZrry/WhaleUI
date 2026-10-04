@@ -367,6 +367,113 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 )";
 
+/* mix-blend-mode compute pass: blend the element's own body color /
+ * gradient (src, from the record) over the painted backdrop (dst, from
+ * the composited frame) with the separable blend formulas + Porter-Duff.
+ * Like the backdrop pass this runs on the composited frame (target2); the
+ * src is the body's own color (a solid/gradient approximation - subtree
+ * content does not participate, documented). The backdrop is read from
+ * the same SIMULTANEOUS texture via out_tex Load (no second binding, so
+ * no sampler slot is needed). Record layout (3 float4):
+ *   {x,y,w,h} {mode,radius,0,0} {sr,sg,sb,sa}
+ * mode = blend_channel id (0..11; 12..15 luminance-mix approx). */
+static const std::string kMixBlendCS = std::string(R"(
+[[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
+[[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+SamplerState samp : register(s0); /* unused (Load-only); keeps the
+    pipeline signature identical to the other blur passes */
+float blend_ch(int mode, float cb, float cs)
+{
+    if (mode <= 0) { return cs; }
+    if (mode == 1) { return cb * cs; }
+    if (mode == 2) { return 1.0 - (1.0 - cb) * (1.0 - cs); }
+    if (mode == 3) {
+        return cb < 0.5 ? 2.0 * cb * cs
+                        : 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
+    }
+    if (mode == 4) { return min(cb, cs); }
+    if (mode == 5) { return max(cb, cs); }
+    if (mode == 6) {
+        if (cb <= 0.0) { return 0.0; }
+        if (cs >= 1.0) { return 1.0; }
+        return min(cb / (1.0 - cs), 1.0);
+    }
+    if (mode == 7) {
+        if (cb >= 1.0) { return 1.0; }
+        if (cs <= 0.0) { return 0.0; }
+        return max(1.0 - (1.0 - cb) / cs, 0.0);
+    }
+    if (mode == 8) {
+        return cs < 0.5 ? 2.0 * cb * cs
+                        : 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
+    }
+    if (mode == 9) {
+        float d = cb <= 0.25 ? ((16.0 * cb - 12.0) * cb + 4.0) * cb
+                             : sqrt(cb);
+        return cs <= 0.5 ? cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+                         : cb + (2.0 * cs - 1.0) * (d - cb);
+    }
+    if (mode == 10) { return abs(cb - cs); }
+    if (mode == 11) { return cb + cs - 2.0 * cb * cs; }
+    return cs; /* 12..15 never reach here (handled in main) */
+}
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float2 px = float2(id.xy) + 0.5;
+    float4 hdr = params[0];
+    int n = int(hdr.x);
+    float4 acc = out_tex[id.xy];
+    for (int i = 0; i < n; ++i) {
+        float4 r = params[1 + i * 3];
+        float4 c = params[2 + i * 3];
+        float4 s = params[3 + i * 3];
+        if (px.x >= r.x && px.x < r.x + r.z &&
+            px.y >= r.y && px.y < r.y + r.w) {
+            float4 dst = acc;
+            int mode = int(c.x + 0.5);
+            float sa = s.a;
+            float da = dst.a;
+            float oa = sa + da * (1.0 - sa);
+            float3 outc = dst.rgb;
+            float sr = s.r, sg = s.g, sb = s.b;
+            if (mode >= 12) {
+                float lum_s = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+                float lum_d = 0.2126 * dst.r + 0.7152 * dst.g + 0.0722 * dst.b;
+                if (mode == 15) {
+                    float k = lum_d > 0.0 ? lum_s / lum_d : 1.0;
+                    outc = dst.rgb * k;
+                } else {
+                    outc = (dst.rgb + float3(sr, sg, sb)) * 0.5;
+                    if (mode == 13) {
+                        float m = (lum_s + lum_d) * 0.5 - lum_d;
+                        outc += m;
+                    }
+                }
+            } else if (mode > 0) {
+                outc.r = blend_ch(mode, dst.r, sr);
+                outc.g = blend_ch(mode, dst.g, sg);
+                outc.b = blend_ch(mode, dst.b, sb);
+            } else {
+                outc = float3(sr, sg, sb);
+            }
+            float3 fin = (outc * sa + dst.rgb * da * (1.0 - sa)) /
+                         max(oa, 1e-5);
+            float4 outv = float4(fin, oa);
+            float rad = c.y;
+            if (rad > 0.0) {
+                float2 hf = r.zw * 0.5;
+                float2 q = abs(px - (r.xy + hf)) - (hf - rad);
+                float dd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+                outv = lerp(acc, outv, 1.0 - saturate(dd + 0.5));
+            }
+            acc = outv;
+            break;
+        }
+    }
+    out_tex[id.xy] = acc;
+}
+)");
+
 /* compute: composite the CPU-rasterized text layer (RGBA8, transparent
  * where empty) over the geometry already drawn into the target. SDL 3.4
  * SPIR-V layout: set0 = sampled textures, set1 = read-write storage. The

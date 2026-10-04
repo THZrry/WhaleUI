@@ -2279,6 +2279,45 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* background-blend-mode: red solid + blue gradient, multiply =>
+     * dark (r&b low-ish, not pure red nor pure blue). mix-blend-mode:
+     * red box over blue backdrop, multiply => near-black. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "blend", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:10px;top:10px;width:80px;"
+                   "height:60px;background-color:#ff0000;"
+                   "background-image:linear-gradient(#0000ff, #0000ff);"
+                   "background-blend-mode:multiply}"
+                   "#b{position:absolute;left:10px;top:100px;width:180px;"
+                   "height:60px;background-color:#0000ff}"
+                   "#m{position:absolute;left:50px;top:110px;width:100px;"
+                   "height:40px;background-color:#ff0000;"
+                   "mix-blend-mode:multiply}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div><div id=\"b\"></div>"
+                   "<div id=\"m\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int bb = gpixel(w->render, 50, 40);
+            unsigned int mb = gpixel(w->render, 100, 130);
+            std::printf("[blend] bgblend=%08X mix=%08X\n", bb, mb);
+            std::fflush(stdout);
+            /* multiply red*blue: dark, neither channel dominant */
+            assert(((bb >> 16) & 0xFF) < 0x80 && (bb & 0xFF) < 0x80);
+            /* red over blue multiply: black-ish */
+            assert(((mb >> 16) & 0xFF) < 0x40 && (mb & 0xFF) < 0x40 &&
+                   ((mb >> 8) & 0xFF) < 0x40);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

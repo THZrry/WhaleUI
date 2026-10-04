@@ -245,6 +245,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->pipe_backdrop_cs = nullptr;
     g->pipe_inset_cs = nullptr;
     g->pipe_filter_cs = nullptr;
+    g->pipe_mixblend_cs = nullptr;
     g->sampler = nullptr;
     g->sampler_mip = nullptr;
     g->white_tex = nullptr;
@@ -261,6 +262,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     g->backdrop_params_buf = nullptr;
     g->inset_params_buf = nullptr;
     g->filter_params_buf = nullptr;
+    g->mixblend_params_buf = nullptr;
     g->vb_transfer = nullptr;
     g->atlas_transfer = nullptr;
     g->layer_transfer[0] = nullptr;
@@ -497,6 +499,8 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         g->inset_params_buf = SDL_CreateGPUBuffer(device, &bci);
         bci.size = (64 * 24 + 4) * sizeof(float);
         g->filter_params_buf = SDL_CreateGPUBuffer(device, &bci);
+        bci.size = (64 * 12 + 4) * sizeof(float);
+        g->mixblend_params_buf = SDL_CreateGPUBuffer(device, &bci);
     }
     SDL_GPUTransferBufferCreateInfo tbi;
     std::memset(&tbi, 0, sizeof(tbi));
@@ -514,6 +518,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     if (!g->vb_solid || !g->vb_text || !g->vb_shapes || !g->vb_solid_late ||
         !g->shadow_params_buf || !g->backdrop_params_buf ||
         !g->inset_params_buf || !g->filter_params_buf ||
+        !g->mixblend_params_buf ||
         !g->vb_transfer || !g->shadow_transfer || !g->atlas_transfer ||
         !g->layer_transfer[0] || !g->layer_transfer[1]) {
         goto fail;
@@ -617,6 +622,21 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
                          SDL_GetError());
             goto fail;
         }
+        cs = compile_dxil(kMixBlendCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0);
+        if (!cs) {
+            goto fail;
+        }
+        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
+        cpi.code_size = cs->GetBufferSize();
+        cpi.num_samplers = 1;
+        g->pipe_mixblend_cs = SDL_CreateGPUComputePipeline(device, &cpi);
+        cs->Release();
+        if (!g->pipe_mixblend_cs) {
+            std::fprintf(stderr, "[gpu] mixblend CS pipeline failed: %s\n",
+                         SDL_GetError());
+            goto fail;
+        }
     }
 
     SDL_ReleaseGPUShader(device, vs_s);
@@ -683,7 +703,7 @@ int whaleui_gpu_resize(whaleui_gpu_t* g, int w, int h)
             SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
             SDL_GPU_TEXTUREUSAGE_SAMPLER);
     g->text_layer = make_texture(dev, wu, hu,
-                                 SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+                                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER);
     g->blur_tex = make_texture_mips(dev, static_cast<uint32_t>(g->blur_w),
                                     static_cast<uint32_t>(g->blur_h),
@@ -720,6 +740,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->pipe_backdrop_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_backdrop_cs);
         if (g->pipe_inset_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_inset_cs);
         if (g->pipe_filter_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_filter_cs);
+        if (g->pipe_mixblend_cs) SDL_ReleaseGPUComputePipeline(g->device, g->pipe_mixblend_cs);
         if (g->sampler) SDL_ReleaseGPUSampler(g->device, g->sampler);
         if (g->sampler_mip) SDL_ReleaseGPUSampler(g->device, g->sampler_mip);
         if (g->white_tex) SDL_ReleaseGPUTexture(g->device, g->white_tex);
@@ -737,6 +758,7 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
         if (g->backdrop_params_buf) SDL_ReleaseGPUBuffer(g->device, g->backdrop_params_buf);
         if (g->inset_params_buf) SDL_ReleaseGPUBuffer(g->device, g->inset_params_buf);
         if (g->filter_params_buf) SDL_ReleaseGPUBuffer(g->device, g->filter_params_buf);
+        if (g->mixblend_params_buf) SDL_ReleaseGPUBuffer(g->device, g->mixblend_params_buf);
         if (g->vb_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->vb_transfer);
         if (g->atlas_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->atlas_transfer);
         if (g->layer_transfer[0]) SDL_ReleaseGPUTransferBuffer(g->device, g->layer_transfer[0]);
@@ -1169,6 +1191,31 @@ void whaleui_gpu_filter(whaleui_gpu_t* g, float x, float y, float w,
     g->filters.push_back(p);
 }
 
+void whaleui_gpu_mixblend(whaleui_gpu_t* g, float x, float y, float w,
+                           float h, float radius, int mode,
+                           unsigned int body_color)
+{
+    if (!g || w <= 0 || h <= 0 || mode < 0) {
+        return;
+    }
+    if (g->mixblends.size() >= 64) {
+        return;
+    }
+    gpu_mixblend_param p;
+    p.x = x;
+    p.y = y;
+    p.w = w;
+    p.h = h;
+    p.mode = static_cast<float>(mode);
+    p.radius = radius > 0 ? radius : 0.0f;
+    p.pad0 = p.pad1 = 0;
+    p.sr = ((body_color >> 16) & 0xFF) / 255.0f;
+    p.sg = ((body_color >> 8) & 0xFF) / 255.0f;
+    p.sb = (body_color & 0xFF) / 255.0f;
+    p.sa = ((body_color >> 24) & 0xFF) / 255.0f;
+    g->mixblends.push_back(p);
+}
+
 void whaleui_gpu_text(whaleui_gpu_t* g, float x, float y, float w, float h,
                       float u, float v, float u2, float v2,
                       unsigned int color)
@@ -1320,7 +1367,8 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                    g->atlas_dirty || g->layer_dirty;
     bool need_svb = !g->shapes.empty() || !g->inset_shapes.empty() ||
                     !g->shadows.empty() || !g->backdrops.empty() ||
-                    !g->insets.empty() || !g->filters.empty();
+                    !g->insets.empty() || !g->filters.empty() ||
+                    !g->mixblends.empty();
     if (need_vb) {
         void* mapped = SDL_MapGPUTransferBuffer(g->device, g->vb_transfer, false);
         if (mapped) {
@@ -1473,6 +1521,17 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 std::memcpy(static_cast<char*>(m2) + off + 16,
                             g->filters.data(),
                             g->filters.size() * sizeof(gpu_filter_param));
+                off += 16 + g->filters.size() * sizeof(gpu_filter_param);
+            }
+            if (!g->mixblends.empty()) {
+                float* hdr = static_cast<float*>(m2) + off / sizeof(float);
+                hdr[0] = static_cast<float>(g->mixblends.size());
+                hdr[1] = g->fb_w;
+                hdr[2] = g->fb_h;
+                hdr[3] = 0;
+                std::memcpy(static_cast<char*>(m2) + off + 16,
+                            g->mixblends.data(),
+                            g->mixblends.size() * sizeof(gpu_mixblend_param));
             }
             SDL_UnmapGPUTransferBuffer(g->device, g->shadow_transfer);
         }
@@ -1538,6 +1597,16 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 br.buffer = g->filter_params_buf;
                 br.offset = 0;
                 br.size = 16 + g->filters.size() * sizeof(gpu_filter_param);
+                bti.offset = off;
+                SDL_UploadToGPUBuffer(cp, &bti, &br, false);
+                off += 16 + g->filters.size() * sizeof(gpu_filter_param);
+            }
+            if (!g->mixblends.empty()) {
+                SDL_GPUBufferRegion br;
+                std::memset(&br, 0, sizeof(br));
+                br.buffer = g->mixblend_params_buf;
+                br.offset = 0;
+                br.size = 16 + g->mixblends.size() * sizeof(gpu_mixblend_param);
                 bti.offset = off;
                 SDL_UploadToGPUBuffer(cp, &bti, &br, false);
             }
@@ -1920,12 +1989,44 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
         }
     }
 
+    /* pass F: mix-blend-mode. Runs with the filter pass (after the text
+     * composite, on target2): the recorded body color blends over the
+     * painted frame with the mode formula. Needs the frame as a sampled
+     * texture AND read-write target: target2 has SIMULTANEOUS usage, and
+     * the shader reads it via frame_tex Load (same texture, no copy). */
+    if (!g->mixblends.empty() && scroll_dy == 0) {
+        SDL_GPUStorageTextureReadWriteBinding rw;
+        std::memset(&rw, 0, sizeof(rw));
+        rw.texture = g->target2;
+        rw.mip_level = 0;
+        rw.layer = 0;
+        rw.cycle = false;
+        SDL_GPUComputePass* cps =
+            SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+        if (cps) {
+            SDL_BindGPUComputePipeline(cps, g->pipe_mixblend_cs);
+            /* sampler slot declared but unused (Load-only shader) */
+            SDL_GPUTextureSamplerBinding tsb;
+            std::memset(&tsb, 0, sizeof(tsb));
+            tsb.texture = g->white_tex;
+            tsb.sampler = g->sampler;
+            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+            SDL_GPUBuffer* sbb = g->mixblend_params_buf;
+            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+            SDL_DispatchGPUCompute(cps,
+                                   (static_cast<Uint32>(fb_w) + 7) / 8,
+                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
+            SDL_EndGPUComputePass(cps);
+        }
+    }
+
     g->solids.clear();
     g->texts.clear();
     g->shadows.clear();
     g->backdrops.clear();
     g->insets.clear();
     g->filters.clear();
+    g->mixblends.clear();
     g->shapes.clear();
     g->inset_shapes.clear();
     g->solids_late.clear();

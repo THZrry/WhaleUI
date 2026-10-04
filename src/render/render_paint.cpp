@@ -1436,6 +1436,11 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                        (is_check_radio(n->el) ||
                         n->tag_id == WUI_TAG_PROGRESS ||
                         n->tag_id == WUI_TAG_METER);
+    /* mix-blend state lives outside the native_ctrl block (the CPU blend
+     * at the tail of paint_node needs it) */
+    int mb_mode = -1;
+    unsigned int mb_src = 0;
+    bool mb_skip_body = false;
     if (!native_ctrl) {
     /* background (border-radius supported). A gradient in `background`/
      * `background-image` paints over the plain color (which shows through
@@ -1486,7 +1491,45 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         whaleui_gpu_late_begin(g_gpu);
         bdf_gpu = true;
     }
-    if (bg != 0) {
+    /* mix-blend-mode: the body's own solid color blends over the painted
+     * backdrop (kMixBlendCS, with the filter pass). Like backdrop the body
+     * paint is skipped and replaced by the blended result - the record
+     * carries the single body color (gradients use their first stop;
+     * subtree content does not participate, documented). CPU path blends
+     * per pixel after children paint (see the tail of paint_node). */
+    std::string mbm = sget(n->style, "mix-blend-mode");
+    Gradient mbg;
+    std::string mbgv = sget(n->style, "background-image");
+    if (mbgv.empty()) {
+        mbgv = sget(n->style, "background");
+    }
+    if (!mbm.empty() && mbm != "normal") {
+        mb_mode = blend_mode_id(mbm.c_str());
+    }
+    if (mb_mode >= 0) {
+        mb_src = bg_c;
+        if (mb_src == 0) {
+            /* gradient-only body: approximate with the first stop */
+            if (parse_gradient(mbgv, mbg) && !mbg.stops.empty()) {
+                mb_src = mbg.stops[0].c;
+            }
+        }
+        if (mb_src != 0) {
+            mb_skip_body = true;
+            if (g_gpu) {
+                whaleui_gpu_mixblend(g_gpu,
+                                     static_cast<float>(n->border.x + nox),
+                                     static_cast<float>(n->border.y + noy),
+                                     static_cast<float>(bw),
+                                     static_cast<float>(bh),
+                                     static_cast<float>(radius), mb_mode,
+                                     mb_src);
+            }
+        } else {
+            mb_mode = -1; /* no body color: plain paint */
+        }
+    }
+    if (bg != 0 && !mb_skip_body) {
         if (has_rot) {
             fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                           n->border.y + noy, bw, bh, radius, bg_c, trot, eff,
@@ -1506,7 +1549,25 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     if (bgv.empty()) {
         bgv = sget(n->style, "background");
     }
+    /* background-blend-mode: the gradient layer blends over the solid
+     * background (bg_c, painted above) instead of plain src-over. Only
+     * when both layers exist; otherwise normal paint. */
+    unsigned int blend_bg = 0;
+    int blend_mode = -1;
+    if (bg != 0 && parse_gradient(bgv, grad)) {
+        std::string bbm = sget(n->style, "background-blend-mode");
+        if (!bbm.empty() && bbm != "normal") {
+            int mid = blend_mode_id(bbm.c_str());
+            if (mid >= 0) {
+                blend_bg = bg_c;
+                blend_mode = mid;
+            }
+        }
+    }
     if (parse_gradient(bgv, grad)) {
+        if (mb_skip_body) {
+            /* mix-blend replaces the whole body: skip the gradient too */
+        } else {
         if (radius > 0) {
             /* gradients ignore the corner arcs (ponytail: fill the full
              * rect; clipped inside rounded containers already) */
@@ -1553,7 +1614,8 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             fill_gradient(r->pixels, r->fb_w, r->fb_h,
                           gx + static_cast<int>(ox),
                           gy + static_cast<int>(oy), static_cast<int>(tw),
-                          static_cast<int>(th), grad, eff, trot, tskx, tsky);
+                          static_cast<int>(th), grad, eff, trot, tskx, tsky,
+                          blend_bg, blend_mode);
         } else {
             /* repeat (default) / repeat-x / repeat-y: tile from the
              * position back to the box edge, then forward */
@@ -1579,14 +1641,18 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                      xx < gx + bw; xx += xi) {
                     fill_gradient(r->pixels, r->fb_w, r->fb_h, xx, yy,
                                   static_cast<int>(tw), static_cast<int>(th),
-                                  grad, eff, trot, tskx, tsky);
+                                  grad, eff, trot, tskx, tsky, blend_bg,
+                                  blend_mode);
                 }
             }
         }
+        } /* end else (!mb_skip_body): gradient paints normally */
     }
-    /* border (follows the corner arcs when border-radius is set) */
+    /* border (follows the corner arcs when border-radius is set).
+     * Skipped under mix-blend (the whole body is replaced by the blend). */
     int bw2[4] = {n->border_w[0], n->border_w[1], n->border_w[2], n->border_w[3]};
-    bool any = bw2[0] || bw2[1] || bw2[2] || bw2[3];
+    bool any = !mb_skip_body &&
+               (bw2[0] || bw2[1] || bw2[2] || bw2[3]);
     if (any) {
         unsigned int def_c = color_of(n->style, "border-color",
                                       border_color_of(n->style, 0xFF000000));
@@ -1790,6 +1856,23 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                     (static_cast<unsigned int>(or_ * 255 + 0.5f) << 16) |
                     (static_cast<unsigned int>(og * 255 + 0.5f) << 8) |
                     static_cast<unsigned int>(ob * 255 + 0.5f);
+            }
+        }
+    }
+    /* CPU mix-blend: the recorded body color over the painted backdrop.
+     * GPU path handles it in pass F instead. */
+    if (mb_mode >= 0 && !g_gpu) {
+        int fx = n->border.x + nox;
+        int fy = n->border.y + noy;
+        int x0 = fx < 0 ? 0 : fx;
+        int y0 = fy < 0 ? 0 : fy;
+        int x1 = fx + bw > r->fb_w ? r->fb_w : fx + bw;
+        int y1 = fy + bh > r->fb_h ? r->fb_h : fy + bh;
+        clip_rect(x0, y0, x1, y1, eff);
+        for (int yy = y0; yy < y1; ++yy) {
+            for (int xx = x0; xx < x1; ++xx) {
+                unsigned int& d = r->pixels[static_cast<size_t>(yy) * r->fb_w + xx];
+                d = blend_pixels(d, mb_src, mb_mode);
             }
         }
     }

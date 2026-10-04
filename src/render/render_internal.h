@@ -79,6 +79,12 @@ unsigned int hex_nib(char c, int* ok);
 void split_grad_parts(const std::string& s, std::vector<std::string>& out);
 int parse_gradient(const std::string& v, Gradient& out);
 unsigned int grad_color(const Gradient& g, float t);
+/* separable blend channel fn (0 normal .. 11 exclusion, see blend_channel);
+ * blend_mode_id maps the keyword (-1 unknown); blend_pixels mixes two
+ * 0xAARRGGBB pixels with Porter-Duff compositing. */
+float blend_channel(int mode, float cb, float cs);
+int blend_mode_id(const char* v);
+unsigned int blend_pixels(unsigned int dst, unsigned int src, int mode);
 /* 4x5 color matrix (row-major, input [r,g,b,a,1]) for `filter` */
 void filter_matrix_identity(float m[4][5]);
 int parse_filter(const char* v, float m[4][5], float* blur);
@@ -91,7 +97,8 @@ void radial_resolve(float rx, float ry, float rcx, float rcy, float x,
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg = 0.0f,
-                   float skx_deg = 0.0f, float sky_deg = 0.0f);
+                   float skx_deg = 0.0f, float sky_deg = 0.0f,
+                   unsigned int blend_bg = 0, int blend_mode = -1);
 unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop,
                       unsigned int def);
 unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def);

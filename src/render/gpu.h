@@ -101,6 +101,19 @@ struct gpu_filter_param
     float r3[4];
 };
 
+/* per-mix-blend record: 12 floats = 3 float4s (kMixBlendCS *3 stride).
+ * src = the element body's own color (solid/gradient corner average);
+ * dst = the painted frame behind it. Subtree content does not participate
+ * (documented approximation). */
+struct gpu_mixblend_param
+{
+    float x, y, w, h;    /* element box, px (framebuffer coords) */
+    float mode;          /* blend_channel id (0..15) */
+    float radius;        /* corner radius px (rounded clip) */
+    float pad0, pad1;
+    float sr, sg, sb, sa; /* body source color */
+};
+
 /* per-window GPU rendering state */
 struct whaleui_gpu
 {
@@ -116,6 +129,7 @@ struct whaleui_gpu
     SDL_GPUComputePipeline* pipe_backdrop_cs; /* blur_tex -> target (backdrop) */
     SDL_GPUComputePipeline* pipe_inset_cs;  /* blur_tex -> target (inset) */
     SDL_GPUComputePipeline* pipe_filter_cs; /* blur_tex -> target2 (filter) */
+    SDL_GPUComputePipeline* pipe_mixblend_cs; /* frame -> target2 (mix-blend) */
 
     /* 1x1 white texture for the solid pipeline */
     SDL_GPUTexture* white_tex;
@@ -158,6 +172,7 @@ struct whaleui_gpu
     SDL_GPUBuffer* backdrop_params_buf;
     SDL_GPUBuffer* inset_params_buf;
     SDL_GPUBuffer* filter_params_buf;
+    SDL_GPUBuffer* mixblend_params_buf;
     SDL_GPUTransferBuffer* shadow_transfer;
 
     /* per-frame command lists */
@@ -172,6 +187,8 @@ struct whaleui_gpu
     std::vector<gpu_inset_param> insets;
     /* filter records (applied to the composited frame after text) */
     std::vector<gpu_filter_param> filters;
+    /* mix-blend records (body color over the painted frame) */
+    std::vector<gpu_mixblend_param> mixblends;
     /* shadow shapes (white rounded rects) painted into blur_tex (pass A) */
     std::vector<gpu_vert_solid> shapes;
     /* inset mask shapes (spread-shrunk white rounded rects) painted into
@@ -279,6 +296,14 @@ void whaleui_gpu_backdrop(whaleui_gpu_t* g, float x, float y, float w,
 void whaleui_gpu_filter(whaleui_gpu_t* g, float x, float y, float w,
                         float h, float radius, float blur,
                         const float m[4][5]);
+
+/* push an element mix-blend region: the body's own color (srgb + alpha)
+ * blends over the painted frame with the mode formula (kMixBlendCS).
+ * Runs with the filter pass (after the text composite). Subtree content
+ * does not participate (documented approximation). */
+void whaleui_gpu_mixblend(whaleui_gpu_t* g, float x, float y, float w,
+                           float h, float radius, int mode,
+                           unsigned int body_color);
 
 /* push a text sprite; atlas uv comes from the glyph atlas manager */
 void whaleui_gpu_text(whaleui_gpu_t* g, float x, float y, float w, float h,

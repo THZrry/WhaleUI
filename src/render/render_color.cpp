@@ -424,6 +424,206 @@ unsigned int grad_color(const Gradient& g, float t)
     return g.stops[n - 1].c;
 }
 
+/* Separable blend modes (per CSS compositing): src over dst with the
+ * channel function applied. cb/cs = backdrop/source 0..1, returns the
+ * blended channel. Non-separable modes (hue/saturation/color/luminosity)
+ * are approximated via luminance mix (documented in 16-engine-support). */
+float blend_channel(int mode, float cb, float cs)
+{
+    /* mode: 0 normal, 1 multiply, 2 screen, 3 overlay, 4 darken, 5 lighten,
+     * 6 color-dodge, 7 color-burn, 8 hard-light, 9 soft-light, 10 difference,
+     * 11 exclusion. -1 unknown. */
+    switch (mode) {
+    case 0:
+        return cs;
+    case 1:
+        return cb * cs;
+    case 2:
+        return 1.0f - (1.0f - cb) * (1.0f - cs);
+    case 3:
+        return cb < 0.5f ? 2.0f * cb * cs
+                         : 1.0f - 2.0f * (1.0f - cb) * (1.0f - cs);
+    case 4:
+        return cb < cs ? cb : cs;
+    case 5:
+        return cb > cs ? cb : cs;
+    case 6: /* color-dodge */
+        if (cb == 0.0f) {
+            return 0.0f;
+        }
+        if (cs >= 1.0f) {
+            return 1.0f;
+        }
+        {
+            float v = cb / (1.0f - cs);
+            return v > 1.0f ? 1.0f : v;
+        }
+    case 7: /* color-burn */
+        if (cb >= 1.0f) {
+            return 1.0f;
+        }
+        if (cs <= 0.0f) {
+            return 0.0f;
+        }
+        {
+            float v = 1.0f - (1.0f - cb) / cs;
+            return v < 0.0f ? 0.0f : v;
+        }
+    case 8: /* hard-light (= overlay with src/dst swapped) */
+        return cs < 0.5f ? 2.0f * cb * cs
+                         : 1.0f - 2.0f * (1.0f - cb) * (1.0f - cs);
+    case 9: { /* soft-light (Pegtop approximation) */
+        float d = cb <= 0.25f
+                      ? ((16.0f * cb - 12.0f) * cb + 4.0f) * cb
+                      : std::sqrt(cb);
+        return cs <= 0.5f ? cb - (1.0f - 2.0f * cs) * cb * (1.0f - cb)
+                          : cb + (2.0f * cs - 1.0f) * (d - cb);
+    }
+    case 10:
+        return cb > cs ? cb - cs : cs - cb;
+    case 11:
+        return cb + cs - 2.0f * cb * cs;
+    default:
+        return cs;
+    }
+}
+
+/* blend-mode keyword -> blend_channel mode. hue/saturation/color/luminosity
+ * map to 12..15 (luminance-mix approximation in blend_pixels). */
+int blend_mode_id(const char* v)
+{
+    if (!v) {
+        return -1;
+    }
+    while (*v == ' ' || *v == '\t') {
+        ++v;
+    }
+    if (std::strcmp(v, "normal") == 0) {
+        return 0;
+    }
+    if (std::strcmp(v, "multiply") == 0) {
+        return 1;
+    }
+    if (std::strcmp(v, "screen") == 0) {
+        return 2;
+    }
+    if (std::strcmp(v, "overlay") == 0) {
+        return 3;
+    }
+    if (std::strcmp(v, "darken") == 0) {
+        return 4;
+    }
+    if (std::strcmp(v, "lighten") == 0) {
+        return 5;
+    }
+    if (std::strcmp(v, "color-dodge") == 0) {
+        return 6;
+    }
+    if (std::strcmp(v, "color-burn") == 0) {
+        return 7;
+    }
+    if (std::strcmp(v, "hard-light") == 0) {
+        return 8;
+    }
+    if (std::strcmp(v, "soft-light") == 0) {
+        return 9;
+    }
+    if (std::strcmp(v, "difference") == 0) {
+        return 10;
+    }
+    if (std::strcmp(v, "exclusion") == 0) {
+        return 11;
+    }
+    if (std::strcmp(v, "hue") == 0) {
+        return 12;
+    }
+    if (std::strcmp(v, "saturation") == 0) {
+        return 13;
+    }
+    if (std::strcmp(v, "color") == 0) {
+        return 14;
+    }
+    if (std::strcmp(v, "luminosity") == 0) {
+        return 15;
+    }
+    return -1;
+}
+
+/* mix two 0xAARRGGBB pixels: src over dst with separable blend + Porter-Duff
+ * compositing (source alpha respected on both sides). Non-separable modes
+ * 12..15 use a luminance mix: hue/saturation/color keep dst luminance with
+ * src chroma approximated by src-dst lerp weighted 0.5; luminosity takes
+ * src luminance. Documented approximation (no full HSL round-trip). */
+unsigned int blend_pixels(unsigned int dst, unsigned int src, int mode)
+{
+    if (mode < 0 || mode == 0) {
+        /* normal / unknown: plain src-over */
+        float sa = ((src >> 24) & 0xFF) / 255.0f;
+        float da = ((dst >> 24) & 0xFF) / 255.0f;
+        float oa = sa + da * (1.0f - sa);
+        if (oa <= 0.0f) {
+            return 0;
+        }
+        auto ch = [&](int s, int d) -> unsigned int {
+            float v = (s / 255.0f * sa + d / 255.0f * da * (1.0f - sa)) / oa;
+            return static_cast<unsigned int>(v * 255.0f + 0.5f);
+        };
+        return (static_cast<unsigned int>(oa * 255.0f + 0.5f) << 24) |
+               (ch((src >> 16) & 0xFF, (dst >> 16) & 0xFF) << 16) |
+               (ch((src >> 8) & 0xFF, (dst >> 8) & 0xFF) << 8) |
+               ch(src & 0xFF, dst & 0xFF);
+    }
+    float sa = ((src >> 24) & 0xFF) / 255.0f;
+    float da = ((dst >> 24) & 0xFF) / 255.0f;
+    float sr = ((src >> 16) & 0xFF) / 255.0f;
+    float sg = ((src >> 8) & 0xFF) / 255.0f;
+    float sb = (src & 0xFF) / 255.0f;
+    float dr = ((dst >> 16) & 0xFF) / 255.0f;
+    float dg = ((dst >> 8) & 0xFF) / 255.0f;
+    float db = (dst & 0xFF) / 255.0f;
+    float rr, gg, bb;
+    if (mode >= 12) {
+        float lum_s = 0.2126f * sr + 0.7152f * sg + 0.0722f * sb;
+        float lum_d = 0.2126f * dr + 0.7152f * dg + 0.0722f * db;
+        if (mode == 15) { /* luminosity: dst chroma + src luminance */
+            float k = lum_d > 0 ? lum_s / lum_d : 1.0f;
+            rr = dr * k;
+            gg = dg * k;
+            bb = db * k;
+        } else { /* hue/saturation/color: mid chroma mix */
+            rr = (sr + dr) * 0.5f;
+            gg = (sg + dg) * 0.5f;
+            bb = (sb + db) * 0.5f;
+            if (mode == 13) { /* saturation: keep dst hue-ish, half luma */
+                float m = (lum_s + lum_d) * 0.5f;
+                rr += m - lum_d;
+                gg += m - lum_d;
+                bb += m - lum_d;
+            }
+        }
+    } else {
+        rr = blend_channel(mode, dr, sr);
+        gg = blend_channel(mode, dg, sg);
+        bb = blend_channel(mode, db, sb);
+    }
+    /* composite blended (as if opaque src) over dst by src alpha */
+    float oa = sa + da * (1.0f - sa);
+    if (oa <= 0.0f) {
+        return 0;
+    }
+    auto fin = [&](float b, float d) -> unsigned int {
+        float v = (b * sa + d * da * (1.0f - sa)) / oa;
+        if (v < 0.0f) {
+            v = 0.0f;
+        } else if (v > 1.0f) {
+            v = 1.0f;
+        }
+        return static_cast<unsigned int>(v * 255.0f + 0.5f);
+    };
+    return (static_cast<unsigned int>(oa * 255.0f + 0.5f) << 24) |
+           (fin(rr, dr) << 16) | (fin(gg, dg) << 8) | fin(bb, db);
+}
+
 /* 4x5 color matrix (row-major, input [r,g,b,a,1]): out[i] = m[i][0..3] *
  * in[0..3] + m[i][4]. Identity by default; filter ops left-multiply in
  * CSS order. */
@@ -620,8 +820,12 @@ int parse_filter(const char* v, float m[4][5], float* blur)
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg, float skx_deg,
-                   float sky_deg)
+                   float sky_deg, unsigned int blend_bg, int blend_mode)
 {
+    /* background-blend-mode: the gradient layer blends over the solid
+     * background color (blend_bg, 0 = none). GPU path folds it into the
+     * corner/layer colors before emitting (zero extra draws); CPU path
+     * blends per pixel in the loop below. */
     if (g_gpu) {
         /* linear gradients: corner colors (projected onto the gradient
          * axis) interpolated by the solid pipeline - free from the
@@ -691,6 +895,12 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             unsigned int c_tr = tcol(static_cast<float>(x + w), static_cast<float>(y));
             unsigned int c_bl = tcol(static_cast<float>(x), static_cast<float>(y + h));
             unsigned int c_br = tcol(static_cast<float>(x + w), static_cast<float>(y + h));
+            if (blend_bg != 0 && blend_mode >= 0) {
+                c_tl = blend_pixels(blend_bg, c_tl, blend_mode);
+                c_tr = blend_pixels(blend_bg, c_tr, blend_mode);
+                c_bl = blend_pixels(blend_bg, c_bl, blend_mode);
+                c_br = blend_pixels(blend_bg, c_br, blend_mode);
+            }
             int c2[4];
             const int* cp = nullptr;
             if (clip) {
@@ -728,6 +938,9 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             for (int i = kLayers; i >= 1; --i) {
                 float t = static_cast<float>(i) / kLayers;
                 unsigned int c = grad_color(g, t);
+                if (blend_bg != 0 && blend_mode >= 0) {
+                    c = blend_pixels(blend_bg, c, blend_mode);
+                }
                 if (((c >> 24) & 0xFF) == 0) {
                     continue;
                 }
@@ -756,6 +969,12 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             return;
         }
         unsigned int& d = fb[static_cast<size_t>(py) * fbw + px];
+        if (blend_bg != 0 && blend_mode >= 0) {
+            /* background-blend: gradient over the solid bg (already
+             * painted below) instead of plain src-over */
+            d = blend_pixels(blend_bg, c, blend_mode);
+            return;
+        }
         if (a == 255) {
             d = 0xFF000000 | (c & 0x00FFFFFF);
             return;

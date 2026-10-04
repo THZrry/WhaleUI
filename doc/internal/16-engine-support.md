@@ -61,7 +61,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 |----|------|------|
 | 80% | `width/height/min-*/max-*`、`margin`、`padding`、`border`、`border-radius`、`box-sizing`、`color`、`font-family/size/weight`、`line-height`、`text-align`、`text-decoration`、`background(-color/-image/-repeat/-position/-size)`、`opacity`、`display`、`position`、`top/left/right/bottom`、`z-index`、`float`、`clear`、`cursor`、`overflow(-x/-y)`、`white-space`、`word-break`、`text-overflow`、`box-shadow`、`transition` | ✅ |
 | 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY/skewX/skewY 生效；`matrix()` 分解为已支持 ops；`rotateX/Y` 降级为透视压缩；`rotateZ`=rotate；`perspective/translateZ/scaleZ` 忽略；锚点走 `transform-origin`；**rotate 转背景/边框/渐变轴/命中**——GPU 顶点旋转近似 + 渐变投影方向同转 + hit_test 逆旋转重测，文本/子树/`::before` 不转）、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
-| 20% | `align-content/self`、`justify-self/items`、`place-*`、`row/column-gap`、`grid-template-*`、`grid-auto-*`、`inset`（含四值简写）、`writing-mode`、`direction`、`text-orientation`、`text-decoration-*`、`background-blend-mode`、`mix-blend-mode`、`filter`、`backdrop-filter`、`overscroll-behavior`、`scroll-margin/padding`、`container-*`、`all`、`animation-composition`、`transform-style` | ⚠️ 见备注 |
+| 20% | `align-content/self`、`justify-self/items`、`place-*`、`row/column-gap`、`grid-template-*`、`grid-auto-*`、`inset`（含四值简写）、`writing-mode`、`direction`、`text-orientation`、`text-decoration-*`、`overscroll-behavior`、`scroll-margin/padding`、`container-*`、`all`、`animation-composition`、`transform-style` | ⚠️ 见备注 |
 
 备注：
 
@@ -74,9 +74,12 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
   的 spread-收缩盒 mask（offset 精确，无四象限近似、无接缝），圆角用同一
   SDF 裁剪，`blur:0` 出实线环；CPU 路径是带 offset 的同心内缩环 /
   硬环四条边。`spread` 为负按 0 处理（收缩语义无定义扩展）。
-- `mix-blend-mode` / `background-blend-mode` / `border-image` /
-  `writing-mode` / `text-orientation` / `container-*` / `animation-composition`
-  **未实现**（清单里保留为待办，不要当成已支持）。
+- `background-blend-mode` / `mix-blend-mode` **已实现**：11 种可分离模式精确
+  + Porter-Duff 合成；hue/saturation/color/luminosity 亮度混合近似。
+  background-blend 在渐变发射前折角颜色（零新增 draw）；mix-blend 走 pass F
+  compute（body 单色 vs painted frame，子树内容不参与）。
+  `border-image` / `writing-mode` / `text-orientation` / `container-*` /
+  `animation-composition` **未实现**（清单里保留为待办，不要当成已支持）。
 - `filter`（元素滤镜）**GPU 路径已实现**：composite 后的 pass E，mip blur
   （记录按 blur 外扩，晕出盒）+ 4x5 颜色矩阵
   （brightness/contrast/saturate/grayscale/invert/sepia/hue-rotate/opacity，
