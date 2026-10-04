@@ -2236,6 +2236,49 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* skew: a 100x40 box with skewX(45deg) shears right by tan45 * h
+     * (~40px at the bottom edge), so x=130 stays red below the box top
+     * while the unskewed column at x=30 turns background. matrix(1,0,0,1
+     * kept simple): scale+translate decompose draws translated. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "skew", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#s{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:40px;background-color:#ff0000;"
+                   "transform:skewX(45deg);transform-origin:left top}"
+                   "#m{position:absolute;left:20px;top:80px;width:40px;"
+                   "height:40px;background-color:#0000ff;"
+                   "transform:matrix(1, 0, 0, 1, 60, 0)}"
+                   "</style></head>"
+                   "<body><div id=\"s\"></div><div id=\"m\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* skewX(45) about left-top: top edge stays x=20..120,
+             * bottom edge shifts to x=60..160 */
+            unsigned int top_l = gpixel(w->render, 40, 30);
+            unsigned int bot_r = gpixel(w->render, 130, 55);
+            unsigned int bot_l = gpixel(w->render, 25, 55);
+            /* matrix translate: blue box moves 60px right */
+            unsigned int mved = gpixel(w->render, 90, 100);
+            unsigned int orig = gpixel(w->render, 30, 100);
+            std::printf("[skew] topl=%08X botr=%08X botl=%08X mv=%08X og=%08X\n",
+                        top_l, bot_r, bot_l, mved, orig);
+            std::fflush(stdout);
+            assert((top_l & 0xFFFFFFu) == 0xFF0000u);
+            assert((bot_r & 0xFFFFFFu) == 0xFF0000u);
+            assert((bot_l & 0xFFFFFFu) != 0xFF0000u);
+            assert((mved & 0xFFFFFFu) == 0x0000FFu);
+            assert((orig & 0xFFFFFFu) != 0x0000FFu);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

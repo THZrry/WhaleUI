@@ -90,7 +90,8 @@ void radial_resolve(float rx, float ry, float rcx, float rcy, float x,
                     float y, float w, float h, float* orx, float* ory);
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
-                   const Clip* clip, float rot_deg = 0.0f);
+                   const Clip* clip, float rot_deg = 0.0f,
+                   float skx_deg = 0.0f, float sky_deg = 0.0f);
 unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop,
                       unsigned int def);
 unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def);
@@ -114,13 +115,15 @@ void fill_round_border(std::vector<unsigned int>& fb, int fbw, int fbh,
                        int x, int y, int w, int h, int radius, int bw,
                        unsigned int color, unsigned int bg, const Clip* clip);
 /* box fill/box ring rotated by rot_deg (CSS rotate, clockwise) around the
- * (ox, oy) anchor (px, in-box coords from whaleui_transform_origin_eval).
- * GPU: rotated corners on the solid pipeline (exact for the SDF shape via
- * affine invariance); CPU fallback: unrotated. */
+ * (ox, oy) anchor (px, in-box coords from whaleui_transform_origin_eval),
+ * with optional skew (degrees, same anchor). GPU: transformed corners on
+ * the solid pipeline (exact for the SDF shape via affine invariance);
+ * CPU fallback: unrotated. */
 void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, int radius,
                    unsigned int color, float rot_deg, const Clip* clip,
-                   float ox = 0.0f, float oy = 0.0f);
+                   float ox = 0.0f, float oy = 0.0f, float skx = 0.0f,
+                   float sky = 0.0f);
 void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
                    const SDL_Surface* surf, int dx, int dy, const Clip* clip,
                    const unsigned int* tint);

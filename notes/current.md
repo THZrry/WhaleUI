@@ -229,6 +229,21 @@ opacity,未知 op 跳过其余照算。
 回归:test_scroll filter(灰/亮蓝/品红/粉晕)。
 验证:10 项测试全绿;14 张主题自检全 OK。
 
+# <20>: transform skew/matrix/3D(顶点剪切近似栈)
+
+SOLVED
+
+延续 rotate 近似栈(零新增纹理/draw):skewX/Y 精确到顶点(剪切绕同锚点,
+tan 钳 ±10,hit 逆剪切行列式判奇异,渐变投影协变);matrix(6 数)分解为
+translate+scale+shear 折角(atan 小角近似,工具生成的 scale/translate 矩阵
+精确);rotateX/Y 降级为 scaleY/X(cos)透视压缩;rotateZ=rotate;
+perspective/translateZ/scaleZ 消费忽略(不再杀整串)。
+踩坑:perspective 前缀数错(12→13→12,python 才数对)+分支漏 `p += N`
+(parse_num 在函数名上失败,加 dbg 打印抓到)+xmake 缓存 stale(删 obj)。
+回归:anim 求值白盒(skew/matrix/rotateX-Z/perspective穿透)+test_scroll
+skew 像素(顶边不动/底边右移/matrix 平移)。
+验证:10 项测试全绿;14 张主题自检全 OK。
+
 SOLVED
 
 两件事,一起修/落地:

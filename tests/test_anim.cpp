@@ -498,6 +498,23 @@ int main(void)
         assert(whaleui_transform_eval("translateY(16px) rotate(90deg)", 100,
                                       50, &t) == 0);
         assert(t.ty == 16.0f && t.rot == 90.0f);
+        /* skew/matrix/3D: parsed, not dropped */
+        assert(whaleui_transform_eval("skewX(30deg)", 100, 50, &t) == 0);
+        assert(t.skx == 30.0f && t.sky == 0.0f);
+        assert(whaleui_transform_eval("skew(10deg, 20deg)", 100, 50, &t) == 0);
+        assert(t.skx == 10.0f && t.sky == 20.0f);
+        assert(whaleui_transform_eval("matrix(2, 0, 0, 3, 10, 20)", 100, 50,
+                                      &t) == 0);
+        assert(t.sx == 2.0f && t.sy == 3.0f && t.tx == 10.0f &&
+               t.ty == 20.0f);
+        assert(whaleui_transform_eval("rotateX(60deg)", 100, 50, &t) == 0);
+        assert(t.sy > 0.49f && t.sy < 0.51f); /* cos60 = 0.5 squash */
+        assert(whaleui_transform_eval("rotateZ(45deg)", 100, 50, &t) == 0);
+        assert(t.rot == 45.0f);
+        /* 3D leftovers no longer kill the string */
+        assert(whaleui_transform_eval("perspective(500px) rotate(45deg)",
+                                      100, 50, &t) == 0);
+        assert(t.rot == 45.0f);
     }
     /* paint-only vs layout animation classification (tick fast path) */
     {

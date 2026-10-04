@@ -218,15 +218,17 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
 
 /* push a solid quad rotated by rot_deg degrees (clockwise, CSS rotate
  * direction) around the (ax, ay) framebuffer anchor (from
- * whaleui_transform_origin_eval; default the box center). The four corner
- * positions are rotated, the per-vertex u/v/size/radius stay in the box's
- * local frame - the SDF rounding then interpolates exactly as unrotated
- * (affine invariance), so rounded corners and pills stay correct under any
- * angle. Zero extra texture/draw cost: the rasterizer does the rotation. */
+ * whaleui_transform_origin_eval; default the box center), with optional
+ * skew (degrees, sheared around the same anchor before rotation). The four
+ * corner positions are transformed, the per-vertex u/v/size/radius stay in
+ * the box's local frame - the SDF rounding then interpolates exactly as
+ * unrotated (affine invariance), so rounded corners and pills stay correct
+ * under any angle. Zero extra texture/draw cost. */
 void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
                           float rot_deg, const int* clip,
-                          float ax = -1.0f, float ay = -1.0f);
+                          float ax = -1.0f, float ay = -1.0f,
+                          float skx_deg = 0.0f, float sky_deg = 0.0f);
 
 /* push a quad whose four corners carry distinct colors (c0=TL, c1=TR,
  * c2=BL, c3=BR); the solid pipeline interpolates them across the quad, so

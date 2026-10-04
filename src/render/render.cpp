@@ -815,19 +815,21 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
         y >= n->border.y + off_y && y < n->border.y + off_y + n->border.h) {
         return n;
     }
-    /* a rotated box's own background/border rotate around the
-     * transform-origin anchor (whaleui_gpu_rect_rot), so the clickable
-     * region must rotate too: inverse-rotate the point into the box's
-     * local frame and retest. translate/scale hit-testing stays at the
-     * laid-out box (a known approximation); only the rotation is exact
-     * here, and only when the precomputed xf flag says this node has a
-     * transform at all. */
+    /* a transformed box's own background/border follows the transform
+     * around the transform-origin anchor (whaleui_gpu_rect_rot), so the
+     * clickable region must follow too: inverse-transform the point into
+     * the box's local frame and retest. translate/scale hit-testing stays
+     * at the laid-out box (a known approximation); only rotation/skew are
+     * exact here, and only when the precomputed xf flag says this node has
+     * a transform at all. Inverse order mirrors paint (un-rotate, then
+     * un-skew around the same anchor). */
     if (n->xf && n->el && !n->is_text) {
         whaleui_transform_t tf;
         if (whaleui_transform_eval(sget(n->style, "transform").c_str(),
                                    static_cast<float>(n->border.w),
                                    static_cast<float>(n->border.h),
-                                   &tf) == 0 && tf.rot != 0.0f) {
+                                   &tf) == 0 &&
+            (tf.rot != 0.0f || tf.skx != 0.0f || tf.sky != 0.0f)) {
             float toox = static_cast<float>(n->border.w) * 0.5f;
             float toooy = static_cast<float>(n->border.h) * 0.5f;
             whaleui_transform_origin_eval(
@@ -837,10 +839,29 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
             float cx = static_cast<float>(n->border.x) + toox;
             float cy = static_cast<float>(n->border.y + off_y) + toooy;
             const float rad = -tf.rot * 3.14159265f / 180.0f;
-            const float dx = static_cast<float>(x) - cx;
-            const float dy = static_cast<float>(y) - cy;
-            const float hx = cx + dx * std::cos(rad) - dy * std::sin(rad);
-            const float hy = cy + dx * std::sin(rad) + dy * std::cos(rad);
+            float dx = static_cast<float>(x) - cx;
+            float dy = static_cast<float>(y) - cy;
+            float ux = dx * std::cos(rad) - dy * std::sin(rad);
+            float uy = dx * std::sin(rad) + dy * std::cos(rad);
+            /* un-skew around the anchor (inverse shear) */
+            if (tf.skx != 0.0f || tf.sky != 0.0f) {
+                float tx = 0, ty = 0;
+                if (tf.skx != 0.0f) {
+                    tx = std::tan(tf.skx * 3.14159265f / 180.0f);
+                }
+                if (tf.sky != 0.0f) {
+                    ty = std::tan(tf.sky * 3.14159265f / 180.0f);
+                }
+                float det = 1.0f - tx * ty;
+                if (det != 0.0f) {
+                    float ix = (ux - tx * uy) / det;
+                    float iy = (uy - ty * ux) / det;
+                    ux = ix;
+                    uy = iy;
+                }
+            }
+            const float hx = cx + ux;
+            const float hy = cy + uy;
             if (hx >= n->border.x && hx < n->border.x + n->border.w &&
                 hy >= n->border.y + off_y &&
                 hy < n->border.y + off_y + n->border.h) {

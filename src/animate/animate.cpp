@@ -701,10 +701,25 @@ bool trans_in_props(const TransSpec& ts, const std::string& prop)
 
 struct TransformOp
 {
-    int op;     /* 0=translate, 1=scale, 2=scaleX, 3=scaleY, 4=rotate */
-    float a, b; /* translate: x,y; scale: sx,sy; rotate: degrees in a */
+    int op;     /* 0=translate, 1=scale, 2=scaleX, 3=scaleY, 4=rotate,
+                 * 5=skewX/skew, 6=skewY, 7=matrix(decomposed), 8=rotateX/Y
+                 * (perspective squash, see below) */
+    float a, b; /* translate: x,y; scale: sx,sy; rotate/skew: degrees in a */
     int au, bu; /* 0=px/number, 1=% (translate only) */
 };
+
+/* angle token: deg default, rad/turn convert. p points just past the
+ * number (unit letters still unread). */
+static float angle_deg(const char* p, float a)
+{
+    if (std::strncmp(p, "rad", 3) == 0) {
+        return a * 180.0f / 3.14159265f;
+    }
+    if (std::strncmp(p, "turn", 4) == 0) {
+        return a * 360.0f;
+    }
+    return a; /* deg or bare number */
+}
 
 /* skip spaces, parse a number (+ optional %), advance p */
 bool parse_num(const char*& p, float* v, int* unit)
@@ -859,14 +874,157 @@ bool transform_parse(const char* v, std::vector<TransformOp>& out)
             /* rotate carries an ANGLE, not a length: deg is the default,
              * rad/turn convert (so "@keyframes spin" written either way
              * animates). A bare number means degrees. */
-            if (std::strncmp(p, "rad", 3) == 0) {
-                a = a * 180.0f / 3.14159265f;
-            } else if (std::strncmp(p, "turn", 4) == 0) {
-                a = a * 360.0f;
-            }
+            a = angle_deg(p, a);
             skip_to_close(p);
             TransformOp op = {4, a, 0.0f, 0, 0};
             out.push_back(op);
+        } else if (std::strncmp(p, "skewX(", 6) == 0) {
+            p += 6;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            a = angle_deg(p, a);
+            skip_to_close(p);
+            TransformOp op = {5, a, 0.0f, 0, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "skewY(", 6) == 0) {
+            p += 6;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            a = angle_deg(p, a);
+            skip_to_close(p);
+            TransformOp op = {6, a, 0.0f, 0, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "skew(", 5) == 0) {
+            p += 5;
+            float a = 0, b = 0;
+            int au = 0, bu = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            a = angle_deg(p, a);
+            skip_unit(p);
+            while (*p == ' ' || *p == '\t') {
+                ++p;
+            }
+            if (*p == ',') {
+                ++p;
+                if (!parse_num(p, &b, &bu)) {
+                    return false;
+                }
+                b = angle_deg(p, b);
+            }
+            skip_to_close(p);
+            TransformOp opx = {5, a, 0.0f, 0, 0};
+            out.push_back(opx);
+            if (b != 0.0f) {
+                TransformOp opy = {6, b, 0.0f, 0, 0};
+                out.push_back(opy);
+            }
+        } else if (std::strncmp(p, "matrix(", 7) == 0) {
+            p += 7;
+            /* matrix(a,b,c,d,e,f): decompose into the supported ops.
+             * e/f are pure translation; a/d scale (with the shear folded
+             * in as skew when b/c are non-trivial). Exact for the common
+             * tool-generated scale+translate matrices; shear/rotation
+             * matrices approximate (small-angle atan fold). */
+            float v[6] = {1, 0, 0, 1, 0, 0};
+            for (int k = 0; k < 6; ++k) {
+                float f = 0;
+                int u = 0;
+                if (!parse_num(p, &f, &u)) {
+                    return false;
+                }
+                v[k] = f;
+                skip_unit(p);
+                while (*p == ' ' || *p == '\t') {
+                    ++p;
+                }
+                if (*p == ',') {
+                    ++p;
+                }
+            }
+            skip_to_close(p);
+            if (v[4] != 0.0f || v[5] != 0.0f) {
+                TransformOp op = {0, v[4], v[5], 0, 0};
+                out.push_back(op);
+            }
+            if (v[0] != 1.0f) {
+                TransformOp op = {2, v[0], 1.0f, 0, 0};
+                out.push_back(op);
+            }
+            if (v[3] != 1.0f) {
+                TransformOp op = {3, v[3], 1.0f, 0, 0};
+                out.push_back(op);
+            }
+            /* shear fold: b/c tilt the axes (skewY = atan(b/a),
+             * skewX = atan(c/d), degrees) */
+            if (v[1] != 0.0f && v[0] != 0.0f) {
+                float sky = std::atan(v[1] / v[0]) * 180.0f / 3.14159265f;
+                if (sky != 0.0f) {
+                    TransformOp op = {6, sky, 0.0f, 0, 0};
+                    out.push_back(op);
+                }
+            }
+            if (v[2] != 0.0f && v[3] != 0.0f) {
+                float skx = std::atan(v[2] / v[3]) * 180.0f / 3.14159265f;
+                if (skx != 0.0f) {
+                    TransformOp op = {5, skx, 0.0f, 0, 0};
+                    out.push_back(op);
+                }
+            }
+        } else if (std::strncmp(p, "rotateX(", 8) == 0 ||
+                   std::strncmp(p, "rotateY(", 8) == 0) {
+            /* 3D tilt: approximate as an in-plane perspective squash
+             * (scaleY/scaleX by cos, no true depth). Keeps the function
+             * from killing the whole transform string; a flip reads as
+             * a squash-and-mirror. rotateZ() is just rotate(). */
+            bool is_x = p[6] == 'X';
+            p += 8;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            a = angle_deg(p, a);
+            skip_to_close(p);
+            float c = std::cos(a * 3.14159265f / 180.0f);
+            TransformOp op = {is_x ? 3 : 2, c, 1.0f, 0, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "rotateZ(", 8) == 0) {
+            p += 8;
+            float a = 0;
+            int au = 0;
+            if (!parse_num(p, &a, &au)) {
+                return false;
+            }
+            a = angle_deg(p, a);
+            skip_to_close(p);
+            TransformOp op = {4, a, 0.0f, 0, 0};
+            out.push_back(op);
+        } else if (std::strncmp(p, "perspective(", 12) == 0 ||
+                   std::strncmp(p, "translateZ(", 11) == 0 ||
+                   std::strncmp(p, "scaleZ(", 7) == 0) {
+            /* pure-depth ops with no 2D projection here: consume and
+             * ignore (the rest of the string still applies) */
+            if (*p == 'p') {
+                p += 12; /* perspective( */
+            } else if (*p == 't') {
+                p += 11; /* translateZ( */
+            } else {
+                p += 7; /* scaleZ( */
+            }
+            float f = 0;
+            int u = 0;
+            if (!parse_num(p, &f, &u)) {
+                return false;
+            }
+            skip_to_close(p);
         } else {
             return false; /* unsupported function */
         }
@@ -881,7 +1039,11 @@ std::vector<TransformOp> initial_ops(const std::vector<TransformOp>& ref)
     v.reserve(ref.size());
     for (size_t i = 0; i < ref.size(); ++i) {
         TransformOp z = ref[i];
-        z.a = (ref[i].op == 0 || ref[i].op == 4) ? 0.0f : 1.0f;
+        /* identity: translate/rotate/skew = 0, scales = 1 */
+        z.a = (ref[i].op == 0 || ref[i].op == 4 || ref[i].op == 5 ||
+               ref[i].op == 6)
+                  ? 0.0f
+                  : 1.0f;
         z.b = ref[i].op == 0 ? 0.0f : 1.0f;
         v.push_back(z);
     }
@@ -928,6 +1090,10 @@ bool transform_lerp(const std::string& from, const std::string& to, float t,
             std::snprintf(buf, sizeof(buf), "scaleX(%g)", av);
         } else if (a[i].op == 3) {
             std::snprintf(buf, sizeof(buf), "scaleY(%g)", av);
+        } else if (a[i].op == 5) {
+            std::snprintf(buf, sizeof(buf), "skewX(%gdeg)", av);
+        } else if (a[i].op == 6) {
+            std::snprintf(buf, sizeof(buf), "skewY(%gdeg)", av);
         } else {
             std::snprintf(buf, sizeof(buf), "rotate(%gdeg)", av);
         }
@@ -1238,6 +1404,8 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
     out->sx = 1.0f;
     out->sy = 1.0f;
     out->rot = 0.0f;
+    out->skx = 0.0f;
+    out->sky = 0.0f;
     if (!value || !*value || std::strcmp(value, "none") == 0) {
         return 0;
     }
@@ -1257,6 +1425,10 @@ extern "C" int whaleui_transform_eval(const char* value, float self_w,
             out->sx *= op.a;
         } else if (op.op == 3) {
             out->sy *= op.a;
+        } else if (op.op == 5) {
+            out->skx += op.a; /* skewX, degrees */
+        } else if (op.op == 6) {
+            out->sky += op.a; /* skewY, degrees */
         } else {
             out->rot += op.a; /* 4 = rotate, degrees */
         }

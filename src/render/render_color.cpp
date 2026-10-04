@@ -619,7 +619,8 @@ int parse_filter(const char* v, float m[4][5], float* blur)
 
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
-                   const Clip* clip, float rot_deg)
+                   const Clip* clip, float rot_deg, float skx_deg,
+                   float sky_deg)
 {
     if (g_gpu) {
         /* linear gradients: corner colors (projected onto the gradient
@@ -632,11 +633,27 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         if (g.type == 0 && g.stops.size() >= 2) {
             float rad = g.angle_deg * 3.14159265f / 180.0f;
             float ddx = std::sin(rad), ddy = -std::cos(rad);
-            /* a rotated element's gradient axis rotates with it (CSS):
-             * rotate the projection direction by the box's rot; the band
-             * positions come from the same box-corner projections, so the
-             * whole gradient turns with the rotated background for a few
-             * ALU ops - no extra texture or draw */
+            /* a transformed element's gradient axis follows it (CSS):
+             * shear the projection direction by the box's skew, then
+             * rotate by its rot; the band positions come from the same
+             * box-corner projections, so the whole gradient turns with
+             * the background for a few ALU ops - no extra texture/draw */
+            if (skx_deg != 0.0f || sky_deg != 0.0f) {
+                float tx = 0, ty = 0;
+                if (skx_deg != 0.0f) {
+                    tx = std::tan(skx_deg * 3.14159265f / 180.0f);
+                }
+                if (sky_deg != 0.0f) {
+                    ty = std::tan(sky_deg * 3.14159265f / 180.0f);
+                }
+                /* inverse-transpose the direction (covariant under shear):
+                 * d' = (ddx - ty*ddy, ddy - tx*ddx) normalized below by
+                 * the span computation */
+                float nx = ddx - ty * ddy;
+                float ny = ddy - tx * ddx;
+                ddx = nx;
+                ddy = ny;
+            }
             if (rot_deg != 0.0f) {
                 float rr = rot_deg * 3.14159265f / 180.0f;
                 float cs = std::cos(rr), sn = std::sin(rr);

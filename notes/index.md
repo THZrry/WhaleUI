@@ -119,3 +119,5 @@ calc乘除/radial关键字/focus-within/is-where; 多过渡timing/sticky远边/
 scrollbar/aspect-ratio/marker。见 notes/current.md
 <19>(SOLVED): filter(元素滤镜) —— GPU pass E(mip blur+4x5矩阵,记录外扩)+
 CPU颜色矩阵; 附带恢复被插桩关掉的外阴影 pass。见 notes/current.md
+<20>(SOLVED): transform skew/matrix/3D —— 顶点剪切+hit逆剪切+渐变协变;
+matrix分解; rotateX/Y透视压缩; 3D消费忽略。见 notes/current.md

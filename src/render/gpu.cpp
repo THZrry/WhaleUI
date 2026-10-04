@@ -834,7 +834,8 @@ void whaleui_gpu_late_end(whaleui_gpu_t* g)
 
 void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
-                          float rot_deg, const int* clip, float ax, float ay)
+                          float rot_deg, const int* clip, float ax, float ay,
+                          float skx_deg, float sky_deg)
 {
     if (!g || w <= 0 || h <= 0) {
         return;
@@ -857,11 +858,30 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
     }
     /* rotate the local corner offsets around the anchor (screen coords,
      * y down: a positive angle turns clockwise like CSS rotate). The
-     * default anchor is the box center; transform-origin moves it. */
+     * default anchor is the box center; transform-origin moves it.
+     * Skew applies first (shear around the same anchor), then rotation -
+     * the composed order matches the accumulated eval approximately. */
     const float PI_F = 3.14159265358979f;
     float rad = rot_deg * PI_F / 180.0f;
     float cs = std::cos(rad);
     float sn = std::sin(rad);
+    float tx = 0, ty = 0; /* skew tangents (0 = no skew) */
+    if (skx_deg != 0.0f) {
+        tx = std::tan(skx_deg * PI_F / 180.0f);
+        if (tx > 10.0f) {
+            tx = 10.0f;
+        } else if (tx < -10.0f) {
+            tx = -10.0f;
+        }
+    }
+    if (sky_deg != 0.0f) {
+        ty = std::tan(sky_deg * PI_F / 180.0f);
+        if (ty > 10.0f) {
+            ty = 10.0f;
+        } else if (ty < -10.0f) {
+            ty = -10.0f;
+        }
+    }
     float cx = (ax >= 0.0f) ? ax : x + w * 0.5f;
     float cy = (ay >= 0.0f) ? ay : y + h * 0.5f;
     float hw = w * 0.5f;
@@ -893,6 +913,10 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
     for (int k = 0; k < 4; ++k) {
         float rx = dx[k] - ox0;
         float ry = dy[k] - oy0;
+        /* skewX shifts x by tan*y, skewY shifts y by tan*x (around the
+         * anchor, so the anchor pixel stays put) */
+        rx += tx * ry;
+        ry += ty * rx;
         px[k] = cx + rx * cs - ry * sn;
         py[k] = cy + rx * sn + ry * cs;
     }

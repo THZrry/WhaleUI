@@ -197,7 +197,7 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
 void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, int radius,
                    unsigned int color, float rot_deg, const Clip* clip,
-                   float ox, float oy)
+                   float ox, float oy, float skx, float sky)
 {
     if (g_gpu) {
         float ax = static_cast<float>(x) + ox;
@@ -205,7 +205,7 @@ void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
         whaleui_gpu_rect_rot(g_gpu, static_cast<float>(x),
                              static_cast<float>(y), static_cast<float>(w),
                              static_cast<float>(h), static_cast<float>(radius),
-                             color, rot_deg, nullptr, ax, ay);
+                             color, rot_deg, nullptr, ax, ay, skx, sky);
         return;
     }
     if (radius > 0) {
@@ -1320,6 +1320,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * ponytail: true 2D transform stacks are a later step. */
     float tdx = 0.0f, tdy = 0.0f, tsx = 1.0f, tsy = 1.0f;
     float trot = 0.0f;
+    float tskx = 0.0f, tsky = 0.0f;
     float toox = 0.0f, toooy = 0.0f; /* transform-origin anchor, px in-box */
     if (has_xf) {
         whaleui_transform_t tf;
@@ -1331,12 +1332,15 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             tsx = tf.sx;
             tsy = tf.sy;
             trot = tf.rot;
+            tskx = tf.skx;
+            tsky = tf.sky;
         }
         whaleui_transform_origin_eval(sget(n->style, "transform-origin").c_str(),
                                       static_cast<float>(n->border.w),
                                       static_cast<float>(n->border.h),
                                       &toox, &toooy);
     }
+    bool has_rot = trot != 0.0f || tskx != 0.0f || tsky != 0.0f;
     int bw = n->border.w;
     int bh = n->border.h;
     if (tsx != 1.0f || tsy != 1.0f) {
@@ -1483,10 +1487,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         bdf_gpu = true;
     }
     if (bg != 0) {
-        if (trot != 0.0f) {
+        if (has_rot) {
             fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                           n->border.y + noy, bw, bh, radius, bg_c, trot, eff,
-                          toox * tsx, toooy * tsy);
+                          toox * tsx, toooy * tsy, tskx, tsky);
         } else if (radius > 0) {
             fill_round_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                             n->border.y + noy,
@@ -1549,7 +1553,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             fill_gradient(r->pixels, r->fb_w, r->fb_h,
                           gx + static_cast<int>(ox),
                           gy + static_cast<int>(oy), static_cast<int>(tw),
-                          static_cast<int>(th), grad, eff, trot);
+                          static_cast<int>(th), grad, eff, trot, tskx, tsky);
         } else {
             /* repeat (default) / repeat-x / repeat-y: tile from the
              * position back to the box edge, then forward */
@@ -1575,7 +1579,7 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                      xx < gx + bw; xx += xi) {
                     fill_gradient(r->pixels, r->fb_w, r->fb_h, xx, yy,
                                   static_cast<int>(tw), static_cast<int>(th),
-                                  grad, eff, trot);
+                                  grad, eff, trot, tskx, tsky);
                 }
             }
         }
@@ -1609,14 +1613,14 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
             }
             /* uniform border width for the ring */
             int brw = bw2[1] > 0 ? bw2[1] : (bw2[3] > 0 ? bw2[3] : (bw2[0] > 0 ? bw2[0] : bw2[2]));
-            if (trot != 0.0f && brw > 0) {
+            if (has_rot && brw > 0) {
                 /* rotated ring: same two-rect trick as fill_round_border's
                  * GPU branch, with rotated corners (the inner refill keeps
                  * the background the ring encloses). The inner rect's
                  * origin shifts by brw, so its in-box anchor shifts too. */
                 fill_rot_rect(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                               n->border.y + noy, bw, bh, radius, c, trot, eff,
-                              toox * tsx, toooy * tsy);
+                              toox * tsx, toooy * tsy, tskx, tsky);
                 int irad = radius - brw;
                 if (irad < 0) {
                     irad = 0;
@@ -1624,7 +1628,8 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 fill_rot_rect(r->pixels, r->fb_w, r->fb_h,
                               n->border.x + nox + brw, n->border.y + noy + brw,
                               bw - 2 * brw, bh - 2 * brw, irad, bg_c, trot,
-                              eff, toox * tsx - brw, toooy * tsy - brw);
+                              eff, toox * tsx - brw, toooy * tsy - brw,
+                              tskx, tsky);
             } else if (radius > 0 && brw > 0) {
                 fill_round_border(r->pixels, r->fb_w, r->fb_h, n->border.x + nox,
                                   n->border.y + noy,
