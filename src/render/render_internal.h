@@ -79,6 +79,12 @@ unsigned int hex_nib(char c, int* ok);
 void split_grad_parts(const std::string& s, std::vector<std::string>& out);
 int parse_gradient(const std::string& v, Gradient& out);
 unsigned int grad_color(const Gradient& g, float t);
+/* resolve a radial-gradient's size markers against the box: negative rx/ry
+ * (-1 closest-side, -2 closest-corner, -3 farthest-side, -4 farthest-corner)
+ * become px radii from the (rcx, rcy) center; positive values pass through.
+ * Mirrors CSS: circle forces rx == ry. */
+void radial_resolve(float rx, float ry, float rcx, float rcy, float x,
+                    float y, float w, float h, float* orx, float* ory);
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg = 0.0f);

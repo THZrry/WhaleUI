@@ -117,6 +117,33 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* math units: rem/vmin/vmax, N-ary min/max, calc star/slash */
+    {
+        /* viewport 800x600: 10vmin = 60, 10vmax = 80, 2rem = 32 */
+        whaleui_layout_tree_t* t = do_layout(
+            "<div id=\"a\" style=\"width:10vmin;height:10vmax;\"></div>"
+            "<div id=\"b\" style=\"width:2rem;height:min(10px,20px,30px);\">"
+            "</div>"
+            "<div id=\"c\" style=\"width:max(10px,20px,5px);"
+            "height:calc(100px - 2 * 10px);\"></div>"
+            "<div id=\"d\" style=\"width:calc(80px / 2);height:clamp(10px,20px,30px);\">"
+            "</div>", 800, 600);
+        assert(t != nullptr);
+        whaleui_layout_node_t* a = find_tag(t->root, "div");
+        assert(a != nullptr);
+        assert(a->border.w == 60 && a->border.h == 80);
+        whaleui_layout_node_t* b = a->next;
+        assert(b != nullptr);
+        assert(b->border.w == 32 && b->border.h == 10);
+        whaleui_layout_node_t* c = b->next;
+        assert(c != nullptr);
+        assert(c->border.w == 20 && c->border.h == 80);
+        whaleui_layout_node_t* d = c->next;
+        assert(d != nullptr);
+        assert(d->border.w == 40 && d->border.h == 20);
+        whaleui_layout_destroy(t);
+    }
+
     /* flex column */
     {
         whaleui_layout_tree_t* t = do_layout(

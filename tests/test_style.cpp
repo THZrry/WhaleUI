@@ -158,12 +158,80 @@ int main(void)
         assert(whaleui_style_match(".note:not(:hover)", p_el, &st));
         st.hover = nullptr;
         assert(whaleui_style_match(".note:not(:hover)", p_el, &st));
+        /* attribute substring operators */
+        assert(whaleui_style_match("div[class^=\"ca\"]", card_el, &st));
+        assert(whaleui_style_match("div[class$=\"ard\"]", card_el, &st));
+        assert(whaleui_style_match("div[class*=\"ar\"]", card_el, &st));
+        assert(!whaleui_style_match("div[class^=\"nope\"]", card_el, &st));
+        assert(!whaleui_style_match("div[class$=\"nope\"]", card_el, &st));
         st = whaleui_style_state();
         /* regression: a bare tag selector must NOT match descendants */
         assert(!whaleui_style_match("body", card_el, &st));
         assert(!whaleui_style_match("html", card_el, &st));
         assert(!whaleui_style_match("div", p_el, &st));
         assert(!whaleui_style_match("div", body_el, &st));
+
+    /* form/link/empty states + attr() content (own document) */
+    {
+        const char* html2 =
+            "<html><body>"
+            "<input id=\"a\" type=\"text\">"
+            "<input id=\"b\" type=\"text\" disabled>"
+            "<input id=\"c\" type=\"text\" required>"
+            "<a id=\"d\" href=\"http://x/\">x</a>"
+            "<a id=\"e\">y</a>"
+            "<span id=\"f\"></span>"
+            "<span id=\"g\" data-v=\"hello\">z</span>"
+            "</body></html>";
+        whaleui_dom_document_t* doc2 =
+            whaleui_dom_parse_html(html2, std::strlen(html2));
+        assert(doc2 != nullptr);
+        whaleui_style_state st2;
+        lxb_dom_element* a = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "a"));
+        lxb_dom_element* b = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "b"));
+        lxb_dom_element* c = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "c"));
+        lxb_dom_element* d = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "d"));
+        lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "e"));
+        lxb_dom_element* f = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "f"));
+        assert(a && b && c && d && e && f);
+        assert(whaleui_style_match("input:enabled", a, &st2));
+        assert(!whaleui_style_match("input:enabled", b, &st2));
+        assert(whaleui_style_match("input:disabled", b, &st2));
+        assert(whaleui_style_match("input:required", c, &st2));
+        assert(whaleui_style_match("input:optional", a, &st2));
+        assert(!whaleui_style_match("input:optional", c, &st2));
+        assert(whaleui_style_match("a:link", d, &st2));
+        assert(!whaleui_style_match("a:link", e, &st2)); /* no href */
+        assert(whaleui_style_match("span:empty", f, &st2));
+        assert(!whaleui_style_match("a:empty", d, &st2)); /* has text */
+        assert(whaleui_style_match("input[type^=\"tex\"]", a, &st2));
+        assert(whaleui_style_match("input[type$=\"ext\"]", a, &st2));
+        assert(whaleui_style_match("input[type*=\"ex\"]", a, &st2));
+        assert(!whaleui_style_match("input[type~=\"tex\"]", a, &st2));
+        /* :is() - any inner match wins */
+        lxb_dom_element* g = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc2, "g"));
+        assert(g != nullptr);
+        assert(whaleui_style_match("span:is(.nope, #g)", g, &st2));
+        assert(!whaleui_style_match("span:is(.nope, #nope)", g, &st2));
+        assert(whaleui_style_match("span:where(span)", g, &st2));
+        /* :focus-within - focus on the child matches the parent */
+        lxb_dom_element* body2 = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc2, "body"));
+        assert(body2 != nullptr);
+        st2.focus = a; /* focus the input */
+        assert(whaleui_style_match("body:focus-within", body2, &st2));
+        assert(!whaleui_style_match("span:focus-within", g, &st2));
+        st2.focus = nullptr;
+        assert(!whaleui_style_match("body:focus-within", body2, &st2));
+        whaleui_dom_document_destroy(doc2);
+    }
 
         /* media */
         assert(whaleui_style_media_ok(nullptr, WHALEUI_THEME_DARK, 800, 0));

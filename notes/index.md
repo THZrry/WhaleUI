@@ -113,3 +113,7 @@ hit_test 逆旋转。见 notes/current.md
 <17>(SOLVED): P0 四项 —— transform-origin(scale/rotate/hit 锚点);
 :not() 单层+状态取反; ::selection-fg(逐字形换色); 伪元素去名单(全量合并)。
 清单 temp/css-todo.md。见 notes/current.md
+<18>(SOLVED): CSS 缺口四批 —— play-state/placeholder/stroke分写/overflow分写/
+object-position(+fit轴选反/RGB24修); :enabled等+attr六档+attr(); rem/vmin/
+calc乘除/radial关键字/focus-within/is-where; 多过渡timing/sticky远边/
+scrollbar/aspect-ratio/marker。见 notes/current.md

@@ -106,6 +106,43 @@ int main(void)
         whaleui_css_keyframes_destroy(&kf);
     }
 
+    /* animation-play-state: paused freezes the clock, running resumes */
+    {
+        whaleui_css_keyframes_t kf = {nullptr, 0};
+        load_kf(&kf, "@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }");
+        whaleui_anim_t* a = whaleui_anim_create();
+        whaleui_anim_set_keyframes(a, &kf);
+        WhaleUIComputedStyle s;
+        s["animation"] = "fade 1000ms linear infinite";
+        s["opacity"] = "1";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 1);
+        assert(whaleui_anim_apply(a, nullptr, s, 500) == 1);
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        /* pause: the clock freezes at p=0.6 no matter how much time passes */
+        s["animation"] = "fade 1000ms linear infinite paused";
+        assert(whaleui_anim_apply(a, nullptr, s, 600) == 1);
+        assert(num(s["opacity"]) > 0.59f && num(s["opacity"]) < 0.61f);
+        assert(whaleui_anim_apply(a, nullptr, s, 1200) == 1);
+        assert(num(s["opacity"]) > 0.59f && num(s["opacity"]) < 0.61f);
+        /* resume at 1700: the frozen progress (t=600) becomes the new
+         * origin, so this frame still shows p=0.6; 500ms later (2200)
+         * t=1100 -> 1.1 loops -> p=0.1 */
+        s["animation"] = "fade 1000ms linear infinite running";
+        assert(whaleui_anim_apply(a, nullptr, s, 1700) == 1);
+        assert(num(s["opacity"]) > 0.59f && num(s["opacity"]) < 0.61f);
+        assert(whaleui_anim_apply(a, nullptr, s, 2200) == 1);
+        assert(num(s["opacity"]) > 0.09f && num(s["opacity"]) < 0.11f);
+        /* longhand form also pauses */
+        s["animation"] = "fade 1000ms linear infinite";
+        s["animation-play-state"] = "paused";
+        assert(whaleui_anim_apply(a, nullptr, s, 2000) == 1);
+        float held = num(s["opacity"]);
+        assert(whaleui_anim_apply(a, nullptr, s, 2600) == 1);
+        assert(num(s["opacity"]) == held);
+        whaleui_anim_destroy(a);
+        whaleui_css_keyframes_destroy(&kf);
+    }
+
     /* 3-frame round-trip (0%->50%->100%), infinite: the pulse pattern
      * (opacity .45 -> 1 -> .45). Regression: multi-frame keyframes with a
      * middle frame must interpolate both segments and loop. */
@@ -177,6 +214,28 @@ int main(void)
         s["opacity"] = "1";
         assert(whaleui_anim_apply(a, nullptr, s, 1100) == 0); /* done */
         assert(num(s["opacity"]) > 0.99f);
+        whaleui_anim_destroy(a);
+    }
+
+    /* transition: per-property durations (no collapse to the first) */
+    {
+        whaleui_anim_t* a = whaleui_anim_create();
+        WhaleUIComputedStyle s;
+        s["transition"] = "opacity 1000ms linear, transform 2000ms linear";
+        s["opacity"] = "0";
+        assert(whaleui_anim_apply(a, nullptr, s, 0) == 0); /* baseline */
+        s["opacity"] = "1";
+        s["transform"] = "translateX(100px)";
+        assert(whaleui_anim_apply(a, nullptr, s, 100) == 1);
+        /* at t=600: opacity p=0.5, transform p=0.25 (own 2000ms clock) */
+        s["opacity"] = "1";
+        s["transform"] = "translateX(100px)";
+        assert(whaleui_anim_apply(a, nullptr, s, 600) == 1);
+        assert(num(s["opacity"]) > 0.49f && num(s["opacity"]) < 0.51f);
+        whaleui_transform_t tf;
+        assert(whaleui_transform_eval(s["transform"].c_str(), 100, 100,
+                                      &tf) == 0);
+        assert(tf.tx > 24.0f && tf.tx < 26.0f);
         whaleui_anim_destroy(a);
     }
 

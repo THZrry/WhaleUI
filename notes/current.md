@@ -176,6 +176,42 @@ scale 锚点从居中改 `ox*(1-s)`(paint_node 的 nox/noy);rotate 锚点透进
 
 验证:10 项测试全绿。清单 `temp/css-todo.md` P0 全勾,P1 待排期。
 
+# <18>: CSS 缺口四批(追加式,零热路径改动)
+
+SOLVED
+
+`temp/css-todo.md` 建清单,按"小→中"四批落地,全部追加语义(无行为回归):
+
+**批1(小):** `animation-play-state`(冻结/恢复双路径);`text-stroke` 分写;
+`::placeholder{color}`(虚属性+两处读取);`overflow-x/y` 分写(三处);
+`object-position`(拟合后定位)。附带修:object-fit 轴选反
+(`(cover)==(ar>dar)` 全反)+RGB24 无 alpha 蓝丢(转 RGBA32)。
+回归:anim 暂停用例 + test_scroll batch1(phred/stblue/overflow 裁剪)
++ `temp/objpos.html` 探针(左红右蓝)。
+
+**批2(小·选择器):** `:enabled/:required/:optional/:empty/:link`,
+`[^$*~|=]` 六档(attr_op),`content:attr()`。回归:test_style 白盒 +
+test_scroll attr 像素。
+
+**批3(中·单位/函数/选择器):** `rem/vmin/vmax`(双 resolve 点),
+`min/max` N 元,`calc` 乘除(注释避 `*/` 坑),`radial` size 关键字
+(`radial_resolve` 按盒解算,顺手修 rcy 绝对值分支),
+`:focus-within`(match 外层+全重绘后祖先链补 cascade),
+`:is/:where`(单层逗号)。回归:layout 数学用例 + style 白盒 +
+test_scroll batch3(closest-side 红心+form 变绿)。
+踩坑:focus 采样点落在 input 框内(改采右下角);sticky 测试期望误读
+(见批4)。
+
+**批4(中·行为):** 多过渡 per-property timing(`TransItem`+longhand 循环铺,
+修 longhand 丢 items 的回归);sticky bottom/right 改相对视口远边
+(之前误对 parent 底)+容器钳制改文档坐标;`scrollbar-width/color`;
+`aspect-ratio`;`::marker` 桶+`list-style-type`(square/circle/alpha/roman)。
+回归:anim 双时钟 + test_scroll batch4。
+踩坑:sticky 测试设计三改才对(bottom 语义是"不被推出视口",非"吸底";
+parent 底误作视口底)。
+
+验证:10 项测试全绿;14 张主题自检全 OK。
+
 SOLVED
 
 两件事,一起修/落地:

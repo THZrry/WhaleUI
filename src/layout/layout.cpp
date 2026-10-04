@@ -70,9 +70,10 @@ static void split_len_args(const std::string& v, size_t open,
 }
 
 /* "12px"/"1.5em"/"50%"/"auto" -> px value relative to parent/base.
- * Supports math functions clamp(MIN,VAL,MAX)/min()/max() and the vw/vh
- * units (relative to viewport_w/viewport_h). unit 0=px 1=% 2=em 4=unitless.
- * Returns value in px. */
+ * Supports math functions clamp(MIN,VAL,MAX)/min()/max() (N-ary), calc with
+ * plus/minus/star/slash chains, and the vw/vh/vmin/vmax/rem units (rem =
+ * root font size, fixed 16px: the engine has no root font-size setting).
+ * unit 0=px 1=% 2=em 4=unitless. Returns value in px. */
 static float len_px_impl(const std::string& v, float base_px, float em_base,
                          float vp_w, float vp_h)
 {
@@ -99,27 +100,40 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
     if (v.compare(0, 4, "min(") == 0) {
         std::vector<std::string> args;
         split_len_args(v, 4, args);
-        if (args.size() != 2) {
+        if (args.empty()) {
             return 0;
         }
-        float a = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
-        float b = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
-        return a < b ? a : b;
+        float m = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
+        for (size_t k = 1; k < args.size(); ++k) {
+            float b = len_px_impl(args[k], base_px, em_base, vp_w, vp_h);
+            if (b < m) {
+                m = b;
+            }
+        }
+        return m;
     }
     if (v.compare(0, 4, "max(") == 0) {
         std::vector<std::string> args;
         split_len_args(v, 4, args);
-        if (args.size() != 2) {
+        if (args.empty()) {
             return 0;
         }
-        float a = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
-        float b = len_px_impl(args[1], base_px, em_base, vp_w, vp_h);
-        return a > b ? a : b;
+        float m = len_px_impl(args[0], base_px, em_base, vp_w, vp_h);
+        for (size_t k = 1; k < args.size(); ++k) {
+            float b = len_px_impl(args[k], base_px, em_base, vp_w, vp_h);
+            if (b > m) {
+                m = b;
+            }
+        }
+        return m;
     }
     if (v.compare(0, 5, "calc(") == 0) {
-        /* calc(expr): a +/- b chains of the units above ("calc(3ch + 30px)").
-         * Split on +/- outside parens and sum; each term resolves like a
-         * plain length. */
+        /* calc(expr): chains of the units above with plus/minus and
+         * star/slash with bare numbers. Split on plus/minus outside parens
+         * and sum; each additive term resolves like a plain length, with
+         * an optional star/slash number factor ("calc(3ch + 30px)",
+         * "calc(100% - 2 * 8px)"). Full unit*unit math is out of scope
+         * (CSS forbids it too). */
         std::vector<std::string> args;
         split_len_args(v, 5, args);
         if (args.size() != 1) {
@@ -138,8 +152,20 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
                 sign = expr[i] == '+' ? 1 : -1;
                 ++i;
             }
+            /* one additive term: split on star/slash outside parens */
             size_t start = i;
-            while (i < expr.size() && expr[i] != '+' && expr[i] != '-') {
+            int depth = 0;
+            while (i < expr.size()) {
+                if (expr[i] == '(') {
+                    ++depth;
+                } else if (expr[i] == ')') {
+                    if (depth > 0) {
+                        --depth;
+                    }
+                } else if (depth == 0 &&
+                           (expr[i] == '+' || expr[i] == '-')) {
+                    break;
+                }
                 ++i;
             }
             std::string term = expr.substr(start, i - start);
@@ -147,7 +173,69 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
             size_t e2 = term.find_last_not_of(" \t");
             if (b2 != std::string::npos) {
                 term = term.substr(b2, e2 - b2 + 1);
-                acc += sign * len_px_impl(term, base_px, em_base, vp_w, vp_h);
+                /* factor split on star/slash (a length times bare numbers) */
+                float factor = 1.0f;
+                std::string base = term;
+                size_t div = term.find_last_of('/');
+                size_t mul = term.find_last_of('*');
+                if (div != std::string::npos &&
+                    (mul == std::string::npos || div > mul)) {
+                    std::string ds = term.substr(div + 1);
+                    size_t db = ds.find_first_not_of(" \t");
+                    size_t de = ds.find_last_not_of(" \t");
+                    if (db != std::string::npos) {
+                        float dv = static_cast<float>(
+                            std::atof(ds.substr(db, de - db + 1).c_str()));
+                        if (dv != 0.0f) {
+                            factor = 1.0f / dv;
+                            base = term.substr(0, div);
+                        } else {
+                            base.clear();
+                        }
+                    } else {
+                        base.clear();
+                    }
+                } else if (mul != std::string::npos) {
+                    std::string rest = term.substr(mul + 1);
+                    base = term.substr(0, mul);
+                    /* "2 * 8px" or "8px * 2": the bare-number side folds
+                     * into the factor, the length side resolves */
+                    size_t rb = rest.find_first_not_of(" \t");
+                    size_t re = rest.find_last_not_of(" \t");
+                    size_t bb = base.find_first_not_of(" \t");
+                    size_t be = base.find_last_not_of(" \t");
+                    if (rb != std::string::npos && bb != std::string::npos) {
+                        std::string rs = rest.substr(rb, re - rb + 1);
+                        std::string bs = base.substr(bb, be - bb + 1);
+                        char* re2 = nullptr;
+                        float rv = std::strtof(rs.c_str(), &re2);
+                        char* be2 = nullptr;
+                        float bv = std::strtof(bs.c_str(), &be2);
+                        bool r_num = re2 != rs.c_str() && *re2 == '\0';
+                        bool b_num = be2 != bs.c_str() && *be2 == '\0';
+                        if (r_num && !b_num) {
+                            factor = rv;
+                            base = bs;
+                        } else if (b_num && !r_num) {
+                            factor = bv;
+                            base = rs;
+                        } else {
+                            base.clear(); /* length*length: invalid */
+                        }
+                    } else {
+                        base.clear();
+                    }
+                }
+                if (!base.empty()) {
+                    size_t bb = base.find_first_not_of(" \t");
+                    size_t be = base.find_last_not_of(" \t");
+                    if (bb != std::string::npos) {
+                        base = base.substr(bb, be - bb + 1);
+                        acc += sign * factor *
+                               len_px_impl(base, base_px, em_base, vp_w,
+                                           vp_h);
+                    }
+                }
             }
             sign = 1;
         }
@@ -164,11 +252,22 @@ static float len_px_impl(const std::string& v, float base_px, float em_base,
     if (end[0] == 'e' && end[1] == 'm') {
         return n * em_base;
     }
+    if (end[0] == 'r' && end[1] == 'e' && end[2] == 'm') {
+        return n * 16.0f; /* root em: no configurable root font-size */
+    }
     if (end[0] == 'v' && end[1] == 'w') {
         return n * vp_w / 100.0f;
     }
     if (end[0] == 'v' && end[1] == 'h') {
         return n * vp_h / 100.0f;
+    }
+    if (end[0] == 'v' && end[1] == 'm') {
+        /* vmin/vmax: against the smaller/larger viewport axis */
+        float m = vp_w < vp_h ? vp_w : vp_h;
+        if (end[2] == 'a' && end[3] == 'x') {
+            m = vp_w > vp_h ? vp_w : vp_h;
+        }
+        return n * m / 100.0f;
     }
     if (end[0] == 'c' && end[1] == 'h') {
         return n * em_base * 0.5f; /* 1ch ~ half an em (zero width) */
@@ -1012,17 +1111,18 @@ int tag_id_of(lxb_dom_element* el)
     }
 }
 
-/* ::before/::after rule index: build() probes pseudo content/box for EVERY
- * element (4 full-rule scans per element before this index), so the scan
- * cost scales with the whole stylesheet. Bucketing the pseudo rules once
- * per rule set (keyed like style.cpp's g_rule_index) turns the per-element
- * probe into "iterate only the ::before / ::after rules". */
+/* ::before/::after/::marker rule index: build() probes pseudo content/box
+ * for EVERY element (4 full-rule scans per element before this index), so
+ * the scan cost scales with the whole stylesheet. Bucketing the pseudo
+ * rules once per rule set (keyed like style.cpp's g_rule_index) turns the
+ * per-element probe into "iterate only the matching pseudo rules". */
 struct PseudoRuleIndex
 {
     const whaleui_css_rule_t* rules = nullptr;
     size_t count = 0;
     std::vector<size_t> before; /* rules whose selector contains ::before */
     std::vector<size_t> after;  /* rules whose selector contains ::after */
+    std::vector<size_t> marker; /* rules whose selector contains ::marker */
 };
 PseudoRuleIndex g_pseudo_idx;
 std::mutex g_pseudo_mtx;
@@ -1042,7 +1142,8 @@ struct Builder
      * whaleui_layout_append_rows on later frames). */
     size_t row_budget = std::numeric_limits<size_t>::max();
 
-    /* bucket of rule indices carrying the pseudo-element `which` (1/2) */
+    /* bucket of rule indices carrying the pseudo-element `which`
+     * (1 = ::before, 2 = ::after, 3 = ::marker) */
     const std::vector<size_t>* pseudo_bucket(int which)
     {
         std::lock_guard<std::mutex> lk(g_pseudo_mtx);
@@ -1051,6 +1152,7 @@ struct Builder
             g_pseudo_idx.count = rule_count;
             g_pseudo_idx.before.clear();
             g_pseudo_idx.after.clear();
+            g_pseudo_idx.marker.clear();
             for (size_t i = 0; i < rule_count; ++i) {
                 const char* sel = rules[i].selector;
                 if (!sel) {
@@ -1062,9 +1164,18 @@ struct Builder
                 if (std::strstr(sel, "::after") != nullptr) {
                     g_pseudo_idx.after.push_back(i);
                 }
+                if (std::strstr(sel, "::marker") != nullptr) {
+                    g_pseudo_idx.marker.push_back(i);
+                }
             }
         }
-        return which == 1 ? &g_pseudo_idx.before : &g_pseudo_idx.after;
+        if (which == 1) {
+            return &g_pseudo_idx.before;
+        }
+        if (which == 3) {
+            return &g_pseudo_idx.marker;
+        }
+        return &g_pseudo_idx.after;
     }
     const std::map<lxb_dom_element*, int>* scrolls;
     whaleui_anim_t* anim;
@@ -1102,6 +1213,30 @@ struct Builder
                 ((out[0] == '\'' && out[out.size() - 1] == '\'') ||
                  (out[0] == '"' && out[out.size() - 1] == '"'))) {
                 out = out.substr(1, out.size() - 2);
+                return;
+            }
+            /* content:attr(name) - the element's attribute value */
+            size_t b = out.find_first_not_of(" \t");
+            if (b != std::string::npos &&
+                out.compare(b, 5, "attr(") == 0 && !out.empty() &&
+                out.back() == ')') {
+                std::string an = out.substr(b + 5, out.size() - b - 6);
+                size_t ab = an.find_first_not_of(" \t");
+                size_t ae = an.find_last_not_of(" \t");
+                if (ab != std::string::npos) {
+                    an = an.substr(ab, ae - ab + 1);
+                    size_t alen = 0;
+                    const lxb_char_t* av = lxb_dom_element_get_attribute(
+                        el, reinterpret_cast<const lxb_char_t*>(an.c_str()),
+                        an.size(), &alen);
+                    out.clear();
+                    if (av && alen > 0) {
+                        out.assign(reinterpret_cast<const char*>(av), alen);
+                    }
+                } else {
+                    out.clear();
+                }
+                return;
             }
             return;
         }
@@ -1678,10 +1813,12 @@ struct Builder
             }
         }
         bool summary_seen = false;
-        /* inline markers injected into the first text run (C++ work: the
-         * engine has no ::marker or [attr] selector):
-         *   <summary> in <details>  -> 鈻糕柛collapse indicator
-         *   <li> in <ul>/<ol>       -> bullet "鈥? / ordinal "N. " */
+        /* inline markers injected into the first text run:
+         *   <summary> in <details>  -> ▸/▾ collapse indicator
+         *   <li> in <ul>/<ol>       -> bullet "•" / ordinal "N. "
+         * list-style-type on the list overrides the glyph ("none" drops it,
+         * "square"/"circle"/"disc" swap it, "decimal"/"lower-alpha" change
+         * the ordinal); a ::marker rule's content replaces it wholesale. */
         std::string run_marker;
         bool run_marker_done = false;
         if (n->el && parent && parent->el) {
@@ -1697,6 +1834,23 @@ struct Builder
                         : "\xe2\x96\xb8 ";
             } else if (plen == 2 && std::memcmp(pname, "ul", 2) == 0) {
                 run_marker = "\xe2\x80\xa2 "; /* bullet */
+                std::string lst = get(n->style, "list-style-type");
+                if (lst.empty() && parent) {
+                    /* list-style-type inherits from the list element */
+                    auto pit = parent->style.find("list-style-type");
+                    if (pit != parent->style.end()) {
+                        lst = pit->second;
+                    }
+                }
+                if (lst == "none") {
+                    run_marker.clear();
+                } else if (lst == "square") {
+                    run_marker = "\xe2\x96\xaa ";
+                } else if (lst == "circle") {
+                    run_marker = "\xe2\x97\xaf ";
+                } else if (lst == "disc") {
+                    run_marker = "\xe2\x80\xa2 ";
+                }
             } else if (plen == 2 && std::memcmp(pname, "ol", 2) == 0) {
                 int idx = 1;
                 for (lxb_dom_node* s = n->el->node.prev; s; s = s->prev) {
@@ -1705,6 +1859,64 @@ struct Builder
                     }
                 }
                 run_marker = std::to_string(idx) + ". ";
+                std::string lst = get(n->style, "list-style-type");
+                if (lst.empty() && parent) {
+                    auto pit = parent->style.find("list-style-type");
+                    if (pit != parent->style.end()) {
+                        lst = pit->second;
+                    }
+                }
+                if (lst == "none") {
+                    run_marker.clear();
+                } else if (lst == "lower-alpha" || lst == "upper-alpha") {
+                    /* 1->a, 27->aa (upper-alpha uppercases) */
+                    std::string alpha;
+                    int v = idx;
+                    while (v > 0) {
+                        --v;
+                        alpha.insert(alpha.begin(),
+                                     static_cast<char>('a' + (v % 26)));
+                        v /= 26;
+                    }
+                    if (lst == "upper-alpha") {
+                        for (size_t k = 0; k < alpha.size(); ++k) {
+                            alpha[k] = static_cast<char>(alpha[k] - 32);
+                        }
+                    }
+                    run_marker = alpha + ". ";
+                } else if (lst == "lower-roman" || lst == "upper-roman") {
+                    static const int vals[] = {1000, 900, 500, 400, 100, 90,
+                                               50,   40,  10,  9,   5,   4,
+                                               1};
+                    static const char* syms[] = {
+                        "m", "cm", "d", "cd", "c", "xc", "l",
+                        "xl", "x", "ix", "v", "iv", "i"};
+                    std::string roman;
+                    int v = idx;
+                    for (size_t k = 0;
+                         k < sizeof(vals) / sizeof(vals[0]); ++k) {
+                        while (v >= vals[k]) {
+                            roman += syms[k];
+                            v -= vals[k];
+                        }
+                    }
+                    if (lst == "upper-roman") {
+                        for (size_t k = 0; k < roman.size(); ++k) {
+                            roman[k] = static_cast<char>(roman[k] - 32);
+                        }
+                    }
+                    run_marker = roman + ". ";
+                }
+            }
+            /* ::marker content replaces the marker wholesale. The rule
+             * targets the item itself ("li::marker"), so match against the
+             * item element (n->el), not the list. */
+            if (!run_marker_done && !run_marker.empty() && n->el) {
+                std::string mk;
+                pseudo_content(n->el, 3, mk);
+                if (!mk.empty()) {
+                    run_marker = mk + " ";
+                }
             }
         }
         /* append `c` to parent `p`: keeps the sibling chain AND the chunk
@@ -2031,6 +2243,27 @@ struct Builder
         float vh = static_cast<float>(tree->viewport_h);
         float wpx = len_or_auto_vp(get(n->style, "width"), static_cast<float>(cw), em, vw, vh, &w_auto);
         float hpx = len_or_auto_vp(get(n->style, "height"), static_cast<float>(ch), em, vw, vh, &h_auto);
+        /* aspect-ratio: "w / h" fills the auto axis from the resolved one
+         * (preferred over content sizing; min/max clamp afterwards as
+         * usual). "auto" disables. */
+        std::string arv = get(n->style, "aspect-ratio");
+        if (!arv.empty() && arv != "auto" && arv != "none") {
+            size_t slash = arv.find('/');
+            if (slash != std::string::npos) {
+                float aw = static_cast<float>(std::atof(arv.c_str()));
+                float ah = static_cast<float>(
+                    std::atof(arv.c_str() + slash + 1));
+                if (aw > 0 && ah > 0) {
+                    if (w_auto && !h_auto && hpx > 0) {
+                        wpx = hpx * aw / ah;
+                        w_auto = false;
+                    } else if (!w_auto && h_auto && wpx > 0) {
+                        hpx = wpx * ah / aw;
+                        h_auto = false;
+                    }
+                }
+            }
+        }
         std::string box_sizing = get(n->style, "box-sizing");
         bool border_box = box_sizing == "border-box";
 
@@ -2243,6 +2476,17 @@ struct Builder
          * The root element (html) always scrolls: content taller than the
          * viewport scrolls the page (browser default). */
         std::string ov = get(n->style, "overflow");
+        if (ov.empty()) {
+            /* overflow-x/-y longhands count when the shorthand is absent */
+            std::string ox = get(n->style, "overflow-x");
+            std::string oy = get(n->style, "overflow-y");
+            if (ox == "auto" || ox == "scroll" ||
+                oy == "auto" || oy == "scroll") {
+                ov = "auto";
+            } else if (ox == "hidden" || oy == "hidden") {
+                ov = "hidden";
+            }
+        }
         bool scrollable = !n->pseudo &&
                           (ov == "auto" || ov == "scroll" ||
                            (n == tree->root && tree->root->scroll_y > 0));
@@ -2308,8 +2552,12 @@ struct Builder
                 /* content taller than an explicit height: overflow:visible
                  * keeps the content reachable (page height covers it),
                  * but overflow:hidden clips instead of stretching (a
-                 * height:100% app pane must stay at its viewport share) */
+                 * height:100% app pane must stay at its viewport share).
+                 * overflow-y:hidden counts like the shorthand. */
                 std::string ov2 = get(n->style, "overflow");
+                if (ov2.empty()) {
+                    ov2 = get(n->style, "overflow-y");
+                }
                 if (ov2 != "hidden") {
                     bh = kid_cursor;
                 }

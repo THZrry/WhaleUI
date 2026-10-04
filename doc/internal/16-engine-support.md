@@ -86,8 +86,8 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 |----|------|------|
 | 基础 | `*`、`tag`、`.class`、`#id`、`[attr]`、`[attr="v"]`、`A,B` | ✅ |
 | 组合器 | 后代、`>`、`+`、`~` | ✅ |
-| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()` `::before` `::after` `::placeholder` | ✅ |
-| 50% | `[attr^=]` `[attr$=]` `[attr*=]`（**部分**：解析支持，未逐项实测）、`:nth-child()` `:nth-of-type()` `:empty` `:target` `:focus-within` `:enabled` `:disabled` `:checked` `:valid` `:invalid`、`::selection` `::marker` | ⚠️ |
+| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()` `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` | ✅ |
+| 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()` `:where()` `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
 | 20% | `:is()` `:where()` `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible`、`::first-line` `::first-letter` | ⚠️ 多数未实现 |
 
 - `:checked` 匹配 `checked` / `selected` **属性**（点击引擎画的原生 checkbox
@@ -106,24 +106,40 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 组 | 函数 | 状态 |
 |----|------|------|
 | 80% | `rgb() rgba() hsl() hsla()`、`var()`、`url()`、`calc()`、`linear-gradient()` | ✅ |
-| 50% | `min()` `max()` `clamp()`、`radial-gradient()`、`counter()` `counters()` `attr()` | ⚠️ 数学函数 ✅（实测）；`radial-gradient` 走 `parse_gradient` 的 radial 分支，**未逐项实测**；`counter()/attr()` ❌ |
-| 20% | `hwb()`、`oklab/oklch/lab/lch`、`color-mix()`、`conic-gradient()`、`repeating-*-gradient()`、`image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
+| 50% | `min()` `max()` `clamp()`（N 元 + `calc()` 乘除 + `rem`/`vmin`/`vmax`）、`radial-gradient()`（size 关键字 + position 关键字，见备注）、`attr()`（`content` 内） | ✅ |
+| 20% | `hwb()`、`oklab/oklch/lab/lch`、`color-mix()`、`conic-gradient()`、`repeating-*-gradient()`、`image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()`、`counter()` `counters()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
+
+备注（新增）：
+
+- `animation-play-state` 生效（`paused` 冻结/`running` 恢复，apply 与 tick
+  双路径）；多过渡 per-property duration/delay/timing（逗号列表按索引循环，
+  不再坍缩到第一组）。
+- `object-position` 生效（cover/contain 拟合后定位）；附带修 object-fit 轴
+  选反 + RGB24 无 alpha 图蓝通道丢失（转 RGBA32）。
+- `aspect-ratio: w/h` 单轴 auto 时从另一轴推；sticky 支持 bottom/right
+  （相对视口远边）+ 容器钳制；`scrollbar-width/color` 可配；
+  `list-style-type`（square/circle/none/alpha/roman）+ `li::marker{content}`；
+  `overflow-x/y` 分写。
+- `radial-gradient` 的 closest/farthest-side/corner 由 `radial_resolve` 按盒
+  解算（circle 取单半径；ellipse 取双轴）。
 
 ## 仍未做（连同原因）
 
 1. **`transform: rotate()` 的文本/子树**：解析、插值、背景/边框/渐变轴/命
    中的旋转都有了（GPU 顶点旋转 + 渐变投影同转 + hit_test 逆旋转重测，
-   notes <15>/<16>）。文本、子元素仍直立；要全部转需要一条矩阵 paint
-   路径（文本/子树走同一变换）。`::before` 状态层不随转；`transform-origin`
-   固定中心。
+   notes <15>/<16>；锚点走 `transform-origin`，<17>）。文本、子元素仍直立；
+   要全部转需要一条矩阵 paint 路径（文本/子树走同一变换）。
+   `::before` 状态层不随转。
 2. **`conic-gradient` / `repeating-*-gradient` / `image-set` / `hwb()` /
    `oklab/oklch/lab/lch` / `color-mix()`**：`whaleui_render_parse_color` 认
    hex、`rgb()/rgba()`、`hsl()/hsla()` 与具名色，其余不认。
 3. **`backdrop-filter` / `inset` 的 CPU 回退**：GPU 有（双档近似 / mask
    反演），Minimal/软件路径只画 body（backdrop 不模糊；inset 是带 offset
    的同心环近似）。
-4. **`::first-line` / `::first-letter` / `::marker`**：伪元素只支持 `::before`/`::after`。
-5. `:has()` 等高级选择器、容器查询、`filter`/混合模式。
+4. **`::first-line` / `::first-letter`**：伪元素支持
+   `::before`/`::after`/`::marker`/`::selection`/`::placeholder`。
+5. `:has()` 等高级选择器、容器查询、`filter`/混合模式/`clip-path`/`mask`、
+   `skew/matrix/3D`、`counter()`。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与
 `notes/current.md`（未解决项）里，别让它们只剩在一个地方。

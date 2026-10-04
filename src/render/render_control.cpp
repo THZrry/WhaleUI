@@ -306,17 +306,24 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         unsigned int pc = fg;
         if (shown.empty()) {
             /* placeholder: shown only while the value is empty (browser
-             * behavior); the muted theme color keeps it visually secondary */
+             * behavior); ::placeholder{color} wins, then the muted theme
+             * color keeps it visually secondary */
             size_t plen = 0;
             const lxb_char_t* ph = lxb_dom_element_get_attribute(
                 el, (const lxb_char_t*)"placeholder", 11, &plen);
             if (ph && plen > 0) {
                 shown.assign(reinterpret_cast<const char*>(ph), plen);
-                auto mi = r->theme_vars.find("--muted");
-                if (mi != r->theme_vars.end()) {
-                    whaleui_render_parse_color(mi->second.c_str(), &pc);
+                std::string phc = sget(n->style, "placeholder-color");
+                if (!phc.empty() &&
+                    whaleui_render_parse_color(phc.c_str(), &pc) == 0) {
+                    /* styled placeholder color */
                 } else {
-                    pc = 0x99808080;
+                    auto mi = r->theme_vars.find("--muted");
+                    if (mi != r->theme_vars.end()) {
+                        whaleui_render_parse_color(mi->second.c_str(), &pc);
+                    } else {
+                        pc = 0x99808080;
+                    }
                 }
             }
         }
@@ -379,9 +386,15 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             el, (const lxb_char_t*)"placeholder", 11, &plen);
         if (ph && plen > 0) {
             unsigned int pc = 0x99808080;
-            auto mi = r->theme_vars.find("--muted");
-            if (mi != r->theme_vars.end()) {
-                whaleui_render_parse_color(mi->second.c_str(), &pc);
+            std::string phc = sget(n->style, "placeholder-color");
+            if (!phc.empty() &&
+                whaleui_render_parse_color(phc.c_str(), &pc) == 0) {
+                /* styled placeholder color */
+            } else {
+                auto mi = r->theme_vars.find("--muted");
+                if (mi != r->theme_vars.end()) {
+                    whaleui_render_parse_color(mi->second.c_str(), &pc);
+                }
             }
             std::string phs(reinterpret_cast<const char*>(ph), plen);
             draw_text_at(r, phs, n->content.x + off_x,
@@ -568,7 +581,22 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (n->scroll_max <= 0 || n->border.h < 24) {
         return;
     }
-    const int bw = 8;
+    /* scrollbar-width: thin (8px default) / none (hidden) / <px>.
+     * none hides the bar but keeps scrolling. */
+    int bw = 8;
+    std::string sbw = sget(n->style, "scrollbar-width");
+    if (sbw == "none") {
+        return;
+    } else if (sbw == "thin") {
+        bw = 8;
+    } else if (sbw == "auto" || sbw.empty()) {
+        bw = 8;
+    } else {
+        int v = std::atoi(sbw.c_str());
+        if (v > 0 && v <= 32) {
+            bw = v;
+        }
+    }
     int track_x = n->border.x + off_x + n->border.w - bw;
     int track_y = n->border.y + off_y;
     int track_h = n->border.h;
@@ -612,6 +640,24 @@ void paint_scrollbar(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (whaleui_render_parse_color(it->second.c_str(), &c) == 0) {
             track = (0x18 << 24) | (c & 0x00FFFFFF);
             thumb = (0x55 << 24) | (c & 0x00FFFFFF);
+        }
+    }
+    /* scrollbar-color: "<thumb> <track>" (single color = thumb only) */
+    std::string sbc = sget(n->style, "scrollbar-color");
+    if (!sbc.empty() && sbc != "auto") {
+        std::vector<std::string> toks = split_space2(sbc);
+        unsigned int c0 = 0, c1 = 0;
+        bool has0 = !toks.empty() &&
+                    whaleui_render_parse_color(toks[0].c_str(), &c0) == 0;
+        bool has1 = toks.size() > 1 &&
+                    whaleui_render_parse_color(toks[1].c_str(), &c1) == 0;
+        if (has0) {
+            unsigned int a = (thumb >> 24) & 0xFF;
+            thumb = (a << 24) | (c0 & 0x00FFFFFF);
+        }
+        if (has1) {
+            unsigned int a = (track >> 24) & 0xFF;
+            track = (a << 24) | (c1 & 0x00FFFFFF);
         }
     }
     /* the scrollbar column is repainted as its own region, IGNORING the

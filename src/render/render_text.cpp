@@ -2256,31 +2256,54 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         }
     }
     /* -webkit-text-stroke: 8-direction outline copies (stroke width is
-     * usually 1px; outline color replaces the transparent fill) */
+     * usually 1px; outline color replaces the transparent fill). Longhands
+     * -webkit-text-stroke-width / -webkit-text-stroke-color (and the
+     * unprefixed text-stroke-width/color) fill in when the shorthand does
+     * not carry that half. */
     std::string tsk = sget(n->style, "-webkit-text-stroke");
     if (tsk.empty()) {
         tsk = sget(n->style, "text-stroke");
     }
-    if (!tsk.empty() && tsk != "none") {
+    std::string tsw = sget(n->style, "-webkit-text-stroke-width");
+    if (tsw.empty()) {
+        tsw = sget(n->style, "text-stroke-width");
+    }
+    std::string tsc = sget(n->style, "-webkit-text-stroke-color");
+    if (tsc.empty()) {
+        tsc = sget(n->style, "text-stroke-color");
+    }
+    if ((!tsk.empty() && tsk != "none") || !tsw.empty() || !tsc.empty()) {
         std::vector<std::string> toks = split_space2(tsk);
         int sw = 1;
         unsigned int scc = 0xFF000000;
+        bool sw_set = false, sc_set = false;
         if (!toks.empty()) {
             char* end = nullptr;
             float w = std::strtof(toks[0].c_str(), &end);
             if (end != toks[0].c_str()) {
                 sw = w > 0 ? static_cast<int>(w) : 1;
+                sw_set = true;
             }
             std::string cstr;
-            for (size_t i = 1; i < toks.size(); ++i) {
+            for (size_t i = sw_set ? 1 : 0; i < toks.size(); ++i) {
                 if (!cstr.empty()) {
                     cstr += ' ';
                 }
                 cstr += toks[i];
             }
-            if (!cstr.empty()) {
-                whaleui_render_parse_color(cstr.c_str(), &scc);
+            if (!cstr.empty() &&
+                whaleui_render_parse_color(cstr.c_str(), &scc) == 0) {
+                sc_set = true;
             }
+        }
+        if (!sw_set && !tsw.empty()) {
+            sw = std::atoi(tsw.c_str());
+            if (sw <= 0) {
+                sw = 1;
+            }
+        }
+        if (!sc_set && !tsc.empty()) {
+            whaleui_render_parse_color(tsc.c_str(), &scc);
         }
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {

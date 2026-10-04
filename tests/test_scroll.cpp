@@ -1978,6 +1978,209 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* batch-1 small features:
+     * - ::placeholder{color} tints the placeholder (input value empty);
+     * - text-stroke-color longhand colors the glyph outline;
+     * - overflow-x:hidden clips (longhand, no shorthand);
+     * - object-position:right bottom pins a contain-fit image. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "batch1", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "input::placeholder{color:#ff0000}"
+                   "#ph{position:absolute;left:10px;top:10px;width:180px;"
+                   "font-size:20px;color:#000000}"
+                   "#st{position:absolute;left:10px;top:50px;font-size:24px;"
+                   "color:#000000;text-stroke-width:1px;"
+                   "text-stroke-color:#0000ff}"
+                   "#ov{position:absolute;left:10px;top:90px;width:60px;"
+                   "height:20px;overflow-x:hidden;background:#ffffff}"
+                   "#ov div{width:120px;height:20px;background:#00ff00}"
+                   "</style></head>"
+                   "<body><input id=\"ph\" placeholder=\"hint\">"
+                   "<div id=\"st\">Ab</div>"
+                   "<div id=\"ov\"><div></div></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* placeholder red (not the muted gray): scan the input box */
+            int ph_red = 0;
+            for (int yy = 12; yy < 34; ++yy) {
+                for (int xx = 12; xx < 188; ++xx) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    if (((px >> 16) & 0xFF) > 0x80 && ((px >> 8) & 0xFF) < 0x80 &&
+                        (px & 0xFF) < 0x80) {
+                        ++ph_red;
+                    }
+                }
+            }
+            /* stroked glyph: blue outline around black "A" - blue ink exists */
+            int st_blue = 0;
+            for (int yy = 52; yy < 80; ++yy) {
+                for (int xx = 12; xx < 80; ++xx) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    if ((px & 0xFF) > 0x80 && ((px >> 16) & 0xFF) < 0x80) {
+                        ++st_blue;
+                    }
+                }
+            }
+            /* overflow-x:hidden: green only inside x=10..70 at y=100 */
+            unsigned int ov_in = gpixel(w->render, 40, 100);
+            unsigned int ov_out = gpixel(w->render, 100, 100);
+            std::printf("[batch1] phred=%d stblue=%d in=%08X out=%08X\n",
+                        ph_red, st_blue, ov_in, ov_out);
+            std::fflush(stdout);
+            assert(ph_red > 0);
+            assert(st_blue > 0);
+            assert(((ov_in >> 8) & 0xFF) > 0x80);
+            assert(!(((ov_out >> 8) & 0xFF) > 0x80 &&
+                     ((ov_out >> 16) & 0xFF) < 0x80 &&
+                     (ov_out & 0xFF) < 0x80));
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* content:attr() - the ::before text comes from the attribute */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "attr-content", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:10px;top:10px;font-size:24px;"
+                   "color:#000000}"
+                   "#u::before{content:attr(data-v)}"
+                   "</style></head>"
+                   "<body><div id=\"u\" data-v=\"Hi\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* "Hi" ink exists (a literal "attr(...)" would paint
+             * different/no glyphs, an empty value paints nothing) */
+            int ink = 0;
+            for (int yy = 10; yy < 44; ++yy) {
+                for (int xx = 10; xx < 80; ++xx) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    if (((px >> 16) & 0xFF) < 0x80 &&
+                        ((px >> 8) & 0xFF) < 0x80 && (px & 0xFF) < 0x80 &&
+                        (((px >> 16) & 0xFF) + ((px >> 8) & 0xFF) +
+                         (px & 0xFF)) > 0) {
+                        ++ink;
+                    }
+                }
+            }
+            std::printf("[attr] ink=%d\n", ink);
+            std::fflush(stdout);
+            assert(ink > 0);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* radial-gradient size keywords + focus-within:
+     * closest-side circle in a 100x60 box centered => radius 30, red
+     * center fading out by the edges; focusing the input makes the form
+     * match :focus-within (green border proxy via background change). */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "batch3", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:60px;background:radial-gradient(circle "
+                   "closest-side at 50% 50%, #ff0000, #0000ff)}"
+                   "#f{position:absolute;left:20px;top:100px;width:160px;"
+                   "height:60px;background:#ffffff}"
+                   "#f:focus-within{background:#00ff00}"
+                   "#f input{width:140px}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div>"
+                   "<div id=\"f\"><input id=\"in\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* center red (radius 30 covers it), corner blue-ish */
+            unsigned int ctr = gpixel(w->render, 70, 50);
+            unsigned int corner = gpixel(w->render, 24, 24);
+            /* focus the input: click it, the form goes green. Sample the
+             * form's bottom-right (outside the input box itself). */
+            whaleui_render_set_pressed(w->render, 40, 130, 1);
+            whaleui_render_set_pressed(w->render, 0, 0, 0);
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int fbg = gpixel(w->render, 150, 150);
+            std::printf("[batch3] ctr=%08X corner=%08X fbg=%08X\n", ctr,
+                        corner, fbg);
+            std::fflush(stdout);
+            assert(((ctr >> 16) & 0xFF) > 0x80);
+            assert((corner & 0xFF) > ((corner >> 16) & 0xFF));
+            assert(((fbg >> 8) & 0xFF) > 0x80 &&
+                   ((fbg >> 16) & 0xFF) < 0x80);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* batch4: aspect-ratio + list-style-type + sticky bottom.
+     * - #ar has width only + aspect-ratio 2/1 => height = w/2;
+     * - square bullets + lower-alpha ordinals via list-style-type;
+     * - sticky bottom bar: scrolling up pins it above the viewport
+     *   bottom (it would otherwise scroll off with the content). */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "batch4", 200, 300);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#ar{width:100px;aspect-ratio:2 / 1;"
+                   "background-color:#ff0000}"
+                   "ul{list-style-type:square}"
+                   "ol{list-style-type:lower-alpha}"
+                   "#sp{height:200px}"
+                   "#st{position:sticky;bottom:0;height:20px;"
+                   "background-color:#0000ff}"
+                   "#tail{height:30px}"
+                   "</style></head>"
+                   "<body><div id=\"ar\"></div>"
+                   "<ul><li>a</li></ul><ol><li>b</li></ol>"
+                   "<div id=\"sp\"></div><div id=\"st\"></div>"
+                   "<div id=\"tail\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* aspect-ratio: 100x50 red box */
+            unsigned int arc = gpixel(w->render, 50, 25);
+            unsigned int below = gpixel(w->render, 50, 75);
+            /* scroll to the very bottom: the sticky bar (30px of tail
+             * below it) would scroll 30px past the viewport bottom;
+             * bottom:0 pins it at 280..300 instead. */
+            whaleui_render_handle_wheel(w->render, 100, 150, -20);
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int stb = gpixel(w->render, 100, 290);
+            std::printf("[batch4] ar=%08X below=%08X sticky=%08X\n", arc,
+                        below, stb);
+            std::fflush(stdout);
+            assert(((arc >> 16) & 0xFF) > 0x80);
+            /* below the 50px box: page background, not red */
+            assert(!(((below >> 16) & 0xFF) > 0x80 &&
+                     ((below >> 8) & 0xFF) < 0x80 && (below & 0xFF) < 0x80));
+            assert((stb & 0xFF) > 0x80 && ((stb >> 16) & 0xFF) < 0x80);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

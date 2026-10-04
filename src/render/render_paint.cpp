@@ -889,32 +889,109 @@ void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     SDL_Surface* img = img_surface(r, srcs);
     if (img && img->w > 0 && img->h > 0) {
         /* object-fit: cover keeps the aspect and crops, contain letterboxes,
-         * fill (default) stretches */
+         * fill (default) stretches. object-position (default center) moves
+         * the fitted image inside the box: keywords / % / px per axis. */
         std::string of = sget(n->style, "object-fit");
         int dw = w, dh = h, dx = x, dy = y;
         if (of == "cover" || of == "contain") {
             float ar = static_cast<float>(img->w) / img->h;
             float dar = w > 0 ? static_cast<float>(w) / h : 1.0f;
-            if ((of == "cover") == (ar > dar)) {
+            /* cover takes the larger scale (crop the overflow), contain
+             * the smaller (letterbox the remainder): fit by width iff the
+             * width is the constraining axis. (The old
+             * `(cover)==(ar>dar)` test had it backwards: square-in-wide
+             * under contain overflowed the box height, and every cover
+             * left a gap on the wrong axis.) */
+            bool by_w = (of == "cover") != (ar > dar);
+            if (by_w) {
                 dh = static_cast<int>(w / ar);
-                dy = y + (h - dh) / 2;
             } else {
                 dw = static_cast<int>(h * ar);
-                dx = x + (w - dw) / 2;
             }
+            float fx = 0.5f, fy = 0.5f; /* object-position, 0..1 */
+            std::vector<std::string> op =
+                split_space2(sget(n->style, "object-position"));
+            if (op.size() == 1) {
+                /* single value: horizontal unless top/bottom */
+                if (op[0] == "left") {
+                    fx = 0.0f;
+                } else if (op[0] == "right") {
+                    fx = 1.0f;
+                } else if (op[0] == "top") {
+                    fy = 0.0f;
+                } else if (op[0] == "bottom") {
+                    fy = 1.0f;
+                } else if (op[0] == "center") {
+                    /* defaults */
+                } else if (!op[0].empty() && op[0].back() == '%') {
+                    fx = static_cast<float>(std::atof(op[0].c_str())) / 100.0f;
+                } else if (!op[0].empty()) {
+                    float pxv = static_cast<float>(std::atof(op[0].c_str()));
+                    fx = (w - dw) != 0 ? pxv / (w - dw) : 0.5f;
+                }
+            } else if (op.size() >= 2) {
+                fx = op[0] == "left"    ? 0.0f
+                     : op[0] == "right" ? 1.0f
+                     : op[0] == "center"
+                         ? 0.5f
+                         : (!op[0].empty() && op[0].back() == '%'
+                                ? static_cast<float>(std::atof(op[0].c_str())) /
+                                      100.0f
+                                : ((w - dw) != 0
+                                       ? static_cast<float>(
+                                             std::atof(op[0].c_str())) /
+                                             (w - dw)
+                                       : 0.5f));
+                fy = op[1] == "top"    ? 0.0f
+                     : op[1] == "bottom" ? 1.0f
+                     : op[1] == "center"
+                         ? 0.5f
+                         : (!op[1].empty() && op[1].back() == '%'
+                                ? static_cast<float>(std::atof(op[1].c_str())) /
+                                      100.0f
+                                : ((h - dh) != 0
+                                       ? static_cast<float>(
+                                             std::atof(op[1].c_str())) /
+                                             (h - dh)
+                                       : 0.5f));
+            }
+            if (fx < 0.0f) {
+                fx = 0.0f;
+            }
+            if (fx > 1.0f) {
+                fx = 1.0f;
+            }
+            if (fy < 0.0f) {
+                fy = 0.0f;
+            }
+            if (fy > 1.0f) {
+                fy = 1.0f;
+            }
+            dx = x + static_cast<int>((w - dw) * fx);
+            dy = y + static_cast<int>((h - dh) * fy);
         }
         if (dw > 0 && dh > 0) {
             SDL_Surface* scaled = SDL_ScaleSurface(img, dw, dh,
                                                    SDL_SCALEMODE_LINEAR);
-            if (scaled) {
+            /* blend_surface reads RGBA32 (s[3] is alpha): an RGB24 source
+             * (JPEG, small PNG) has no alpha byte, so the pixel AFTER each
+             * triplet was read as alpha - blue pixels (R=0) came out
+             * transparent and vanished. Convert once. */
+            SDL_Surface* rgba = scaled;
+            if (scaled &&
+                scaled->format != SDL_PIXELFORMAT_RGBA32) {
+                rgba = SDL_ConvertSurface(scaled, SDL_PIXELFORMAT_RGBA32);
+                SDL_DestroySurface(scaled);
+            }
+            if (rgba) {
                 if (g_gpu) {
-                    blend_surface(r->text_layer, r->fb_w, r->fb_h, scaled,
+                    blend_surface(r->text_layer, r->fb_w, r->fb_h, rgba,
                                   dx, dy, clip, nullptr);
                 } else {
-                    blend_surface(r->pixels, r->fb_w, r->fb_h, scaled,
+                    blend_surface(r->pixels, r->fb_w, r->fb_h, rgba,
                                   dx, dy, clip, nullptr);
                 }
-                SDL_DestroySurface(scaled);
+                SDL_DestroySurface(rgba);
             }
         }
         return;
@@ -1177,17 +1254,62 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         off_x = 0;
         off_y = 0;
     }
-    /* position:sticky: keep the box pinned at top:N once scrolling would
-     * push it past that edge (the layout pass already shifted the box by
-     * the scroll amount, so border.y + off_y is the current viewport
-     * position). Simplified to the page/root scroll; container-bottom
-     * clamping is skipped (ponytail: add when a page needs it). */
+    /* position:sticky: keep the box pinned inside the top/left/right/
+     * bottom offsets once scrolling would push it past an edge (the layout
+     * pass already shifted the box by the scroll amount, so border + off
+     * is the current viewport position). top/left pin against the viewport
+     * origin; bottom/right pin against the viewport far edge (r->fb_w/h);
+     * the box also never leaves its parent's content box (container
+     * clamping, in document coords). Simplified to the page/root scroll. */
     if (n->sk) {
-        /* top is usually px; %/vh are rare on sticky (ponytail) */
-        int st = std::atoi(sget(n->style, "top").c_str());
-        int cur = n->border.y + off_y;
-        if (cur < st) {
-            off_y += st - cur;
+        int cur_x = n->border.x + off_x;
+        int cur_y = n->border.y + off_y;
+        std::string stv = sget(n->style, "top");
+        std::string slv = sget(n->style, "left");
+        std::string sbv = sget(n->style, "bottom");
+        std::string srv = sget(n->style, "right");
+        if (!stv.empty() && stv != "auto") {
+            int st = std::atoi(stv.c_str());
+            if (cur_y < st) {
+                off_y += st - cur_y;
+                cur_y = st;
+            }
+        }
+        if (!slv.empty() && slv != "auto") {
+            int sl = std::atoi(slv.c_str());
+            if (cur_x < sl) {
+                off_x += sl - cur_x;
+                cur_x = sl;
+            }
+        }
+        if (!sbv.empty() && sbv != "auto") {
+            int sb = std::atoi(sbv.c_str());
+            int lim = r->fb_h - n->border.h - sb;
+            if (cur_y > lim) {
+                off_y -= cur_y - lim;
+                cur_y = lim;
+            }
+        }
+        if (!srv.empty() && srv != "auto") {
+            int sr = std::atoi(srv.c_str());
+            int lim = r->fb_w - n->border.w - sr;
+            if (cur_x > lim) {
+                off_x -= cur_x - lim;
+                cur_x = lim;
+            }
+        }
+        if (n->parent && !n->parent->is_text) {
+            /* container clamp (document coords): the sticky box never
+             * leaves its parent's content box */
+            int pex = n->parent->border.x + n->parent->border.w;
+            int pey = n->parent->border.y + n->parent->border.h;
+            if (n->border.y + n->border.h > pey) {
+                int over = n->border.y + n->border.h - pey;
+                off_y -= over;
+            }
+            if (n->border.x + n->border.w > pex) {
+                off_x -= n->border.x + n->border.w - pex;
+            }
         }
     }
     /* transform: translate (px/%) + scale around the transform-origin +
@@ -1235,10 +1357,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         clear_subtree_text(r, n, off_x, off_y);
     }
     /* overflow: hidden/auto/scroll clips descendants to the border box
-     * (auto/scroll containers also shift children by scroll_y at layout) */
+     * (auto/scroll containers also shift children by scroll_y at layout).
+     * overflow-x/-y longhands count when the shorthand is absent. */
     Clip self;
     const Clip* eff = clip;
     std::string ov = sget(n->style, "overflow");
+    if (ov.empty()) {
+        std::string ox = sget(n->style, "overflow-x");
+        std::string oy = sget(n->style, "overflow-y");
+        if (ox == "hidden" || ox == "auto" || ox == "scroll" ||
+            oy == "hidden" || oy == "auto" || oy == "scroll") {
+            ov = "hidden"; /* clip; scroll deltas still come from layout */
+        }
+    }
     if (ov == "hidden" || ov == "auto" || ov == "scroll") {
         self.x = n->border.x + nox;
         self.y = n->border.y + noy;

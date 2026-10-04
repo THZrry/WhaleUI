@@ -930,11 +930,23 @@ int font_size_px(whaleui_render_t* r, const std::string& v)
         if (end[0] == 'e' && end[1] == 'm') {
             return n * em;
         }
+        if (end[0] == 'r' && end[1] == 'e' && end[2] == 'm') {
+            return n * 16.0f; /* root em: fixed 16 (mirrors layout) */
+        }
         if (end[0] == 'v' && end[1] == 'w') {
             return n * static_cast<float>(r->fb_w) / 100.0f;
         }
         if (end[0] == 'v' && end[1] == 'h') {
             return n * static_cast<float>(r->fb_h) / 100.0f;
+        }
+        if (end[0] == 'v' && end[1] == 'm') {
+            float m = r->fb_w < r->fb_h ? static_cast<float>(r->fb_w)
+                                        : static_cast<float>(r->fb_h);
+            if (end[2] == 'a' && end[3] == 'x') {
+                m = r->fb_w > r->fb_h ? static_cast<float>(r->fb_w)
+                                      : static_cast<float>(r->fb_h);
+            }
+            return n * m / 100.0f;
         }
         return n; /* px / unitless */
     };
@@ -993,22 +1005,32 @@ int font_size_px(whaleui_render_t* r, const std::string& v)
         if (t.compare(0, 4, "min(") == 0) {
             std::vector<std::string> args;
             split_args(t, 4, args);
-            if (args.size() != 2) {
+            if (args.empty()) {
                 return 0;
             }
-            float a = term_px(args[0], em);
-            float b = term_px(args[1], em);
-            return a < b ? a : b;
+            float m = term_px(args[0], em);
+            for (size_t k = 1; k < args.size(); ++k) {
+                float b = term_px(args[k], em);
+                if (b < m) {
+                    m = b;
+                }
+            }
+            return m;
         }
         if (t.compare(0, 4, "max(") == 0) {
             std::vector<std::string> args;
             split_args(t, 4, args);
-            if (args.size() != 2) {
+            if (args.empty()) {
                 return 0;
             }
-            float a = term_px(args[0], em);
-            float b = term_px(args[1], em);
-            return a > b ? a : b;
+            float m = term_px(args[0], em);
+            for (size_t k = 1; k < args.size(); ++k) {
+                float b = term_px(args[k], em);
+                if (b > m) {
+                    m = b;
+                }
+            }
+            return m;
         }
         return term_px(t, em);
     };
@@ -4301,18 +4323,34 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             if (!sa[si]) {
                 continue;
             }
-            whaleui_layout_node_t* nd = find_node_by_el(r->tree, sa[si]);
-            if (!nd) {
-                continue;
+            /* :focus-within bubbles like :hover (see add_with_ancestors
+             * above): the focus element's ancestors must re-cascade too,
+             * or a form's :focus-within rule never applies after click.
+             * Dedup via a small visited set (the 6 slots overlap). */
+            lxb_dom_element* chain[6] = {sa[si], nullptr, nullptr,
+                                         nullptr, nullptr, nullptr};
+            int nc = 1;
+            if (sa[si] == r->focus_el || sa[si] == r->focus_old_el) {
+                for (lxb_dom_node* a = sa[si]->node.parent; a && nc < 6;
+                     a = a->parent) {
+                    if (a->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                        chain[nc++] = lxb_dom_interface_element(a);
+                    }
+                }
             }
-            whaleui_style_state stx;
-            stx.hover = r->hover_el;
-            stx.focus = r->focus_el;
-            stx.pressed = r->pressed_el;
-            whaleui_layout_relayout_style(r->tree, sa[si], r->rules,
-                                          r->rule_count, &r->theme_vars,
-                                          &stx, &r->scrolls, r->anim,
-                                          r->text_scale);
+            for (int ci = 0; ci < nc; ++ci) {
+                if (!find_node_by_el(r->tree, chain[ci])) {
+                    continue;
+                }
+                whaleui_style_state stx;
+                stx.hover = r->hover_el;
+                stx.focus = r->focus_el;
+                stx.pressed = r->pressed_el;
+                whaleui_layout_relayout_style(r->tree, chain[ci], r->rules,
+                                              r->rule_count, &r->theme_vars,
+                                              &stx, &r->scrolls, r->anim,
+                                              r->text_scale);
+            }
         }
         r->bounds_valid = 0; /* subtree paint bounds are stale */
         mark_bounds_dirty_all(r->tree->root);

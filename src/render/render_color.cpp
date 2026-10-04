@@ -121,31 +121,89 @@ int parse_gradient(const std::string& v, Gradient& out)
     }
     size_t first = 1;
     if (!lin) {
-        /* radial first part: "1100px 560px at 72% -12%" / "circle 200px" */
+        /* radial first part: "[circle|ellipse] <size> at <pos>".
+         * Sizes: "200px" (circle r), "110px 60px" (ellipse radii),
+         * closest-side / closest-corner / farthest-side / farthest-corner
+         * (resolved against the box at paint time via rx/ry markers below),
+         * "circle"/"ellipse" alone (defaults). Positions: "72% -12%",
+         * "100px 20px", single value (= horizontal, vertical centers), or
+         * keywords (left/center/right/top/bottom pairs). */
         const std::string& head = parts[0];
         size_t at = head.find(" at ");
         std::string size_s = at == std::string::npos ? head : head.substr(0, at);
         std::string pos_s = at == std::string::npos ? std::string() : head.substr(at + 4);
         if (!pos_s.empty()) {
-            float px = 0, py = 0;
-            if (std::sscanf(pos_s.c_str(), "%f%% %f%%", &px, &py) == 2) {
-                out.cx = px / 100.0f;
-                out.cy = py / 100.0f;
-            } else if (std::sscanf(pos_s.c_str(), "%fpx %fpx", &px, &py) == 2) {
-                out.cx = px;
-                out.cy = py;
-                out.cx += 100.0f; /* marker: absolute px center */
+            std::vector<std::string> pp = split_space2(pos_s);
+            auto pos1 = [&](const std::string& t, float base) -> float {
+                if (t == "left" || t == "top") {
+                    return 0.0f;
+                }
+                if (t == "center") {
+                    return base * 0.5f;
+                }
+                if (t == "right" || t == "bottom") {
+                    return base;
+                }
+                if (!t.empty() && t.back() == '%') {
+                    return static_cast<float>(std::atof(t.c_str())) / 100.0f;
+                }
+                /* px: absolute, marked +100 like the legacy path */
+                return static_cast<float>(std::atof(t.c_str())) + 100.0f;
+            };
+            if (pp.size() == 1) {
+                if (pp[0] == "top" || pp[0] == "bottom") {
+                    out.cy = pos1(pp[0], 1.0f);
+                } else {
+                    out.cx = pos1(pp[0], 1.0f);
+                }
+            } else if (pp.size() >= 2) {
+                /* "left top" order still resolves (swap onto the axes) */
+                bool p0v = pp[0] == "top" || pp[0] == "bottom";
+                bool p1h = pp[1] == "left" || pp[1] == "right";
+                if (p0v && p1h) {
+                    out.cx = pos1(pp[1], 1.0f);
+                    out.cy = pos1(pp[0], 1.0f);
+                } else {
+                    out.cx = pos1(pp[0], 1.0f);
+                    out.cy = pos1(pp[1], 1.0f);
+                }
             }
         }
+        /* size keywords resolve at paint time (need the box); encode as
+         * negative rx markers: -1 closest-side, -2 closest-corner,
+         * -3 farthest-side, -4 farthest-corner (default). */
         float rx = 0, ry = 0;
+        bool sized = false;
         if (std::sscanf(size_s.c_str(), "%fpx %fpx", &rx, &ry) == 2) {
             out.rx = rx;
             out.ry = ry;
+            sized = true;
         } else if (size_s.find("circle") != std::string::npos) {
             const char* c = std::strchr(size_s.c_str(), ' ');
-            if (c) {
+            if (c && std::atof(c) > 0) {
                 out.rx = out.ry = static_cast<float>(std::atof(c));
+            } else {
+                out.rx = out.ry = -4.0f; /* circle farthest-corner */
             }
+            sized = true;
+        } else if (size_s.find("closest-side") != std::string::npos) {
+            out.rx = out.ry = -1.0f;
+            sized = true;
+        } else if (size_s.find("closest-corner") != std::string::npos) {
+            out.rx = out.ry = -2.0f;
+            sized = true;
+        } else if (size_s.find("farthest-side") != std::string::npos) {
+            out.rx = out.ry = -3.0f;
+            sized = true;
+        } else if (size_s.find("farthest-corner") != std::string::npos) {
+            out.rx = out.ry = -4.0f;
+            sized = true;
+        } else if (size_s.find("ellipse") != std::string::npos) {
+            out.rx = out.ry = -4.0f;
+            sized = true;
+        }
+        if (!sized) {
+            out.rx = out.ry = -4.0f; /* default: farthest-corner */
         }
     } else {
         /* linear first part: "90deg" / "to right" */
@@ -234,6 +292,107 @@ int parse_gradient(const std::string& v, Gradient& out)
         }
     }
     return 1;
+}
+
+void radial_resolve(float rx, float ry, float rcx, float rcy, float x,
+                    float y, float w, float h, float* orx, float* ory)
+{
+    float ox = rx, oy = ry;
+    if (rx < 0 || ry < 0) {
+        /* distances from the center to the box edges/corners */
+        float dl = rcx - x, dr = x + w - rcx;
+        float dt = rcy - y, db = y + h - rcy;
+        if (dl < 0) {
+            dl = 0;
+        }
+        if (dr < 0) {
+            dr = 0;
+        }
+        if (dt < 0) {
+            dt = 0;
+        }
+        if (db < 0) {
+            db = 0;
+        }
+        int kind = static_cast<int>(rx < ry ? rx : ry);
+        if (kind == -1) { /* closest-side */
+            float m = dl;
+            if (dr < m) {
+                m = dr;
+            }
+            if (dt < m) {
+                m = dt;
+            }
+            if (db < m) {
+                m = db;
+            }
+            ox = oy = m;
+        } else if (kind == -2) { /* closest-corner */
+            float c1 = std::sqrt(dl * dl + dt * dt);
+            float c2 = std::sqrt(dr * dr + dt * dt);
+            float c3 = std::sqrt(dl * dl + db * db);
+            float c4 = std::sqrt(dr * dr + db * db);
+            float m = c1;
+            if (c2 < m) {
+                m = c2;
+            }
+            if (c3 < m) {
+                m = c3;
+            }
+            if (c4 < m) {
+                m = c4;
+            }
+            ox = oy = m;
+        } else if (kind == -3) { /* farthest-side */
+            float m = dl;
+            if (dr > m) {
+                m = dr;
+            }
+            if (dt > m) {
+                m = dt;
+            }
+            if (db > m) {
+                m = db;
+            }
+            ox = oy = m;
+        } else { /* farthest-corner (default): ellipse radii */
+            float ex = dl > dr ? dl : dr;
+            float ey = dt > db ? dt : db;
+            if (rx < 0 && ry < 0 && rx == ry) {
+                /* circle: single radius to the farthest corner */
+                float c1 = std::sqrt(dl * dl + dt * dt);
+                float c2 = std::sqrt(dr * dr + dt * dt);
+                float c3 = std::sqrt(dl * dl + db * db);
+                float c4 = std::sqrt(dr * dr + db * db);
+                float m = c1;
+                if (c2 > m) {
+                    m = c2;
+                }
+                if (c3 > m) {
+                    m = c3;
+                }
+                if (c4 > m) {
+                    m = c4;
+                }
+                ox = oy = m;
+            } else {
+                ox = ex;
+                oy = ey;
+            }
+        }
+    }
+    if (ox <= 0) {
+        ox = w * 0.5f;
+    }
+    if (oy <= 0) {
+        oy = h * 0.5f;
+    }
+    if (orx) {
+        *orx = ox;
+    }
+    if (ory) {
+        *ory = oy;
+    }
 }
 
 unsigned int grad_color(const Gradient& g, float t)
@@ -340,10 +499,12 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             /* radial: concentric rounded-rect ellipses, alpha fading
              * outwards - a coarse approximation of the per-pixel ellipse
              * distance (10 layers, GPU-trivial) */
-            float rx = g.rx > 0 ? g.rx : w * 0.5f;
-            float ry = g.ry > 0 ? g.ry : h * 0.5f;
             float rcx = g.cx > 1.0f ? g.cx - 100.0f : x + g.cx * w;
-            float rcy = g.cy * h + y;
+            float rcy = g.cy > 1.0f ? g.cy - 100.0f : y + g.cy * h;
+            float rx = 0, ry = 0;
+            radial_resolve(g.rx, g.ry, rcx, rcy, static_cast<float>(x),
+                           static_cast<float>(y), static_cast<float>(w),
+                           static_cast<float>(h), &rx, &ry);
             int c2[4];
             const int* cp = nullptr;
             if (clip) {
@@ -432,10 +593,12 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         }
     } else {
         /* radial: ellipse distance from the center */
-        float rx = g.rx > 0 ? g.rx : w * 0.5f;
-        float ry = g.ry > 0 ? g.ry : h * 0.5f;
         float rcx = g.cx > 1.0f ? g.cx - 100.0f : x + g.cx * w;
-        float rcy = g.cy * h + y;
+        float rcy = g.cy > 1.0f ? g.cy - 100.0f : y + g.cy * h;
+        float rx = 0, ry = 0;
+        radial_resolve(g.rx, g.ry, rcx, rcy, static_cast<float>(x),
+                       static_cast<float>(y), static_cast<float>(w),
+                       static_cast<float>(h), &rx, &ry);
         if (rx <= 0 || ry <= 0) {
             return;
         }

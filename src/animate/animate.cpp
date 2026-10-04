@@ -322,6 +322,7 @@ struct AnimSpec
     bool backwards;
     std::string timing;
     int dir;
+    bool paused; /* animation-play-state: paused (running by default) */
 };
 
 bool parse_anim(const std::string& v, AnimSpec& out)
@@ -363,6 +364,14 @@ bool parse_anim(const std::string& v, AnimSpec& out)
         }
         if (tok == "alternate-reverse") {
             out.dir = 3;
+            continue;
+        }
+        if (tok == "paused") {
+            out.paused = true;
+            continue;
+        }
+        if (tok == "running") {
+            out.paused = false;
             continue;
         }
         if (tok == "linear" || tok == "ease" || tok == "ease-in" ||
@@ -437,6 +446,12 @@ void merge_anim_longs(const WhaleUIComputedStyle& style, AnimSpec& spec)
     } else if (v == "normal") {
         spec.dir = 0;
     }
+    v = get("animation-play-state");
+    if (v == "paused") {
+        spec.paused = true;
+    } else if (v == "running") {
+        spec.paused = false;
+    }
 }
 
 /* "250ms"/"0.25s" -> ms (single token) */
@@ -469,9 +484,16 @@ void split_comma(const std::string& s, std::vector<std::string>& out)
     }
 }
 
-/* Parsed `transition` value: property whitelist + first duration/delay/
- * timing (per-property values collapse to the first; the sample pages use
- * one timing for every listed property). */
+/* Parsed `transition` value: per-property timing. A comma list assigns
+ * each property its own duration/delay/timing (a shorter timing list
+ * cycles, per CSS); a single set applies to all. */
+struct TransItem
+{
+    std::string prop; /* "" = all */
+    uint32_t dur;
+    uint32_t delay;
+    std::string timing;
+};
 struct TransSpec
 {
     bool all; /* no property list: every interpolable property transitions */
@@ -479,7 +501,27 @@ struct TransSpec
     uint32_t dur;
     uint32_t delay;
     std::string timing;
+    std::vector<TransItem> items; /* per-property entries (may be empty) */
 };
+
+/* timing of one property: its own item, else the collapsed first set */
+static void trans_timing_for(const TransSpec& ts, const std::string& prop,
+                             uint32_t* dur, uint32_t* delay,
+                             std::string* timing)
+{
+    *dur = ts.dur;
+    *delay = ts.delay;
+    *timing = ts.timing;
+    for (size_t i = 0; i < ts.items.size(); ++i) {
+        if (ts.items[i].prop.empty() || ts.items[i].prop == prop ||
+            ts.items[i].prop == "all") {
+            *dur = ts.items[i].dur;
+            *delay = ts.items[i].delay;
+            *timing = ts.items[i].timing;
+            return;
+        }
+    }
+}
 
 bool is_timing_token(const std::string& tok)
 {
@@ -490,7 +532,8 @@ bool is_timing_token(const std::string& tok)
 }
 
 /* parse the `transition` shorthand ("background-color 0.3s ease", "all
- * 0.1s", "opacity .5s,transform .5s"). Empty property token = all. */
+ * 0.1s", "opacity .5s,transform .5s"). Empty property token = all. Each
+ * comma item keeps its own duration/delay/timing. */
 void parse_transition_list(const std::string& v, TransSpec& ts)
 {
     std::vector<std::string> items;
@@ -499,20 +542,22 @@ void parse_transition_list(const std::string& v, TransSpec& ts)
         std::vector<std::string> toks;
         split_ws(items[i], toks);
         std::string prop;
+        uint32_t dur = 0, delay = 0;
+        std::string timing;
         for (size_t j = 0; j < toks.size(); ++j) {
             const std::string& tok = toks[j];
             if (is_time(tok.c_str())) {
                 uint32_t ms = time_ms(tok);
-                if (ts.dur == 0) {
-                    ts.dur = ms;
-                } else if (ts.delay == 0) {
-                    ts.delay = ms;
+                if (dur == 0) {
+                    dur = ms;
+                } else if (delay == 0) {
+                    delay = ms;
                 }
                 continue;
             }
             if (is_timing_token(tok)) {
-                if (ts.timing.empty()) {
-                    ts.timing = tok;
+                if (timing.empty()) {
+                    timing = tok;
                 }
                 continue;
             }
@@ -524,6 +569,25 @@ void parse_transition_list(const std::string& v, TransSpec& ts)
             ts.all = true;
         } else if (!ts.all) {
             ts.props.push_back(prop);
+        }
+        TransItem it;
+        it.prop = prop;
+        it.dur = dur;
+        it.delay = delay;
+        it.timing = timing;
+        ts.items.push_back(it);
+        /* the collapsed single set stays the first item's (back-compat for
+         * callers that only read ts.dur/delay/timing) */
+        if (items.size() == 1 || ts.dur == 0) {
+            if (ts.dur == 0) {
+                ts.dur = dur;
+            }
+            if (ts.delay == 0) {
+                ts.delay = delay;
+            }
+            if (ts.timing.empty()) {
+                ts.timing = timing;
+            }
         }
     }
 }
@@ -551,7 +615,10 @@ void build_trans_spec(const WhaleUIComputedStyle& style, TransSpec& ts)
     if (!sh.empty() && sh != "none") {
         parse_transition_list(sh, ts);
     }
-    /* longhand properties override the shorthand */
+    /* longhand properties override the shorthand. Comma lists pair by
+     * index (a short list cycles, per CSS); the collapsed single set is
+     * the first entry. */
+    std::vector<std::string> pitems, ditems, litems, titems;
     if (!pv.empty()) {
         ts.props.clear();
         ts.all = false;
@@ -559,27 +626,60 @@ void build_trans_spec(const WhaleUIComputedStyle& style, TransSpec& ts)
             ts.all = true;
         } else {
             split_comma(pv, ts.props);
+            pitems = ts.props;
         }
     }
     if (!dv.empty()) {
-        std::vector<std::string> items;
-        split_comma(dv, items);
-        if (!items.empty()) {
-            ts.dur = parse_ms(items[0]);
-        }
+        split_comma(dv, ditems);
     }
     if (!lv.empty()) {
-        std::vector<std::string> items;
-        split_comma(lv, items);
-        if (!items.empty()) {
-            ts.delay = parse_ms(items[0]);
-        }
+        split_comma(lv, litems);
     }
     if (!tv.empty()) {
-        std::vector<std::string> items;
-        split_comma(tv, items);
-        if (!items.empty()) {
-            ts.timing = items[0];
+        split_comma(tv, titems);
+    }
+    if (!ditems.empty() || !litems.empty() || !titems.empty() ||
+        !pitems.empty()) {
+        if (!ditems.empty()) {
+            ts.dur = parse_ms(ditems[0]);
+        }
+        if (!litems.empty()) {
+            ts.delay = parse_ms(litems[0]);
+        }
+        if (!titems.empty()) {
+            ts.timing = titems[0];
+        }
+        /* rebuild per-property items when the property list is explicit;
+         * otherwise spread the longhand lists over the shorthand items
+         * (a short list cycles, per CSS) so trans_timing_for sees them */
+        if (!pitems.empty()) {
+            ts.items.clear();
+            for (size_t k = 0; k < pitems.size(); ++k) {
+                TransItem it;
+                it.prop = pitems[k];
+                it.dur = ditems.empty()
+                             ? ts.dur
+                             : parse_ms(ditems[k % ditems.size()]);
+                it.delay = litems.empty()
+                               ? ts.delay
+                               : parse_ms(litems[k % litems.size()]);
+                it.timing = titems.empty()
+                                ? ts.timing
+                                : titems[k % titems.size()];
+                ts.items.push_back(it);
+            }
+        } else {
+            for (size_t k = 0; k < ts.items.size(); ++k) {
+                if (!ditems.empty()) {
+                    ts.items[k].dur = parse_ms(ditems[k % ditems.size()]);
+                }
+                if (!litems.empty()) {
+                    ts.items[k].delay = parse_ms(litems[k % litems.size()]);
+                }
+                if (!titems.empty()) {
+                    ts.items[k].timing = titems[k % titems.size()];
+                }
+            }
         }
     }
 }
@@ -1054,6 +1154,9 @@ struct whaleui_anim
         bool backwards;
         std::string timing;
         std::vector<std::string> props; /* animated properties */
+        uint64_t freeze_t; /* paused progress (ms since start, incl. delay);
+                            * (uint64_t)-1 = running */
+        bool paused; /* animation-play-state: paused freezes the clock */
     };
     std::map<std::string, KfState> kf;
 
@@ -1337,6 +1440,8 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
         st.forwards = spec.forwards;
         st.backwards = spec.backwards;
         st.timing = spec.timing;
+        st.freeze_t = static_cast<uint64_t>(-1); /* running */
+        st.paused = spec.paused;
         /* remember the animated properties (from the frames) so the tick
          * can decide paint-only vs layout */
         std::set<std::string> props;
@@ -1394,7 +1499,31 @@ void apply_keyframes(whaleui_anim_t* a, const std::string& elkey,
             style[bi->first] = bi->second;
         }
     }
-    uint64_t t = now - it->second.start;
+    uint64_t t;
+    /* animation-play-state flows in from the style every frame (unlike
+     * name/dur/iter/dir, it must NOT rebuild the state - rebuilding would
+     * restart the clock). paused freezes at the last progress; resume
+     * shifts start forward. The tick path mirrors this via st.paused. */
+    it->second.paused = spec.paused;
+    if (spec.paused) {
+        /* paused: freeze at the last progress. First pause snapshots now;
+         * resume shifts start forward so the clock continues seamlessly. */
+        if (it->second.freeze_t == static_cast<uint64_t>(-1)) {
+            t = (now >= it->second.start) ? now - it->second.start : 0;
+            it->second.freeze_t = t;
+        } else {
+            t = it->second.freeze_t;
+        }
+    } else {
+        if (it->second.freeze_t != static_cast<uint64_t>(-1)) {
+            /* resume: keep the frozen progress as the new origin */
+            it->second.start = (now >= it->second.freeze_t)
+                                   ? now - it->second.freeze_t
+                                   : now;
+            it->second.freeze_t = static_cast<uint64_t>(-1);
+        }
+        t = (now >= it->second.start) ? now - it->second.start : 0;
+    }
     if (t < spec.delay) {
         /* delay period: fill-mode backwards/both shows the first frame
          * (kept active so the loop survives the delay and the run starts) */
@@ -1475,11 +1604,14 @@ void apply_transition(whaleui_anim_t* a, lxb_dom_element* el,
                     p = 0.0f;
                 }
                 any_lerp(kv->first, tr->second.from, tr->second.to,
-                         ease_value(ts.timing, p), kv->second);
+                         ease_value(tr->second.timing, p), kv->second);
                 a->active = 1;
             }
             continue;
         }
+        uint32_t p_dur = 0, p_delay = 0;
+        std::string p_timing;
+        trans_timing_for(ts, kv->first, &p_dur, &p_delay, &p_timing);
         std::map<std::string, std::string>& pvmap = a->prev[el];
         std::map<std::string, std::string>::iterator pv = pvmap.find(kv->first);
         if (pv == pvmap.end()) {
@@ -1493,15 +1625,15 @@ void apply_transition(whaleui_anim_t* a, lxb_dom_element* el,
              * instantly. Only transform has a known neutral; everything
              * else falls back to recording the value (snap on change). */
             std::string tmp;
-            if (ts.dur > 0 && kv->first == "transform" &&
+            if (p_dur > 0 && kv->first == "transform" &&
                 any_lerp("transform", "none", kv->second, 0.0f, tmp)) {
                 whaleui_anim::Trans st;
                 st.from = "none";
                 st.to = kv->second;
-                st.start = now + ts.delay;
-                st.dur = ts.dur;
-                st.delay = ts.delay;
-                st.timing = ts.timing;
+                st.start = now + p_delay;
+                st.dur = p_dur;
+                st.delay = p_delay;
+                st.timing = p_timing;
                 a->trans[key] = st;
                 kv->second = "none"; /* start from the neutral value */
                 a->active = 1;
@@ -1514,14 +1646,14 @@ void apply_transition(whaleui_anim_t* a, lxb_dom_element* el,
             continue;
         }
         std::string tmp;
-        if (ts.dur > 0 && any_lerp(kv->first, pv->second, kv->second, 0.0f, tmp)) {
+        if (p_dur > 0 && any_lerp(kv->first, pv->second, kv->second, 0.0f, tmp)) {
             whaleui_anim::Trans st;
             st.from = pv->second;
             st.to = kv->second;
-            st.start = now + ts.delay;
-            st.dur = ts.dur;
-            st.delay = ts.delay;
-            st.timing = ts.timing;
+            st.start = now + p_delay;
+            st.dur = p_dur;
+            st.delay = p_delay;
+            st.timing = p_timing;
             a->trans[key] = st;
             kv->second = pv->second; /* start from the previous value */
             a->active = 1;
@@ -1546,16 +1678,19 @@ void apply_transition(whaleui_anim_t* a, lxb_dom_element* el,
                     ++it;
                     continue;
                 }
+                uint32_t p_dur = 0, p_delay = 0;
+                std::string p_timing;
+                trans_timing_for(ts, prop, &p_dur, &p_delay, &p_timing);
                 std::string tmp;
-                if (ts.dur > 0 &&
+                if (p_dur > 0 &&
                     any_lerp("transform", it->second, "none", 0.0f, tmp)) {
                     whaleui_anim::Trans st;
                     st.from = it->second;
                     st.to = "none";
-                    st.start = now + ts.delay;
-                    st.dur = ts.dur;
-                    st.delay = ts.delay;
-                    st.timing = ts.timing;
+                    st.start = now + p_delay;
+                    st.dur = p_dur;
+                    st.delay = p_delay;
+                    st.timing = p_timing;
                     a->trans[prop + "@" + elkey] = st;
                     a->active = 1;
                 }
@@ -1672,7 +1807,20 @@ extern "C" int whaleui_anim_tick(whaleui_anim_t* a, uint64_t now)
         if (!kf) {
             continue;
         }
-        uint64_t t = now - st.start;
+        uint64_t t;
+        if (st.paused) {
+            /* frozen (see apply_keyframes): reuse the snapshot, keep the
+             * frame injected but do not advance the loop */
+            t = (st.freeze_t == static_cast<uint64_t>(-1))
+                    ? ((now >= st.start) ? now - st.start : 0)
+                    : st.freeze_t;
+        } else {
+            if (st.freeze_t != static_cast<uint64_t>(-1)) {
+                st.start = (now >= st.freeze_t) ? now - st.freeze_t : now;
+                st.freeze_t = static_cast<uint64_t>(-1);
+            }
+            t = (now >= st.start) ? now - st.start : 0;
+        }
         bool running = false;
         float p = -1.0f; /* -1: nothing to inject (finished) */
         if (t < st.delay) {

@@ -38,9 +38,19 @@ struct SelPart
     bool nth;           /* ":nth-child(An+B)" present */
     int nth_a, nth_b;   /* position p matches when p = A*n + B, n >= 0 */
     bool pseudo_el;     /* "::before"/"::after" suffix: never matches el */
-    bool has_attr;      /* "[name]" / "[name=value]" present */
+    bool has_attr;      /* "[name...]" present */
     std::string attr;   /* attribute name */
     std::string attr_val; /* expected value ("" = presence only) */
+    int attr_op;        /* 0==presence, 1 '=' exact, 2 '^=' prefix,
+                         * 3 '$=' suffix, 4 '*=' substring, 5 '~=' word,
+                         * 6 '|=' hyphen-prefix */
+    bool enabled;       /* ":enabled" present */
+    bool required;      /* ":required" present */
+    bool optional;      /* ":optional" present */
+    bool empty;         /* ":empty" present */
+    bool link;          /* ":link"/":visited" present (any <a href>) */
+    bool focus_within;  /* ":focus-within" present */
+    std::string is_sel; /* ":is(...)" inner selector list (comma-separated) */
     bool has_not;       /* ":not(<simple>)" present: matches when the inner
                          * simple selector does NOT match (single level,
                          * no combinators inside, per CSS) */
@@ -126,12 +136,15 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     }
     while (p < end) {
         if (*p == '[') {
-            /* attribute selector: [name] presence, [name="value"] equality.
+            /* attribute selector: [name] presence, [name="value"] equality,
+             * [name^="v"] prefix / [name$="v"] suffix / [name*="v"]
+             * substring / [name~="v"] word / [name|="v"] hyphen-prefix.
              * Quotes inside the value are handled so "=" within them is not
              * mistaken for the operator. */
             ++p;
             const char* as = p;
-            while (p < end && *p != ']' && *p != '=') {
+            while (p < end && *p != ']' && *p != '=' && *p != '^' &&
+                   *p != '$' && *p != '*' && *p != '~' && *p != '|') {
                 if (*p == '"' || *p == '\'') {
                     char q = *p++;
                     while (p < end && *p != q) {
@@ -150,8 +163,48 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             if (ab != std::string::npos) {
                 out.attr = aname.substr(ab, ae - ab + 1);
                 out.has_attr = true;
+                out.attr_op = 0;
             }
-            if (p < end && *p == '=') {
+            if (p < end && (*p == '^' || *p == '$' || *p == '*' ||
+                            *p == '~' || *p == '|')) {
+                char oc = *p++;
+                if (p < end && *p == '=') {
+                    ++p;
+                    out.attr_op = oc == '^' ? 2
+                                  : oc == '$' ? 3
+                                  : oc == '*' ? 4
+                                  : oc == '~' ? 5
+                                              : 6;
+                } else {
+                    /* stray operator char: skip to ']' (malformed) */
+                    while (p < end && *p != ']') {
+                        ++p;
+                    }
+                }
+                const char* vs = p;
+                if (p < end && (*p == '"' || *p == '\'')) {
+                    char q = *p++;
+                    const char* v0 = p;
+                    while (p < end && *p != q) {
+                        ++p;
+                    }
+                    out.attr_val.assign(v0, static_cast<size_t>(p - v0));
+                    if (p < end) {
+                        ++p;
+                    }
+                } else {
+                    while (p < end && *p != ']') {
+                        ++p;
+                    }
+                    out.attr_val.assign(vs, static_cast<size_t>(p - vs));
+                    size_t vb = out.attr_val.find_first_not_of(" \t");
+                    size_t ve = out.attr_val.find_last_not_of(" \t");
+                    if (vb != std::string::npos) {
+                        out.attr_val = out.attr_val.substr(vb, ve - vb + 1);
+                    }
+                }
+            } else if (p < end && *p == '=') {
+                out.attr_op = 1;
                 ++p;
                 const char* vs = p;
                 if (p < end && (*p == '"' || *p == '\'')) {
@@ -224,6 +277,32 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                 out.focus = true;
             } else if (v == "disabled") {
                 out.disabled = true;
+            } else if (v == "enabled") {
+                out.enabled = true;
+            } else if (v == "required") {
+                out.required = true;
+            } else if (v == "optional") {
+                out.optional = true;
+            } else if (v == "empty") {
+                out.empty = true;
+            } else if (v == "link" || v == "visited") {
+                out.link = true;
+            } else if (v == "focus-within") {
+                out.focus_within = true;
+            } else if ((v.compare(0, 3, "is(") == 0 ||
+                        v.compare(0, 6, "where(") == 0) &&
+                       !v.empty() && v.back() == ')') {
+                /* ":is(a, b)" / ":where(a, b)" - match if ANY inner
+                 * selector matches (single-level, like :not; :where has
+                 * zero specificity but we do not discount it - the
+                 * cascade rarely depends on that here). */
+                size_t open = v.find('(');
+                std::string inner = v.substr(open + 1, v.size() - open - 2);
+                size_t b = inner.find_first_not_of(" \t");
+                size_t e = inner.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    out.is_sel = inner.substr(b, e - b + 1);
+                }
             } else if (v == "checked") {
                 out.checked = true;
             } else if (v == "indeterminate") {
@@ -312,7 +391,9 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
     return !out.pseudo_el &&
            (!out.tag.empty() || !out.id.empty() || !out.cls.empty() ||
             out.hover || out.active || out.focus || out.disabled ||
-            out.checked || out.indeterminate ||
+            out.checked || out.indeterminate || out.enabled ||
+            out.required || out.optional || out.empty || out.link ||
+            out.focus_within || !out.is_sel.empty() ||
             out.last_child || out.first_child || out.nth || out.has_attr ||
             out.has_not || out.not_hover || out.not_active || out.not_focus);
 }
@@ -412,22 +493,165 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
     }
     if (p.has_attr) {
         /* presence must go through has_attribute (a value-less attribute
-         * has no value to return); only the [name="value"] form needs the
-         * value itself */
+         * has no value to return); only the valued forms need the value
+         * itself */
         if (!lxb_dom_element_has_attribute(
                 el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
                 p.attr.size())) {
             return false; /* [name]: the attribute must exist */
         }
-        if (!p.attr_val.empty()) {
+        if (p.attr_op != 0 && !p.attr_val.empty()) {
             size_t alen = 0;
             const lxb_char_t* a = lxb_dom_element_get_attribute(
                 el, reinterpret_cast<const lxb_char_t*>(p.attr.c_str()),
                 p.attr.size(), &alen);
-            if (!a || alen != p.attr_val.size() ||
-                std::memcmp(a, p.attr_val.data(), p.attr_val.size()) != 0) {
-                return false; /* [name="value"]: exact match */
+            std::string av;
+            if (a) {
+                av.assign(reinterpret_cast<const char*>(a), alen);
             }
+            const std::string& w = p.attr_val;
+            bool ok = false;
+            switch (p.attr_op) {
+            case 1: /* [name="value"]: exact match */
+                ok = av == w;
+                break;
+            case 2: /* [name^="v"]: prefix */
+                ok = av.size() >= w.size() &&
+                     av.compare(0, w.size(), w) == 0;
+                break;
+            case 3: /* [name$="v"]: suffix */
+                ok = av.size() >= w.size() &&
+                     av.compare(av.size() - w.size(), w.size(), w) == 0;
+                break;
+            case 4: /* [name*="v"]: substring */
+                ok = av.find(w) != std::string::npos;
+                break;
+            case 5: { /* [name~="v"]: whitespace-separated word */
+                size_t pos = 0;
+                while (pos < av.size()) {
+                    while (pos < av.size() &&
+                           (av[pos] == ' ' || av[pos] == '\t')) {
+                        ++pos;
+                    }
+                    size_t s = pos;
+                    while (pos < av.size() && av[pos] != ' ' &&
+                           av[pos] != '\t') {
+                        ++pos;
+                    }
+                    if (pos > s && av.compare(s, pos - s, w) == 0) {
+                        ok = true;
+                        break;
+                    }
+                }
+                break;
+            }
+            case 6: /* [name|="v"]: exact or hyphen-prefixed */
+                ok = av == w ||
+                     (av.size() > w.size() && av.compare(0, w.size(), w) == 0 &&
+                      av[w.size()] == '-');
+                break;
+            default:
+                break;
+            }
+            if (!ok) {
+                return false;
+            }
+        }
+    }
+    if (p.enabled) {
+        /* form controls that are NOT disabled (:disabled's complement) */
+        if (lxb_dom_element_has_attribute(el, (const lxb_char_t*)"disabled",
+                                           8)) {
+            return false;
+        }
+    }
+    if (p.required) {
+        if (!lxb_dom_element_has_attribute(el, (const lxb_char_t*)"required",
+                                           8)) {
+            return false;
+        }
+    }
+    if (p.optional) {
+        if (lxb_dom_element_has_attribute(el, (const lxb_char_t*)"required",
+                                          8)) {
+            return false;
+        }
+    }
+    if (p.empty) {
+        /* no element children and no non-blank text */
+        for (lxb_dom_node* c = el->node.first_child; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                return false;
+            }
+            if (c->type == LXB_DOM_NODE_TYPE_TEXT ||
+                c->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
+                const lexbor_str_t* s =
+                    &lxb_dom_interface_text(c)->char_data.data;
+                if (s->data) {
+                    for (size_t k = 0; k < s->length; ++k) {
+                        unsigned char ch = s->data[k];
+                        if (ch != ' ' && ch != '\t' && ch != '\n' &&
+                            ch != '\r') {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (p.link) {
+        /* :link/:visited - any <a href> (no history tracking, so :visited
+         * matches the same set; splitting them would only matter for
+         * privacy-separated visited styling, which we do not do) */
+        size_t nlen = 0;
+        const lxb_char_t* name = lxb_dom_element_local_name(el, &nlen);
+        if (!name || nlen != 1 || name[0] != 'a') {
+            return false;
+        }
+        size_t hlen = 0;
+        const lxb_char_t* href = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"href", 4, &hlen);
+        if (!href || hlen == 0) {
+            return false;
+        }
+    }
+    if (!p.is_sel.empty()) {
+        /* ":is(a, b)" / ":where(a, b)" - any inner simple selector
+         * matching the same element wins (single-level, like :not) */
+        bool any = false;
+        size_t start = 0;
+        int depth = 0;
+        for (size_t k = 0; k <= p.is_sel.size(); ++k) {
+            char ch = k < p.is_sel.size() ? p.is_sel[k] : ',';
+            if (ch == '(') {
+                ++depth;
+            } else if (ch == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            }
+            if ((ch == ',' && depth == 0) || k == p.is_sel.size()) {
+                std::string one = p.is_sel.substr(start, k - start);
+                size_t b = one.find_first_not_of(" \t");
+                size_t e = one.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    one = one.substr(b, e - b + 1);
+                    SelPart inner;
+                    if (parse_simple(one.c_str(), one.size(), inner)) {
+                        inner.hover = inner.active = inner.focus = false;
+                        inner.not_hover = inner.not_active =
+                            inner.not_focus = false;
+                        if (part_match(inner, el)) {
+                            any = true;
+                            break;
+                        }
+                    }
+                }
+                start = k + 1;
+            }
+        }
+        if (!any) {
+            return false;
         }
     }
     if (p.last_child) {
@@ -959,6 +1183,24 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
         if (part.focus && (!st || !st->focus || cur_el != st->focus)) {
             return 0;
         }
+        if (part.focus_within) {
+            /* :focus-within: the element itself or any descendant holds
+             * the focus (same target test as :focus, walked downward) */
+            bool ok = (st && st->focus && cur_el == st->focus);
+            if (!ok && st && st->focus) {
+                for (lxb_dom_node* h = st->focus->node.parent; h;
+                     h = h->parent) {
+                    if (h->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                        lxb_dom_interface_element(h) == cur_el) {
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+            if (!ok) {
+                return 0;
+            }
+        }
         /* ":not(:hover/:active/:focus)" - the same state test, inverted
          * (with the same bubble rule as the positive form). A part like
          * "button:not(:hover)" matches a button while the pointer is
@@ -1006,6 +1248,9 @@ extern "C" int whaleui_style_match_pseudo(const char* selector,
     } else if (len >= 8 && std::strcmp(selector + len - 8, "::before") == 0) {
         pe = selector + len - 8;
         pv = 1;
+    } else if (len >= 8 && std::strcmp(selector + len - 8, "::marker") == 0) {
+        pe = selector + len - 8;
+        pv = 3;
     }
     if (!pe) {
         return whaleui_style_match(selector, el, st);
@@ -1445,6 +1690,27 @@ extern "C" WhaleUIComputedStyle whaleui_style_compute(
                     out.find("selection-fg") != out.end()) {
                     break;
                 }
+            }
+        }
+    }
+    /* ::placeholder color rides as virtual "placeholder-color" (the input /
+     * textarea paint reads it; falls back to --muted when absent). Same
+     * last-wins + resolve_var treatment as ::selection above. */
+    if (out.find("placeholder-color") == out.end()) {
+        for (size_t i = count; i-- > 0;) {
+            const char* sel = rules[i].selector;
+            size_t n2 = sel ? std::strlen(sel) : 0;
+            if (n2 >= 13 &&
+                std::strcmp(sel + n2 - 13, "::placeholder") == 0) {
+                const char* fg = whaleui_css_get_property(&rules[i], "color");
+                if (fg && *fg) {
+                    std::string fgs = fg;
+                    resolve_var(fgs, vars);
+                    if (!fgs.empty()) {
+                        out["placeholder-color"] = fgs;
+                    }
+                }
+                break;
             }
         }
     }
