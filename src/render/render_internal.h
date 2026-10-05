@@ -85,6 +85,16 @@ unsigned int grad_color(const Gradient& g, float t);
 float blend_channel(int mode, float cb, float cs);
 int blend_mode_id(const char* v);
 unsigned int blend_pixels(unsigned int dst, unsigned int src, int mode);
+/* clip-path shape (see ClipPath in render_color.cpp): type 0 none,
+ * 1 inset rect, 2 circle, 3 ellipse. polygon() parses but reports -1. */
+struct ClipPath
+{
+    int type;
+    float ccx, ccy;
+    float cr0, cr1;
+    float crad;
+};
+int parse_clip_path(const char* v, float w, float h, ClipPath* out);
 /* 4x5 color matrix (row-major, input [r,g,b,a,1]) for `filter` */
 void filter_matrix_identity(float m[4][5]);
 int parse_filter(const char* v, float m[4][5], float* blur);
@@ -98,7 +108,9 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg = 0.0f,
                    float skx_deg = 0.0f, float sky_deg = 0.0f,
-                   unsigned int blend_bg = 0, int blend_mode = -1);
+                   unsigned int blend_bg = 0, int blend_mode = -1,
+                   float ctype = 0, float ccx = 0, float ccy = 0,
+                   float cr0 = 0, float cr1 = 0, float crad = 0);
 unsigned int color_of(const WhaleUIComputedStyle& s, const char* prop,
                       unsigned int def);
 unsigned int border_color_of(const WhaleUIComputedStyle& s, unsigned int def);
@@ -115,6 +127,14 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                int x, int y, int w, int h, unsigned int color,
                const Clip* clip);
 bool inside_rounded(int px, int py, int x, int y, int w, int h, int radius);
+bool inside_clip(int px, int py);
+/* mask-image queries (stack lives in render_paint.cpp): active reports a
+ * pushed linear-gradient mask; at() samples it at a framebuffer point
+ * (1 = no mask). tint() scales one 0xAARRGGBB color's alpha by mv. */
+bool whaleui_mask_active();
+float whaleui_mask_at(float fx, float fy);
+unsigned int whaleui_mask_tint(unsigned int c, float mv);
+bool whaleui_clip_active();
 void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                      int x, int y, int w, int h, int radius,
                      unsigned int color, const Clip* clip);

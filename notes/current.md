@@ -246,6 +246,32 @@ luminosity 亮度混合近似。CPU/GPU 共用 blend_pixels/blend_ch 逻辑。
 回归:test_scroll blend(双纯黑)。
 验证:10 项测试全绿;14 张主题自检全 OK。
 
+# <22>: clip-path / mask-image(裁剪/遮罩管线)
+
+SOLVED
+
+clip-path: inset(TRBL/mirror, round 角)/circle(closest-side 缺省)/ellipse
+解析为盒内形(parse_clip_path, polygon 解析但普通绘制);顶点尾字段
+(ctype/cc/cr/crad, quad 局部坐标, 随 rotate/skew 同变换)+ solid shader
+第二 SDF 相交(双形取 max, 1px AA);CPU inside_clip 镜像;
+paint_node 压栈/弹栈(含 overflow 早退弹栈), 子树继承;
+solid/round/rot/gradient-linear/gradient-radial(逐层 quad 局部重映射)/
+blend_surface(门控逐像素)/文字直写循环(门控逐像素)全发射器接入。
+mask-image(含 -webkit- 别名):linear-gradient alpha 遮罩, 按 fill_gradient
+同轴投影取四角 alpha(mask_from_linear), 栈式压栈/弹栈(子树继承);
+发射器按逐角 alpha 相乘 —— solid/round 走 gradient_rect(给 gradient_rect
+加 radius 尾参, 一次 draw 同时带圆角 SDF 与逐角 alpha; 之前两 draw 相叠
+写法是错的, src-over 不相乘)/gradient-linear 四角 tint/gradient-radial
+逐层中心采样/图片+文字逐像素; CPU 全路径逐像素相乘。非 linear 遮罩解析
+但跳过(不透明绘制, 不杀整串)。热路径门控: 无 mask/clip 时 blend_surface/
+文字循环零新增检查(needs_clip/use_mask 两分支)。
+踩坑:mask 像素断言写错通道 —— 浅色底上红混合后 R 一直高, 衰减信号在 G
+通道(l=0D/m=7C/r=EA); 测试要按 G 通道判。另 xmake 增量在 stash 切换时混
+obj 致 test_style 误报, 重编即过(与本轮无关)。
+回归:test_scroll [clip](inset 中红/边裁掉/圆心蓝/角背景)+[mask]
+(l=FE0D0D/m=FA7C7C/r=F5EAEA 渐隐梯度 + 不透明 mask 蓝盒完好)。
+验证:10 套件全绿(test_scroll 含新用例); 14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

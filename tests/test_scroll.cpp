@@ -2318,6 +2318,94 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* clip-path: inset(10px) cuts 10px off every side; circle(25px)
+     * keeps only the disc (corners go background). */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "clip-path", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:60px;background-color:#ff0000;"
+                   "clip-path:inset(10px)}"
+                   "#v{position:absolute;left:20px;top:100px;width:100px;"
+                   "height:60px;background-color:#0000ff;"
+                   "clip-path:circle(25px at 50px 30px)}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div><div id=\"v\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* inset box keeps its middle red */
+            unsigned int mid = gpixel(w->render, 70, 50);
+            /* 5px inside the laid-out edge is clipped away */
+            unsigned int edge = gpixel(w->render, 25, 25);
+            /* circle center blue, corner background */
+            unsigned int cc = gpixel(w->render, 70, 130);
+            unsigned int corner = gpixel(w->render, 25, 105);
+            std::printf("[clip] mid=%08X edge=%08X cc=%08X cn=%08X\n",
+                        mid, edge, cc, corner);
+            std::fflush(stdout);
+            assert((mid & 0xFFFFFFu) == 0xFF0000u);
+            assert((edge & 0xFFFFFFu) != 0xFF0000u);
+            assert((cc & 0xFFFFFFu) == 0x0000FFu);
+            assert((corner & 0xFFFFFFu) != 0x0000FFu);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* mask-image: linear-gradient(to right, black, transparent) fades the
+     * red box from opaque (left) to gone (right). The midpoint keeps some
+     * red but weakened; the right edge is the page background. A second
+     * box with a fully-opaque mask paints normally (parse-but-degenerate
+     * masks must not kill the paint). */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "mask-image", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:60px;background-color:#ff0000;"
+                   "mask-image:linear-gradient(to right,#000000,#00000000)}"
+                   "#v{position:absolute;left:20px;top:100px;width:100px;"
+                   "height:60px;background-color:#0000ff;"
+                   "mask-image:linear-gradient(to bottom,#000000,#000000)}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div><div id=\"v\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* left edge: full-strength red (green ~0x0D) */
+            unsigned int ml = gpixel(w->render, 25, 50);
+            /* midpoint: half-faded (green midway 0x0D -> 0xEA) */
+            unsigned int mm = gpixel(w->render, 70, 50);
+            /* right edge: mask ~0, red gone (page background) */
+            unsigned int mr = gpixel(w->render, 115, 50);
+            /* opaque vertical mask: blue box intact */
+            unsigned int vb = gpixel(w->render, 70, 130);
+            std::printf("[mask] l=%08X m=%08X r=%08X b=%08X\n",
+                        ml, mm, mr, vb);
+            std::fflush(stdout);
+            /* red stays strong throughout (red over light bg); the fade
+             * signal is the green channel rising toward the background */
+            assert(((ml >> 16) & 0xFF) > 0xC0);
+            assert(((mm >> 16) & 0xFF) > 0xC0);
+            assert(((mr >> 16) & 0xFF) > 0xC0);
+            unsigned int mlg = (ml >> 8) & 0xFF;
+            unsigned int mmg = (mm >> 8) & 0xFF;
+            unsigned int mrg = (mr >> 8) & 0xFF;
+            assert(mlg < 0x40 && mmg > 0x40 && mmg < 0xC0 && mrg > 0xC0);
+            assert((vb & 0xFFFFFFu) == 0x0000FFu);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

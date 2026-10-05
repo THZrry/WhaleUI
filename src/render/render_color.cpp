@@ -624,6 +624,216 @@ unsigned int blend_pixels(unsigned int dst, unsigned int src, int mode)
            (fin(rr, dr) << 16) | (fin(gg, dg) << 8) | fin(bb, db);
 }
 
+/* clip-path helpers (ClipPath lives in render_internal.h) */
+
+static float clip_len(const char* s, size_t n, float base)
+{
+    std::string t(s, n);
+    size_t b = t.find_first_not_of(" \t");
+    size_t e = t.find_last_not_of(" \t");
+    if (b == std::string::npos) {
+        return 0;
+    }
+    t = t.substr(b, e - b + 1);
+    float v = static_cast<float>(std::atof(t.c_str()));
+    if (!t.empty() && t.back() == '%') {
+        return v * base / 100.0f;
+    }
+    return v; /* px or bare number */
+}
+
+/* split a paren-arg list on top-level spaces/commas */
+static void split_clip_args(const std::string& s,
+                            std::vector<std::string>& out)
+{
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' ||
+                                s[i] == ',')) {
+            ++i;
+        }
+        if (i >= s.size()) {
+            break;
+        }
+        size_t start = i;
+        int depth = 0;
+        while (i < s.size()) {
+            if (s[i] == '(') {
+                ++depth;
+            } else if (s[i] == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            } else if (depth == 0 &&
+                       (s[i] == ' ' || s[i] == '\t' || s[i] == ',')) {
+                break;
+            }
+            ++i;
+        }
+        if (i > start) {
+            out.push_back(s.substr(start, i - start));
+        }
+    }
+}
+
+int parse_clip_path(const char* v, float w, float h, ClipPath* out)
+{
+    if (!v || !out || w <= 0 || h <= 0) {
+        return -1;
+    }
+    while (*v == ' ' || *v == '\t') {
+        ++v;
+    }
+    if (std::strncmp(v, "none", 4) == 0) {
+        out->type = 0;
+        return 0;
+    }
+    out->type = 0;
+    out->ccx = out->ccy = out->cr0 = out->cr1 = out->crad = 0;
+    if (std::strncmp(v, "inset(", 6) == 0) {
+        const char* p = v + 6;
+        const char* e = std::strchr(p, ')');
+        if (!e) {
+            return -1;
+        }
+        /* optional "round <radius>" tail */
+        std::string body(p, static_cast<size_t>(e - p));
+        float crad = 0;
+        size_t rnd = body.find("round");
+        if (rnd != std::string::npos) {
+            std::string rs = body.substr(rnd + 5);
+            crad = clip_len(rs.c_str(), rs.size(),
+                            w < h ? w : h);
+            body = body.substr(0, rnd);
+        }
+        std::vector<std::string> a;
+        split_clip_args(body, a);
+        /* 1..4 values, TRBL fill like margin (missing = mirror) */
+        float t = 0, r = 0, b = 0, l = 0;
+        if (a.size() >= 1) {
+            t = clip_len(a[0].c_str(), a[0].size(), h);
+        }
+        if (a.size() >= 2) {
+            r = clip_len(a[1].c_str(), a[1].size(), w);
+        } else {
+            r = t;
+        }
+        if (a.size() >= 3) {
+            b = clip_len(a[2].c_str(), a[2].size(), h);
+        } else {
+            b = t;
+        }
+        if (a.size() >= 4) {
+            l = clip_len(a[3].c_str(), a[3].size(), w);
+        } else {
+            l = r;
+        }
+        out->type = 1;
+        out->ccx = (l + (w - r)) * 0.5f;
+        out->ccy = (t + (h - b)) * 0.5f;
+        out->cr0 = (w - l - r) * 0.5f;
+        out->cr1 = (h - t - b) * 0.5f;
+        out->crad = crad;
+        if (out->cr0 < 0) {
+            out->cr0 = 0;
+        }
+        if (out->cr1 < 0) {
+            out->cr1 = 0;
+        }
+        return 0;
+    }
+    if (std::strncmp(v, "circle(", 7) == 0 ||
+        std::strncmp(v, "ellipse(", 8) == 0) {
+        bool circle = v[0] == 'c';
+        const char* p = v + (circle ? 7 : 8);
+        const char* e = std::strchr(p, ')');
+        if (!e) {
+            return -1;
+        }
+        std::string body(p, static_cast<size_t>(e - p));
+        /* split "size at pos" */
+        float rr0 = 0, rr1 = 0;
+        float cx = w * 0.5f, cy = h * 0.5f;
+        size_t at = body.find(" at ");
+        std::string ss = at == std::string::npos ? body : body.substr(0, at);
+        std::string ps = at == std::string::npos ? std::string()
+                                                 : body.substr(at + 4);
+        std::vector<std::string> sa;
+        split_clip_args(ss, sa);
+        if (circle) {
+            /* "R", "R at ...", "at ..." (closest-side default) */
+            size_t k = 0;
+            if (!sa.empty() && sa[0] != "at" &&
+                sa[0].find("closest") == std::string::npos &&
+                sa[0].find("farthest") == std::string::npos) {
+                rr0 = clip_len(sa[0].c_str(), sa[0].size(),
+                               w < h ? w : h);
+                k = 1;
+            } else {
+                /* closest-side default against the center */
+                rr0 = w < h ? w * 0.5f : h * 0.5f;
+            }
+            (void)k;
+            rr1 = rr0;
+        } else {
+            if (sa.size() >= 2) {
+                rr0 = clip_len(sa[0].c_str(), sa[0].size(), w);
+                rr1 = clip_len(sa[1].c_str(), sa[1].size(), h);
+            } else {
+                rr0 = w * 0.5f;
+                rr1 = h * 0.5f;
+            }
+        }
+        if (!ps.empty()) {
+            std::vector<std::string> pa;
+            split_clip_args(ps, pa);
+            auto pos1 = [&](const std::string& t, float base) -> float {
+                if (t == "left" || t == "top") {
+                    return 0;
+                }
+                if (t == "center") {
+                    return base * 0.5f;
+                }
+                if (t == "right" || t == "bottom") {
+                    return base;
+                }
+                if (!t.empty() && t.back() == '%') {
+                    return static_cast<float>(std::atof(t.c_str())) * base /
+                           100.0f;
+                }
+                return static_cast<float>(std::atof(t.c_str()));
+            };
+            if (pa.size() == 1) {
+                if (pa[0] == "top" || pa[0] == "bottom") {
+                    cy = pos1(pa[0], h);
+                } else {
+                    cx = pos1(pa[0], w);
+                }
+            } else if (pa.size() >= 2) {
+                bool p0v = pa[0] == "top" || pa[0] == "bottom";
+                bool p1h = pa[1] == "left" || pa[1] == "right";
+                if (p0v && p1h) {
+                    cx = pos1(pa[1], w);
+                    cy = pos1(pa[0], h);
+                } else {
+                    cx = pos1(pa[0], w);
+                    cy = pos1(pa[1], h);
+                }
+            }
+        }
+        out->type = circle ? 2 : 3;
+        out->ccx = cx;
+        out->ccy = cy;
+        out->cr0 = rr0;
+        out->cr1 = rr1;
+        return 0;
+    }
+    if (std::strncmp(v, "polygon(", 8) == 0) {
+        return -1; /* parsed but unsupported: plain paint (no kill) */
+    }
+    return -1;
+}
+
 /* 4x5 color matrix (row-major, input [r,g,b,a,1]): out[i] = m[i][0..3] *
  * in[0..3] + m[i][4]. Identity by default; filter ops left-multiply in
  * CSS order. */
@@ -820,7 +1030,9 @@ int parse_filter(const char* v, float m[4][5], float* blur)
 void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                    int x, int y, int w, int h, const Gradient& g,
                    const Clip* clip, float rot_deg, float skx_deg,
-                   float sky_deg, unsigned int blend_bg, int blend_mode)
+                   float sky_deg, unsigned int blend_bg, int blend_mode,
+                   float ctype, float ccx, float ccy, float cr0, float cr1,
+                   float crad)
 {
     /* background-blend-mode: the gradient layer blends over the solid
      * background color (blend_bg, 0 = none). GPU path folds it into the
@@ -901,6 +1113,22 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                 c_bl = blend_pixels(blend_bg, c_bl, blend_mode);
                 c_br = blend_pixels(blend_bg, c_br, blend_mode);
             }
+            if (whaleui_mask_active()) {
+                /* mask-image over the gradient layer: per-corner alpha
+                 * multiply (same bilinear sampler the solid path uses) */
+                c_tl = whaleui_mask_tint(c_tl, whaleui_mask_at(
+                                                   static_cast<float>(x),
+                                                   static_cast<float>(y)));
+                c_tr = whaleui_mask_tint(
+                    c_tr, whaleui_mask_at(static_cast<float>(x + w),
+                                          static_cast<float>(y)));
+                c_bl = whaleui_mask_tint(
+                    c_bl, whaleui_mask_at(static_cast<float>(x),
+                                          static_cast<float>(y + h)));
+                c_br = whaleui_mask_tint(
+                    c_br, whaleui_mask_at(static_cast<float>(x + w),
+                                          static_cast<float>(y + h)));
+            }
             int c2[4];
             const int* cp = nullptr;
             if (clip) {
@@ -914,7 +1142,8 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                                       static_cast<float>(y),
                                       static_cast<float>(w),
                                       static_cast<float>(h), c_tl, c_tr, c_bl,
-                                      c_br, cp);
+                                      c_br, cp, ctype, ccx, ccy, cr0, cr1,
+                                      crad);
         } else if (g.type == 1 && g.stops.size() >= 2) {
             /* radial: concentric rounded-rect ellipses, alpha fading
              * outwards - a coarse approximation of the per-pixel ellipse
@@ -946,8 +1175,23 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                 }
                 float sx = rcx - rx * t;
                 float sy = rcy - ry * t;
+                if (whaleui_mask_active()) {
+                    /* radial layers tile the box: sample the mask at each
+                     * layer quad's center (coarse but matches the 10-layer
+                     * approximation's own fidelity) */
+                    float mv = whaleui_mask_at(
+                        sx + rx * t, sy + ry * t);
+                    if (mv <= 0.0f) {
+                        continue;
+                    }
+                    c = whaleui_mask_tint(c, mv);
+                }
+                /* layer quad local coords for the clip shape */
+                float lccx = ccx + static_cast<float>(x) - sx;
+                float lccy = ccy + static_cast<float>(y) - sy;
                 whaleui_gpu_rect(g_gpu, sx, sy, rx * 2.0f * t,
-                                 ry * 2.0f * t, rx * t, c, cp);
+                                 ry * 2.0f * t, rx * t, c, cp, ctype, lccx,
+                                 lccy, cr0, cr1, crad);
             }
         }
         return;
@@ -967,6 +1211,20 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         unsigned int a = (c >> 24) & 0xFF;
         if (a == 0) {
             return;
+        }
+        if (whaleui_mask_active()) {
+            /* mask-image over the gradient layer: the mask alpha scales
+             * the layer color's alpha (CPU path, per pixel) */
+            float mv = whaleui_mask_at(static_cast<float>(px),
+                                       static_cast<float>(py));
+            if (mv <= 0.0f) {
+                return;
+            }
+            c = whaleui_mask_tint(c, mv);
+            a = (c >> 24) & 0xFF;
+            if (a == 0) {
+                return;
+            }
         }
         unsigned int& d = fb[static_cast<size_t>(py) * fbw + px];
         if (blend_bg != 0 && blend_mode >= 0) {

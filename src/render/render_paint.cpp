@@ -22,6 +22,131 @@
 #include <vector>
 /* (struct Clip lives in render_internal.h) */
 
+/* active mask (set by paint_node, consumed by the fill_* emitters):
+ * linear-gradient alpha mask over the owner box (in-box px). mask_quad
+ * holds the per-corner mask alpha (TL,TR,BL,BR); active flags presence. */
+struct MaskActive
+{
+    bool active;
+    int bx, by, bw, bh;
+    float m[4];
+};
+static std::vector<MaskActive> g_mask_stack;
+
+/* active clip-path (set by paint_node, consumed by the fill_* emitters):
+ * shape in the owner's in-box px + the owner box in framebuffer coords
+ * (for mapping onto each emitted quad). Stacked (nested clip-paths
+ * intersect). CPU path uses the framebuffer-space rect/circle directly. */
+struct ClipPathActive
+{
+    ClipPath shape;
+    int bx, by, bw, bh;
+};
+static std::vector<ClipPathActive> g_clip_stack;
+
+/* map the active clip shape onto one emitted quad (qx,qy,qw,qh, framebuffer
+ * coords): center into quad-local coords, half-size/radii unchanged
+ * (same scale). Returns the type (0 = none). */
+static int clip_for_quad(float qx, float qy, float* ccx, float* ccy,
+                         float* cr0, float* cr1, float* crad)
+{
+    if (g_clip_stack.empty()) {
+        return 0;
+    }
+    const ClipPathActive& top = g_clip_stack.back();
+    if (top.shape.type <= 0) {
+        return 0;
+    }
+    *ccx = static_cast<float>(top.bx) + top.shape.ccx - qx;
+    *ccy = static_cast<float>(top.by) + top.shape.ccy - qy;
+    *cr0 = top.shape.cr0;
+    *cr1 = top.shape.cr1;
+    *crad = top.shape.crad;
+    return top.shape.type;
+}
+
+/* mask-image queries for other TUs (render_color.cpp's fill_gradient):
+ * the stack lives here (static), so these non-static accessors expose it.
+ * mask_at() samples the top mask at a framebuffer point (1 = no mask). */
+bool whaleui_mask_active()
+{
+    return !g_mask_stack.empty() && g_mask_stack.back().active;
+}
+/* clip-path stack query for other TUs (render_text.cpp's blit loop):
+ * true while any shape is pushed (nested shapes intersect). */
+bool whaleui_clip_active()
+{
+    return !g_clip_stack.empty();
+}
+float whaleui_mask_at(float fx, float fy)
+{
+    if (g_mask_stack.empty() || !g_mask_stack.back().active) {
+        return 1.0f;
+    }
+    const MaskActive& mk = g_mask_stack.back();
+    float bw = mk.bw > 0 ? static_cast<float>(mk.bw) : 1.0f;
+    float bh = mk.bh > 0 ? static_cast<float>(mk.bh) : 1.0f;
+    float u = (fx - static_cast<float>(mk.bx)) / bw;
+    float v = (fy - static_cast<float>(mk.by)) / bh;
+    if (u < 0) {
+        u = 0;
+    } else if (u > 1) {
+        u = 1;
+    }
+    if (v < 0) {
+        v = 0;
+    } else if (v > 1) {
+        v = 1;
+    }
+    return mk.m[0] * (1 - u) * (1 - v) + mk.m[1] * u * (1 - v) +
+           mk.m[2] * (1 - u) * v + mk.m[3] * u * v;
+}
+/* corner mask values for one emitted quad (TL,TR,BL,BR, framebuffer) */
+static void mask_corners(float x, float y, float w, float h, float out[4])
+{
+    out[0] = whaleui_mask_at(x, y);
+    out[1] = whaleui_mask_at(x + w, y);
+    out[2] = whaleui_mask_at(x, y + h);
+    out[3] = whaleui_mask_at(x + w, y + h);
+}
+/* scale one 0xAARRGGBB color's alpha by mv (0..1) */
+unsigned int whaleui_mask_tint(unsigned int c, float mv)
+{
+    unsigned int a = (c >> 24) & 0xFF;
+    unsigned int ma = static_cast<unsigned int>(a * mv + 0.5f);
+    return (ma << 24) | (c & 0x00FFFFFF);
+}
+/* project a linear Gradient's alpha onto the box corners (in-box px): the
+ * same axis projection fill_gradient uses, so the mask matches the
+ * equivalent background gradient exactly. */
+static void mask_from_linear(const Gradient& mg, int bw, int bh, float m[4])
+{
+    const float PI_F = 3.14159265358979f;
+    float rad = mg.angle_deg * PI_F / 180.0f;
+    float ddx = std::sin(rad), ddy = -std::cos(rad);
+    float ccx = bw * 0.5f, ccy = bh * 0.5f;
+    float px[4] = {0, static_cast<float>(bw), 0, static_cast<float>(bw)};
+    float py[4] = {0, 0, static_cast<float>(bh), static_cast<float>(bh)};
+    float t[4], t0 = 1e30f, t1 = -1e30f;
+    for (int i = 0; i < 4; ++i) {
+        t[i] = (px[i] - ccx) * ddx + (py[i] - ccy) * ddy;
+        if (t[i] < t0) {
+            t0 = t[i];
+        }
+        if (t[i] > t1) {
+            t1 = t[i];
+        }
+    }
+    float span = t1 - t0;
+    if (span <= 0.0f) {
+        span = 1.0f;
+    }
+    for (int i = 0; i < 4; ++i) {
+        unsigned int c = grad_color(mg, (t[i] - t0) / span);
+        m[i] = static_cast<float>((c >> 24) & 0xFF) / 255.0f;
+    }
+}
+
 void dirty_rect(int x0, int y0, int x1, int y1, Clip* out)
 {
     if (!out) {
@@ -60,6 +185,31 @@ void clip_rect(int& x0, int& y0, int& x1, int& y1, const Clip* clip)
 void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                int x, int y, int w, int h, unsigned int color, const Clip* clip)
 {
+    /* mask: modulate the color alpha by the mask value at the quad
+     * corners (bilinear over the emitted quad; exact for linear-gradient
+     * masks). CPU path multiplies per pixel below. */
+    unsigned int mcols[6];
+    bool has_mask = false;
+    if (!g_mask_stack.empty() && g_mask_stack.back().active) {
+        float mv[4];
+        mask_corners(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(w), static_cast<float>(h), mv);
+        /* v[0]=TL v[1]=TR v[2]=BL v[3]=TR v[4]=BL v[5]=BR */
+        unsigned int base_a = (color >> 24) & 0xFF;
+        unsigned int mc[4];
+        for (int k = 0; k < 4; ++k) {
+            unsigned int ma =
+                static_cast<unsigned int>(base_a * mv[k] + 0.5f);
+            mc[k] = (ma << 24) | (color & 0x00FFFFFF);
+        }
+        mcols[0] = mc[0];
+        mcols[1] = mc[1];
+        mcols[2] = mc[2];
+        mcols[3] = mc[1];
+        mcols[4] = mc[2];
+        mcols[5] = mc[3];
+        has_mask = true;
+    }
     if (g_gpu) {
         int c[4];
         const int* cp = nullptr;
@@ -70,9 +220,33 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
             c[3] = clip->h;
             cp = c;
         }
-        whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
-                         static_cast<float>(w), static_cast<float>(h),
-                         0.0f, color, cp);
+        float ct = 0, ccx = 0, ccy = 0, cr0 = 0, cr1 = 0, crad = 0;
+        if (!g_clip_stack.empty()) {
+            ct = static_cast<float>(clip_for_quad(static_cast<float>(x),
+                                                  static_cast<float>(y), &ccx,
+                                                  &ccy, &cr0, &cr1, &crad));
+        }
+        if (has_mask) {
+            /* masked solid = four corner colors (same rgb, per-corner
+             * alpha): reuse the gradient rect (free rasterizer interp) */
+            float mct = 0, mccx = 0, mccy = 0, mcr0 = 0, mcr1 = 0, mcrad = 0;
+            if (!g_clip_stack.empty()) {
+                mct = static_cast<float>(clip_for_quad(
+                    static_cast<float>(x), static_cast<float>(y), &mccx,
+                    &mccy, &mcr0, &mcr1, &mcrad));
+            }
+            whaleui_gpu_gradient_rect(g_gpu, static_cast<float>(x),
+                                      static_cast<float>(y),
+                                      static_cast<float>(w),
+                                      static_cast<float>(h), mcols[0],
+                                      mcols[1], mcols[2], mcols[5], cp, mct,
+                                      mccx, mccy, mcr0, mcr1, mcrad);
+        } else {
+            whaleui_gpu_rect(g_gpu, static_cast<float>(x),
+                             static_cast<float>(y), static_cast<float>(w),
+                             static_cast<float>(h), 0.0f, color, cp, ct, ccx,
+                             ccy, cr0, cr1, crad);
+        }
         return;
     }
     if (w <= 0 || h <= 0) {
@@ -88,20 +262,73 @@ void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
         return;
     }
     if (a == 255) {
+        if (g_clip_stack.empty() && !has_mask) {
+            for (int yy = y0; yy < y1; ++yy) {
+                std::fill(fb.begin() + static_cast<size_t>(yy) * fbw + x0,
+                          fb.begin() + static_cast<size_t>(yy) * fbw + x1, color);
+            }
+            return;
+        }
         for (int yy = y0; yy < y1; ++yy) {
-            std::fill(fb.begin() + static_cast<size_t>(yy) * fbw + x0,
-                      fb.begin() + static_cast<size_t>(yy) * fbw + x1, color);
+            for (int xx = x0; xx < x1; ++xx) {
+                if (!inside_clip(xx, yy)) {
+                    continue;
+                }
+                if (has_mask) {
+                    float mv = whaleui_mask_at(static_cast<float>(xx),
+                                               static_cast<float>(yy));
+                    if (mv <= 0.0f) {
+                        continue;
+                    }
+                    if (mv < 1.0f) {
+                        /* opaque source faded by the mask: dst shows
+                         * through the transparent part */
+                        unsigned int& d =
+                            fb[static_cast<size_t>(yy) * fbw + xx];
+                        unsigned int dr = (d >> 16) & 0xFF,
+                                     dg = (d >> 8) & 0xFF, db = d & 0xFF;
+                        unsigned int sr = (color >> 16) & 0xFF,
+                                     sg = (color >> 8) & 0xFF,
+                                     sb = color & 0xFF;
+                        unsigned int ma = static_cast<unsigned int>(255 * mv +
+                                                                    0.5f);
+                        unsigned int nr =
+                            (sr * ma + dr * (255 - ma)) / 255;
+                        unsigned int ng =
+                            (sg * ma + dg * (255 - ma)) / 255;
+                        unsigned int nb =
+                            (sb * ma + db * (255 - ma)) / 255;
+                        d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
+                        continue;
+                    }
+                }
+                fb[static_cast<size_t>(yy) * fbw + xx] = color;
+            }
         }
         return;
     }
     unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+    /* mask modulation on the CPU path (per pixel) */
+    bool cpu_mask = has_mask;
     for (int yy = y0; yy < y1; ++yy) {
         for (int xx = x0; xx < x1; ++xx) {
+            if (!inside_clip(xx, yy)) {
+                continue;
+            }
+            unsigned int use_a = a;
+            if (cpu_mask) {
+                float mv = whaleui_mask_at(static_cast<float>(xx),
+                                           static_cast<float>(yy));
+                use_a = static_cast<unsigned int>(a * mv + 0.5f);
+                if (use_a == 0) {
+                    continue;
+                }
+            }
             unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
             unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
-            unsigned int nr = (r * a + dr * (255 - a)) / 255;
-            unsigned int ng = (g * a + dg * (255 - a)) / 255;
-            unsigned int nb = (b * a + db * (255 - a)) / 255;
+            unsigned int nr = (r * use_a + dr * (255 - use_a)) / 255;
+            unsigned int ng = (g * use_a + dg * (255 - use_a)) / 255;
+            unsigned int nb = (b * use_a + db * (255 - use_a)) / 255;
             d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
         }
     }
@@ -133,10 +360,73 @@ bool inside_rounded(int px, int py, int x, int y, int w, int h, int radius)
     return true; /* in the middle band */
 }
 
+/* CPU mirror of the clip-path SDF (framebuffer coords): the active shape
+ * (if any) must contain (px,py). Rounded inset rect / circle / ellipse. */
+bool inside_clip(int px, int py)
+{
+    if (g_clip_stack.empty()) {
+        return true;
+    }
+    const ClipPathActive& top = g_clip_stack.back();
+    const ClipPath& s = top.shape;
+    if (s.type <= 0) {
+        return true;
+    }
+    float ccx = static_cast<float>(top.bx) + s.ccx;
+    float ccy = static_cast<float>(top.by) + s.ccy;
+    if (s.type == 1) {
+        /* inset rounded rect */
+        float dx = 0, dy = 0;
+        float x0 = ccx - s.cr0, x1 = ccx + s.cr0;
+        float y0 = ccy - s.cr1, y1 = ccy + s.cr1;
+        float rr = s.crad;
+        if (rr > 0) {
+            if (px < x0 + rr) {
+                dx = x0 + rr - px;
+            } else if (px >= x1 - rr) {
+                dx = px - (x1 - rr) + 1;
+            }
+            if (py < y0 + rr) {
+                dy = y0 + rr - py;
+            } else if (py >= y1 - rr) {
+                dy = py - (y1 - rr) + 1;
+            }
+            if (dx != 0 || dy != 0) {
+                return dx * dx + dy * dy <= rr * rr;
+            }
+            return true;
+        }
+        return px >= x0 && px < x1 && py >= y0 && py < y1;
+    }
+    if (s.type == 2) {
+        float dx = px - ccx, dy = py - ccy;
+        return dx * dx + dy * dy <= s.cr0 * s.cr0;
+    }
+    /* ellipse: normalized distance <= 1 */
+    if (s.cr0 <= 0 || s.cr1 <= 0) {
+        return false;
+    }
+    float nx = (px - ccx) / s.cr0, ny = (py - ccy) / s.cr1;
+    return nx * nx + ny * ny <= 1.0f;
+}
+
 void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                      int x, int y, int w, int h, int radius,
                      unsigned int color, const Clip* clip)
 {
+    /* mask: same per-corner alpha trick as fill_rect (masked solid =
+     * four corner colors through the gradient rect, exact for linear
+     * masks). Computed up front so both the GPU and CPU paths share it. */
+    bool has_mask = whaleui_mask_active();
+    unsigned int mcols[4] = {color, color, color, color};
+    if (has_mask) {
+        float mv[4];
+        mask_corners(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(w), static_cast<float>(h), mv);
+        for (int k = 0; k < 4; ++k) {
+            mcols[k] = whaleui_mask_tint(color, mv[k]);
+        }
+    }
     if (g_gpu) {
         int c[4];
         const int* cp = nullptr;
@@ -147,9 +437,27 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
             c[3] = clip->h;
             cp = c;
         }
+        float ct = 0, ccx = 0, ccy = 0, cr0 = 0, cr1 = 0, crad = 0;
+        if (!g_clip_stack.empty()) {
+            ct = static_cast<float>(clip_for_quad(static_cast<float>(x),
+                                                  static_cast<float>(y), &ccx,
+                                                  &ccy, &cr0, &cr1, &crad));
+        }
+        if (has_mask) {
+            /* masked rounded rect in ONE draw: per-corner mask alpha
+             * through the gradient rect + the real corner radius (the
+             * SDF and the interpolated alpha multiply in the shader) */
+            whaleui_gpu_gradient_rect(
+                g_gpu, static_cast<float>(x), static_cast<float>(y),
+                static_cast<float>(w), static_cast<float>(h), mcols[0],
+                mcols[1], mcols[2], mcols[3], cp, ct, ccx, ccy, cr0, cr1,
+                crad, static_cast<float>(radius));
+            return;
+        }
         whaleui_gpu_rect(g_gpu, static_cast<float>(x), static_cast<float>(y),
                          static_cast<float>(w), static_cast<float>(h),
-                         static_cast<float>(radius), color, cp);
+                         static_cast<float>(radius), color, cp, ct, ccx, ccy,
+                         cr0, cr1, crad);
         return;
     }
     if (radius <= 0) {
@@ -170,19 +478,32 @@ void fill_round_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
         return;
     }
     unsigned int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+    bool cpu_mask = has_mask;
     for (int yy = y0; yy < y1; ++yy) {
         for (int xx = x0; xx < x1; ++xx) {
             if (!inside_rounded(xx, yy, x, y, w, h, radius)) {
                 continue; /* outside the rounded corner */
             }
+            if (!inside_clip(xx, yy)) {
+                continue; /* outside the clip-path shape */
+            }
+            unsigned int use_a = a;
+            if (cpu_mask) {
+                float mv = whaleui_mask_at(static_cast<float>(xx),
+                                           static_cast<float>(yy));
+                use_a = static_cast<unsigned int>(a * mv + 0.5f);
+                if (use_a == 0) {
+                    continue;
+                }
+            }
             unsigned int& d = fb[static_cast<size_t>(yy) * fbw + xx];
             unsigned int dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
-            if (a == 255) {
-                d = color;
+            if (use_a == 255) {
+                d = 0xFF000000 | (r << 16) | (g << 8) | b;
             } else {
-                unsigned int nr = (r * a + dr * (255 - a)) / 255;
-                unsigned int ng = (g * a + dg * (255 - a)) / 255;
-                unsigned int nb = (b * a + db * (255 - a)) / 255;
+                unsigned int nr = (r * use_a + dr * (255 - use_a)) / 255;
+                unsigned int ng = (g * use_a + dg * (255 - use_a)) / 255;
+                unsigned int nb = (b * use_a + db * (255 - use_a)) / 255;
                 d = 0xFF000000 | (nr << 16) | (ng << 8) | nb;
             }
         }
@@ -202,10 +523,17 @@ void fill_rot_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
     if (g_gpu) {
         float ax = static_cast<float>(x) + ox;
         float ay = static_cast<float>(y) + oy;
+        float ct = 0, ccx = 0, ccy = 0, cr0 = 0, cr1 = 0, crad = 0;
+        if (!g_clip_stack.empty()) {
+            ct = static_cast<float>(clip_for_quad(static_cast<float>(x),
+                                                  static_cast<float>(y), &ccx,
+                                                  &ccy, &cr0, &cr1, &crad));
+        }
         whaleui_gpu_rect_rot(g_gpu, static_cast<float>(x),
                              static_cast<float>(y), static_cast<float>(w),
                              static_cast<float>(h), static_cast<float>(radius),
-                             color, rot_deg, nullptr, ax, ay, skx, sky);
+                             color, rot_deg, nullptr, ax, ay, skx, sky,
+                             ct, ccx, ccy, cr0, cr1, crad);
         return;
     }
     if (radius > 0) {
@@ -294,6 +622,11 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
     unsigned int tr = tint ? (*tint >> 16) & 0xFF : 0;
     unsigned int tg = tint ? (*tint >> 8) & 0xFF : 0;
     unsigned int tb = tint ? *tint & 0xFF : 0;
+    /* mask-image over <img>/glyph blits: the mask alpha scales the source
+     * alpha per pixel. needs_clip gates the per-pixel inside_clip() check
+     * (off by default: glyph blits are the hottest path in the renderer). */
+    bool use_mask = whaleui_mask_active();
+    bool needs_clip = use_mask || !g_clip_stack.empty();
     for (int y = 0; y < surf->h; ++y) {
         int ty = dy + y;
         if (ty < 0 || ty >= fbh) {
@@ -301,6 +634,11 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
         }
         if (clip && (ty < clip->y || ty >= clip->y + clip->h)) {
             continue;
+        }
+        if (!inside_clip(dx, ty) && !inside_clip(dx + surf->w - 1, ty)) {
+            /* row span outside a circle/ellipse clip: still scan (the
+             * per-pixel check below stays exact), no early-out here */
+            (void)0;
         }
         for (int x = 0; x < surf->w; ++x) {
             int tx = dx + x;
@@ -310,10 +648,24 @@ void blend_surface(std::vector<unsigned int>& fb, int fbw, int fbh,
             if (clip && (tx < clip->x || tx >= clip->x + clip->w)) {
                 continue;
             }
+            if (needs_clip && !inside_clip(tx, ty)) {
+                continue;
+            }
             const unsigned char* s = src + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
             unsigned int a = s[3];
             if (a == 0) {
                 continue;
+            }
+            if (use_mask) {
+                float mv = whaleui_mask_at(static_cast<float>(tx),
+                                           static_cast<float>(ty));
+                if (mv <= 0.0f) {
+                    continue;
+                }
+                a = static_cast<unsigned int>(a * mv + 0.5f);
+                if (a == 0) {
+                    continue;
+                }
             }
             unsigned int sr = tint ? tr : s[0];
             unsigned int sg = tint ? tg : s[1];
@@ -1353,6 +1705,57 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
               static_cast<int>(toox * (1.0f - tsx));
     int noy = off_y + static_cast<int>(tdy) +
               static_cast<int>(toooy * (1.0f - tsy));
+    /* clip-path: parse against this box and push (stacked; children
+     * inherit). The shape is stored in-box; emitters map it onto each
+     * quad. polygon() parses but reports unsupported (plain paint).
+     * Placed after transform/scale resolve (bw/bh/nox/noy final). */
+    bool pushed_clip = false;
+    if (n->el) {
+        std::string cpv = sget(n->style, "clip-path");
+        if (!cpv.empty() && cpv != "none") {
+            ClipPath cps;
+            if (parse_clip_path(cpv.c_str(), static_cast<float>(bw),
+                                static_cast<float>(bh),
+                                &cps) == 0 &&
+                cps.type > 0) {
+                ClipPathActive act;
+                act.shape = cps;
+                act.bx = n->border.x + nox;
+                act.by = n->border.y + noy;
+                act.bw = bw;
+                act.bh = bh;
+                g_clip_stack.push_back(act);
+                pushed_clip = true;
+            }
+        }
+    }
+    /* mask-image: linear-gradient alpha mask over this box (stacked like
+     * clip-path; children inherit). Only the alpha channel matters: the
+     * gradient's corners project to per-corner mask values (same axis math
+     * as fill_gradient). Non-linear masks parse but are skipped (opaque).
+     * -webkit-mask-image is accepted as an alias. */
+    bool pushed_mask = false;
+    if (n->el) {
+        std::string mkv = sget(n->style, "mask-image");
+        if (mkv.empty()) {
+            mkv = sget(n->style, "-webkit-mask-image");
+        }
+        if (!mkv.empty() && mkv != "none") {
+            Gradient mg;
+            if (parse_gradient(mkv, mg) && mg.type == 0 &&
+                !mg.stops.empty()) {
+                MaskActive mk;
+                mk.active = true;
+                mk.bx = n->border.x + nox;
+                mk.by = n->border.y + noy;
+                mk.bw = bw;
+                mk.bh = bh;
+                mask_from_linear(mg, bw, bh, mk.m);
+                g_mask_stack.push_back(mk);
+                pushed_mask = true;
+            }
+        }
+    }
     /* z-order high root with an opaque background: this element's layer
      * occludes lower layers - clear the old text under it so lower
      * glyphs do not show through its background. Unified rule; the popup
@@ -1384,6 +1787,12 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
          * scrolled page most of the document is off-screen, so skip their
          * whole subtree (the biggest scroll-paint win) */
         if (self.y + self.h <= 0 || self.y >= r->fb_h) {
+            if (pushed_mask && !g_mask_stack.empty()) {
+                g_mask_stack.pop_back();
+            }
+            if (pushed_clip && !g_clip_stack.empty()) {
+                g_clip_stack.pop_back();
+            }
             return;
         }
     }
@@ -1609,13 +2018,21 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         }
         const int gx = n->border.x + nox;
         const int gy = n->border.y + noy;
+        /* clip-path shape mapped onto the gradient tile quad */
+        float gct = 0, gccx = 0, gccy = 0, gcr0 = 0, gcr1 = 0, gcrad = 0;
         std::string rpv = sget(n->style, "background-repeat");
         if (rpv.find("no-repeat") != std::string::npos) {
-            fill_gradient(r->pixels, r->fb_w, r->fb_h,
-                          gx + static_cast<int>(ox),
-                          gy + static_cast<int>(oy), static_cast<int>(tw),
-                          static_cast<int>(th), grad, eff, trot, tskx, tsky,
-                          blend_bg, blend_mode);
+            int txx = gx + static_cast<int>(ox);
+            int tyy = gy + static_cast<int>(oy);
+            if (!g_clip_stack.empty()) {
+                gct = static_cast<float>(clip_for_quad(
+                    static_cast<float>(txx), static_cast<float>(tyy), &gccx,
+                    &gccy, &gcr0, &gcr1, &gcrad));
+            }
+            fill_gradient(r->pixels, r->fb_w, r->fb_h, txx, tyy,
+                          static_cast<int>(tw), static_cast<int>(th), grad,
+                          eff, trot, tskx, tsky, blend_bg, blend_mode, gct,
+                          gccx, gccy, gcr0, gcr1, gcrad);
         } else {
             /* repeat (default) / repeat-x / repeat-y: tile from the
              * position back to the box edge, then forward */
@@ -1639,10 +2056,18 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                  yy < gy + bh; yy += yi) {
                 for (int xx = rx ? x0 : gx + static_cast<int>(ox);
                      xx < gx + bw; xx += xi) {
+                    float tct = 0, tccx = 0, tccy = 0, tcr0 = 0, tcr1 = 0,
+                          tcrad = 0;
+                    if (!g_clip_stack.empty()) {
+                        tct = static_cast<float>(clip_for_quad(
+                            static_cast<float>(xx), static_cast<float>(yy),
+                            &tccx, &tccy, &tcr0, &tcr1, &tcrad));
+                    }
                     fill_gradient(r->pixels, r->fb_w, r->fb_h, xx, yy,
                                   static_cast<int>(tw), static_cast<int>(th),
                                   grad, eff, trot, tskx, tsky, blend_bg,
-                                  blend_mode);
+                                  blend_mode, tct, tccx, tccy, tcr0, tcr1,
+                                  tcrad);
                 }
             }
         }
@@ -1875,5 +2300,11 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                 d = blend_pixels(d, mb_src, mb_mode);
             }
         }
+    }
+    if (pushed_mask && !g_mask_stack.empty()) {
+        g_mask_stack.pop_back();
+    }
+    if (pushed_clip && !g_clip_stack.empty()) {
+        g_clip_stack.pop_back();
     }
 }

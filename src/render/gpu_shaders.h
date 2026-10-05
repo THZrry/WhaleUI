@@ -25,6 +25,10 @@ struct VSIn {
     float2 size : TEXCOORD3;
     float radius : TEXCOORD4;
     float2 fb : TEXCOORD5;
+    float ctype : TEXCOORD6;
+    float2 cc : TEXCOORD7;
+    float2 cr : TEXCOORD8;
+    float crad : TEXCOORD9;
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -32,6 +36,10 @@ struct VSOut {
     float4 col : TEXCOORD1;
     float2 size : TEXCOORD2;
     float radius : TEXCOORD3;
+    float ctype : TEXCOORD4;
+    float2 cc : TEXCOORD5;
+    float2 cr : TEXCOORD6;
+    float crad : TEXCOORD7;
 };
 VSOut main(VSIn v) {
     VSOut o;
@@ -42,13 +50,19 @@ VSOut main(VSIn v) {
     o.col = v.col;
     o.size = v.size;
     o.radius = v.radius;
+    o.ctype = v.ctype;
+    o.cc = v.cc;
+    o.cr = v.cr;
+    o.crad = v.crad;
     return o;
 }
 )";
 
 /* pixel: rounded-rect distance field with 1px anti-aliasing; vertex colors
  * interpolate so linear gradients fall out of the rasterizer for free.
- * No texture (SDL 3.4 D3D12 graphics SRV fails with E_INVALIDARG). */
+ * No texture (SDL 3.4 D3D12 graphics SRV fails with E_INVALIDARG).
+ * clip-path (ctype/cc/cr/crad, local box coords) intersects a second SDF:
+ * the pixel survives only inside BOTH shapes. */
 static const char* kSolidPS = R"(
 struct VSOut {
     float4 pos : SV_Position;
@@ -56,6 +70,10 @@ struct VSOut {
     float4 col : TEXCOORD1;
     float2 size : TEXCOORD2;
     float radius : TEXCOORD3;
+    float ctype : TEXCOORD4;
+    float2 cc : TEXCOORD5;
+    float2 cr : TEXCOORD6;
+    float crad : TEXCOORD7;
 };
 float4 main(VSOut i) : SV_Target {
     float4 c = i.col;
@@ -63,6 +81,22 @@ float4 main(VSOut i) : SV_Target {
     float2 half = i.size * 0.5; /* size is the full quad size; SDF wants half */
     float2 q = abs(i.uv - 0.5) * i.size - (half - r);
     float d = length(max(q, 0)) + min(max(q.x, q.y), 0) - r;
+    if (i.ctype > 0.5 && i.ctype < 1.5) {
+        /* inset rect: center cc + half-size cr (+ corner crad) */
+        float rr = max(i.crad, 0);
+        float2 qq = abs(i.uv * i.size - i.cc) - (i.cr - rr);
+        float dc = length(max(qq, 0)) + min(max(qq.x, qq.y), 0) - rr;
+        d = max(d, dc);
+    } else if (i.ctype > 1.5 && i.ctype < 2.5) {
+        /* circle: distance to center minus radius */
+        float dc = length(i.uv * i.size - i.cc) - i.cr.x;
+        d = max(d, dc);
+    } else if (i.ctype > 2.5) {
+        /* ellipse: normalized distance (approx SDF, good for AA) */
+        float2 e = (i.uv * i.size - i.cc) / max(i.cr, 0.001);
+        float dc = (length(e) - 1.0) * min(i.cr.x, i.cr.y);
+        d = max(d, dc);
+    }
     float a = 1.0 - saturate(d + 0.5);
     c.a *= a;
     return c;

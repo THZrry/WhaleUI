@@ -301,7 +301,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     }
 
     /* vertex layout for the solid pipeline (gpu_vert_solid) */
-    SDL_GPUVertexAttribute attrs[6];
+    SDL_GPUVertexAttribute attrs[10];
     std::memset(attrs, 0, sizeof(attrs));
     attrs[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
     attrs[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 8};
@@ -309,6 +309,10 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     attrs[3] = {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 32};
     attrs[4] = {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 40};
     attrs[5] = {5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 44};
+    attrs[6] = {6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 52};
+    attrs[7] = {7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 56};
+    attrs[8] = {8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 64};
+    attrs[9] = {9, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 72};
     SDL_GPUVertexBufferDescription vbd;
     std::memset(&vbd, 0, sizeof(vbd));
     vbd.slot = 0;
@@ -320,7 +324,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
     vis.vertex_buffer_descriptions = &vbd;
     vis.num_vertex_buffers = 1;
     vis.vertex_attributes = attrs;
-    vis.num_vertex_attributes = 6;
+    vis.num_vertex_attributes = 10;
     SDL_GPUColorTargetBlendState blend;
     std::memset(&blend, 0, sizeof(blend));
     blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
@@ -769,7 +773,9 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g)
 }
 
 void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
-                      float radius, unsigned int color, const int* clip)
+                      float radius, unsigned int color, const int* clip,
+                      float ctype, float ccx, float ccy, float cr0, float cr1,
+                      float crad)
 {
     if (!g || w <= 0 || h <= 0) {
         return;
@@ -815,7 +821,8 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
         radius = hr * 0.5f;
     }
     gpu_vert_solid v[6];
-    /* two triangles, UV 0..1, same color, size + radius + fb size */
+    /* two triangles, UV 0..1, same color, size + radius + fb size.
+     * Clip shape rides along (local coords of this quad). */
     for (int i = 0; i < 6; ++i) {
         v[i].x = x;
         v[i].y = y;
@@ -828,6 +835,12 @@ void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
         v[i].radius = radius;
         v[i].fb_w = g->fb_w;
         v[i].fb_h = g->fb_h;
+        v[i].ctype = ctype;
+        v[i].ccx = ccx;
+        v[i].ccy = ccy;
+        v[i].cr0 = cr0;
+        v[i].cr1 = cr1;
+        v[i].crad = crad;
     }
     v[0].x = x;         v[0].y = y;         v[0].u = 0; v[0].v = 0;
     v[1].x = x + w;     v[1].y = y;         v[1].u = 1; v[1].v = 0;
@@ -857,7 +870,9 @@ void whaleui_gpu_late_end(whaleui_gpu_t* g)
 void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
                           float rot_deg, const int* clip, float ax, float ay,
-                          float skx_deg, float sky_deg)
+                          float skx_deg, float sky_deg, float ctype,
+                          float ccx, float ccy, float cr0, float cr1,
+                          float crad)
 {
     if (!g || w <= 0 || h <= 0) {
         return;
@@ -919,11 +934,20 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
         v[i].radius = radius;
         v[i].fb_w = g->fb_w;
         v[i].fb_h = g->fb_h;
+        v[i].ctype = ctype;
+        v[i].ccx = ccx;
+        v[i].ccy = ccy;
+        v[i].cr0 = cr0;
+        v[i].cr1 = cr1;
+        v[i].crad = crad;
     }
     /* corner k: (dx,dy) local offset, (u,v) its 0..1 box coordinate - the
      * pairing must stay TL,TR,BL,TR,BL,BR so the SDF frame survives.
      * dx/dy are relative to the box center; (ox0, oy0) shifts them onto
-     * the anchor so an off-center origin rotates correctly. */
+     * the anchor so an off-center origin rotates correctly. NOTE: the clip
+     * shape (cc/cr, local coords of this quad) rides the SAME corner
+     * transform implicitly - u/v/size stay local, so the SDF clip follows
+     * rotation/skew exactly like the body rounding. */
     const float ox0 = cx - (x + hw);
     const float oy0 = cy - (y + hh);
     float dx[4] = {-hw, hw, -hw, hw};
@@ -955,7 +979,9 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
 void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
                                float h, unsigned int c0, unsigned int c1,
                                unsigned int c2, unsigned int c3,
-                               const int* clip)
+                               const int* clip, float ctype, float ccx,
+                               float ccy, float cr0, float cr1, float crad,
+                               float radius)
 {
     if (!g || w <= 0 || h <= 0) {
         return;
@@ -978,9 +1004,17 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
     if (out.size() + 6 > 65536) {
         return;
     }
-    /* corner colors: v[0]=TL v[1]=TR v[2]=BL v[3]=TR v[4]=BL v[5]=BR */
+    /* corner colors: v[0]=TL v[1]=TR v[2]=BL v[3]=TR v[4]=BL v[5]=BR.
+     * radius is normally 0 (square gradient tiles); the masked rounded-rect
+     * path passes the real radius so one draw carries both the corner SDF
+     * and the per-corner mask alpha (they multiply in the shader). */
     unsigned int cols[6] = {c0, c1, c2, c1, c2, c3};
     gpu_vert_solid v[6];
+    float hr = w < h ? w : h;
+    float rad = radius;
+    if (rad > hr * 0.5f) {
+        rad = hr * 0.5f;
+    }
     for (int i = 0; i < 6; ++i) {
         v[i].x = x;
         v[i].y = y;
@@ -990,9 +1024,15 @@ void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
         v[i].a = ((cols[i] >> 24) & 0xFF) / 255.0f;
         v[i].size_x = w;
         v[i].size_y = h;
-        v[i].radius = 0;
+        v[i].radius = rad;
         v[i].fb_w = g->fb_w;
         v[i].fb_h = g->fb_h;
+        v[i].ctype = ctype;
+        v[i].ccx = ccx;
+        v[i].ccy = ccy;
+        v[i].cr0 = cr0;
+        v[i].cr1 = cr1;
+        v[i].crad = crad;
     }
     v[0].x = x;         v[0].y = y;         v[0].u = 0; v[0].v = 0;
     v[1].x = x + w;     v[1].y = y;         v[1].u = 1; v[1].v = 0;
@@ -1031,6 +1071,8 @@ static void push_solid_into(std::vector<gpu_vert_solid>& out, float x, float y,
         v[i].radius = radius;
         v[i].fb_w = fbw;
         v[i].fb_h = fbh;
+        v[i].ctype = 0;
+        v[i].ccx = v[i].ccy = v[i].cr0 = v[i].cr1 = v[i].crad = 0;
     }
     v[0].x = x;         v[0].y = y;         v[0].u = 0; v[0].v = 0;
     v[1].x = x + w;     v[1].y = y;         v[1].u = 1; v[1].v = 0;

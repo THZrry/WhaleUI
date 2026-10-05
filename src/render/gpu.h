@@ -36,6 +36,14 @@ struct gpu_vert_solid
     float radius;      /* corner radius px */
     float fb_w, fb_h;  /* framebuffer size in px (per-vertex: SDL 3.4 D3D12
                           DXIL vertex uniform crashes pipeline creation) */
+    /* clip-path shape (local box coords, so it survives rotation like the
+     * SDF frame): 0 = none, 1 = inset rect, 2 = circle, 3 = ellipse.
+     * rect: (ccx, ccy) center + (cr0, cr1) half-size (+crad corner radius);
+     * circle: center + cr0 radius; ellipse: center + (rx, ry). */
+    float ctype;
+    float ccx, ccy;
+    float cr0, cr1;
+    float crad;
 };
 
 /* text sprite quad, atlas UVs */
@@ -229,9 +237,13 @@ void whaleui_gpu_destroy(whaleui_gpu_t* g);
 int whaleui_gpu_resize(whaleui_gpu_t* g, int w, int h);
 
 /* push one solid quad (px coords). clip: NULL or a rectangle to
- * intersect (rounded corners are approximated when clipped). */
+ * intersect (rounded corners are approximated when clipped). The trailing
+ * clip-path shape (local coords of THIS quad: center + half-size/radii,
+ * 0 = none) intersects a second SDF in the pixel shader. */
 void whaleui_gpu_rect(whaleui_gpu_t* g, float x, float y, float w, float h,
-                      float radius, unsigned int color, const int* clip);
+                      float radius, unsigned int color, const int* clip,
+                      float ctype = 0, float ccx = 0, float ccy = 0,
+                      float cr0 = 0, float cr1 = 0, float crad = 0);
 
 /* push a solid quad rotated by rot_deg degrees (clockwise, CSS rotate
  * direction) around the (ax, ay) framebuffer anchor (from
@@ -245,15 +257,22 @@ void whaleui_gpu_rect_rot(whaleui_gpu_t* g, float x, float y, float w,
                           float h, float radius, unsigned int color,
                           float rot_deg, const int* clip,
                           float ax = -1.0f, float ay = -1.0f,
-                          float skx_deg = 0.0f, float sky_deg = 0.0f);
+                          float skx_deg = 0.0f, float sky_deg = 0.0f,
+                          float ctype = 0, float ccx = 0, float ccy = 0,
+                          float cr0 = 0, float cr1 = 0, float crad = 0);
 
 /* push a quad whose four corners carry distinct colors (c0=TL, c1=TR,
  * c2=BL, c3=BR); the solid pipeline interpolates them across the quad, so
- * linear CSS gradients fall out of the rasterizer for free. */
+ * linear CSS gradients fall out of the rasterizer for free. Trailing clip
+ * shape like whaleui_gpu_rect; radius (default 0) adds the corner SDF so
+ * one draw carries both rounding and per-corner (mask) alpha. */
 void whaleui_gpu_gradient_rect(whaleui_gpu_t* g, float x, float y, float w,
                                float h, unsigned int c0, unsigned int c1,
                                unsigned int c2, unsigned int c3,
-                               const int* clip);
+                               const int* clip, float ctype = 0,
+                               float ccx = 0, float ccy = 0, float cr0 = 0,
+                               float cr1 = 0, float crad = 0,
+                               float radius = 0);
 
 /* push a soft box-shadow: a rounded-rect shape (radius, px, framebuffer
  * coords) blurred by `blur` px and drawn with `color` (0xAARRGGBB) under

@@ -84,6 +84,19 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
   （记录按 blur 外扩，晕出盒）+ 4x5 颜色矩阵
   （brightness/contrast/saturate/grayscale/invert/sepia/hue-rotate/opacity，
   CSS 顺序左乘）；CPU 路径只做颜色矩阵（blur 跳过）。
+- `clip-path` **已实现**（inset/circle/ellipse；polygon 解析但按普通绘制）：
+  顶点尾字段（ctype/cc/cr/crad，quad 局部坐标，旋转 follow）+ solid shader
+  第二 SDF 相交 + CPU `inside_clip` 镜像；paint_node 压栈/弹栈（含早退弹栈），
+  子树继承；solid/round/rot/gradient-linear/gradient-radial/图片/文字全发射器
+  接入。回归：test_scroll `[clip]` 像素。
+- `mask-image`（含 `-webkit-mask-image` 别名）**已实现**（linear-gradient
+  alpha 遮罩）：mask 渐变按 `fill_gradient` 同轴投影取四角 alpha，
+  paint_node 压栈/弹栈（栈式，子树继承）；发射器按逐角 alpha 相乘——solid/
+  round（round 走 gradient_rect + radius 尾参，一次 draw 同时带圆角 SDF 与
+  逐角 alpha）/gradient-linear（四角 tint）/gradient-radial（逐层中心采样）/
+  图片+文字 blit（逐像素）；CPU 全路径逐像素相乘。非 linear 遮罩解析但跳过
+  （不透明绘制，不杀整串）。热路径门控（无 mask/clip 时零新增检查）。
+  回归：test_scroll `[mask]` 像素（红→背景渐隐梯度）。
 - `padding/margin` 的**四值简写与四条 longhand 都生效**（第 1 条修掉之后）；
   百分比 padding 按父内容宽解析，与规范一致。
 
@@ -145,8 +158,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
    的同心环近似）。
 4. **`::first-line` / `::first-letter`**：伪元素支持
    `::before`/`::after`/`::marker`/`::selection`/`::placeholder`。
-5. `:has()` 等高级选择器、容器查询、混合模式/`clip-path`/`mask`、
-   `skew/matrix/3D`、`counter()`。
+5. `:has()` 等高级选择器、容器查询、`counter()`。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与
 `notes/current.md`（未解决项）里，别让它们只剩在一个地方。

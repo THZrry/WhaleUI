@@ -1832,6 +1832,11 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
     const int fw = g_gpu ? r->fb_w : r->width;
     const int fh = g_gpu ? r->fb_h : r->height;
     const bool fade = opacity < 1.0f;
+    /* mask-image / clip-path over text: the mask alpha scales the glyph
+     * alpha per pixel. Gated (off by default: text blits are the hottest
+     * path in the renderer). */
+    const bool use_mask = whaleui_mask_active();
+    const bool needs_clip = use_mask || whaleui_clip_active();
     /* the raster covers only the visible rows (see the raster pass): its
      * height is th_buf and it starts ty_shift past the run's top */
     const int th_draw = th_buf > 0 ? th_buf : th;
@@ -1863,6 +1868,25 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             }
             if (clip && (fx < clip->x || fx >= clip->x + clip->w)) {
                 continue;
+            }
+            if (needs_clip) {
+                /* mask-image: glyph alpha scales by the mask; clip-path:
+                 * pixels outside the shape are dropped */
+                if (!inside_clip(fx, fy)) {
+                    continue;
+                }
+                if (use_mask) {
+                    float mv = whaleui_mask_at(static_cast<float>(fx),
+                                               static_cast<float>(fy));
+                    if (mv <= 0.0f) {
+                        continue;
+                    }
+                    sa = static_cast<unsigned int>(sa * mv + 0.5f);
+                    if (sa == 0) {
+                        continue;
+                    }
+                    sp = (sa << 24) | (sp & 0x00FFFFFF);
+                }
             }
             unsigned int& d = fb[static_cast<size_t>(fy) * fw + fx];
             if (sa == 255) {

@@ -123,3 +123,5 @@ CPU颜色矩阵; 附带恢复被插桩关掉的外阴影 pass。见 notes/curren
 matrix分解; rotateX/Y透视压缩; 3D消费忽略。见 notes/current.md
 <21>(SOLVED): 混合模式 —— background-blend折角颜色+mix-blend pass F;
 11种精确+4种亮度近似。见 notes/current.md
+<22>(SOLVED): clip-path/mask —— inset/circle/ellipse 顶点SDF+CPU镜像+全发射器;
+mask linear-gradient逐角alpha, CPU/GPU双路径, 热路径门控。见 notes/current.md
