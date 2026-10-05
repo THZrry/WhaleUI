@@ -35,6 +35,296 @@ const std::string& get(const WhaleUIComputedStyle& s, const char* k)
     return it == s.end() ? kEmpty : it->second;
 }
 
+/* --- CSS counters (counter-reset/increment/set + content counter()) --- */
+
+/* counter value in one list-style (decimal default, alpha/roman shared
+ * with the ::marker ordinal path below) */
+static std::string counter_text(int v, const std::string& style)
+{
+    if (style == "lower-alpha" || style == "upper-alpha") {
+        std::string alpha;
+        int u = v;
+        while (u > 0) {
+            --u;
+            alpha.insert(alpha.begin(), static_cast<char>('a' + (u % 26)));
+            u /= 26;
+        }
+        if (alpha.empty()) {
+            alpha = "a"; /* 0 and negatives: clamp to first */
+        }
+        if (style == "upper-alpha") {
+            for (size_t k = 0; k < alpha.size(); ++k) {
+                alpha[k] = static_cast<char>(alpha[k] - 32);
+            }
+        }
+        return alpha;
+    }
+    if (style == "lower-roman" || style == "upper-roman") {
+        static const int vals[] = {1000, 900, 500, 400, 100, 90,
+                                   50,   40,  10,  9,   5,  4,
+                                   1};
+        static const char* syms[] = {"m",  "cm", "d",  "cd", "c",  "xc",
+                                     "l",  "xl", "x",  "ix", "v",  "iv",
+                                     "i"};
+        std::string roman;
+        int u = v > 0 ? v : 1;
+        for (size_t k = 0; k < sizeof(vals) / sizeof(vals[0]); ++k) {
+            while (u >= vals[k]) {
+                roman += syms[k];
+                u -= vals[k];
+            }
+        }
+        if (style == "upper-roman") {
+            for (size_t k = 0; k < roman.size(); ++k) {
+                roman[k] = static_cast<char>(roman[k] - 32);
+            }
+        }
+        return roman;
+    }
+    return std::to_string(v); /* decimal and anything unknown */
+}
+
+/* one scope layer: counter name -> value. The stack mirrors the layout
+ * recursion: reset/set push a layer (copy of the parent + assignments),
+ * increment mutates the top, pop restores on scope exit. */
+struct CounterLayer
+{
+    std::map<std::string, int> vals;
+};
+
+/* parse "name [n] name [n]..." (reset/set/increment lists): name then an
+ * optional integer. on_increment: missing integer means +1 (reset/set
+ * require the integer, missing means the default below). */
+static void counter_list(const std::string& v, bool is_inc,
+                         std::vector<std::pair<std::string, int>>& out,
+                         std::vector<bool>& has_num)
+{
+    const char* p = v.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != ',') {
+            ++p;
+        }
+        std::string tok(s, static_cast<size_t>(p - s));
+        if (tok == "none") {
+            continue;
+        }
+        if (!tok.empty() && (tok[0] == '-' || (tok[0] >= '0' && tok[0] <= '9'))) {
+            /* a number attaches to the previous name */
+            if (!out.empty()) {
+                out.back().second = std::atoi(tok.c_str());
+                has_num.back() = true;
+            }
+            continue;
+        }
+        out.emplace_back(tok, is_inc ? 1 : 0);
+        has_num.push_back(false);
+    }
+}
+
+/* apply counter-reset/counter-set/counter-increment of one element's style
+ * to the scope stack. Returns the push depth (0 or 1) so the caller pops
+ * exactly that on scope exit. Order per spec: reset/set first (new layer),
+ * then increment on the (possibly new) top. */
+static int counter_enter(const WhaleUIComputedStyle& style,
+                         std::vector<CounterLayer>& stack)
+{
+    int pushed = 0;
+    const std::string& rs = get(style, "counter-reset");
+    const std::string& ss = get(style, "counter-set");
+    if ((!rs.empty() && rs != "none") || !ss.empty()) {
+        CounterLayer lay;
+        if (!stack.empty()) {
+            lay.vals = stack.back().vals; /* inherit outer counters */
+        }
+        if (!rs.empty() && rs != "none") {
+            std::vector<std::pair<std::string, int>> items;
+            std::vector<bool> has;
+            counter_list(rs, false, items, has);
+            for (size_t i = 0; i < items.size(); ++i) {
+                lay.vals[items[i].first] = items[i].second;
+            }
+        }
+        if (!ss.empty() && ss != "none") {
+            std::vector<std::pair<std::string, int>> items;
+            std::vector<bool> has;
+            counter_list(ss, false, items, has);
+            for (size_t i = 0; i < items.size(); ++i) {
+                lay.vals[items[i].first] = items[i].second;
+            }
+        }
+        stack.push_back(lay);
+        pushed = 1;
+    }
+    const std::string& is = get(style, "counter-increment");
+    if (!is.empty() && is != "none") {
+        if (stack.empty()) {
+            stack.emplace_back();
+        }
+        std::vector<std::pair<std::string, int>> items;
+        std::vector<bool> has;
+        counter_list(is, true, items, has);
+        for (size_t i = 0; i < items.size(); ++i) {
+            auto it = stack.back().vals.find(items[i].first);
+            int cur = it == stack.back().vals.end() ? 0 : it->second;
+            stack.back().vals[items[i].first] = cur + items[i].second;
+        }
+    }
+    return pushed;
+}
+
+/* current value of one counter (0 when never created, per spec) */
+static int counter_get(const std::vector<CounterLayer>& stack,
+                       const std::string& name)
+{
+    if (stack.empty()) {
+        return 0;
+    }
+    auto it = stack.back().vals.find(name);
+    return it == stack.back().vals.end() ? 0 : it->second;
+}
+
+/* counters(name, sep): outer-to-inner join over every layer carrying it */
+static std::string counters_join(const std::vector<CounterLayer>& stack,
+                                 const std::string& name,
+                                 const std::string& sep,
+                                 const std::string& style)
+{
+    std::string out;
+    for (size_t i = 0; i < stack.size(); ++i) {
+        auto it = stack[i].vals.find(name);
+        if (it == stack[i].vals.end()) {
+            continue;
+        }
+        if (!out.empty()) {
+            out += sep;
+        }
+        out += counter_text(it->second, style);
+    }
+    if (out.empty()) {
+        out = counter_text(0, style);
+    }
+    return out;
+}
+
+/* expand counter()/counters() inside a content value. Tokens are split on
+ * top-level spaces (quotes protect theirs); each token is a quoted string,
+ * attr(name), counter(name[, style]) or counters(name, sep[, style]).
+ * Unknown tokens are dropped (same leniency as the attr() path). */
+static void counter_expand(const std::string& v, lxb_dom_element* el,
+                           const std::vector<CounterLayer>& stack,
+                           std::string& out)
+{
+    out.clear();
+    size_t i = 0;
+    while (i < v.size()) {
+        while (i < v.size() && (v[i] == ' ' || v[i] == '\t')) {
+            ++i;
+        }
+        if (i >= v.size()) {
+            break;
+        }
+        std::string tok;
+        if (v[i] == '\'' || v[i] == '"') {
+            char q = v[i++];
+            while (i < v.size() && v[i] != q) {
+                tok += v[i++];
+            }
+            if (i < v.size()) {
+                ++i;
+            }
+            out += tok;
+            continue;
+        }
+        size_t start = i;
+        int depth = 0;
+        while (i < v.size() &&
+               (depth > 0 || (v[i] != ' ' && v[i] != '\t'))) {
+            if (v[i] == '(') {
+                ++depth;
+            } else if (v[i] == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            }
+            ++i;
+        }
+        tok = v.substr(start, i - start);
+        if (tok.compare(0, 5, "attr(") == 0 && !tok.empty() &&
+            tok.back() == ')') {
+            std::string an = tok.substr(5, tok.size() - 6);
+            size_t ab = an.find_first_not_of(" \t");
+            size_t ae = an.find_last_not_of(" \t");
+            if (ab != std::string::npos) {
+                an = an.substr(ab, ae - ab + 1);
+                size_t alen = 0;
+                const lxb_char_t* av = lxb_dom_element_get_attribute(
+                    el, reinterpret_cast<const lxb_char_t*>(an.c_str()),
+                    an.size(), &alen);
+                if (av && alen > 0) {
+                    out.assign(out + std::string(
+                                         reinterpret_cast<const char*>(av),
+                                         alen));
+                }
+            }
+            continue;
+        }
+        bool is_counters = tok.compare(0, 9, "counters(") == 0;
+        bool is_counter = !is_counters && tok.compare(0, 8, "counter(") == 0;
+        if ((is_counter || is_counters) && !tok.empty() && tok.back() == ')') {
+            size_t open = tok.find('(');
+            std::string inner = tok.substr(open + 1, tok.size() - open - 2);
+            /* top-level comma split */
+            std::vector<std::string> args;
+            size_t d2 = 0, st2 = 0;
+            for (size_t k = 0; k <= inner.size(); ++k) {
+                char c = k < inner.size() ? inner[k] : ',';
+                if (c == '(') {
+                    ++d2;
+                } else if (c == ')') {
+                    if (d2 > 0) {
+                        --d2;
+                    }
+                } else if (c == ',' && d2 == 0) {
+                    std::string a = inner.substr(st2, k - st2);
+                    size_t b = a.find_first_not_of(" \t");
+                    size_t e = a.find_last_not_of(" \t");
+                    if (b != std::string::npos) {
+                        args.push_back(a.substr(b, e - b + 1));
+                    }
+                    st2 = k + 1;
+                }
+            }
+            if (!args.empty()) {
+                std::string style = args.size() >= (is_counters ? 3u : 2u)
+                                        ? args[is_counters ? 2 : 1]
+                                        : "decimal";
+                /* strip quotes from the separator */
+                std::string sep = is_counters && args.size() >= 2 ? args[1]
+                                                                  : ".";
+                if (sep.size() >= 2 &&
+                    ((sep[0] == '\'' && sep[sep.size() - 1] == '\'') ||
+                     (sep[0] == '"' && sep[sep.size() - 1] == '"'))) {
+                    sep = sep.substr(1, sep.size() - 2);
+                }
+                if (is_counters) {
+                    out += counters_join(stack, args[0], sep, style);
+                } else {
+                    out += counter_text(counter_get(stack, args[0]), style);
+                }
+            }
+            continue;
+        }
+        /* a bare word outside quotes (e.g. `none`): dropped */
+    }
+}
+
 /* split "clamp(a,b,c)" / "min(a,b)" inner args on top-level commas
  * (nested function calls keep their own commas) */
 static void split_len_args(const std::string& v, size_t open,
@@ -1180,6 +1470,11 @@ struct Builder
     const std::map<lxb_dom_element*, int>* scrolls;
     whaleui_anim_t* anim;
     float text_scale;
+    /* CSS counter scope stack (reset/set push a layer, increment mutates
+     * the top, pop restores). Lives on the Builder so every build() call
+     * starts from a clean stack (incremental relayouts recompute, no
+     * stale values). */
+    std::vector<CounterLayer> counters;
 
     whaleui_layout_node_t* new_node()
     {
@@ -1211,7 +1506,11 @@ struct Builder
             out = c;
             if (out.size() >= 2 &&
                 ((out[0] == '\'' && out[out.size() - 1] == '\'') ||
-                 (out[0] == '"' && out[out.size() - 1] == '"'))) {
+                 (out[0] == '"' && out[out.size() - 1] == '"')) &&
+                out.find_first_of("'\"", 1) == out.size() - 1) {
+                /* a single quoted string (no inner quotes): strip them.
+                 * Mixed content (`"A" counter(x) "B"`) keeps its quotes
+                 * for counter_expand below. */
                 out = out.substr(1, out.size() - 2);
                 return;
             }
@@ -1237,6 +1536,14 @@ struct Builder
                     out.clear();
                 }
                 return;
+            }
+            /* content with counter()/counters() (possibly mixed with quoted
+             * strings and attr()): expand against the current scope */
+            if (out.find("counter(") != std::string::npos ||
+                out.find("counters(") != std::string::npos) {
+                std::string exp;
+                counter_expand(out, el, counters, exp);
+                out = exp;
             }
             return;
         }
@@ -1796,6 +2103,28 @@ struct Builder
          * its own run (pseudo styles apply to it).
          * A <details> without the open attribute collapses: only its first
          * <summary> child renders (the clickable title). */
+        /* CSS counters: reset/set push a scope layer, increment mutates the
+         * top; the guard pops on scope exit (including the budgeted-build
+         * early return below). ::before text below sees the incremented
+         * value (browser behavior: `li` counts from 1). */
+        struct CounterGuard
+        {
+            std::vector<CounterLayer>* st;
+            int pushed;
+            CounterGuard(std::vector<CounterLayer>* s,
+                         const WhaleUIComputedStyle& style)
+                : st(s)
+            {
+                pushed = counter_enter(style, *st);
+            }
+            ~CounterGuard()
+            {
+                for (int i = 0; i < pushed; ++i) {
+                    st->pop_back();
+                }
+            }
+        };
+        CounterGuard counter_guard(&counters, n->style);
         std::string pre, post;
         pseudo_content(el, 1, pre);
         pseudo_content(el, 2, post);

@@ -60,7 +60,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 组 | 属性 | 状态 |
 |----|------|------|
 | 80% | `width/height/min-*/max-*`、`margin`、`padding`、`border`、`border-radius`、`box-sizing`、`color`、`font-family/size/weight`、`line-height`、`text-align`、`text-decoration`、`background(-color/-image/-repeat/-position/-size)`、`opacity`、`display`、`position`、`top/left/right/bottom`、`z-index`、`float`、`clear`、`cursor`、`overflow(-x/-y)`、`white-space`、`word-break`、`text-overflow`、`box-shadow`、`transition` | ✅ |
-| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY/skewX/skewY 生效；`matrix()` 分解为已支持 ops；`rotateX/Y` 降级为透视压缩；`rotateZ`=rotate；`perspective/translateZ/scaleZ` 忽略；锚点走 `transform-origin`；**rotate 转背景/边框/渐变轴/命中**——GPU 顶点旋转近似 + 渐变投影方向同转 + hit_test 逆旋转重测，文本/子树/`::before` 不转）、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment`（未验证） | ⚠️ 见备注 |
+| 50% | `flex`（含 `flex-direction/wrap/justify-content/align-items/gap`）、`grid`、`aspect-ratio`、`transform`（translate/scale/scaleX/scaleY/skewX/skewY 生效；`matrix()` 分解为已支持 ops；`rotateX/Y` 降级为透视压缩；`rotateZ`=rotate；`perspective/translateZ/scaleZ` 忽略；锚点走 `transform-origin`；**rotate 转背景/边框/渐变轴/命中**——GPU 顶点旋转近似 + 渐变投影方向同转 + hit_test 逆旋转重测，文本/子树/`::before` 不转）、`perspective`、`backface-visibility`、`animation(-*)`、`text-shadow`、`border-image`（未验证）、`outline`、`outline-offset`、`accent-color`、`caret-color`、`scroll-behavior`、`scroll-snap-type`、`user-select`、`pointer-events`、`resize`、`counter-reset/increment/set`（作用域栈，见函数备注） | ⚠️ 见备注 |
 | 20% | `align-content/self`、`justify-self/items`、`place-*`、`row/column-gap`、`grid-template-*`、`grid-auto-*`、`inset`（含四值简写）、`writing-mode`、`direction`、`text-orientation`、`text-decoration-*`、`overscroll-behavior`、`scroll-margin/padding`、`container-*`、`all`、`animation-composition`、`transform-style` | ⚠️ 见备注 |
 
 备注：
@@ -126,9 +126,9 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 组 | 函数 | 状态 |
 |----|------|------|
 | 80% | `rgb() rgba() hsl() hsla()`、`hwb()`、`lab()` `lch()` `oklab()` `oklch()`（→sRGB，域外钳制）、`color-mix(in srgb/srgb-linear/hsl + 百分比权重，递归解析，oklab 近似走线性）`、`var()`、`url()`、`calc()`、`linear-gradient()`、`conic-gradient()`（CPU 精确 atan2 角度 закладочный start ray + 中心；GPU 跳过留底色，主题零用量）、`repeating-linear-gradient()`（CPU 逐像素取模精确；GPU 轴向按 stop 段切分精确条纹，对角回退整盒取模近似）、`repeating-radial-gradient()`（CPU 取模精确；GPU 10 层取模近似） | ✅ |
-| 50% | `min()` `max()` `clamp()`（N 元 + `calc()` 乘除 + `rem`/`vmin`/`vmax`）、`radial-gradient()`（size 关键字 + position 关键字，见备注）、`attr()`（`content` 内） | ✅ |
+| 50% | `min()` `max()` `clamp()`（N 元 + `calc()` 乘除 + `rem`/`vmin`/`vmax`）、`radial-gradient()`（size 关键字 + position 关键字，见备注）、`attr()`（`content` 内）、`counter()` `counters()`（`counter-reset/increment/set` 作用域 + decimal/alpha/roman 样式，见备注） | ✅ |
 | 20% | `conic-gradient()`、`repeating-*-gradient()` 已见上（conic GPU 跳过，repeating 对角 GPU 近似） | ⚠️ 部分近似 |
-| 20% | `image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()`、`counter()` `counters()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
+| 20% | `image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
 
 备注（新增）：
 
@@ -143,6 +143,13 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
   `overflow-x/y` 分写。
 - `radial-gradient` 的 closest/farthest-side/corner 由 `radial_resolve` 按盒
   解算（circle 取单半径；ellipse 取双轴）。
+- `counter-reset/increment/set` + `content: counter()/counters()` 生效：
+  Builder 持作用域栈（reset/set 压层继承父副本，increment 改栈顶，RAII
+  guard 配对弹栈，::before 看到递增后值）；`counters(name, sep)` 连接所有
+  含名层（嵌套列表 "1.1" 是规范行为）；decimal/alpha/roman 复用 marker 转换；
+  `content` 混合 token（引号串 + attr() + counter()) 按顶层空格切分展开。
+  附带修两处：纯引号 fast-path 误剥混合 content 首尾引号（加内引号检查）；
+  全显式渐变 stop 被均匀重写（repeating 硬条纹变过渡带，batch3 中心 E6）。
 
 ## 仍未做（连同原因）
 
@@ -160,7 +167,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
    的同心环近似）。
 4. **`::first-line` / `::first-letter`**：伪元素支持
    `::before`/`::after`/`::marker`/`::selection`/`::placeholder`。
-5. `:has()` 等高级选择器、容器查询、`counter()`。
+5. `:has()` 等高级选择器、容器查询。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与
 `notes/current.md`（未解决项）里，别让它们只剩在一个地方。

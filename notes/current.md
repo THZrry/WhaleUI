@@ -301,6 +301,28 @@ repeating 硬条纹变过渡带) —— 改全 auto 才均匀, 部分 auto 逐�
 中心/rep-conic 降级)。
 验证:10 套件全绿;14 张主题自检全 OK。
 
+# <24>: content:counter()/counters()(计数器作用域)
+
+SOLVED
+
+layout.cpp 内追加, 与渲染热路径无关:
+scope 栈随 build() 递归嵌套(Builder 成员, 每次 build 从空栈起, 增量
+relayout 无陈旧值; resume 是整树重建, 早退帧丢弃, 无需续接)。
+counter-reset/set 压层(父副本+赋值, 缺省 0), increment 改栈顶(缺省 +1,
+无则隐式建), RAII guard 配对弹栈(含 budgeted 早退)。::before 在 enter
+之后组装, 看到递增后值(浏览器行为, li 从 1 起)。
+取值: counter(name[, style]) 取栈顶(无则 0); counters(name, sep[, style])
+连接所有含名层(嵌套 "1.1" 是规范行为, 不是 bug)。样式 decimal 缺省,
+alpha/roman 复用 marker 转换(抽 counter_text, marker 原代码保留)。
+content 混合 token(`"第" counter(ch) "章"`)按顶层空格切分展开(引号/attr()/
+counter() 三态)。
+踩坑: 纯引号 fast-path 首尾引号误判混合 content(`"A" counter(x) "B"`
+首尾恰为引号, 剥成 `A" counter(x) "B`) —— 加内引号检查才走 fast-path。
+附带影响: stop 全显式修复后 batch3 中心 E6(旧 0.5/0.75 错位碰巧纯红,
+GPU 10 层最小 t=0.1 的固有粒度; 断言仍过, CPU 精确)。
+回归:test_layout [counter](外层 1./2. + 嵌套 1.1-i + 混合 A0B + set 41 白盒)。
+验证:10 套件全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

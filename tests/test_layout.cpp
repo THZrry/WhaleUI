@@ -876,6 +876,101 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* CSS counters: reset/increment scope + content counter()/counters()
+     * (decimal/alpha/roman styles, mixed string tokens, nested scopes) */
+    {
+        std::string css = whaleui_theme_default_css("fluent");
+        css += "ol.ch { counter-reset: ch; }\n"
+               "ol.ch > li { counter-increment: ch; }\n"
+               "ol.ch > li::before { content: counter(ch) \". \"; }\n"
+               "ol.ch > li ol.sec { counter-reset: sec; }\n"
+               "ol.ch > li ol.sec > li { counter-increment: sec; }\n"
+               "ol.ch > li ol.sec > li::before { content: counters(ch, \".\") "
+               "\"-\" counter(sec, lower-roman) \" \"; }\n"
+               "p.mix::before { content: \"A\" counter(ch) \"B\"; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><ol class=\"ch\"><li>one<ol class=\"sec\"><li>sub</li>"
+            "</ol></li><li>two</li></ol><p class=\"mix\">x</p></body>", 0);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        /* outer items count 1, 2 (decimal) */
+        whaleui_layout_node_t* ol = find_tag(t->root, "ol");
+        assert(ol != nullptr);
+        whaleui_layout_node_t* l1 = ol->first_child;
+        assert(l1 != nullptr && l1->first_child && l1->first_child->is_text);
+        std::printf("[counter] l1=%s\n", l1->first_child->text.c_str());
+        std::fflush(stdout);
+        assert(l1->first_child->text.rfind("1. ", 0) == 0);
+        whaleui_layout_node_t* l2 = l1->next;
+        assert(l2 != nullptr && l2->first_child && l2->first_child->is_text);
+        assert(l2->first_child->text.rfind("2. ", 0) == 0);
+        /* nested: counters() joins EVERY layer carrying the name - the
+         * sub-list's reset layer inherits ch=1, so counters(ch) is "1.1"
+         * (spec behavior); the inner counter renders lower-roman */
+        whaleui_layout_node_t* sub = find_tag(l1, "li");
+        /* find_tag(l1) returns l1 itself; step into the nested list */
+        whaleui_layout_node_t* sec = nullptr;
+        for (whaleui_layout_node_t* c = l1->first_child; c; c = c->next) {
+            if (!c->is_text && c->el) {
+                sec = c;
+                break;
+            }
+        }
+        assert(sec != nullptr);
+        whaleui_layout_node_t* s1 = sec->first_child;
+        assert(s1 != nullptr && s1->first_child && s1->first_child->is_text);
+        std::printf("[counter] s1=%s\n", s1->first_child->text.c_str());
+        std::fflush(stdout);
+        assert(s1->first_child->text.rfind("1.1-i ", 0) == 0);
+        /* mixed string + counter tokens outside any scope: counter is 0 */
+        whaleui_layout_node_t* pm = find_tag(t->root, "p");
+        assert(pm != nullptr && pm->first_child && pm->first_child->is_text);
+        assert(pm->first_child->text == "A0B");
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* counter-set writes an absolute value (no increment needed) */
+    {
+        std::string css = whaleui_theme_default_css("fluent");
+        css += "div.set { counter-set: k 41; }\n"
+               "div.set::after { content: counter(k); }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        whaleui_css_keyframes_t kf;
+        assert(whaleui_css_parse_full(css.c_str(), css.size(), &rules,
+                                      &count, &kf) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div class=\"set\">x</div></body>", 0);
+        assert(doc != nullptr);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, rules, count, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        assert(t != nullptr);
+        whaleui_layout_node_t* dv = find_tag(t->root, "div");
+        assert(dv != nullptr);
+        /* ::after run is the last child carrying "41" */
+        whaleui_layout_node_t* tail = dv->first_child;
+        assert(tail != nullptr);
+        while (tail->next) {
+            tail = tail->next;
+        }
+        assert(tail->is_text);
+        assert(tail->text == "41");
+        whaleui_layout_destroy(t);
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* incremental relayout: a DOM change rebuilds only the affected
      * subtree; the untouched sibling keeps its node (stable pointer) and
      * the box pass re-positions it below the resized block */

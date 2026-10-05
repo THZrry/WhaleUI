@@ -128,3 +128,5 @@ mask linear-gradient逐角alpha, CPU/GPU双路径, 热路径门控。见 notes/c
 <23>(SOLVED): 颜色与渐变值 —— hwb/lab/oklab/lch/oklch→sRGB + color-mix(srgb/
 srgb-linear/hsl精确, oklab近似) + conic(CPU精确/GPU留底) + repeating取模
 (CPU精确, GPU轴向条带/10层)。见 notes/current.md
+<24>(SOLVED): 计数器 —— reset/increment/set作用域栈(RAII) + counter()/
+counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.md
