@@ -57,6 +57,170 @@ unsigned int hex_nib(char c, int* ok)
     return 0;
 }
 
+/* --- perceptual color spaces -> sRGB (all channels 0..1 unless noted) --- */
+
+/* linear-sRGB -> gamma sRGB (the exact piecewise transfer) */
+static float lin_to_srgb(float c)
+{
+    if (c <= 0.0f) {
+        return 0.0f;
+    }
+    if (c >= 1.0f) {
+        return 1.0f;
+    }
+    if (c <= 0.0031308f) {
+        return 12.92f * c;
+    }
+    return 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+}
+
+/* gamma sRGB -> linear-sRGB */
+static float srgb_to_lin(float c)
+{
+    if (c <= 0.0f) {
+        return 0.0f;
+    }
+    if (c >= 1.0f) {
+        return 1.0f;
+    }
+    if (c <= 0.04045f) {
+        return c / 12.92f;
+    }
+    return std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+/* CIE Lab (L 0..100, a/b unbounded) -> linear sRGB, D65. XYZ is the
+ * pivot: Lab -> XYZ (D50-ish inverse companding, then the Bradford-ish
+ * D50->D65 scale the spec folds into the matrix) -> linear sRGB. */
+static void lab_to_lin(float L, float a, float b, float* r, float* g,
+                       float* bl)
+{
+    float fy = (L + 16.0f) / 116.0f;
+    float fx = fy + a / 500.0f;
+    float fz = fy - b / 200.0f;
+    auto inv = [](float t) {
+        float t3 = t * t * t;
+        return t3 > 0.008856f ? t3 : (t - 16.0f / 116.0f) / 7.787f;
+    };
+    /* D65 reference white */
+    float x = inv(fx) * 0.95047f;
+    float y = inv(fy);
+    float z = inv(fz) * 1.08883f;
+    *r = 3.2404542f * x - 1.5371385f * y - 0.4985314f * z;
+    *g = -0.9692660f * x + 1.8760108f * y + 0.0415560f * z;
+    *bl = 0.0556434f * x - 0.2040259f * y + 1.0572252f * z;
+}
+
+/* Oklab (L 0..1) -> linear sRGB (Bjorn Ottosson's matrices, exactly as
+ * the spec writes them: LMS' -> LMS cubing -> linear sRGB). */
+static void oklab_to_lin(float L, float a, float b, float* r, float* g,
+                         float* bl)
+{
+    float l_ = L + 0.3963377774f * a + 0.2158037573f * b;
+    float m_ = L - 0.1055613458f * a - 0.0638541728f * b;
+    float s_ = L - 0.0894841775f * a - 1.2914855480f * b;
+    float l = l_ * l_ * l_;
+    float m = m_ * m_ * m_;
+    float s = s_ * s_ * s_;
+    *r = 4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    *g = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    *bl = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+}
+
+/* pack clamped linear-sRGB + alpha into 0xAARRGGBB */
+static unsigned int pack_lin(float r, float g, float b, float alpha01)
+{
+    float rr = lin_to_srgb(r), gg = lin_to_srgb(g), bb = lin_to_srgb(b);
+    if (rr < 0) { rr = 0; } else if (rr > 1) { rr = 1; }
+    if (gg < 0) { gg = 0; } else if (gg > 1) { gg = 1; }
+    if (bb < 0) { bb = 0; } else if (bb > 1) { bb = 1; }
+    unsigned int a = static_cast<unsigned>(alpha01 * 255.0f + 0.5f);
+    if (a > 255) { a = 255; }
+    return (a << 24) |
+           (static_cast<unsigned>(rr * 255.0f + 0.5f) << 16) |
+           (static_cast<unsigned>(gg * 255.0f + 0.5f) << 8) |
+           static_cast<unsigned>(bb * 255.0f + 0.5f);
+}
+
+/* hue angle with CSS units (deg default, grad/rad/turn) -> degrees 0..360 */
+static float hue_deg(const char* s, float v)
+{
+    if (std::strstr(s, "turn")) {
+        v *= 360.0f;
+    } else if (std::strstr(s, "grad")) {
+        v = v * 0.9f;
+    } else if (std::strstr(s, "rad")) {
+        v = v * 180.0f / 3.14159265f;
+    }
+    v = std::fmod(v, 360.0f);
+    if (v < 0) {
+        v += 360.0f;
+    }
+    return v;
+}
+
+/* split a functional color's inner args on top-level commas, slashes
+ * AND spaces (modern space-separated syntax: "lch(50% 40 30 / 0.5)",
+ * "hwb(0 0% 0%)"). Returns the parts with whitespace trimmed. */
+static void split_color_args(const char* inner, std::vector<std::string>& out)
+{
+    const char* p = inner;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* s = p;
+        int depth = 0;
+        while (*p && ((*p != ',' && *p != '/' && *p != ' ' && *p != '\t') ||
+                       depth > 0)) {
+            if (*p == '(') {
+                ++depth;
+            } else if (*p == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            }
+            ++p;
+        }
+        std::string t(s, static_cast<size_t>(p - s));
+        size_t b = t.find_first_not_of(" \t");
+        size_t e = t.find_last_not_of(" \t");
+        if (b != std::string::npos) {
+            out.push_back(t.substr(b, e - b + 1));
+        }
+        if (*p == ',' || *p == '/' || *p == ' ' || *p == '\t') {
+            ++p;
+        }
+    }
+}
+
+/* one numeric arg: trailing % allowed (caller decides the scale) */
+static float color_num(const std::string& t)
+{
+    return static_cast<float>(std::atof(t.c_str()));
+}
+
+/* alpha arg: float 0..1, percent, or legacy 0..255 int */
+static float color_alpha(const std::string& t)
+{
+    if (!t.empty() && t.back() == '%') {
+        float v = static_cast<float>(std::atof(t.c_str())) / 100.0f;
+        if (v < 0) { v = 0; } else if (v > 1) { v = 1; }
+        return v;
+    }
+    float v = static_cast<float>(std::atof(t.c_str()));
+    if (v > 1.0f) {
+        v = v > 255.0f ? 1.0f : v / 255.0f;
+    }
+    if (v < 0) {
+        v = 0;
+    }
+    return v;
+}
+
 void split_grad_parts(const std::string& s, std::vector<std::string>& out)
 {
     size_t depth = 0, start = 0;
@@ -84,14 +248,36 @@ int parse_gradient(const std::string& v, Gradient& out)
 {
     size_t li = v.find("linear-gradient(");
     size_t ri = v.find("radial-gradient(");
-    if (li == std::string::npos && ri == std::string::npos) {
+    size_t ci = v.find("conic-gradient(");
+    size_t rli = v.find("repeating-linear-gradient(");
+    size_t rri = v.find("repeating-radial-gradient(");
+    size_t rci = v.find("repeating-conic-gradient(");
+    /* earliest opener wins (a mask-image and a background may nest) */
+    size_t best = std::string::npos;
+    int kind = -1; /* 0 lin, 1 rad, 2 conic, 3 rep-lin, 4 rep-rad,
+                    * 5 rep-conic (parsed as conic, tiling later) */
+    auto consider = [&](size_t p, int k) {
+        if (p != std::string::npos && (best == std::string::npos || p < best)) {
+            best = p;
+            kind = k;
+        }
+    };
+    consider(li, 0);
+    consider(ri, 1);
+    consider(ci, 2);
+    consider(rli, 3);
+    consider(rri, 4);
+    consider(rci, 5);
+    if (kind < 0) {
         return 0;
     }
-    bool lin = li != std::string::npos &&
-               (ri == std::string::npos || li < ri);
-    size_t start = lin ? li : ri;
-    /* "linear-gradient(" / "radial-gradient(" are both 16 chars */
-    size_t open = start + 16;
+    bool lin = kind == 0 || kind == 3;
+    bool conic = kind == 2 || kind == 5;
+    size_t start = best;
+    /* opener lengths: "linear-gradient("=16, "radial-gradient("=16,
+     * "conic-gradient("=15, "repeating-linear-gradient("=26,
+     * "repeating-radial-gradient("=26, "repeating-conic-gradient("=25 */
+    size_t open = start + (kind == 0 || kind == 1 ? 16 : kind == 2 ? 15 : kind == 5 ? 25 : 26);
     size_t depth = 1;
     size_t end = std::string::npos;
     for (size_t i = open; i < v.size(); ++i) {
@@ -108,8 +294,11 @@ int parse_gradient(const std::string& v, Gradient& out)
         return 0;
     }
     out = Gradient();
-    out.type = lin ? 0 : 1;
-    out.angle_deg = 180.0f; /* default: to bottom */
+    out.type = conic ? 2 : kind == 3 ? 3 : kind == 4 ? 4 : (lin ? 0 : 1);
+    out.angle_deg = 180.0f; /* default: to bottom (linear); conic: from top */
+    if (conic) {
+        out.angle_deg = 0.0f; /* "from 0deg" = pointing up */
+    }
     out.rx = 0;
     out.ry = 0;
     out.cx = 0.5f;
@@ -120,7 +309,7 @@ int parse_gradient(const std::string& v, Gradient& out)
         return 0;
     }
     size_t first = 1;
-    if (!lin) {
+    if (!lin && !conic) {
         /* radial first part: "[circle|ellipse] <size> at <pos>".
          * Sizes: "200px" (circle r), "110px 60px" (ellipse radii),
          * closest-side / closest-corner / farthest-side / farthest-corner
@@ -205,6 +394,73 @@ int parse_gradient(const std::string& v, Gradient& out)
         if (!sized) {
             out.rx = out.ry = -4.0f; /* default: farthest-corner */
         }
+    } else if (conic) {
+        /* conic first part: "[from <angle>] [at <pos>]". The angle sets
+         * the start ray (0deg = up, clockwise); the center reuses the
+         * radial position grammar (fraction of the box). */
+        const std::string& head = parts[0];
+        size_t at = head.find(" at ");
+        std::string as = at == std::string::npos ? head : head.substr(0, at);
+        std::string ps = at == std::string::npos ? std::string()
+                                                 : head.substr(at + 4);
+        size_t from = as.find("from");
+        if (from != std::string::npos) {
+            std::string an = as.substr(from + 4);
+            size_t b = an.find_first_not_of(" \t");
+            size_t e = an.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                an = an.substr(b, e - b + 1);
+                float v = static_cast<float>(std::atof(an.c_str()));
+                if (an.find("turn") != std::string::npos) {
+                    v *= 360.0f;
+                } else if (an.find("grad") != std::string::npos) {
+                    v = v * 0.9f;
+                } else if (an.find("rad") != std::string::npos) {
+                    v = v * 180.0f / 3.14159265f;
+                }
+                v = std::fmod(v, 360.0f);
+                if (v < 0) {
+                    v += 360.0f;
+                }
+                out.angle_deg = v;
+            }
+        }
+        if (!ps.empty()) {
+            /* same keywords as the radial position (fraction of box) */
+            std::vector<std::string> pp = split_space2(ps);
+            auto pos1 = [&](const std::string& t, float base) -> float {
+                if (t == "left" || t == "top") {
+                    return 0.0f;
+                }
+                if (t == "center") {
+                    return base * 0.5f;
+                }
+                if (t == "right" || t == "bottom") {
+                    return base;
+                }
+                if (!t.empty() && t.back() == '%') {
+                    return static_cast<float>(std::atof(t.c_str())) / 100.0f;
+                }
+                return static_cast<float>(std::atof(t.c_str())) + 100.0f;
+            };
+            if (pp.size() == 1) {
+                if (pp[0] == "top" || pp[0] == "bottom") {
+                    out.cy = pos1(pp[0], 1.0f);
+                } else {
+                    out.cx = pos1(pp[0], 1.0f);
+                }
+            } else if (pp.size() >= 2) {
+                bool p0v = pp[0] == "top" || pp[0] == "bottom";
+                bool p1h = pp[1] == "left" || pp[1] == "right";
+                if (p0v && p1h) {
+                    out.cx = pos1(pp[1], 1.0f);
+                    out.cy = pos1(pp[0], 1.0f);
+                } else {
+                    out.cx = pos1(pp[0], 1.0f);
+                    out.cy = pos1(pp[1], 1.0f);
+                }
+            }
+        }
     } else {
         /* linear first part: "90deg" / "to right" */
         const std::string& head = parts[0];
@@ -264,16 +520,20 @@ int parse_gradient(const std::string& v, Gradient& out)
             auto_pos.push_back(out.stops.size() - 1);
         }
     }
-    /* fill unspecified positions evenly */
+    /* fill unspecified positions evenly. All-explicit stops keep their
+     * values (the old code rewrote even those to even spacing, which broke
+     * any explicit mid stop - repeating gradients' hard-stop pairs). */
     size_t n = out.stops.size();
     if (n == 0) {
         return 0;
     }
-    if (auto_pos.empty()) {
+    if (auto_pos.size() == n) {
+        /* no explicit positions at all: even spacing (the classic
+         * "linear-gradient(red, blue)" case) */
         for (size_t i = 0; i < n; ++i) {
             out.stops[i].pos = n > 1 ? static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
         }
-    } else {
+    } else if (!auto_pos.empty()) {
         for (size_t i = 0; i < auto_pos.size(); ++i) {
             size_t idx = auto_pos[i];
             float lo = idx == 0 ? 0.0f : out.stops[idx - 1].pos;
@@ -1046,7 +1306,7 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
          * them). Radial needs per-pixel work the graphics pipeline cannot
          * do (SDL 3.4 D3D12 graphics SRV is broken), so it is skipped -
          * the flat element background underneath stays correct. */
-        if (g.type == 0 && g.stops.size() >= 2) {
+        if ((g.type == 0 || g.type == 3) && g.stops.size() >= 2) {
             float rad = g.angle_deg * 3.14159265f / 180.0f;
             float ddx = std::sin(rad), ddy = -std::cos(rad);
             /* a transformed element's gradient axis follows it (CSS):
@@ -1101,6 +1361,20 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             }
             auto tcol = [&](float px, float py) {
                 float t = ((px - ccx) * ddx + (py - ccy) * ddy - t0) / span;
+                if (g.type == 3 && g.stops.size() >= 2) {
+                    /* repeating-linear: wrap into the stop range (same
+                     * math as the CPU path, per corner) */
+                    float rlo = g.stops.front().pos;
+                    float rhi = g.stops.back().pos;
+                    float rspan = rhi - rlo;
+                    if (rspan > 0.0f) {
+                        t = std::fmod(t - rlo, rspan);
+                        if (t < 0) {
+                            t += rspan;
+                        }
+                        t += rlo;
+                    }
+                }
                 return grad_color(g, t);
             };
             unsigned int c_tl = tcol(static_cast<float>(x), static_cast<float>(y));
@@ -1138,13 +1412,166 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                 c2[3] = clip->h;
                 cp = c2;
             }
-            whaleui_gpu_gradient_rect(g_gpu, static_cast<float>(x),
-                                      static_cast<float>(y),
-                                      static_cast<float>(w),
-                                      static_cast<float>(h), c_tl, c_tr, c_bl,
-                                      c_br, cp, ctype, ccx, ccy, cr0, cr1,
-                                      crad);
-        } else if (g.type == 1 && g.stops.size() >= 2) {
+            if (g.type == 3 && g.stops.size() >= 2) {
+                /* repeating-linear on GPU: corner interpolation cannot hold
+                 * stripes (a wrap is per corner; periods between corners
+                 * interpolate away). Slice into per-STOP-SEGMENT strips:
+                 * each strip spans exactly one stop pair [pos[i],pos[i+1]]
+                 * of one period, so its end colors are the stop colors and
+                 * the interpolation inside IS the segment gradient (hard
+                 * stops stay razor sharp). Axial gradients (the common
+                 * repeating case) map t to x/y directly; diagonal axes fall
+                 * back to the whole-box wrapped corners (approximation,
+                 * documented). One submit, several pushes, no new draw
+                 * call; total strips capped at 8. */
+                float rlo = g.stops.front().pos;
+                float rhi = g.stops.back().pos;
+                float rspan = rhi - rlo;
+                if (rspan <= 0.0f) {
+                    rspan = 1.0f;
+                }
+                float alen = std::sqrt(ddx * ddx + ddy * ddy);
+                bool axial = false, horiz = false;
+                if (alen > 0) {
+                    float ahx = std::fabs(ddx / alen);
+                    float ahy = std::fabs(ddy / alen);
+                    axial = (ahx > 0.99f && ahy < 0.14f) ||
+                            (ahy > 0.99f && ahx < 0.14f);
+                    horiz = ahx >= ahy;
+                }
+                int nper =
+                    static_cast<int>(std::ceil(1.0f / rspan - 1e-6f));
+                if (nper < 1) {
+                    nper = 1;
+                }
+                int nseg = static_cast<int>(g.stops.size()) - 1;
+                if (nseg < 1) {
+                    nseg = 1;
+                }
+                while (nper * nseg > 8 && nper > 1) {
+                    --nper;
+                }
+                bool sliced = false;
+                if (axial) {
+                    sliced = true;
+                    /* t increases toward +x (horiz) or +y (!horiz)? */
+                    float t_far = horiz
+                                      ? ((static_cast<float>(x + w) - ccx) *
+                                             ddx +
+                                         (static_cast<float>(y) - ccy) * ddy -
+                                         t0) /
+                                            span
+                                      : ((static_cast<float>(x) - ccx) * ddx +
+                                         (static_cast<float>(y + h) - ccy) *
+                                             ddy -
+                                         t0) /
+                                            span;
+                    bool fwd = t_far >= 0.5f;
+                    for (int k = 0; k < nper; ++k) {
+                        for (int si = 0;
+                             si + 1 < static_cast<int>(g.stops.size());
+                             ++si) {
+                            if (k * nseg + si >= 8) {
+                                break;
+                            }
+                            float ta = k * rspan +
+                                       (g.stops[si].pos - rlo);
+                            float tb = k * rspan +
+                                       (g.stops[si + 1].pos - rlo);
+                            if (tb < 0.0f || ta > 1.0f) {
+                                continue;
+                            }
+                            if (ta < 0.0f) {
+                                ta = 0.0f;
+                            }
+                            if (tb > 1.0f) {
+                                tb = 1.0f;
+                            }
+                            if (tb <= ta) {
+                                continue;
+                            }
+                            unsigned int ca = g.stops[si].c;
+                            unsigned int cb = g.stops[si + 1].c;
+                            if (blend_bg != 0 && blend_mode >= 0) {
+                                ca = blend_pixels(blend_bg, ca, blend_mode);
+                                cb = blend_pixels(blend_bg, cb, blend_mode);
+                            }
+                            float qx, qy, qw, qh;
+                            unsigned int c_lo, c_hi;
+                            if (horiz) {
+                                float pxa = static_cast<float>(x) +
+                                            (fwd ? ta : 1.0f - tb) * w;
+                                float pxb = static_cast<float>(x) +
+                                            (fwd ? tb : 1.0f - ta) * w;
+                                qx = pxa < pxb ? pxa : pxb;
+                                qw = (pxa < pxb ? pxb - pxa : pxa - pxb);
+                                qy = static_cast<float>(y);
+                                qh = static_cast<float>(h);
+                                c_lo = fwd ? ca : cb;
+                                c_hi = fwd ? cb : ca;
+                            } else {
+                                float pya = static_cast<float>(y) +
+                                            (fwd ? ta : 1.0f - tb) * h;
+                                float pyb = static_cast<float>(y) +
+                                            (fwd ? tb : 1.0f - ta) * h;
+                                qy = pya < pyb ? pya : pyb;
+                                qh = (pya < pyb ? pyb - pya : pya - pyb);
+                                qx = static_cast<float>(x);
+                                qw = static_cast<float>(w);
+                                c_lo = fwd ? ca : cb;
+                                c_hi = fwd ? cb : ca;
+                            }
+                            if (qw <= 0 || qh <= 0) {
+                                continue;
+                            }
+                            if (whaleui_mask_active()) {
+                                float m0 = whaleui_mask_at(
+                                    horiz ? qx : static_cast<float>(x),
+                                    horiz ? static_cast<float>(y) : qy);
+                                float m1 = whaleui_mask_at(
+                                    horiz ? qx + qw : static_cast<float>(x),
+                                    horiz ? static_cast<float>(y) : qy + qh);
+                                c_lo = whaleui_mask_tint(c_lo, m0);
+                                c_hi = whaleui_mask_tint(c_hi, m1);
+                            }
+                            float st = 0, sccx = 0, sccy = 0, scr0 = 0,
+                                  scr1 = 0, scrad = 0;
+                            if (ctype > 0.5f) {
+                                st = ctype;
+                                sccx = ccx + static_cast<float>(x) - qx;
+                                sccy = ccy + static_cast<float>(y) - qy;
+                                scr0 = cr0;
+                                scr1 = cr1;
+                                scrad = crad;
+                            }
+                            /* constant across the strip, gradient along it */
+                            unsigned int q0 = c_lo, q1 = horiz ? c_hi : c_lo,
+                                           q2 = horiz ? c_lo : c_hi,
+                                           q3 = c_hi;
+                            whaleui_gpu_gradient_rect(
+                                g_gpu, qx, qy, qw, qh, q0, q1, q2, q3, cp,
+                                st, sccx, sccy, scr0, scr1, scrad);
+                        }
+                    }
+                }
+                if (!sliced) {
+                    /* diagonal axis (or degenerate): whole-box wrapped
+                     * corners - stripes with >1 period smear, documented */
+                    whaleui_gpu_gradient_rect(
+                        g_gpu, static_cast<float>(x), static_cast<float>(y),
+                        static_cast<float>(w), static_cast<float>(h), c_tl,
+                        c_tr, c_bl, c_br, cp, ctype, ccx, ccy, cr0, cr1,
+                        crad);
+                }
+            } else {
+                whaleui_gpu_gradient_rect(g_gpu, static_cast<float>(x),
+                                          static_cast<float>(y),
+                                          static_cast<float>(w),
+                                          static_cast<float>(h), c_tl, c_tr,
+                                          c_bl, c_br, cp, ctype, ccx, ccy,
+                                          cr0, cr1, crad);
+            }
+        } else if ((g.type == 1 || g.type == 4) && g.stops.size() >= 2) {
             /* radial: concentric rounded-rect ellipses, alpha fading
              * outwards - a coarse approximation of the per-pixel ellipse
              * distance (10 layers, GPU-trivial) */
@@ -1164,8 +1591,24 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                 cp = c2;
             }
             const int kLayers = 10;
+            float rlo = 0, rhi = 1;
+            if (g.type == 4 && g.stops.size() >= 2) {
+                rlo = g.stops.front().pos;
+                rhi = g.stops.back().pos;
+            }
+            float rspan = rhi - rlo;
+            if (rspan <= 0.0f) {
+                rspan = 1.0f;
+            }
             for (int i = kLayers; i >= 1; --i) {
                 float t = static_cast<float>(i) / kLayers;
+                if (g.type == 4) {
+                    t = std::fmod(t - rlo, rspan);
+                    if (t < 0) {
+                        t += rspan;
+                    }
+                    t += rlo;
+                }
                 unsigned int c = grad_color(g, t);
                 if (blend_bg != 0 && blend_mode >= 0) {
                     c = blend_pixels(blend_bg, c, blend_mode);
@@ -1193,6 +1636,13 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
                                  ry * 2.0f * t, rx * t, c, cp, ctype, lccx,
                                  lccy, cr0, cr1, crad);
             }
+        } else if (g.type == 2) {
+            /* conic has no GPU approximation (an angle->color map is not
+             * expressible with the rasterizer's bilinear interpolation;
+             * a tile-per-sector mosaic would smear pie-chart edges): the
+             * flat element background underneath stays correct, like radial
+             * before its 10-layer approximation. The CPU path below is
+             * exact. Zero conic usage in themes/showcase/tests today. */
         }
         return;
     }
@@ -1244,8 +1694,9 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
             (((cg * a + dg * (255 - a)) / 255) << 8) |
             ((cb * a + db * (255 - a)) / 255);
     };
-    if (g.type == 0) {
-        /* linear: project pixels onto the direction axis */
+    if (g.type == 0 || g.type == 3) {
+        /* linear (+ repeating-linear: t wraps into the first..last stop
+         * range, so the band tiles instead of clamping) */
         float rad = g.angle_deg * 3.14159265f / 180.0f;
         float dx = std::sin(rad), dy = -std::cos(rad);
         float cx = x + w * 0.5f, cy = y + h * 0.5f;
@@ -1268,14 +1719,59 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         if (span <= 0.0f) {
             span = 1.0f;
         }
+        float rlo = 0, rhi = 1;
+        if (g.type == 3 && g.stops.size() >= 2) {
+            rlo = g.stops.front().pos;
+            rhi = g.stops.back().pos;
+        }
+        float rspan = rhi - rlo;
+        if (rspan <= 0.0f) {
+            rspan = 1.0f;
+        }
         for (int py = y0; py < y1; ++py) {
             float t = ((static_cast<float>(x0) - cx) * dx +
                        (static_cast<float>(py) - cy) * dy - t0) /
                       span;
             float step = dx / span;
             for (int px = x0; px < x1; ++px) {
-                blend(px, py, grad_color(g, t));
+                float tt = t;
+                if (g.type == 3) {
+                    /* wrap into [rlo, rhi): negative-safe fmod */
+                    tt = std::fmod(tt - rlo, rspan);
+                    if (tt < 0) {
+                        tt += rspan;
+                    }
+                    tt += rlo;
+                }
+                blend(px, py, grad_color(g, tt));
                 t += step;
+            }
+        }
+    } else if (g.type == 2) {
+        /* conic: angle around the center (0deg = up, clockwise) mapped
+         * onto the stop positions; the center pixel takes stops[0] */
+        float rcx = g.cx > 1.0f ? g.cx - 100.0f : x + g.cx * w;
+        float rcy = g.cy > 1.0f ? g.cy - 100.0f : y + g.cy * h;
+        float start = g.angle_deg * 3.14159265f / 180.0f;
+        for (int py = y0; py < y1; ++py) {
+            for (int px = x0; px < x1; ++px) {
+                float ddx = static_cast<float>(px) - rcx;
+                float ddy = static_cast<float>(py) - rcy;
+                float t;
+                if (ddx == 0 && ddy == 0) {
+                    t = 0;
+                } else {
+                    /* atan2(x, -y): 0 at up, clockwise positive */
+                    float ang = std::atan2(ddx, -ddy) - start;
+                    while (ang < 0) {
+                        ang += 2.0f * 3.14159265f;
+                    }
+                    while (ang >= 2.0f * 3.14159265f) {
+                        ang -= 2.0f * 3.14159265f;
+                    }
+                    t = ang / (2.0f * 3.14159265f);
+                }
+                blend(px, py, grad_color(g, t));
             }
         }
     } else {
@@ -1289,11 +1785,27 @@ void fill_gradient(std::vector<unsigned int>& fb, int fbw, int fbh,
         if (rx <= 0 || ry <= 0) {
             return;
         }
+        float rlo = 0, rhi = 1;
+        if (g.type == 4 && g.stops.size() >= 2) {
+            rlo = g.stops.front().pos;
+            rhi = g.stops.back().pos;
+        }
+        float rspan = rhi - rlo;
+        if (rspan <= 0.0f) {
+            rspan = 1.0f;
+        }
         for (int py = y0; py < y1; ++py) {
             float ny = (static_cast<float>(py) - rcy) / ry;
             for (int px = x0; px < x1; ++px) {
                 float nx = (static_cast<float>(px) - rcx) / rx;
                 float t = std::sqrt(nx * nx + ny * ny);
+                if (g.type == 4) {
+                    t = std::fmod(t - rlo, rspan);
+                    if (t < 0) {
+                        t += rspan;
+                    }
+                    t += rlo;
+                }
                 blend(px, py, grad_color(g, t));
             }
         }
@@ -1360,8 +1872,7 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
         }
         return -4;
     }
-    if (std::strncmp(s, "hsl(", 4) == 0 || std::strncmp(s, "hsla(", 5) == 0) {
-        /* hsl()/hsla(): H in degrees (deg/grad/rad/turn accepted), S/L in %.
+    if (std::strncmp(s, "hsl(", 4) == 0 || std::strncmp(s, "hsla(", 5) == 0) {        /* hsl()/hsla(): H in degrees (deg/grad/rad/turn accepted), S/L in %.
          * 80%-bucket function that pages reach for constantly; without it
          * the declaration fell through to "not a colour" and painted the
          * default. */
@@ -1427,6 +1938,312 @@ extern "C" int whaleui_render_parse_color(const char* s, unsigned int* out)
     for (const NamedColor& nc : k_named) {
         if (std::strcmp(s, nc.name) == 0) {
             *out = nc.value;
+            return 0;
+        }
+    }
+    /* hwb(): "hwb(H W% B% [/ A])" (space or comma separated). HWB ->
+     * sRGB: take the hsl hue sector (full saturation), then mix toward
+     * white by W and toward black by B. */
+    if (std::strncmp(s, "hwb(", 4) == 0) {
+        const char* open = std::strchr(s, '(');
+        const char* close = open ? std::strrchr(open, ')') : nullptr;
+        if (!open || !close || close <= open + 1) {
+            return -5;
+        }
+        std::string inner(open + 1, static_cast<size_t>(close - open - 1));
+        /* commas tolerated ("hwb(210, 10%, 20%)") */
+        for (size_t i = 0; i < inner.size(); ++i) {
+            if (inner[i] == ',') {
+                inner[i] = ' ';
+            }
+        }
+        std::vector<std::string> a;
+        split_color_args(inner.c_str(), a);
+        if (a.size() < 3) {
+            return -5;
+        }
+        float h = hue_deg(a[0].c_str(), color_num(a[0]));
+        float w = color_num(a[1]) / 100.0f;
+        float bk = color_num(a[2]) / 100.0f;
+        float alpha = a.size() >= 4 ? color_alpha(a[3]) : 1.0f;
+        if (w < 0) { w = 0; } else if (w > 1) { w = 1; }
+        if (bk < 0) { bk = 0; } else if (bk > 1) { bk = 1; }
+        /* pure-hue sector color (same math as the hsl() branch at S=1,L=1/2) */
+        float hp = h / 60.0f;
+        float x = 1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f);
+        float r = 0, g = 0, b = 0;
+        if (hp < 1) { r = 1; g = x; }
+        else if (hp < 2) { r = x; g = 1; }
+        else if (hp < 3) { g = 1; b = x; }
+        else if (hp < 4) { g = x; b = 1; }
+        else if (hp < 5) { r = x; b = 1; }
+        else { r = 1; b = x; }
+        /* whiten then blacken (clamped when w+bk > 1: grey by ratio) */
+        float tot = w + bk;
+        if (tot > 1.0f) {
+            float grey = w / tot;
+            r = g = b = grey;
+        } else {
+            float k = 1.0f - w - bk;
+            r = r * k + w;
+            g = g * k + w;
+            b = b * k + w;
+        }
+        /* gamma sRGB -> linear for the shared packer */
+        return (*out = pack_lin(srgb_to_lin(r), srgb_to_lin(g),
+                                srgb_to_lin(b), alpha),
+                0);
+    }
+    /* lab()/lch()/oklab()/oklch(): perceptual spaces. L in lab() is 0..100
+     * (percent allowed); oklab L is 0..1 (percent = /100). Chroma/hue for
+     * the polar forms convert to a/b first. Out-of-gamut clamps in pack. */
+    if (std::strncmp(s, "lab(", 4) == 0 ||
+        std::strncmp(s, "lch(", 4) == 0 ||
+        std::strncmp(s, "oklab(", 6) == 0 ||
+        std::strncmp(s, "oklch(", 6) == 0) {
+        /* polar (chroma/hue) forms: lch/oklch. lab/oklab carry a/b. */
+        bool polar = (s[0] == 'o') ? (s[3] == 'c') : (s[1] == 'c');
+        bool okl = s[0] == 'o';
+        const char* open = std::strchr(s, '(');
+        const char* close = open ? std::strrchr(open, ')') : nullptr;
+        if (!open || !close || close <= open + 1) {
+            return -5;
+        }
+        std::string inner(open + 1, static_cast<size_t>(close - open - 1));
+        for (size_t i = 0; i < inner.size(); ++i) {
+            if (inner[i] == ',') {
+                inner[i] = ' ';
+            }
+        }
+        std::vector<std::string> a;
+        split_color_args(inner.c_str(), a);
+        if (a.size() < 3) {
+            return -5;
+        }
+        float L = color_num(a[0]);
+        if (!a[0].empty() && a[0].back() == '%') {
+            L = okl ? L / 100.0f : L; /* lab % = 0..100 directly */
+        } else if (okl) {
+            /* unitless oklab L is already 0..1 */
+        }
+        float aa = 0, bb = 0;
+        if (polar) {
+            /* lch(L C H) / oklch(L C H): H is the 3rd arg */
+            float c = color_num(a[1]);
+            float h = hue_deg(a[2].c_str(), color_num(a[2]));
+            float rad = h * 3.14159265f / 180.0f;
+            aa = c * std::cos(rad);
+            bb = c * std::sin(rad);
+        } else {
+            aa = color_num(a[1]);
+            bb = color_num(a[2]);
+        }
+        float alpha = a.size() >= 4 ? color_alpha(a[3]) : 1.0f;
+        float r = 0, g = 0, bl = 0;
+        if (okl) {
+            oklab_to_lin(L, aa, bb, &r, &g, &bl);
+        } else {
+            lab_to_lin(L, aa, bb, &r, &g, &bl);
+        }
+        *out = pack_lin(r, g, bl, alpha);
+        return 0;
+    }
+    /* color-mix(in <space>, c1 [p%], c2 [q%]): interpolate two colors in
+     * the named space (srgb / srgb-linear / hsl / oklab; "in " prefix and
+     * the " Exhibits " are required by the grammar but we tolerate their
+     * absence). Recursion handles nested functions (var() is NOT expanded
+     * here - unresolved names fail and fall back, same as other paths). */
+    if (std::strncmp(s, "color-mix(", 10) == 0) {
+        const char* open = std::strchr(s, '(');
+        if (!open) {
+            return -5;
+        }
+        /* match the OUTER paren (inner colors nest their own parens) */
+        int depth = 1;
+        const char* end = nullptr;
+        for (const char* p = open + 1; *p; ++p) {
+            if (*p == '(') {
+                ++depth;
+            } else if (*p == ')') {
+                if (--depth == 0) {
+                    end = p;
+                    break;
+                }
+            }
+        }
+        if (!end || end <= open + 1) {
+            return -5;
+        }
+        std::string inner(open + 1, static_cast<size_t>(end - open - 1));
+        std::vector<std::string> a;
+        split_grad_parts(inner, a); /* top-level comma split */
+        if (a.size() < 2) {
+            return -5;
+        }
+        /* space: "in srgb" / "in hsl" / "in oklab" / "in srgb-linear" */
+        std::string space = "srgb";
+        size_t ci = 0;
+        {
+            std::string h0 = a[0];
+            size_t b = h0.find_first_not_of(" \t");
+            size_t e = h0.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                h0 = h0.substr(b, e - b + 1);
+            }
+            if (h0.compare(0, 3, "in ") == 0 || h0.compare(0, 3, "in\t") == 0) {
+                std::string sp = h0.substr(3);
+                b = sp.find_first_not_of(" \t");
+                e = sp.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    space = sp.substr(b, e - b + 1);
+                }
+                ci = 1;
+            }
+        }
+        if (a.size() - ci < 2) {
+            return -5;
+        }
+        /* each side: "color [pct%]"; missing pct = complement */
+        auto side = [&](const std::string& t, unsigned int* c,
+                         float* pct) -> bool {
+            std::string u = t;
+            size_t b = u.find_first_not_of(" \t");
+            size_t e = u.find_last_not_of(" \t");
+            if (b == std::string::npos) {
+                return false;
+            }
+            u = u.substr(b, e - b + 1);
+            /* trailing percent (top-level: scan back past spaces) */
+            size_t pe = u.find_last_of("0123456789.");
+            size_t ps = u.find_last_of(" \t");
+            *pct = -1.0f;
+            std::string cs = u;
+            if (pe != std::string::npos && pe + 1 < u.size() &&
+                u[pe + 1] == '%') {
+                size_t nb = (ps == std::string::npos) ? 0 : ps + 1;
+                *pct = static_cast<float>(std::atof(u.c_str() + nb)) /
+                       100.0f;
+                cs = u.substr(0, ps == std::string::npos ? 0 : ps);
+                b = cs.find_first_not_of(" \t");
+                e = cs.find_last_not_of(" \t");
+                if (b == std::string::npos) {
+                    return false;
+                }
+                cs = cs.substr(b, e - b + 1);
+            }
+            return whaleui_render_parse_color(cs.c_str(), c) == 0;
+        };
+        unsigned int c1 = 0, c2 = 0;
+        float p1 = -1.0f, p2 = -1.0f;
+        if (!side(a[ci], &c1, &p1) || !side(a[ci + 1], &c2, &p2)) {
+            return -5;
+        }
+        if (p1 < 0 && p2 < 0) {
+            p1 = p2 = 0.5f;
+        } else if (p1 < 0) {
+            p1 = 1.0f - p2;
+        } else if (p2 < 0) {
+            p2 = 1.0f - p1;
+        }
+        float tot = p1 + p2;
+        float t = (tot > 0) ? p2 / tot : 0.5f; /* weight of c2 */
+        float r = 0, g = 0, b = 0, al = 0;
+        float a1 = ((c1 >> 24) & 0xFF) / 255.0f;
+        float a2 = ((c2 >> 24) & 0xFF) / 255.0f;
+        al = a1 + (a2 - a1) * t;
+        if (space == "hsl") {
+            /* hsl interpolation: convert both ends, lerp h/s/l */
+            auto to_hsl = [](unsigned int c, float* h, float* st,
+                             float* l) {
+                float r = ((c >> 16) & 0xFF) / 255.0f;
+                float g = ((c >> 8) & 0xFF) / 255.0f;
+                float bb = (c & 0xFF) / 255.0f;
+                float mx = r > g ? (r > bb ? r : bb) : (g > bb ? g : bb);
+                float mn = r < g ? (r < bb ? r : bb) : (g < bb ? g : bb);
+                *l = (mx + mn) * 0.5f;
+                if (mx == mn) {
+                    *h = 0;
+                    *st = 0;
+                    return;
+                }
+                float d = mx - mn;
+                *st = *l > 0.5f ? d / (2.0f - mx - mn) : d / (mx + mn);
+                if (mx == r) {
+                    *h = (g - bb) / d + (g < bb ? 6.0f : 0.0f);
+                } else if (mx == g) {
+                    *h = (bb - r) / d + 2.0f;
+                } else {
+                    *h = (r - g) / d + 4.0f;
+                }
+                *h *= 60.0f;
+            };
+            float h1, s1, l1, h2, s2, l2;
+            to_hsl(c1, &h1, &s1, &l1);
+            to_hsl(c2, &h2, &s2, &l2);
+            /* shorter hue arc */
+            float dh = h2 - h1;
+            if (dh > 180.0f) {
+                dh -= 360.0f;
+            } else if (dh < -180.0f) {
+                dh += 360.0f;
+            }
+            float h = h1 + dh * t, st = s1 + (s2 - s1) * t,
+                  l = l1 + (l2 - l1) * t;
+            float c = (1.0f - std::fabs(2.0f * l - 1.0f)) * st;
+            float hp = h / 60.0f;
+            float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+            float rr = 0, gg = 0, bb = 0;
+            if (hp < 1) { rr = c; gg = x; }
+            else if (hp < 2) { rr = x; gg = c; }
+            else if (hp < 3) { gg = c; bb = x; }
+            else if (hp < 4) { gg = x; bb = c; }
+            else if (hp < 5) { rr = x; bb = c; }
+            else { rr = c; bb = x; }
+            float m = l - c / 2.0f;
+            r = rr + m;
+            g = gg + m;
+            b = bb + m;
+            /* gamma sRGB -> linear for the packer */
+            *out = pack_lin(srgb_to_lin(r), srgb_to_lin(g),
+                            srgb_to_lin(b), al);
+            return 0;
+        }
+        if (space == "oklab" || space == "oklch") {
+            /* oklab interpolation would need lin->oklab; approximate via
+             * linear-sRGB (documented: hue-preserving exactness is a later
+             * step, pages overwhelmingly mix in srgb anyway) */
+        }
+        /* default "srgb" (and srgb-linear/oklab approx): lerp gamma sRGB */
+        {
+            float r1 = ((c1 >> 16) & 0xFF) / 255.0f;
+            float g1 = ((c1 >> 8) & 0xFF) / 255.0f;
+            float b1 = (c1 & 0xFF) / 255.0f;
+            float r2 = ((c2 >> 16) & 0xFF) / 255.0f;
+            float g2 = ((c2 >> 8) & 0xFF) / 255.0f;
+            float b2 = (c2 & 0xFF) / 255.0f;
+            if (space == "srgb-linear") {
+                r1 = srgb_to_lin(r1);
+                g1 = srgb_to_lin(g1);
+                b1 = srgb_to_lin(b1);
+                r2 = srgb_to_lin(r2);
+                g2 = srgb_to_lin(g2);
+                b2 = srgb_to_lin(b2);
+                *out = pack_lin(r1 + (r2 - r1) * t, g1 + (g2 - g1) * t,
+                                b1 + (b2 - b1) * t, al);
+                return 0;
+            }
+            r = r1 + (r2 - r1) * t;
+            g = g1 + (g2 - g1) * t;
+            b = b1 + (b2 - b1) * t;
+            unsigned int ai = static_cast<unsigned>(al * 255.0f + 0.5f);
+            if (ai > 255) { ai = 255; }
+            unsigned int ri = static_cast<unsigned>(r * 255.0f + 0.5f);
+            unsigned int gi = static_cast<unsigned>(g * 255.0f + 0.5f);
+            unsigned int bi = static_cast<unsigned>(b * 255.0f + 0.5f);
+            if (ri > 255) { ri = 255; }
+            if (gi > 255) { gi = 255; }
+            if (bi > 255) { bi = 255; }
+            *out = (ai << 24) | (ri << 16) | (gi << 8) | bi;
             return 0;
         }
     }

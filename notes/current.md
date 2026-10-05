@@ -272,6 +272,35 @@ obj 致 test_style 误报, 重编即过(与本轮无关)。
 (l=FE0D0D/m=FA7C7C/r=F5EAEA 渐隐梯度 + 不透明 mask 蓝盒完好)。
 验证:10 套件全绿(test_scroll 含新用例); 14 张主题自检全 OK。
 
+# <23>: 颜色与渐变值(hwb/lab/oklab/color-mix/conic/repeating)
+
+SOLVED
+
+render_color.cpp 内追加, 零热路径改动(无 mask/clip 时新增分支不执行):
+颜色: hwb(HWB→满饱和扇区+白黑混合, w+b>1 按比成灰); lab→XYZ→线性 sRGB,
+oklab→LMS 立方→线性 sRGB(规范矩阵照抄), lch/oklch 极坐标先转 a/b;
+color-mix(in space, c1 p%, c2) 递归解析(权重缺省互补/0.5), srgb/srgb-linear
+精确, hsl 短弧插值, oklab 走线性近似(文档写明)。空格分隔参数靠
+split_color_args 同时按逗号/斜杠/空格顶层切分(旧版只认逗号斜杠, hwb/lab
+的空格写法整体落到一个 part 直接 -5)。
+渐变: Gradient type 加 2=conic(from 角+at 中心复用 cx/cy)/3=rep-linear/
+4=rep-radial(rep-conic 按普通 conic 解析不杀串); opener 长度逐 kind 算
+(repeating-conic 25 易错抄成 15, 单列 kind=5)。CPU: conic 逐像素 atan2
+角度→t(中心取首 stop); rep-linear/rep-radial t 负安全取模。GPU:
+rep-linear 轴向(|cos|>0.99)按 stop 段切分条带(每段起止色即 stop 色, 硬条纹
+精确, 一次提交多 push, 总段 cap 8), 对角回退整盒取模角(近似, 文档写明);
+rep-radial 10 层取模; conic 无近似(角度→色非双线性可表, 马赛克拼扇会糊 pie
+边), 留底色, 主题零用量。
+踩坑三处: (1) stop 全显式时旧 auto_pos 逻辑无条件均匀重写(中间 stop 全错,
+repeating 硬条纹变过渡带) —— 改全 auto 才均匀, 部分 auto 逐个补, 全显式
+保持; (2) conic 分支条件 `if (!lin)` 把 conic 吞进 radial( elses if 链,
+改 `!lin && !conic`); (3) oklch 的 polar 判定抄错下标(s[2] 恒为 'l',
+改 okl 前缀判 s[3])。
+回归:test_scroll [colors](hwb 红绿精确/lab 中灰 777777/color-mix 紫
+800080/oklch 砖红 + repeating 红蓝红蓝硬条纹)+[conic] parse 白盒(type/起角/
+中心/rep-conic 降级)。
+验证:10 套件全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

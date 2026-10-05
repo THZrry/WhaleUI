@@ -65,10 +65,11 @@ struct GradStop
 
 struct Gradient
 {
-    int type;                  /* 0=linear, 1=radial */
-    float angle_deg;           /* linear direction */
+    int type;                  /* 0=linear, 1=radial, 2=conic, 3=rep-linear,
+                                * 4=rep-radial (repeat-conic parses as conic) */
+    float angle_deg;           /* linear direction / conic start angle */
     float rx, ry;              /* radial radii (px) */
-    float cx, cy;              /* radial center (fraction of the box) */
+    float cx, cy;              /* radial/conic center (fraction of the box) */
     std::vector<GradStop> stops;
 };
 

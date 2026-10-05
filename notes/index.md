@@ -125,3 +125,6 @@ matrix分解; rotateX/Y透视压缩; 3D消费忽略。见 notes/current.md
 11种精确+4种亮度近似。见 notes/current.md
 <22>(SOLVED): clip-path/mask —— inset/circle/ellipse 顶点SDF+CPU镜像+全发射器;
 mask linear-gradient逐角alpha, CPU/GPU双路径, 热路径门控。见 notes/current.md
+<23>(SOLVED): 颜色与渐变值 —— hwb/lab/oklab/lch/oklch→sRGB + color-mix(srgb/
+srgb-linear/hsl精确, oklab近似) + conic(CPU精确/GPU留底) + repeating取模
+(CPU精确, GPU轴向条带/10层)。见 notes/current.md

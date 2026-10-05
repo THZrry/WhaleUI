@@ -125,9 +125,10 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 
 | 组 | 函数 | 状态 |
 |----|------|------|
-| 80% | `rgb() rgba() hsl() hsla()`、`var()`、`url()`、`calc()`、`linear-gradient()` | ✅ |
+| 80% | `rgb() rgba() hsl() hsla()`、`hwb()`、`lab()` `lch()` `oklab()` `oklch()`（→sRGB，域外钳制）、`color-mix(in srgb/srgb-linear/hsl + 百分比权重，递归解析，oklab 近似走线性）`、`var()`、`url()`、`calc()`、`linear-gradient()`、`conic-gradient()`（CPU 精确 atan2 角度 закладочный start ray + 中心；GPU 跳过留底色，主题零用量）、`repeating-linear-gradient()`（CPU 逐像素取模精确；GPU 轴向按 stop 段切分精确条纹，对角回退整盒取模近似）、`repeating-radial-gradient()`（CPU 取模精确；GPU 10 层取模近似） | ✅ |
 | 50% | `min()` `max()` `clamp()`（N 元 + `calc()` 乘除 + `rem`/`vmin`/`vmax`）、`radial-gradient()`（size 关键字 + position 关键字，见备注）、`attr()`（`content` 内） | ✅ |
-| 20% | `hwb()`、`oklab/oklch/lab/lch`、`color-mix()`、`conic-gradient()`、`repeating-*-gradient()`、`image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()`、`counter()` `counters()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
+| 20% | `conic-gradient()`、`repeating-*-gradient()` 已见上（conic GPU 跳过，repeating 对角 GPU 近似） | ⚠️ 部分近似 |
+| 20% | `image-set()`、`minmax()` `fit-content()` `repeat()`、`abs()` `sign()`、`counter()` `counters()` | ⚠️ `minmax()`/`repeat()`/`fit-content()` 在 grid 里 ✅；其余 ❌ |
 
 备注（新增）：
 
@@ -150,9 +151,10 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
    notes <15>/<16>；锚点走 `transform-origin`，<17>）。文本、子元素仍直立；
    要全部转需要一条矩阵 paint 路径（文本/子树走同一变换）。
    `::before` 状态层不随转。
-2. **`conic-gradient` / `repeating-*-gradient` / `image-set` / `hwb()` /
-   `oklab/oklch/lab/lch` / `color-mix()`**：`whaleui_render_parse_color` 认
-   hex、`rgb()/rgba()`、`hsl()/hsla()` 与具名色，其余不认。
+2. **未转 sRGB 的颜色输入**：`whaleui_render_parse_color` 认 hex、
+   `rgb()/rgba()`、`hsl()/hsla()`、`hwb()`、`lab()/lch()/oklab()/oklch()`、
+   `color-mix()` 与具名色；`color-mix` 的 oklab 空间走线性近似（保色相精确
+   是后续步骤，页面几乎全用 srgb 混合）。
 3. **`backdrop-filter` / `inset` 的 CPU 回退**：GPU 有（双档近似 / mask
    反演），Minimal/软件路径只画 body（backdrop 不模糊；inset 是带 offset
    的同心环近似）。

@@ -2406,6 +2406,108 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* colors: hwb()/lab()/color-mix() as plain background-color (GPU/CPU
+     * identical for solids). conic-gradient parses (white-box below); its
+     * GPU path intentionally skips (flat body stays), so no pixel assert
+     * for conic here. repeating-linear stripes ARE drawn on GPU. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "colors", 260, 220);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:10px;top:10px;width:60px;"
+                   "height:40px;background-color:hwb(0 0% 0%)}"
+                   "#v{position:absolute;left:80px;top:10px;width:60px;"
+                   "height:40px;background-color:hwb(120 0% 0%)}"
+                   "#x{position:absolute;left:150px;top:10px;width:60px;"
+                   "height:40px;background-color:lab(50% 0 0)}"
+                   "#m{position:absolute;left:10px;top:60px;width:60px;"
+                   "height:40px;background-color:color-mix(in srgb,"
+                   "#ff0000 50%,#0000ff)}"
+                   "#o{position:absolute;left:80px;top:60px;width:60px;"
+                   "height:40px;background-color:oklch(60% 0.15 30)}"
+                   "#r{position:absolute;left:10px;top:110px;width:200px;"
+                   "height:40px;background-image:repeating-linear-gradient("
+                   "to right,#ff0000 0%,#ff0000 25%,#0000ff 25%,#0000ff 50%)}"
+                   "</style></head>"
+                   "<body><div id=\"u\"></div><div id=\"v\"></div>"
+                   "<div id=\"x\"></div><div id=\"m\"></div>"
+                   "<div id=\"o\"></div><div id=\"r\"></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            unsigned int pu = gpixel(w->render, 40, 30);
+            unsigned int pv = gpixel(w->render, 110, 30);
+            unsigned int px = gpixel(w->render, 180, 30);
+            unsigned int pm = gpixel(w->render, 40, 80);
+            unsigned int po = gpixel(w->render, 110, 80);
+            /* repeating stripes: 200px box, period 50% = 100px...
+             * t spans 1.0 over the box, rspan 0.5 -> 2 periods: px 10-60
+             * red, 60-110 blue, 110-160 red, 160-210 blue */
+            unsigned int r1 = gpixel(w->render, 30, 130);
+            unsigned int r2 = gpixel(w->render, 90, 130);
+            unsigned int r3 = gpixel(w->render, 140, 130);
+            unsigned int r4 = gpixel(w->render, 190, 130);
+            std::printf("[colors] u=%08X v=%08X x=%08X m=%08X o=%08X "
+                        "r=%08X %08X %08X %08X\n",
+                        pu, pv, px, pm, po, r1, r2, r3, r4);
+            std::fflush(stdout);
+            /* hwb red / hwb green: exact primaries */
+            assert((pu & 0xFFFFFFu) == 0xFF0000u);
+            assert((pv & 0xFFFFFFu) == 0x00FF00u);
+            /* lab middle grey: channels agree, mid-range */
+            {
+                unsigned int r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF,
+                             b = px & 0xFF;
+                assert(r > 0x50 && r < 0xA0 && g > 0x50 && g < 0xA0 &&
+                       b > 0x50 && b < 0xA0);
+                unsigned int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                unsigned int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                assert(mx - mn < 0x14);
+            }
+            /* color-mix red/blue 50%: purple, both ends present */
+            {
+                unsigned int r = (pm >> 16) & 0xFF, b = pm & 0xFF,
+                             g = (pm >> 8) & 0xFF;
+                assert(r > 0x60 && b > 0x60 && g < 0x40);
+            }
+            /* oklch warm: red dominant, some green, little blue */
+            {
+                unsigned int r = (po >> 16) & 0xFF, g = (po >> 8) & 0xFF,
+                             b = po & 0xFF;
+                assert(r > 0xB0 && g > 0x40 && g < r && b < 0x90);
+            }
+            /* repeating stripes red/blue/red/blue */
+            assert((r1 & 0xFFFFFFu) == 0xFF0000u);
+            assert((r2 & 0xFFFFFFu) == 0x0000FFu);
+            assert((r3 & 0xFFFFFFu) == 0xFF0000u);
+            assert((r4 & 0xFFFFFFu) == 0x0000FFu);
+        }
+        whaleui_window_destroy(w);
+    }
+
+    /* conic-gradient white-box: parse type/angle/stops (the GPU path
+     * skips conic, the CPU path is exact - parse is the shared gate). */
+    {
+        Gradient g;
+        assert(parse_gradient(
+                   "conic-gradient(from 90deg at 25% 75%, #ff0000, #0000ff)",
+                   g) == 1);
+        assert(g.type == 2 && g.stops.size() == 2);
+        /* 90deg start ray */
+        assert(g.angle_deg > 89.0f && g.angle_deg < 91.0f);
+        assert(g.cx > 0.24f && g.cx < 0.26f && g.cy > 0.74f &&
+               g.cy < 0.76f);
+        assert(parse_gradient(
+                   "repeating-conic-gradient(#ff0000, #0000ff)", g) == 1);
+        assert(g.type == 2 && g.stops.size() == 2);
+        std::printf("[conic] parse OK\n");
+        std::fflush(stdout);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;
