@@ -1331,6 +1331,14 @@ extern "C" int whaleui_style_match_pseudo(const char* selector,
     } else if (len >= 8 && std::strcmp(selector + len - 8, "::marker") == 0) {
         pe = selector + len - 8;
         pv = 3;
+    } else if (len >= 12 &&
+               std::strcmp(selector + len - 12, "::first-line") == 0) {
+        pe = selector + len - 12;
+        pv = 4;
+    } else if (len >= 14 &&
+               std::strcmp(selector + len - 14, "::first-letter") == 0) {
+        pe = selector + len - 14;
+        pv = 5;
     }
     if (!pe) {
         return whaleui_style_match(selector, el, st);

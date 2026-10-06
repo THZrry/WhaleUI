@@ -1413,6 +1413,8 @@ struct PseudoRuleIndex
     std::vector<size_t> before; /* rules whose selector contains ::before */
     std::vector<size_t> after;  /* rules whose selector contains ::after */
     std::vector<size_t> marker; /* rules whose selector contains ::marker */
+    std::vector<size_t> firstline;  /* ... ::first-line */
+    std::vector<size_t> firstletter; /* ... ::first-letter */
 };
 PseudoRuleIndex g_pseudo_idx;
 std::mutex g_pseudo_mtx;
@@ -1433,7 +1435,8 @@ struct Builder
     size_t row_budget = std::numeric_limits<size_t>::max();
 
     /* bucket of rule indices carrying the pseudo-element `which`
-     * (1 = ::before, 2 = ::after, 3 = ::marker) */
+     * (1 = ::before, 2 = ::after, 3 = ::marker, 4 = ::first-line,
+     * 5 = ::first-letter) */
     const std::vector<size_t>* pseudo_bucket(int which)
     {
         std::lock_guard<std::mutex> lk(g_pseudo_mtx);
@@ -1443,6 +1446,8 @@ struct Builder
             g_pseudo_idx.before.clear();
             g_pseudo_idx.after.clear();
             g_pseudo_idx.marker.clear();
+            g_pseudo_idx.firstline.clear();
+            g_pseudo_idx.firstletter.clear();
             for (size_t i = 0; i < rule_count; ++i) {
                 const char* sel = rules[i].selector;
                 if (!sel) {
@@ -1457,6 +1462,12 @@ struct Builder
                 if (std::strstr(sel, "::marker") != nullptr) {
                     g_pseudo_idx.marker.push_back(i);
                 }
+                if (std::strstr(sel, "::first-line") != nullptr) {
+                    g_pseudo_idx.firstline.push_back(i);
+                }
+                if (std::strstr(sel, "::first-letter") != nullptr) {
+                    g_pseudo_idx.firstletter.push_back(i);
+                }
             }
         }
         if (which == 1) {
@@ -1464,6 +1475,12 @@ struct Builder
         }
         if (which == 3) {
             return &g_pseudo_idx.marker;
+        }
+        if (which == 4) {
+            return &g_pseudo_idx.firstline;
+        }
+        if (which == 5) {
+            return &g_pseudo_idx.firstletter;
         }
         return &g_pseudo_idx.after;
     }
@@ -2082,6 +2099,32 @@ struct Builder
         }
         n->hz = n->z > 0;
         whaleui_layout_node_refresh_paint_flags(n);
+        /* ::first-line / ::first-letter probe (build time): a matching rule
+         * sets the paint-path flag; the paint pass merges the declarations
+         * then. Only blocks opt in (no el = text runs never carry it).
+         * pseudo_bucket() refreshes the index for the current rule set. */
+        if (el) {
+            const std::vector<size_t>* flb = pseudo_bucket(4);
+            int pv = 0;
+            for (size_t bi = 0; bi < flb->size(); ++bi) {
+                const whaleui_css_rule_t* rl = &rules[(*flb)[bi]];
+                if (whaleui_style_match_pseudo(rl->selector, el, &st, &pv) &&
+                    pv == 4) {
+                    n->fl = 1;
+                    break;
+                }
+            }
+            const std::vector<size_t>* ftb = pseudo_bucket(5);
+            pv = 0;
+            for (size_t bi = 0; bi < ftb->size(); ++bi) {
+                const whaleui_css_rule_t* rl = &rules[(*ftb)[bi]];
+                if (whaleui_style_match_pseudo(rl->selector, el, &st, &pv) &&
+                    pv == 5) {
+                    n->flt = 1;
+                    break;
+                }
+            }
+        }
         std::string op = get(n->style, "opacity");
         if (!op.empty()) {
             float o = std::strtof(op.c_str(), nullptr);

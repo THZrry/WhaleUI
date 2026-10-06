@@ -132,3 +132,5 @@ srgb-linear/hsl精确, oklab近似) + conic(CPU精确/GPU留底) + repeating取�
 counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.md
 <25>(SOLVED): 权重与媒体 —— :is/:not取参最大/:where零 + 选择器逗号括号感知切分
 + @media高/方向/比例/hover/pointer/分辨率 + contain:paint裁剪。见 notes/current.md
+<26>(SOLVED): 首行/首字 —— match_pseudo 4/5 + fl/flt位 + paint首行wrap拆分/
+首字形独立绘制。见 notes/current.md

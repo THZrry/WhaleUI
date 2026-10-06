@@ -106,9 +106,9 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 |----|------|------|
 | 基础 | `*`、`tag`、`.class`、`#id`、`[attr]`、`[attr="v"]`、`A,B` | ✅ |
 | 组合器 | 后代、`>`、`+`、`~` | ✅ |
-| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()`（取参数最大权重） `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` | ✅ |
+| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()`（取参数最大权重） `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` `::first-line`（首行拆分绘制） `::first-letter`（首字形独立绘制） | ✅ |
 | 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()`（取参数最大权重） `:where()`（零权重） `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
-| 20% | `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible`、`::first-line` `::first-letter` | ⚠️ 多数未实现 |
+| 20% | `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible` | ⚠️ 多数未实现 |
 
 - `:checked` 匹配 `checked` / `selected` **属性**（点击引擎画的原生 checkbox
   会 set/remove 该属性，因此动态勾选也能命中）。
@@ -120,6 +120,12 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 - `::before`/`::after` 盒合并伪规则的**全部声明**（无属性白名单；
   纯 `content` 的仍走行内文本 run）；`transform-origin` 参与 scale/rotate
   锚点（含 hit_test）。
+- `::first-line` / `::first-letter`：match_pseudo 认 pv=4/5 + 伪规则桶；
+  块节点 build 时探测置位（fl/flt 位，paint 读位不读表）；paint_text 仅块
+  的首个 plain-text run 拆分 —— 首行按 wrap 边界（tl 表复用，首行 line
+  样式 + 余下原样式，续行 align 归零）；首字形按首 display char 切
+  （letter 样式独立 draw，余下 x 偏移 advance，bh=1 禁二次居中）。
+  约束见上（仍未做第 4 条）。
 
 ### 函数
 
@@ -165,9 +171,7 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 3. **`backdrop-filter` / `inset` 的 CPU 回退**：GPU 有（双档近似 / mask
    反演），Minimal/软件路径只画 body（backdrop 不模糊；inset 是带 offset
    的同心环近似）。
-4. **`::first-line` / `::first-letter`**：伪元素支持
-   `::before`/`::after`/`::marker`/`::selection`/`::placeholder`。
-5. `:has()` 等高级选择器、容器查询。
+4. `:has()` 等高级选择器、容器查询。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与
 `notes/current.md`（未解决项）里，别让它们只剩在一个地方。

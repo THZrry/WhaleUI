@@ -2540,6 +2540,108 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* ::first-line colors the first wrapped line only; ::first-letter
+     * paints the first glyph big and red. Scan for the expected colors:
+     * first-line red on line 1, base black on line 2, big red lead glyph. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "first-line", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:10px;top:10px;width:120px;"
+                   "color:#000000;font-size:16px}"
+                   "#u::first-line{color:#ff0000}"
+                   "#v{position:absolute;left:10px;top:100px;width:120px;"
+                   "color:#000000;font-size:16px}"
+                   "#v::first-letter{color:#ff0000;font-size:32px}"
+                   "#s{position:absolute;left:10px;top:150px;width:120px;"
+                   "color:#000000;font-size:16px}"
+                   "#s::first-line{color:#ff0000}"
+                   "</style></head>"
+                   "<body><div id=\"u\">aaaa bbbb cccc dddd eeee ffff gggg "
+                   "hhhh</div><div id=\"v\">hello world</div>"
+                   "<div id=\"s\">short</div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* line 1 (y~18): red glyphs present */
+            bool line1_red = false;
+            for (int xx = 10; xx < 132 && !line1_red; xx += 2) {
+                for (int yy = 8; yy < 70 && !line1_red; yy += 2) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    unsigned int r = (px >> 16) & 0xFF,
+                                 g = (px >> 8) & 0xFF, b = px & 0xFF;
+                    if (r > 0x90 && g < 0x60 && b < 0x60) {
+                        line1_red = true;
+                        std::printf("[first] red at %d,%d\n", xx, yy);
+                    }
+                }
+            }
+            std::fflush(stdout);
+            /* line 2 (y~38): black glyphs present, no red */
+            bool line2_black = false, line2_red = false;
+            for (int xx = 12; xx < 128; xx += 3) {
+                unsigned int px = gpixel(w->render, xx, 38);
+                unsigned int r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF,
+                             b = px & 0xFF;
+                if (r < 0x60 && g < 0x60 && b < 0x60) {
+                    line2_black = true;
+                }
+                if (r > 0x90 && g < 0x60 && b < 0x60) {
+                    line2_red = true;
+                }
+            }
+            /* first-letter: the lead glyph draws red (32px), the rest of
+             * the run stays black - proving the split (red somewhere in
+             * the box + black elsewhere in the same box). */
+            bool letter_red = false, letter_rest_black = false;
+            for (int xx = 10; xx < 132 && (!letter_red || !letter_rest_black);
+                 xx += 2) {
+                for (int yy = 96; yy < 140 && (!letter_red || !letter_rest_black);
+                     yy += 2) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    unsigned int r = (px >> 16) & 0xFF,
+                                 g = (px >> 8) & 0xFF, b = px & 0xFF;
+                    if (r > 0x90 && g < 0x60 && b < 0x60) {
+                        letter_red = true;
+                    }
+                    if (r < 0x60 && g < 0x60 && b < 0x60) {
+                        letter_rest_black = true;
+                    }
+                }
+            }
+            std::printf("[first] l1red=%d l2black=%d l2red=%d letter=%d "
+                        "lrest=%d\n",
+                        (int)line1_red, (int)line2_black, (int)line2_red,
+                        (int)letter_red, (int)letter_rest_black);
+            std::fflush(stdout);
+            assert(line1_red);
+            assert(line2_black);
+            assert(!line2_red);
+            assert(letter_red);
+            assert(letter_rest_black);
+            /* single-line run: whole line in the first-line style */
+            bool short_red = false;
+            for (int xx = 12; xx < 128 && !short_red; xx += 3) {
+                for (int yy = 152; yy < 168 && !short_red; yy += 2) {
+                    unsigned int px = gpixel(w->render, xx, yy);
+                    unsigned int r = (px >> 16) & 0xFF,
+                                 g = (px >> 8) & 0xFF, b = px & 0xFF;
+                    if (r > 0x90 && g < 0x60 && b < 0x60) {
+                        short_red = true;
+                    }
+                }
+            }
+            std::printf("[first] short=%d\n", (int)short_red);
+            std::fflush(stdout);
+            assert(short_red);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

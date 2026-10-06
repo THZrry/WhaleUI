@@ -2106,6 +2106,99 @@ void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
               accent_hl(r, 0xFF), clip);
 }
 
+/* --- ::first-line / ::first-letter (paint-time split) ---
+ * The first-line boundary only exists after wrapping (layout_text), so the
+ * split happens here, not in layout/build. Merged declarations come from a
+ * paint-time scan of r->rules (only rules whose selector contains the
+ * pseudo name; only when the block's build-time flag is set, so normal
+ * text pays one bit test). */
+
+/* merge ::first-line(4)/::first-letter(5) declarations matching (base, el)
+ * over `base_style`. Paint-relevant text attributes only. */
+static void first_pseudo_style(whaleui_render_t* r, int which,
+                               lxb_dom_element* el,
+                               const WhaleUIComputedStyle& base_style,
+                               WhaleUIComputedStyle& out)
+{
+    out = base_style;
+    if (!r || !r->rules || !el) {
+        return;
+    }
+    const char* want = which == 4 ? "::first-line" : "::first-letter";
+    static const char* kText[] = {
+        "color",          "font-size",   "font-family",  "font-weight",
+        "font-style",     "letter-spacing",
+    };
+    for (size_t i = 0; i < r->rule_count; ++i) {
+        const char* sel = r->rules[i].selector;
+        if (!sel || !std::strstr(sel, want)) {
+            continue;
+        }
+        int pseudo = 0;
+        whaleui_style_state st;
+        if (!whaleui_style_match_pseudo(sel, el, &st, &pseudo) ||
+            pseudo != which) {
+            continue;
+        }
+        for (size_t d = 0; d < r->rules[i].decl_count; ++d) {
+            char* kv = r->rules[i].decls[d];
+            char* eq = std::strchr(kv, '=');
+            if (!eq) {
+                continue;
+            }
+            std::string name(kv, static_cast<size_t>(eq - kv));
+            for (size_t p = 0;
+                 p < sizeof(kText) / sizeof(kText[0]); ++p) {
+                if (name == kText[p]) {
+                    out[name] = std::string(eq + 1);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/* byte length of the first visual line of `text` (0 = single line).
+ * Shares the tl table cache with draw_text_at (same key), so the layout
+ * work is not repeated. Needs a glyph measure fn like the draw path. */
+static size_t first_line_bytes(whaleui_render_t* r, const std::string& text,
+                               int fs, const std::string& family, bool bold,
+                               int lsp, int wrap_w, int lh, int style)
+{
+    if (text.empty()) {
+        return 0;
+    }
+    const uint64_t lkey = tl_key(text, fs, family, bold, lsp, wrap_w, lh);
+    const TextLayout* Lp = tl_lookup(lkey);
+    TextLayout L_local;
+    if (!Lp) {
+#ifdef WHALEUI_BUILD_FULL
+        TTF_Font* font = render_get_font(r, family, fs, style);
+        if (!font) {
+            return 0;
+        }
+        TextMeasureCtx mc = { r, fs, family, bold };
+        L_local = layout_text(text, wrap_w, lh, glyph_ttf, &mc);
+#else
+        StbFonts stb(family, fs);
+        if (stb.pref == static_cast<size_t>(-1)) {
+            return 0;
+        }
+        L_local = layout_text(text, wrap_w, lh, glyph_stb, &stb);
+#endif
+        Lp = tl_insert(lkey, L_local);
+    }
+    const TextLayout& L = *Lp;
+    if (L.lines.size() < 2 || L.map.empty()) {
+        return 0; /* single line: no split needed */
+    }
+    size_t cend = L.lines[0].cend;
+    if (cend >= L.map.size()) {
+        return text.size();
+    }
+    return L.map[cend];
+}
+
 void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
                      const std::string& family, bool bold, size_t caret,
                      int tx, int ty, int wrap_w)
@@ -2347,9 +2440,282 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * wash); pass bh = the glyph box so draw_text_at does NOT center a
      * second time - double-centering (line height vs glyph box) pushed
      * textarea glyphs half a line below their highlight. */
-    draw_text_at(r, shown, tx0, ty0, avail_w, gh_box,
-                 fs, family, color, style, align, n->el, clip, lsp, wrap,
-                 n->opacity, false, sela, selb, selfg);
+    bool did_fl = false;
+    do {
+        /* ::first-line / ::first-letter: only the block's FIRST text run
+         * (pseudo==0, no earlier plain-text sibling run), only without
+         * selection/shadow/stroke (those paint the whole run; splitting
+         * would misplace washes and copies - documented). */
+        if (n->pseudo != 0 || (selb > sela)) {
+            break;
+        }
+        if ((!tsh.empty() && tsh != "none") ||
+            ((!tsk.empty() && tsk != "none") || !tsw.empty() ||
+             !tsc.empty())) {
+            break;
+        }
+        bool want_line = box->fl && box->el;
+        bool want_letter = box->flt && box->el;
+        if (!want_line && !want_letter) {
+            break;
+        }
+        bool first_run = true;
+        for (whaleui_layout_node_t* s = box->first_child; s && s != n;
+             s = s->next) {
+            if (s->is_text && s->pseudo == 0 && !s->text.empty()) {
+                first_run = false;
+                break;
+            }
+        }
+        if (!first_run) {
+            break;
+        }
+        /* merged first-line / first-letter styles over this run's own */
+        WhaleUIComputedStyle fl_style, flt_style;
+        int fl_fs = fs, flt_fs = fs;
+        std::string fl_family = family, flt_family = family;
+        int fl_stylebits = style, flt_stylebits = style;
+        unsigned int fl_color = color, flt_color = color;
+        int fl_lsp = lsp, flt_lsp = lsp;
+        if (want_line) {
+            first_pseudo_style(r, 4, box->el, n->style, fl_style);
+            auto rd = [&](const char* k, std::string& o) {
+                auto it = fl_style.find(k);
+                o = it == fl_style.end() ? std::string() : it->second;
+            };
+            std::string v;
+            rd("color", v);
+            if (!v.empty()) {
+                unsigned int c = 0;
+                if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+                    fl_color = c;
+                }
+            }
+            rd("font-size", v);
+            if (!v.empty()) {
+                int f = font_size_px(r, v);
+                if (f > 0) {
+                    fl_fs = f;
+                }
+            }
+            rd("font-family", v);
+            if (!v.empty()) {
+                fl_family = v;
+            }
+            rd("font-weight", v);
+            if (v == "bold" || v == "bolder" ||
+                (!v.empty() && std::atoi(v.c_str()) >= 600)) {
+                fl_stylebits |= kFontBold;
+            }
+            rd("font-style", v);
+            if (v == "italic" || v == "oblique") {
+                fl_stylebits |= kFontItalic;
+            }
+            rd("letter-spacing", v);
+            if (!v.empty() && v != "normal") {
+                float lv = static_cast<float>(std::atof(v.c_str()));
+                fl_lsp = static_cast<int>(
+                    v.find("em") != std::string::npos ? lv * fl_fs : lv);
+            }
+        }
+        if (want_letter) {
+            first_pseudo_style(r, 5, box->el, n->style, flt_style);
+            auto rd = [&](const char* k, std::string& o) {
+                auto it = flt_style.find(k);
+                o = it == flt_style.end() ? std::string() : it->second;
+            };
+            std::string v;
+            rd("color", v);
+            if (!v.empty()) {
+                unsigned int c = 0;
+                if (whaleui_render_parse_color(v.c_str(), &c) == 0) {
+                    flt_color = c;
+                }
+            }
+            rd("font-size", v);
+            if (!v.empty()) {
+                int f = font_size_px(r, v);
+                if (f > 0) {
+                    flt_fs = f;
+                }
+            }
+            rd("font-family", v);
+            if (!v.empty()) {
+                flt_family = v;
+            }
+            rd("font-weight", v);
+            if (v == "bold" || v == "bolder" ||
+                (!v.empty() && std::atoi(v.c_str()) >= 600)) {
+                flt_stylebits |= kFontBold;
+            }
+            rd("font-style", v);
+            if (v == "italic" || v == "oblique") {
+                flt_stylebits |= kFontItalic;
+            }
+            rd("letter-spacing", v);
+            if (!v.empty() && v != "normal") {
+                float lv = static_cast<float>(std::atof(v.c_str()));
+                flt_lsp = static_cast<int>(
+                    v.find("em") != std::string::npos ? lv * flt_fs : lv);
+            }
+        }
+        /* ::first-letter: peel the first display char (UTF-8 aware via the
+         * leading byte length; leading spaces stay with the line). It draws
+         * in the letter style; the rest starts after its advance (no float
+         * wrapping - documented). */
+        std::string rest = shown;
+        int rest_tx = tx0;
+        int rest_avail = avail_w;
+        if (want_letter && !rest.empty()) {
+            unsigned char c0 = static_cast<unsigned char>(rest[0]);
+            size_t clen = 1;
+            if ((c0 & 0xE0) == 0xC0) {
+                clen = 2;
+            } else if ((c0 & 0xF0) == 0xE0) {
+                clen = 3;
+            } else if ((c0 & 0xF8) == 0xF0) {
+                clen = 4;
+            }
+            if (clen > rest.size()) {
+                clen = rest.size();
+            }
+            /* leading spaces belong to the line, not the letter */
+            size_t lead = 0;
+            while (lead < rest.size() &&
+                   (rest[lead] == ' ' || rest[lead] == '\t')) {
+                ++lead;
+            }
+            if (lead < rest.size()) {
+                unsigned char cc =
+                    static_cast<unsigned char>(rest[lead]);
+                clen = 1;
+                if ((cc & 0xE0) == 0xC0) {
+                    clen = 2;
+                } else if ((cc & 0xF0) == 0xE0) {
+                    clen = 3;
+                } else if ((cc & 0xF8) == 0xF0) {
+                    clen = 4;
+                }
+                if (lead + clen > rest.size()) {
+                    clen = rest.size() - lead;
+                }
+                std::string first = rest.substr(lead, clen);
+                unsigned int first_cp = 0;
+                {
+                    const unsigned char* u =
+                        reinterpret_cast<const unsigned char*>(first.c_str());
+                    if (first.size() == 1) {
+                        first_cp = u[0];
+                    } else if (first.size() == 2) {
+                        first_cp =
+                            ((u[0] & 0x1F) << 6) | (u[1] & 0x3F);
+                    } else if (first.size() == 3) {
+                        first_cp = ((u[0] & 0x0F) << 12) |
+                                   ((u[1] & 0x3F) << 6) | (u[2] & 0x3F);
+                    } else if (first.size() >= 4) {
+                        first_cp = ((u[0] & 0x07) << 18) |
+                                   ((u[1] & 0x3F) << 12) |
+                                   ((u[2] & 0x3F) << 6) | (u[3] & 0x3F);
+                    }
+                }
+                bool flt_bold = (flt_stylebits & kFontBold) != 0;
+                int flt_adv = text_glyph_adv(r, flt_fs, flt_family, flt_bold,
+                                             first_cp);
+                if (flt_adv <= 0) {
+                    flt_adv = flt_fs / 2;
+                }
+                int flt_gh = text_glyph_h(r, flt_fs, flt_family, flt_bold);
+                if (flt_gh < 1) {
+                    flt_gh = gh_box;
+                }
+                int lead_w = 0;
+                if (lead > 0) {
+                    lead_w = static_cast<int>(lead) * fs / 2;
+                }
+                /* bh=1 disables draw_text_at's second centering (ty=by):
+                 * the letter's top aligns with the line top; a bigger
+                 * letter overflows downward (line height is approximate,
+                 * documented) */
+                draw_text_at(r, first, tx0 + lead_w, ty0, avail_w, 1,
+                             flt_fs, flt_family, flt_color, flt_stylebits,
+                             0, n->el, clip, flt_lsp, false, n->opacity,
+                             false, 0, 0, 0);
+                /* the rest reflows after the letter's advance (shrink the
+                 * wrap width by the consumed prefix so it wraps on time) */
+                rest = rest.substr(lead + clen);
+                rest_tx = tx0 + lead_w + flt_adv;
+                rest_avail = avail_w - lead_w - flt_adv;
+                if (rest_avail < 1) {
+                    rest_avail = 1;
+                }
+                if (!want_line || rest.empty()) {
+                    /* letter-only: draw the rest in the base style */
+                    if (!rest.empty()) {
+                        draw_text_at(r, rest, rest_tx, ty0, rest_avail,
+                                     gh_box, fs, family, color, style, 0,
+                                     n->el, clip, lsp, wrap, n->opacity,
+                                     false, 0, 0, 0);
+                    }
+                    did_fl = true;
+                    break;
+                }
+                /* else fall through to the ::first-line split below, which
+                 * draws `rest` (already letter-peeled) */
+            }
+        }
+        /* ::first-line: split the (letter-peeled) rest at the first wrap
+         * boundary; the head draws in the line style. Single-line runs
+         * paint whole in the line style. The letter peel above already
+         * shrank rest_avail, so the wrap stays in sync. */
+        if (want_line && !rest.empty()) {
+            int lh = text_line_h(r, fs, family, bold);
+            if (lh <= 0) {
+                lh = fs;
+            }
+            size_t head_n = 0;
+            int wrap_arg = wrap ? rest_avail : 0;
+            head_n = first_line_bytes(r, rest, fs, family, bold, lsp,
+                                      wrap_arg, lh, style);
+            if (head_n == 0) {
+                /* single line: whole rest in the line style */
+                draw_text_at(r, rest, rest_tx, ty0, rest_avail, gh_box,
+                             fl_fs, fl_family, fl_color, fl_stylebits, align,
+                             n->el, clip, fl_lsp, wrap, n->opacity, false, 0,
+                             0, 0);
+            } else if (head_n < rest.size()) {
+                std::string head = rest.substr(0, head_n);
+                std::string tail = rest.substr(head_n);
+                draw_text_at(r, head, rest_tx, ty0, rest_avail, gh_box,
+                             fl_fs, fl_family, fl_color, fl_stylebits, align,
+                             n->el, clip, fl_lsp, wrap, n->opacity, false, 0,
+                             0, 0);
+                int lh2 = text_line_h(r, fs, family, bold);
+                if (lh2 <= 0) {
+                    lh2 = fs;
+                }
+                draw_text_at(r, tail, tx0, ty0 + lh2, avail_w, gh_box, fs,
+                             family, color, style, 0, n->el, clip, lsp,
+                             wrap, n->opacity, false, 0, 0, 0);
+            } else {
+                draw_text_at(r, rest, rest_tx, ty0, rest_avail, gh_box,
+                             fl_fs, fl_family, fl_color, fl_stylebits, align,
+                             n->el, clip, fl_lsp, wrap, n->opacity, false, 0,
+                             0, 0);
+            }
+            did_fl = true;
+            break;
+        }
+        if (want_letter) {
+            /* letter-only (line not wanted): rest already drawn above */
+            did_fl = true;
+            break;
+        }
+    } while (0);
+    if (!did_fl) {
+        draw_text_at(r, shown, tx0, ty0, avail_w, gh_box,
+                     fs, family, color, style, align, n->el, clip, lsp, wrap,
+                     n->opacity, false, sela, selb, selfg);
+    }
 
     /* text-decoration: underline / line-through lines over the box (width
      * = the run's own text extent, clamped to the line remainder) */

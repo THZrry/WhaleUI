@@ -84,6 +84,8 @@ struct whaleui_layout_node
     unsigned fx : 1;         /* position: fixed */
     unsigned sk : 1;         /* position: sticky */
     unsigned hz : 1;         /* z-index > 0 (high-root layer) */
+    unsigned fl : 1;         /* a ::first-line rule matches this block */
+    unsigned flt : 1;        /* a ::first-letter rule matches this block */
     int z;                   /* z-index (0 default) */
     float opacity;           /* cascaded opacity (1 default) */
 

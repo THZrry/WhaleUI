@@ -348,6 +348,29 @@ isolation/will-change 解析保留(cascade 无白名单)、零消费(文档写�
 test_scroll [contain] 像素(内红/外背景)。
 验证:10 套件全绿;14 张主题自检全 OK。
 
+# <26>: ::first-line / ::first-letter(首行/首字拆分绘制)
+
+SOLVED
+
+行边界只在 paint 时存在(layout 只有整串 run, 换行在 draw_text_at 的
+layout_text 里), 所以拆分放 paint_text 尾部:
+style: match_pseudo 认 pv=4/5 + layout 伪规则桶(firstline/firstletter);
+块节点 build 时探测置位(fl/flt 位, paint 读位不读表, 零热路径成本)。
+paint: 仅块的首个 plain-text run(::before run 不染) + 无 selection/shadow/
+stroke 时拆分(那些画整 run, 拆分会错位, 文档写明): first-line 按 wrap 边界
+(tl 表复用 first_line_bytes, 首行 line 样式 + 余下原样式, 续行 align 归零);
+first-letter 按首 display char 切(UTF-8 首字节长, 前导空格留行), letter 样式
+独立 draw(bh=1 禁二次居中, 顶对齐行顶, 大字下溢) + 余下 x 偏移 advance
+(wrap 宽同步收缩)。
+踩坑三处: (1) 采样行 y=18 差 2px(字形顶 y≈20) —— 全区扫描定位;
+(2) 首字 draw 传 bh=flt_gh 致 draw 内二次居中下移 —— 改 bh=1;
+(3) 测试 park 污染 l1red(short 红字 park 到 y≈10 被首行扫描误收) —— 删 park,
+全区扫描 + 坐标打印。
+约束(文档写明): inline 子元素跨首行不管; 首字大字号溢出行盒(行高不重算);
+有 selection/shadow/stroke 跳过拆分; 结合字符按首 display char 切。
+回归:test_scroll [first](首行红@12,20/次行黑无红/首字红+余下黑/单行红)。
+验证:10 套件全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED
