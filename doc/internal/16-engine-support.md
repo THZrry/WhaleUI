@@ -107,14 +107,20 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 | 基础 | `*`、`tag`、`.class`、`#id`、`[attr]`、`[attr="v"]`、`A,B` | ✅ |
 | 组合器 | 后代、`>`、`+`、`~` | ✅ |
 | 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()`（取参数最大权重） `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` `::first-line`（首行拆分绘制） `::first-letter`（首字形独立绘制） | ✅ |
-| 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()`（取参数最大权重） `:where()`（零权重） `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
-| 20% | `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible` | ⚠️ 多数未实现 |
+| 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()`（取参数最大权重） `:where()`（零权重） `:has()`（后代/子/兄弟相对选择器，见备注） `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
+| 20% | `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible` | ⚠️ 多数未实现 |
 
 - `:checked` 匹配 `checked` / `selected` **属性**（点击引擎画的原生 checkbox
   会 set/remove 该属性，因此动态勾选也能命中）。
 - `:indeterminate` 没有属性对应物，引擎接受一个 `indeterminate` 属性作为表达方式。
 - `:not()` 支持单层简单选择器（含 `:not(:hover/:active/:focus)` 状态取反，
-  与正向同冒泡规则）；嵌套 / 复杂参数未验证。
+  与正向同冒泡规则）；嵌套 / 复杂参数未验证。`:not(:has(...))` 可用
+  （:has 在 :not 内递归求值）。
+- `:has()` 支持后代（`div:has(img)`）、子（`:has(> img)`）、相邻兄弟
+  （`:has(+ b)`）与通用兄弟（`:has(~ b)`）相对选择器；余下部分是完整选择器
+  （内部 combinator 可用）；多个 `:has()` 串联须全中；权重取参数最大。
+  内部状态（:hover 等）按未置近似。性能：子树扫描，只在选择器含 `:has(`
+  时触发， uncommon 路径。
 - `::selection` 的 `background` + `color` 都生效（`selection-bg/fg` 虚属性，
   页面规则赢主题，`var()` 展开；光栅逐字形换色）。
 - `::before`/`::after` 盒合并伪规则的**全部声明**（无属性白名单；
@@ -171,7 +177,8 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 3. **`backdrop-filter` / `inset` 的 CPU 回退**：GPU 有（双档近似 / mask
    反演），Minimal/软件路径只画 body（backdrop 不模糊；inset 是带 offset
    的同心环近似）。
-4. `:has()` 等高级选择器、容器查询。
+4. 高级选择器余量（`:nth-last-*`、`:only-*`、`:first/last-of-type`、`:dir()`、
+   `:lang()` 等）、容器查询。
 
 这些条目同时留在 `temp/engine-gaps.md`（原始实测数据）与
 `notes/current.md`（未解决项）里，别让它们只剩在一个地方。

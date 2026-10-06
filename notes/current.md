@@ -371,6 +371,24 @@ first-letter 按首 display char 切(UTF-8 首字节长, 前导空格留行), le
 回归:test_scroll [first](首行红@12,20/次行黑无红/首字红+余下黑/单行红)。
 验证:10 套件全绿;14 张主题自检全 OK。
 
+# <27>: :has() 父条件选择器(后代/子/兄弟)
+
+SOLVED
+
+匹配器右→左, :has 需向下/向旁看 —— 求值器独立(has_match_inner):
+前导 combinator 定候选集(> 子 / + 紧邻弟 / ~ 后弟 / 无然后代 DFS 迭代),
+余下是完整选择器(内部 combinator 可用), 复用 whaleui_style_match(零状态
+近似, 同 :is 剥状态)。多个 :has 串联全中; :not(:has(...)) 经 :not 递归
+可用。解析存 has_sel 向量; 权重取参数最大(同 :is); 选择器逗号切分与 paren
+感知早已修好(:has(a,b) 不断裂)。
+之前行为: `div:has(X)` 退化裸 div 误匹配(比不匹配更坏); 裸 `:has(X)`
+整规则失效; specificity 漏计内部。
+踩坑: 裸 `:has(span)` 期望"永不匹配"写错 —— 规范是"含 span 后代即匹配",
+改期望 true/false 对。另 img placeholder 盖采样点(改小 img 采卡片角)。
+回归:test_style 白盒(后代/子/兄弟/否定/裸)+test_scroll [has] 像素(有图红/
+纯文白)。
+验证:10 套件全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

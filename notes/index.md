@@ -134,3 +134,4 @@ counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.m
 + @media高/方向/比例/hover/pointer/分辨率 + contain:paint裁剪。见 notes/current.md
 <26>(SOLVED): 首行/首字 —— match_pseudo 4/5 + fl/flt位 + paint首行wrap拆分/
 首字形独立绘制。见 notes/current.md
+<27>(SOLVED): :has() —— 后代/子/兄弟相对选择器求值 + 取参最大权重。见 notes/current.md

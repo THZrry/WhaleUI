@@ -56,6 +56,8 @@ struct SelPart
                          * simple selector does NOT match (single level,
                          * no combinators inside, per CSS) */
     std::string not_sel; /* the inner selector text */
+    std::vector<std::string> has_sel; /* ":has(<relative>)" inners (each must
+                         * match; multiple :has() concatenate) */
     bool not_hover;     /* ":not(:hover)" - state negation, checked with
                          * the same bubble rule as :hover in match() */
     bool not_active;    /* ":not(:active)" */
@@ -366,6 +368,23 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
                         }
                     }
                 }
+            } else if (v.compare(0, 4, "has(") == 0 &&
+                       !v.empty() && v.back() == ')') {
+                /* ":has(<relative>)" - parent/sibling conditional. The inner
+                 * text is stored raw (leading > + ~ supported, combinators
+                 * inside allowed) and evaluated against el's surroundings in
+                 * part_match. Multiple :has() concatenate (each must match).
+                 * Malformed/empty arguments are dropped like other unknown
+                 * pseudo-classes. */
+                std::string inner = v.substr(4, v.size() - 5);
+                size_t b = inner.find_first_not_of(" \t");
+                size_t e = inner.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    inner = inner.substr(b, e - b + 1);
+                    if (!inner.empty()) {
+                        out.has_sel.push_back(inner);
+                    }
+                }
             }
             continue;
         }
@@ -396,7 +415,104 @@ bool parse_simple(const char* sel, size_t len, SelPart& out)
             out.required || out.optional || out.empty || out.link ||
             out.focus_within || !out.is_sel.empty() ||
             out.last_child || out.first_child || out.nth || out.has_attr ||
-            out.has_not || out.not_hover || out.not_active || out.not_focus);
+            out.has_not || out.not_hover || out.not_active ||
+            out.not_focus || !out.has_sel.empty());
+}
+
+/* fwd: full-selector match used by :has() inner evaluation */
+extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
+                                   const whaleui_style_state* st);
+
+/* ":has(<relative>)" inner evaluation against el's surroundings.
+ * Leading combinator picks the candidate set; the remainder is a full
+ * selector (combinators inside allowed) matched with whaleui_style_match:
+ *   "> X"  any child matches X          "+ X"  next sibling matches X
+ *   "~ X"  any later sibling matches X  "X"    any descendant matches X
+ * State inside X is approximated as unset (zero state: no hover/focus),
+ * same conservatism as :is()'s state stripping. Nested :has inside the
+ * remainder works via recursion (depth-bounded by selector nesting). */
+static bool has_match_inner(lxb_dom_element* el, const std::string& inner)
+{
+    size_t b = inner.find_first_not_of(" \t");
+    if (b == std::string::npos) {
+        return false;
+    }
+    std::string s = inner.substr(b);
+    size_t e = s.find_last_not_of(" \t");
+    s = s.substr(0, e + 1);
+    if (s.empty()) {
+        return false;
+    }
+    int scope = 0; /* 0 = descendant, 1 = child, 2 = adjacent, 3 = sibling */
+    std::string rest = s;
+    if (s[0] == '>') {
+        scope = 1;
+        rest = s.substr(1);
+    } else if (s[0] == '+') {
+        scope = 2;
+        rest = s.substr(1);
+    } else if (s[0] == '~') {
+        scope = 3;
+        rest = s.substr(1);
+    }
+    b = rest.find_first_not_of(" \t");
+    if (b == std::string::npos) {
+        return false;
+    }
+    e = rest.find_last_not_of(" \t");
+    rest = rest.substr(b, e - b + 1);
+    if (rest.empty()) {
+        return false;
+    }
+    whaleui_style_state zero;
+    auto matches = [&](lxb_dom_element* cand) {
+        return cand &&
+               whaleui_style_match(rest.c_str(), cand, &zero) != 0;
+    };
+    if (scope == 1) {
+        for (lxb_dom_node* c = el->node.first_child; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                matches(lxb_dom_interface_element(c))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (scope == 2) {
+        for (lxb_dom_node* c = el->node.next; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                return matches(lxb_dom_interface_element(c));
+            }
+        }
+        return false;
+    }
+    if (scope == 3) {
+        for (lxb_dom_node* c = el->node.next; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                matches(lxb_dom_interface_element(c))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    /* descendant: iterative DFS (no recursion depth risk on deep pages) */
+    std::vector<lxb_dom_node*> stack;
+    for (lxb_dom_node* c = el->node.first_child; c; c = c->next) {
+        stack.push_back(c);
+    }
+    while (!stack.empty()) {
+        lxb_dom_node* c = stack.back();
+        stack.pop_back();
+        if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            if (matches(lxb_dom_interface_element(c))) {
+                return true;
+            }
+        }
+        for (lxb_dom_node* k = c->first_child; k; k = k->next) {
+            stack.push_back(k);
+        }
+    }
+    return false;
 }
 
 bool el_has_class(lxb_dom_element* el, const std::string& cls)
@@ -708,6 +824,16 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
             }
         }
     }
+    if (!p.has_sel.empty()) {
+        /* ":has(<relative>)" - each inner must match against el's
+         * surroundings (children/descendants/siblings). Unlike :not this
+         * looks AWAY from the element (parent-conditional styling). */
+        for (size_t i = 0; i < p.has_sel.size(); ++i) {
+            if (!has_match_inner(el, p.has_sel[i])) {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -735,10 +861,10 @@ Specificity sel_specificity(const char* sel)
         } else if (*p == '.') {
             ++sp.b;
         } else if (*p == ':') {
-            /* :where() contributes nothing (not even the colon); :is()
-             * and :not() contribute their most-specific argument (ditto).
-             * Both are matched case-insensitively like the rest of the
-             * parser. */
+            /* :where() contributes nothing (not even the colon); :is(),
+             * :not() and :has() contribute their most-specific argument
+             * (ditto). All matched case-insensitively like the rest of
+             * the parser. */
             bool is_where = (p[1] == 'w' || p[1] == 'W') &&
                             (p[2] == 'h' || p[2] == 'H') &&
                             (p[3] == 'e' || p[3] == 'E') &&
@@ -750,7 +876,11 @@ Specificity sel_specificity(const char* sel)
                           (p[1] == 'n' || p[1] == 'N') &&
                           (p[2] == 'o' || p[2] == 'O') &&
                           (p[3] == 't' || p[3] == 'T') && p[4] == '(';
-            if (is_where || is_is || is_not) {
+            bool is_has = !is_where && !is_is && !is_not &&
+                          (p[1] == 'h' || p[1] == 'H') &&
+                          (p[2] == 'a' || p[2] == 'A') &&
+                          (p[3] == 's' || p[3] == 'S') && p[4] == '(';
+            if (is_where || is_is || is_not || is_has) {
                 const char* open = std::strchr(p, '(');
                 if (!open) {
                     ++sp.b;
@@ -767,7 +897,11 @@ Specificity sel_specificity(const char* sel)
                     ++q;
                 }
                 /* [open+1, q-1) is the argument list */
-                if (is_is || is_not) {
+                if (is_is || is_not || is_has) {
+                    /* max over the comma-separated arguments (a leading
+                     * > + ~ combinator in :has() carries no weight; only
+                     * the inner #/. counts leak through, which is exactly
+                     * what the raw scan below would see) */
                     /* max over the comma-separated arguments */
                     Specificity best = {0, 0, 0};
                     const char* a0 = open + 1;

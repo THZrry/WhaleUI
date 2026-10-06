@@ -2642,6 +2642,39 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* :has() parent-conditional: a card containing an image gets a red
+     * background, a text-only card stays white. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "has", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   ".card{position:absolute;left:10px;width:80px;height:40px;"
+                   "background-color:#ffffff}"
+                   "#a{top:10px}#b{top:60px}"
+                   ".card:has(img){background-color:#ff0000}"
+                   ".card img{width:20px;height:20px}"
+                   "</style></head>"
+                   "<body><div class=\"card\" id=\"a\"><img></div>"
+                   "<div class=\"card\" id=\"b\">text</div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* card with img: red (sample the bottom-right, past the
+             * 20px placeholder); text-only card: white */
+            unsigned int with = gpixel(w->render, 70, 40);
+            unsigned int without = gpixel(w->render, 70, 90);
+            std::printf("[has] with=%08X without=%08X\n", with, without);
+            std::fflush(stdout);
+            assert((with & 0xFFFFFFu) == 0xFF0000u);
+            assert((without & 0xFFFFFFu) == 0xFFFFFFu);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

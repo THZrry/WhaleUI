@@ -221,6 +221,44 @@ int main(void)
         assert(whaleui_style_match("span:is(.nope, #g)", g, &st2));
         assert(!whaleui_style_match("span:is(.nope, #nope)", g, &st2));
         assert(whaleui_style_match("span:where(span)", g, &st2));
+        /* :has() - parent/sibling conditionals (own document) */
+        {
+            const char* html3 =
+                "<html><body>"
+                "<div id=\"p1\"><span id=\"c1\">x</span></div>"
+                "<div id=\"p2\"><em>y</em></div>"
+                "<p id=\"s1\">a</p><b id=\"s2\">b</b>"
+                "</body></html>";
+            whaleui_dom_document_t* doc3 =
+                whaleui_dom_parse_html(html3, std::strlen(html3));
+            assert(doc3 != nullptr);
+            whaleui_style_state st3;
+            lxb_dom_element* p1 = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(doc3, "p1"));
+            lxb_dom_element* p2 = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(doc3, "p2"));
+            lxb_dom_element* s1 = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(doc3, "s1"));
+            assert(p1 && p2 && s1);
+            /* descendant */
+            assert(whaleui_style_match("div:has(span)", p1, &st3));
+            assert(!whaleui_style_match("div:has(span)", p2, &st3));
+            /* child (direct only) */
+            assert(whaleui_style_match("div:has(> span)", p1, &st3));
+            assert(!whaleui_style_match("div:has(> em)", p1, &st3));
+            assert(whaleui_style_match("div:has(> em)", p2, &st3));
+            /* adjacent / general sibling */
+            assert(whaleui_style_match("p:has(+ b)", s1, &st3));
+            assert(whaleui_style_match("p:has(~ b)", s1, &st3));
+            assert(!whaleui_style_match("p:has(+ span)", s1, &st3));
+            /* negation of the conditional */
+            assert(whaleui_style_match("div:not(:has(span))", p2, &st3));
+            assert(!whaleui_style_match("div:not(:has(span))", p1, &st3));
+            /* bare :has(span) matches any element with a span descendant */
+            assert(whaleui_style_match(":has(span)", p1, &st3));
+            assert(!whaleui_style_match(":has(span)", p2, &st3));
+            whaleui_dom_document_destroy(doc3);
+        }
         /* :focus-within - focus on the child matches the parent */
         lxb_dom_element* body2 = reinterpret_cast<lxb_dom_element*>(
             whaleui_dom_query_selector(doc2, "body"));
