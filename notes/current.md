@@ -560,3 +560,53 @@ probe_hover(demo_full) hover 段无布局漂移、scroll_max 不变; 旧代码�
 踩坑: xmake f --tests=y 会触发 lexbor 重装报 "vs not found"(包已在,
 忽略该报错, 直接 xmake b test_scroll 即可); hit 顺序改"末中者胜"后,
 重叠兄弟的 hover 归属与 paint 一致, 既有非重叠用例全部不受影响。
+
+
+# <29>: GPU 高帧率占用 —— 全屏 compute 区域化(五 pass) + clear 化 + 条带 scissor
+
+SOLVED
+
+现象: 高帧率(动画/悬停)下 GPU 占用高。帧管线 CPU 侧在 <28> 已按损伤收敛,
+但 GPU 侧每帧仍有五处**全屏** compute + 一处全屏 RMW 写 + 全屏源 blit ——
+与损伤面积无关, 只与 framebuffer 面积成正比:
+
+**(1) 五个区域 pass 全屏 dispatch -> 记录包围盒 dispatch。**
+kShadowCS/kBackdropCS/kInsetCS/kFilterCS/kMixBlendCS 每线程本来就要拿记录
+盒做包围判定, 但 dispatch 覆盖全屏 —— 4k 一遍 ~13 万个 8x8 工作组,
+其中绝大多数线程的判定结果为"不属于任何记录"。现在 CPU 侧先算当帧记录的
+包围盒(region_of_records, 按 stride 混合步长通用), 作为 thread-id 偏移经
+uniform 推给 shader(与 kTextCompositeCS 同款 cbuffer b0 space2 绑定 ——
+该模式在 D3D12/Vulkan 双后端均已验证), dispatch 只覆盖包围盒。单个小元素
+模糊的工作组数降约两个数量级; 全部记录出屏时整个 pass 跳过。
+shader 内逐记录判定保留(多记录重叠区域仍需选层), 输出与全屏版**逐字节
+一致**(fluent/material x 深浅 4 张主题 render_shot 哈希对照)。
+
+**(2) shadow 目标清零: 全屏 RMW compute -> 固定功能 clear pass。** 旧
+kShadowCS 对"不属于任何记录"的像素写 acc=0 —— 用 800 万个读改写线程做
+memset。区域化后这些像素不再被触碰, 改为 CS 前一个空 render pass
+LOADOP_CLEAR 透明黑(成本近乎零, 且语义更显式)。
+
+**(3) backdrop/filter 的模糊源 blit 区域化。** 旧逻辑每帧把整幅
+geom_cur/target2 blit 进 blur_tex 再全量 mip。现在只拷记录盒 + mip 足迹
+外扩(blur>=8 -> level7 texel 跨 128 blur-tex px = 256 fb px, 双线性再拉
+邻居, 外扩 520px; 小模糊 16px), 源坐标偶对齐(blur_tex 是 fb/kBlurDiv,
+偶坐标保证 1:1 映射, 与全帧 blit 同约定)。GenerateMipmaps 仍是全纹理
+(SDL API 无区域版, blur_tex 为半分辨率, 记为边界)。
+
+**(4) partial 帧主 raster pass 条带 scissor。** hover/动画帧只重绘条带,
+但页面级大四边形(全页背景)覆盖全屏 —— 没有.scissor 时光栅器对每个像素跑
+SDF 像素着色器。load_only 帧把 scissor 钉到 text_layer 上传的条带上
+(g->layer_rx/rw 与 paint_clip 同源), 条带外片段在固定功能阶段丢弃。
+各 pass 开始时 SDL 自动重置 scissor 状态, 不外泄。
+
+**(5) 越界守卫。** dispatch 取整到整组后边缘线程可能越过区域/fb 边界
+(D3D12 静默丢弃 OOB RW 写, Vulkan 校验层报警): 五个区域 CS 按 hdr 里的
+fb 尺寸丢弃边缘线程; kTextCompositeCS 的 uniform zw 分量(原来恒 0)改为
+携带区域尺寸, 守卫 id < zw。
+
+验证: 10 套件全绿(blur/backdrop/filter/inset/blend 像素断言全部与改动前
+逐值相同); fluent/material x 深浅 4 张主题 render_shot 与改动前**哈希
+一致**; xmake b 三库 + demo + tests 通过。
+
+遗留: GenerateMipmapsForGPUTexture 全纹理(SDL 无区域 API); 最终
+swapchain blit 全屏(present 本性); FSR 两 pass 全窗(仅 FSR 激活时)。

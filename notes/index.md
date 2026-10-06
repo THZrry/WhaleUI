@@ -139,3 +139,8 @@ counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.m
 translate 子树/兄弟优先序 + hover 只由 motion 驱动补帧内重命中) +
 动画帧 3-4 次全树走访改 O(动画元素) + 值不变跳帧 + 动态刷新率帧率策略 +
 tl 缓存超预算无界生长/reset_dom 指针键缓存漏清 —— 见 notes/current.md
+<29>(SOLVED): GPU 高帧率占用 —— 五个全屏区域 compute(shadow/backdrop/
+inset/filter/mixblend)改记录包围盒 dispatch(uniform 偏移, 输出逐字节
+一致) + shadow 清零 RMW 改 clear pass + backdrop/filter 源 blit 区域化
+(mip 足迹外扩/偶对齐) + partial 帧主 raster 条带 scissor + 边缘线程
+越界守卫 —— 见 notes/current.md

@@ -574,6 +574,7 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.num_samplers = 1;
         cpi.num_readonly_storage_buffers = 1;
         cpi.num_readwrite_storage_textures = 1;
+        cpi.num_uniform_buffers = 1; /* dispatch region offset */
         cpi.threadcount_x = 8;
         cpi.threadcount_y = 8;
         cpi.threadcount_z = 1;
@@ -1366,6 +1367,55 @@ void whaleui_gpu_text_layer(whaleui_gpu_t* g, const unsigned int* pixels,
     g->layer_dirty = 1;
 }
 
+/* bounding region of a record list (each record starts with float4
+ * {x,y,w,h}, `stride4` float4 per record), clamped to the framebuffer.
+ * Returns false when nothing is on screen - the caller skips the dispatch.
+ * The region passes to the compute shader as the thread-id offset, so a
+ * 4k frame with one hovered button dispatches ~200 workgroups instead of
+ * ~32k (the per-pixel record bounds check stays as the inner filter). */
+static bool region_of_records(const float* recs, size_t count,
+                              size_t stride4, Uint32 fb_w, Uint32 fb_h,
+                              Uint32 out[4])
+{
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (size_t i = 0; i < count; ++i, recs += stride4 * 4) {
+        const float x = recs[0], y = recs[1], w = recs[2], h = recs[3];
+        if (!(w > 0.0f) || !(h > 0.0f)) {
+            continue;
+        }
+        if (x < x0) x0 = x;
+        if (y < y0) y0 = y;
+        if (x + w > x1) x1 = x + w;
+        if (y + h > y1) y1 = y + h;
+    }
+    if (x1 <= 0.0f || y1 <= 0.0f || x0 >= static_cast<float>(fb_w) ||
+        y0 >= static_cast<float>(fb_h)) {
+        return false;
+    }
+    if (x0 < 0.0f) x0 = 0.0f;
+    if (y0 < 0.0f) y0 = 0.0f;
+    if (x1 > static_cast<float>(fb_w)) x1 = static_cast<float>(fb_w);
+    if (y1 > static_cast<float>(fb_h)) y1 = static_cast<float>(fb_h);
+    /* a thread's sample point is p + 0.5: start at floor, end at ceil */
+    out[0] = static_cast<Uint32>(x0);
+    out[1] = static_cast<Uint32>(y0);
+    out[2] = static_cast<Uint32>(x1) - out[0];
+    out[3] = static_cast<Uint32>(y1) - out[1];
+    if (out[2] < 1) {
+        out[2] = 1;
+    }
+    if (out[3] < 1) {
+        out[3] = 1;
+    }
+    if (out[0] + out[2] > fb_w) {
+        out[2] = fb_w - out[0];
+    }
+    if (out[1] + out[3] > fb_h) {
+        out[3] = fb_h - out[1];
+    }
+    return out[2] > 0 && out[3] > 0;
+}
+
 SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                                         unsigned int clear_color, int scroll_dy,
                                         int load_only)
@@ -1665,6 +1715,21 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     /* pass A: paint the shadow shapes into the low-res blur texture, then
      * build the mip chain (box-filtered downsamples) */
     if (do_shadow) {
+        /* the region-scoped shadow CS no longer writes the pixels outside
+         * its records: clear the target with a fixed-function pass instead
+         * (the old full-screen compute "clear" was 8M read-modify-write
+         * threads at 4k before the first real pixel). Transparent black,
+         * exactly what the CS used to write. */
+        SDL_GPUColorTargetInfo cct;
+        std::memset(&cct, 0, sizeof(cct));
+        cct.texture = g->geom_cur;
+        cct.clear_color = SDL_FColor{0, 0, 0, 0};
+        cct.load_op = SDL_GPU_LOADOP_CLEAR;
+        cct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* ccp = SDL_BeginGPURenderPass(cmd, &cct, 1, nullptr);
+        if (ccp) {
+            SDL_EndGPURenderPass(ccp);
+        }
         SDL_GPUColorTargetInfo bct;
         std::memset(&bct, 0, sizeof(bct));
         bct.texture = g->blur_tex;
@@ -1701,26 +1766,35 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
 
     /* compute pass: blur the shapes into the target as the shadow layer */
     if (do_shadow) {
-        SDL_GPUStorageTextureReadWriteBinding rw;
-        std::memset(&rw, 0, sizeof(rw));
-        rw.texture = g->geom_cur;
-        rw.mip_level = 0;
-        rw.layer = 0;
-        rw.cycle = false;
-        SDL_GPUComputePass* cps = SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
-        if (cps) {
-            SDL_BindGPUComputePipeline(cps, g->pipe_shadow_cs);
-            SDL_GPUTextureSamplerBinding tsb;
-            std::memset(&tsb, 0, sizeof(tsb));
-            tsb.texture = g->blur_tex;
-            tsb.sampler = g->sampler_mip;
-            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
-            SDL_GPUBuffer* sbb = g->shadow_params_buf;
-            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
-            SDL_DispatchGPUCompute(cps,
-                                   (static_cast<Uint32>(fb_w) + 7) / 8,
-                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
-            SDL_EndGPUComputePass(cps);
+        Uint32 sreg[4] = {0, 0, static_cast<Uint32>(fb_w),
+                          static_cast<Uint32>(fb_h)};
+        bool have_sreg = region_of_records(
+            reinterpret_cast<const float*>(g->shadows.data()),
+            g->shadows.size(), 3, static_cast<Uint32>(fb_w),
+            static_cast<Uint32>(fb_h), sreg);
+        if (have_sreg) {
+            SDL_GPUStorageTextureReadWriteBinding rw;
+            std::memset(&rw, 0, sizeof(rw));
+            rw.texture = g->geom_cur;
+            rw.mip_level = 0;
+            rw.layer = 0;
+            rw.cycle = false;
+            SDL_GPUComputePass* cps =
+                SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, g->pipe_shadow_cs);
+                SDL_GPUTextureSamplerBinding tsb;
+                std::memset(&tsb, 0, sizeof(tsb));
+                tsb.texture = g->blur_tex;
+                tsb.sampler = g->sampler_mip;
+                SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+                SDL_GPUBuffer* sbb = g->shadow_params_buf;
+                SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, sreg, sizeof(sreg));
+                SDL_DispatchGPUCompute(cps, (sreg[2] + 7) / 8, (sreg[3] + 7) / 8,
+                                       1);
+                SDL_EndGPUComputePass(cps);
+            }
         }
     }
 
@@ -1750,6 +1824,26 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
     vp.min_depth = 0;
     vp.max_depth = 1;
     SDL_SetGPUViewport(rp, &vp);
+    /* partial (hover/animation) frames repaint exactly the strip: scissor
+     * the pass so the rasterizer discards everything outside it in fixed
+     * function (the emitters already clip in the shader - this only skips
+     * the tile sweep over the untouched rest of the target) */
+    if (load_only && g->layer_rw > 0 && g->layer_rh > 0) {
+        SDL_Rect sc;
+        sc.x = g->layer_rx < 0 ? 0 : g->layer_rx;
+        sc.y = g->layer_ry < 0 ? 0 : g->layer_ry;
+        sc.w = g->layer_rw;
+        sc.h = g->layer_rh;
+        if (sc.x + sc.w > fb_w) {
+            sc.w = fb_w - sc.x;
+        }
+        if (sc.y + sc.h > fb_h) {
+            sc.h = fb_h - sc.y;
+        }
+        if (sc.w > 0 && sc.h > 0) {
+            SDL_SetGPUScissor(rp, &sc);
+        }
+    }
 
     if (!g->solids.empty()) {
         SDL_BindGPUGraphicsPipeline(rp, g->pipe_solid);
@@ -1787,41 +1881,87 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * it). Runs on partial (animation/hover) frames too, so a fixed
      * translucent header stays blurred while content animates under it. */
     if (!g->backdrops.empty() && scroll_dy == 0) {
-        SDL_GPUBlitInfo blit;
-        std::memset(&blit, 0, sizeof(blit));
-        blit.source.texture = g->geom_cur;
-        blit.source.w = static_cast<Uint32>(fb_w);
-        blit.source.h = static_cast<Uint32>(fb_h);
-        blit.destination.texture = g->blur_tex;
-        blit.destination.w = static_cast<Uint32>(g->blur_w);
-        blit.destination.h = static_cast<Uint32>(g->blur_h);
-        blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-        blit.filter = SDL_GPU_FILTER_LINEAR;
-        SDL_BlitGPUTexture(cmd, &blit);
-        SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
+        Uint32 dreg[4] = {0, 0, static_cast<Uint32>(fb_w),
+                          static_cast<Uint32>(fb_h)};
+        bool have_dreg = region_of_records(
+            reinterpret_cast<const float*>(g->backdrops.data()),
+            g->backdrops.size(), 3, static_cast<Uint32>(fb_w),
+            static_cast<Uint32>(fb_h), dreg);
+        if (have_dreg) {
+            /* the blur source only needs the records' boxes plus the mip
+             * footprint of the widest blur: level<=7 texels span 128
+             * blur-tex px (256 fb px) and bilinear pulls the neighbour, so
+             * a big blur needs ~520 fb px of margin - small blurs only
+             * reach level 2 (<=4 blur-tex px). A header at the top no
+             * longer copies the whole 4k framebuffer every animation
+             * frame. */
+            float max_blur = 0.0f;
+            for (size_t i = 0; i < g->backdrops.size(); ++i) {
+                if (g->backdrops[i].blur > max_blur) {
+                    max_blur = g->backdrops[i].blur;
+                }
+            }
+            int pad = max_blur >= 8.0f ? 520 : 16;
+            int bx0 = static_cast<int>(dreg[0]) - pad;
+            int by0 = static_cast<int>(dreg[1]) - pad;
+            int bx1 = static_cast<int>(dreg[0] + dreg[2]) + pad;
+            int by1 = static_cast<int>(dreg[1] + dreg[3]) + pad;
+            if (bx0 < 0) bx0 = 0;
+            if (by0 < 0) by0 = 0;
+            if (bx1 > fb_w) bx1 = fb_w;
+            if (by1 > fb_h) by1 = fb_h;
+            /* even alignment: blur_tex is fb/kBlurDiv, so even source
+             * coords map 1:1 onto destination texels (same convention as
+             * the full-frame blit this replaces) */
+            bx0 &= ~1;
+            by0 &= ~1;
+            bx1 = (bx1 + 1) & ~1;
+            by1 = (by1 + 1) & ~1;
+            if (bx1 > fb_w) bx1 = fb_w & ~1;
+            if (by1 > fb_h) by1 = fb_h & ~1;
+            if (bx1 > bx0 && by1 > by0) {
+                SDL_GPUBlitInfo blit;
+                std::memset(&blit, 0, sizeof(blit));
+                blit.source.texture = g->geom_cur;
+                blit.source.x = static_cast<Uint32>(bx0);
+                blit.source.y = static_cast<Uint32>(by0);
+                blit.source.w = static_cast<Uint32>(bx1 - bx0);
+                blit.source.h = static_cast<Uint32>(by1 - by0);
+                blit.destination.texture = g->blur_tex;
+                blit.destination.x = static_cast<Uint32>(bx0 / kBlurDiv);
+                blit.destination.y = static_cast<Uint32>(by0 / kBlurDiv);
+                blit.destination.w = static_cast<Uint32>((bx1 - bx0) / kBlurDiv);
+                blit.destination.h = static_cast<Uint32>((by1 - by0) / kBlurDiv);
+                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                blit.filter = SDL_GPU_FILTER_LINEAR;
+                SDL_BlitGPUTexture(cmd, &blit);
+                SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
 
-        /* read+write the target in one pass (SIMULTANEOUS_READ_WRITE) */
-        SDL_GPUStorageTextureReadWriteBinding rw;
-        std::memset(&rw, 0, sizeof(rw));
-        rw.texture = g->geom_cur;
-        rw.mip_level = 0;
-        rw.layer = 0;
-        rw.cycle = false;
-        SDL_GPUComputePass* cps =
-            SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
-        if (cps) {
-            SDL_BindGPUComputePipeline(cps, g->pipe_backdrop_cs);
-            SDL_GPUTextureSamplerBinding tsb;
-            std::memset(&tsb, 0, sizeof(tsb));
-            tsb.texture = g->blur_tex;
-            tsb.sampler = g->sampler_mip;
-            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
-            SDL_GPUBuffer* sbb = g->backdrop_params_buf;
-            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
-            SDL_DispatchGPUCompute(cps,
-                                   (static_cast<Uint32>(fb_w) + 7) / 8,
-                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
-            SDL_EndGPUComputePass(cps);
+                /* read+write the target in one pass (SIMULTANEOUS) */
+                SDL_GPUStorageTextureReadWriteBinding rw;
+                std::memset(&rw, 0, sizeof(rw));
+                rw.texture = g->geom_cur;
+                rw.mip_level = 0;
+                rw.layer = 0;
+                rw.cycle = false;
+                SDL_GPUComputePass* cps =
+                    SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+                if (cps) {
+                    SDL_BindGPUComputePipeline(cps, g->pipe_backdrop_cs);
+                    SDL_GPUTextureSamplerBinding tsb;
+                    std::memset(&tsb, 0, sizeof(tsb));
+                    tsb.texture = g->blur_tex;
+                    tsb.sampler = g->sampler_mip;
+                    SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+                    SDL_GPUBuffer* sbb = g->backdrop_params_buf;
+                    SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+                    SDL_PushGPUComputeUniformData(cmd, 0, dreg,
+                                                  sizeof(dreg));
+                    SDL_DispatchGPUCompute(cps, (dreg[2] + 7) / 8,
+                                           (dreg[3] + 7) / 8, 1);
+                    SDL_EndGPUComputePass(cps);
+                }
+            }
         }
     }
 
@@ -1870,59 +2010,67 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * 1 - blurred_mask(px - offset) over the painted geometry (inset
      * shadows sit on top of the element background). */
     if (!g->insets.empty() && scroll_dy == 0 && !load_only) {
-        SDL_GPUColorTargetInfo ict;
-        std::memset(&ict, 0, sizeof(ict));
-        ict.texture = g->blur_tex;
-        ict.clear_color = SDL_FColor{0, 0, 0, 0};
-        ict.load_op = SDL_GPU_LOADOP_CLEAR;
-        ict.store_op = SDL_GPU_STOREOP_STORE;
-        SDL_GPURenderPass* irp = SDL_BeginGPURenderPass(cmd, &ict, 1, nullptr);
-        if (irp) {
-            SDL_GPUViewport ivp;
-            std::memset(&ivp, 0, sizeof(ivp));
-            ivp.w = static_cast<float>(g->blur_w);
-            ivp.h = static_cast<float>(g->blur_h);
-            ivp.min_depth = 0;
-            ivp.max_depth = 1;
-            SDL_SetGPUViewport(irp, &ivp);
-            SDL_BindGPUGraphicsPipeline(irp, g->pipe_solid);
-            SDL_GPUBufferBinding ibb;
-            std::memset(&ibb, 0, sizeof(ibb));
-            ibb.buffer = g->vb_shapes;
-            /* the mask run starts AFTER the shadow shapes in vb_shapes */
-            ibb.offset = g->shapes.size() * sizeof(gpu_vert_solid);
-            SDL_BindGPUVertexBuffers(irp, 0, &ibb, 1);
-            SDL_GPUTextureSamplerBinding itsb;
-            std::memset(&itsb, 0, sizeof(itsb));
-            itsb.texture = g->white_tex;
-            itsb.sampler = g->sampler;
-            SDL_BindGPUFragmentSamplers(irp, 0, &itsb, 1);
-            SDL_DrawGPUPrimitives(irp, static_cast<int>(g->inset_shapes.size()),
-                                  1, 0, 0);
-            SDL_EndGPURenderPass(irp);
-        }
-        SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
+        Uint32 ireg[4] = {0, 0, static_cast<Uint32>(fb_w),
+                          static_cast<Uint32>(fb_h)};
+        bool have_ireg = region_of_records(
+            reinterpret_cast<const float*>(g->insets.data()),
+            g->insets.size(), 4, static_cast<Uint32>(fb_w),
+            static_cast<Uint32>(fb_h), ireg);
+        if (have_ireg) {
+            SDL_GPUColorTargetInfo ict;
+            std::memset(&ict, 0, sizeof(ict));
+            ict.texture = g->blur_tex;
+            ict.clear_color = SDL_FColor{0, 0, 0, 0};
+            ict.load_op = SDL_GPU_LOADOP_CLEAR;
+            ict.store_op = SDL_GPU_STOREOP_STORE;
+            SDL_GPURenderPass* irp = SDL_BeginGPURenderPass(cmd, &ict, 1, nullptr);
+            if (irp) {
+                SDL_GPUViewport ivp;
+                std::memset(&ivp, 0, sizeof(ivp));
+                ivp.w = static_cast<float>(g->blur_w);
+                ivp.h = static_cast<float>(g->blur_h);
+                ivp.min_depth = 0;
+                ivp.max_depth = 1;
+                SDL_SetGPUViewport(irp, &ivp);
+                SDL_BindGPUGraphicsPipeline(irp, g->pipe_solid);
+                SDL_GPUBufferBinding ibb;
+                std::memset(&ibb, 0, sizeof(ibb));
+                ibb.buffer = g->vb_shapes;
+                /* the mask run starts AFTER the shadow shapes in vb_shapes */
+                ibb.offset = g->shapes.size() * sizeof(gpu_vert_solid);
+                SDL_BindGPUVertexBuffers(irp, 0, &ibb, 1);
+                SDL_GPUTextureSamplerBinding itsb;
+                std::memset(&itsb, 0, sizeof(itsb));
+                itsb.texture = g->white_tex;
+                itsb.sampler = g->sampler;
+                SDL_BindGPUFragmentSamplers(irp, 0, &itsb, 1);
+                SDL_DrawGPUPrimitives(irp, static_cast<int>(g->inset_shapes.size()),
+                                      1, 0, 0);
+                SDL_EndGPURenderPass(irp);
+            }
+            SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
 
-        SDL_GPUStorageTextureReadWriteBinding rw;
-        std::memset(&rw, 0, sizeof(rw));
-        rw.texture = g->geom_cur;
-        rw.mip_level = 0;
-        rw.layer = 0;
-        rw.cycle = false;
-        SDL_GPUComputePass* cps = SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
-        if (cps) {
-            SDL_BindGPUComputePipeline(cps, g->pipe_inset_cs);
-            SDL_GPUTextureSamplerBinding tsb;
-            std::memset(&tsb, 0, sizeof(tsb));
-            tsb.texture = g->blur_tex;
-            tsb.sampler = g->sampler_mip;
-            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
-            SDL_GPUBuffer* sbb = g->inset_params_buf;
-            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
-            SDL_DispatchGPUCompute(cps,
-                                   (static_cast<Uint32>(fb_w) + 7) / 8,
-                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
-            SDL_EndGPUComputePass(cps);
+            SDL_GPUStorageTextureReadWriteBinding rw;
+            std::memset(&rw, 0, sizeof(rw));
+            rw.texture = g->geom_cur;
+            rw.mip_level = 0;
+            rw.layer = 0;
+            rw.cycle = false;
+            SDL_GPUComputePass* cps = SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, g->pipe_inset_cs);
+                SDL_GPUTextureSamplerBinding tsb;
+                std::memset(&tsb, 0, sizeof(tsb));
+                tsb.texture = g->blur_tex;
+                tsb.sampler = g->sampler_mip;
+                SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+                SDL_GPUBuffer* sbb = g->inset_params_buf;
+                SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, ireg, sizeof(ireg));
+                SDL_DispatchGPUCompute(cps, (ireg[2] + 7) / 8, (ireg[3] + 7) / 8,
+                                       1);
+                SDL_EndGPUComputePass(cps);
+            }
         }
     }
 
@@ -1969,7 +2117,8 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
                 rhpx = 1;
             }
             Uint32 off[4] = {static_cast<Uint32>(rx), static_cast<Uint32>(ry),
-                             0, 0};
+                             static_cast<Uint32>(rwpx),
+                             static_cast<Uint32>(rhpx)};
             SDL_PushGPUComputeUniformData(cmd, 0, off, sizeof(off));
             SDL_DispatchGPUCompute(
                 cps, (static_cast<Uint32>(rwpx) + 15) / 16,
@@ -1984,50 +2133,81 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * painted content. When blur > 0 the composited frame is blitted into
      * blur_tex + mipmapped first (like the backdrop pass), then the compute
      * pass applies blur + the 4x5 color matrix in each region. Skipped on
-     * scroll frames like the other blur passes. */
+     * scroll frames like the other blur passes. Dispatch + source blit are
+     * region-scoped (see pass C). */
     if (!g->filters.empty() && scroll_dy == 0) {
+        Uint32 freg[4] = {0, 0, static_cast<Uint32>(fb_w),
+                          static_cast<Uint32>(fb_h)};
+        bool have_freg = region_of_records(
+            reinterpret_cast<const float*>(g->filters.data()),
+            g->filters.size(), 6, static_cast<Uint32>(fb_w),
+            static_cast<Uint32>(fb_h), freg);
         bool need_blur = false;
+        float max_fblur = 0.0f;
         for (size_t fi = 0; fi < g->filters.size(); ++fi) {
             if (g->filters[fi].blur > 0) {
                 need_blur = true;
-                break;
+                if (g->filters[fi].blur > max_fblur) {
+                    max_fblur = g->filters[fi].blur;
+                }
             }
         }
-        if (need_blur) {
+        if (have_freg && need_blur) {
+            int pad = max_fblur >= 8.0f ? 520 : 16;
+            int bx0 = static_cast<int>(freg[0]) - pad;
+            int by0 = static_cast<int>(freg[1]) - pad;
+            int bx1 = static_cast<int>(freg[0] + freg[2]) + pad;
+            int by1 = static_cast<int>(freg[1] + freg[3]) + pad;
+            if (bx0 < 0) bx0 = 0;
+            if (by0 < 0) by0 = 0;
+            if (bx1 > fb_w) bx1 = fb_w;
+            if (by1 > fb_h) by1 = fb_h;
+            bx0 &= ~1;
+            by0 &= ~1;
+            bx1 = (bx1 + 1) & ~1;
+            by1 = (by1 + 1) & ~1;
+            if (bx1 > fb_w) bx1 = fb_w & ~1;
+            if (by1 > fb_h) by1 = fb_h & ~1;
             SDL_GPUBlitInfo blit;
             std::memset(&blit, 0, sizeof(blit));
             blit.source.texture = g->target2;
-            blit.source.w = static_cast<Uint32>(fb_w);
-            blit.source.h = static_cast<Uint32>(fb_h);
+            blit.source.x = static_cast<Uint32>(bx0);
+            blit.source.y = static_cast<Uint32>(by0);
+            blit.source.w = static_cast<Uint32>(bx1 - bx0);
+            blit.source.h = static_cast<Uint32>(by1 - by0);
             blit.destination.texture = g->blur_tex;
-            blit.destination.w = static_cast<Uint32>(g->blur_w);
-            blit.destination.h = static_cast<Uint32>(g->blur_h);
+            blit.destination.x = static_cast<Uint32>(bx0 / kBlurDiv);
+            blit.destination.y = static_cast<Uint32>(by0 / kBlurDiv);
+            blit.destination.w = static_cast<Uint32>((bx1 - bx0) / kBlurDiv);
+            blit.destination.h = static_cast<Uint32>((by1 - by0) / kBlurDiv);
             blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
             blit.filter = SDL_GPU_FILTER_LINEAR;
             SDL_BlitGPUTexture(cmd, &blit);
             SDL_GenerateMipmapsForGPUTexture(cmd, g->blur_tex);
         }
-        SDL_GPUStorageTextureReadWriteBinding rw;
-        std::memset(&rw, 0, sizeof(rw));
-        rw.texture = g->target2;
-        rw.mip_level = 0;
-        rw.layer = 0;
-        rw.cycle = false;
-        SDL_GPUComputePass* cps =
-            SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
-        if (cps) {
-            SDL_BindGPUComputePipeline(cps, g->pipe_filter_cs);
-            SDL_GPUTextureSamplerBinding tsb;
-            std::memset(&tsb, 0, sizeof(tsb));
-            tsb.texture = g->blur_tex;
-            tsb.sampler = g->sampler_mip;
-            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
-            SDL_GPUBuffer* sbb = g->filter_params_buf;
-            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
-            SDL_DispatchGPUCompute(cps,
-                                   (static_cast<Uint32>(fb_w) + 7) / 8,
-                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
-            SDL_EndGPUComputePass(cps);
+        if (have_freg) {
+            SDL_GPUStorageTextureReadWriteBinding rw;
+            std::memset(&rw, 0, sizeof(rw));
+            rw.texture = g->target2;
+            rw.mip_level = 0;
+            rw.layer = 0;
+            rw.cycle = false;
+            SDL_GPUComputePass* cps =
+                SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, g->pipe_filter_cs);
+                SDL_GPUTextureSamplerBinding tsb;
+                std::memset(&tsb, 0, sizeof(tsb));
+                tsb.texture = g->blur_tex;
+                tsb.sampler = g->sampler_mip;
+                SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+                SDL_GPUBuffer* sbb = g->filter_params_buf;
+                SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, freg, sizeof(freg));
+                SDL_DispatchGPUCompute(cps, (freg[2] + 7) / 8,
+                                       (freg[3] + 7) / 8, 1);
+                SDL_EndGPUComputePass(cps);
+            }
         }
     }
 
@@ -2037,28 +2217,35 @@ SDL_GPUCommandBuffer* whaleui_gpu_flush(whaleui_gpu_t* g, int fb_w, int fb_h,
      * texture AND read-write target: target2 has SIMULTANEOUS usage, and
      * the shader reads it via frame_tex Load (same texture, no copy). */
     if (!g->mixblends.empty() && scroll_dy == 0) {
-        SDL_GPUStorageTextureReadWriteBinding rw;
-        std::memset(&rw, 0, sizeof(rw));
-        rw.texture = g->target2;
-        rw.mip_level = 0;
-        rw.layer = 0;
-        rw.cycle = false;
-        SDL_GPUComputePass* cps =
-            SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
-        if (cps) {
-            SDL_BindGPUComputePipeline(cps, g->pipe_mixblend_cs);
-            /* sampler slot declared but unused (Load-only shader) */
-            SDL_GPUTextureSamplerBinding tsb;
-            std::memset(&tsb, 0, sizeof(tsb));
-            tsb.texture = g->white_tex;
-            tsb.sampler = g->sampler;
-            SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
-            SDL_GPUBuffer* sbb = g->mixblend_params_buf;
-            SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
-            SDL_DispatchGPUCompute(cps,
-                                   (static_cast<Uint32>(fb_w) + 7) / 8,
-                                   (static_cast<Uint32>(fb_h) + 7) / 8, 1);
-            SDL_EndGPUComputePass(cps);
+        Uint32 mreg[4] = {0, 0, static_cast<Uint32>(fb_w),
+                          static_cast<Uint32>(fb_h)};
+        if (region_of_records(
+                reinterpret_cast<const float*>(g->mixblends.data()),
+                g->mixblends.size(), 3, static_cast<Uint32>(fb_w),
+                static_cast<Uint32>(fb_h), mreg)) {
+            SDL_GPUStorageTextureReadWriteBinding rw;
+            std::memset(&rw, 0, sizeof(rw));
+            rw.texture = g->target2;
+            rw.mip_level = 0;
+            rw.layer = 0;
+            rw.cycle = false;
+            SDL_GPUComputePass* cps =
+                SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+            if (cps) {
+                SDL_BindGPUComputePipeline(cps, g->pipe_mixblend_cs);
+                /* sampler slot declared but unused (Load-only shader) */
+                SDL_GPUTextureSamplerBinding tsb;
+                std::memset(&tsb, 0, sizeof(tsb));
+                tsb.texture = g->white_tex;
+                tsb.sampler = g->sampler;
+                SDL_BindGPUComputeSamplers(cps, 0, &tsb, 1);
+                SDL_GPUBuffer* sbb = g->mixblend_params_buf;
+                SDL_BindGPUComputeStorageBuffers(cps, 0, &sbb, 1);
+                SDL_PushGPUComputeUniformData(cmd, 0, mreg, sizeof(mreg));
+                SDL_DispatchGPUCompute(cps, (mreg[2] + 7) / 8,
+                                       (mreg[3] + 7) / 8, 1);
+                SDL_EndGPUComputePass(cps);
+            }
         }
     }
 

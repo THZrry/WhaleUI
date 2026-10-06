@@ -203,13 +203,21 @@ static const std::string kShadowCS = std::string(R"(
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+cbuffer Off : register(b0, space2) { uint4 offset; };
 )") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float2 px = float2(id.xy) + 0.5;
+    /* region-scoped dispatch: id covers only the records' bounding box
+     * (offset pushed per frame); a pixel outside every record keeps the
+     * cleared target (the clear render pass before this one) */
     float4 hdr = params[0];
+    int2 p = int2(id.xy) + offset.xy;
+    if (p.x >= int(hdr.y) || p.y >= int(hdr.z)) {
+        return; /* dispatch rounds up to the 8x8 group: drop edge threads */
+    }
+    float2 px = float2(p) + 0.5;
     int n = int(hdr.x);
-    float4 acc = 0;
+    float4 acc = out_tex[p];
     for (int i = 0; i < n; ++i) {
         float4 r = params[1 + i * 3];
         float4 c = params[2 + i * 3];
@@ -223,7 +231,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             break;
         }
     }
-    out_tex[id.xy] = acc;
+    out_tex[p] = acc;
 }
 )";
 
@@ -232,14 +240,19 @@ static const std::string kBackdropCS = std::string(R"(
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+cbuffer Off : register(b0, space2) { uint4 offset; };
 )") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float2 px = float2(id.xy) + 0.5;
     float4 hdr = params[0];
+    int2 p = int2(id.xy) + offset.xy; /* region-scoped dispatch */
+    if (p.x >= int(hdr.y) || p.y >= int(hdr.z)) {
+        return; /* dispatch rounds up: drop edge threads */
+    }
+    float2 px = float2(p) + 0.5;
     int n = int(hdr.x);
     /* default: keep the painted pixel (target is SIMULTANEOUS read+write) */
-    float4 acc = out_tex[id.xy];
+    float4 acc = out_tex[p];
     for (int i = 0; i < n; ++i) {
         float4 r = params[1 + i * 3];
         float4 c = params[2 + i * 3];
@@ -280,7 +293,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             break;
         }
     }
-    out_tex[id.xy] = acc;
+    out_tex[p] = acc;
 }
 )";
 
@@ -302,13 +315,18 @@ static const std::string kInsetCS = std::string(R"(
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+cbuffer Off : register(b0, space2) { uint4 offset; };
 )") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float2 px = float2(id.xy) + 0.5;
     float4 hdr = params[0];
+    int2 p = int2(id.xy) + offset.xy; /* region-scoped dispatch */
+    if (p.x >= int(hdr.y) || p.y >= int(hdr.z)) {
+        return; /* dispatch rounds up: drop edge threads */
+    }
+    float2 px = float2(p) + 0.5;
     int n = int(hdr.x);
-    float4 acc = out_tex[id.xy]; /* keep the painted background */
+    float4 acc = out_tex[p]; /* keep the painted background */
     for (int i = 0; i < n; ++i) {
         float4 r = params[1 + i * 4];
         float4 c = params[2 + i * 4];
@@ -337,7 +355,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             break;
         }
     }
-    out_tex[id.xy] = acc;
+    out_tex[p] = acc;
 }
 )";
 
@@ -354,13 +372,18 @@ static const std::string kFilterCS = std::string(R"(
 [[vk::binding(1, 0)]] StructuredBuffer<float4> params : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0);
+cbuffer Off : register(b0, space2) { uint4 offset; };
 )") + kBlurSampleFn + R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float2 px = float2(id.xy) + 0.5;
     float4 hdr = params[0];
+    int2 p = int2(id.xy) + offset.xy; /* region-scoped dispatch */
+    if (p.x >= int(hdr.y) || p.y >= int(hdr.z)) {
+        return; /* dispatch rounds up: drop edge threads */
+    }
+    float2 px = float2(p) + 0.5;
     int n = int(hdr.x);
-    float4 acc = out_tex[id.xy]; /* keep everything outside the regions */
+    float4 acc = out_tex[p]; /* keep everything outside the regions */
     for (int i = 0; i < n; ++i) {
         float4 r = params[1 + i * 6];
         float4 c = params[2 + i * 6];
@@ -397,7 +420,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             break;
         }
     }
-    out_tex[id.xy] = acc;
+    out_tex[p] = acc;
 }
 )";
 
@@ -416,6 +439,7 @@ static const std::string kMixBlendCS = std::string(R"(
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
 SamplerState samp : register(s0); /* unused (Load-only); keeps the
     pipeline signature identical to the other blur passes */
+cbuffer Off : register(b0, space2) { uint4 offset; };
 float blend_ch(int mode, float cb, float cs)
 {
     if (mode <= 0) { return cs; }
@@ -453,10 +477,14 @@ float blend_ch(int mode, float cb, float cs)
 }
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    float2 px = float2(id.xy) + 0.5;
     float4 hdr = params[0];
+    int2 p = int2(id.xy) + offset.xy; /* region-scoped dispatch */
+    if (p.x >= int(hdr.y) || p.y >= int(hdr.z)) {
+        return; /* dispatch rounds up: drop edge threads */
+    }
+    float2 px = float2(p) + 0.5;
     int n = int(hdr.x);
-    float4 acc = out_tex[id.xy];
+    float4 acc = out_tex[p];
     for (int i = 0; i < n; ++i) {
         float4 r = params[1 + i * 3];
         float4 c = params[2 + i * 3];
@@ -504,7 +532,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             break;
         }
     }
-    out_tex[id.xy] = acc;
+    out_tex[p] = acc;
 }
 )");
 
@@ -519,9 +547,14 @@ static const char* kTextCompositeCS = R"(
 [[vk::binding(0, 0)]] Texture2D geometry : register(t0);
 [[vk::binding(1, 0)]] Texture2D text_layer : register(t1);
 [[vk::binding(0, 1)]] RWTexture2D<float4> out_tex : register(u0, space1);
+/* xy = region origin px, zw = region size px (the dispatch covers the
+ * region rounded up to whole 16x16 groups; edge threads must drop) */
 cbuffer Params : register(b0, space2) { uint4 offset; };
 [numthreads(16, 16, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= offset.z || id.y >= offset.w) {
+        return;
+    }
     int2 p = int2(id.xy + offset.xy);
     float4 t = text_layer.Load(int3(p, 0));
     /* text_layer is R8G8B8A8 (the CPU upload swaps the 0xAARRGGBB bytes
