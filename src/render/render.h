@@ -155,6 +155,11 @@ struct whaleui_render
      * frame and would dangle) */
     struct lxb_dom_element* open_select;
     int open_select_hover;
+    /* ms timestamp of the popup open (whaleui_anim_now clock): drives the
+     * CSS open transition (opacity + rise) in paint_select_list. 0 = no
+     * transition in progress (closed, or opened before this field
+     * existed). */
+    uint64_t open_select_t;
     std::map<struct lxb_dom_element*, int> select_index; /* select -> option */
 
     /* element under the mouse (for :hover rules) */

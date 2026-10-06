@@ -91,6 +91,19 @@ void whaleui_style_virtual(const char* selector,
                            const std::map<std::string, std::string>& vars,
                            WhaleUIComputedStyle& out);
 
+/* Shadow-host variant: the popup is the select's shadow child, so page CSS
+ * can target it through the host (`select .select-popup`,
+ * `select.foo .select-option-hover`, `#theme > .select-popup`). The right-
+ * most compound must be the virtual class; the ancestor part matches
+ * against the host element with the normal matcher (descendant matching
+ * is transitive, so `P .popup` and `P > .popup` both reduce correctly).
+ * Bare `.select-popup` always matches. `st` carries interaction state. */
+void whaleui_style_virtual_host(const char* vclass, lxb_dom_element* host,
+                                const whaleui_css_rule_t* rules, size_t count,
+                                const std::map<std::string, std::string>& vars,
+                                const whaleui_style_state* st,
+                                WhaleUIComputedStyle& out);
+
 #ifdef __cplusplus
 }
 #endif

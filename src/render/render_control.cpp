@@ -4,6 +4,7 @@
 
 #include "render/render_internal.h"
 #include "style/style.h" /* whaleui_style_virtual: select popup chrome */
+#include "animate/animate.h" /* whaleui_anim_now: popup open transition */
 #include <lexbor/dom/dom.h>
 
 #include <cstdlib>
@@ -763,18 +764,31 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     /* popup chrome comes from the theme stylesheet, not hard-coded colors:
      * the renderer computes the virtual .select-popup / .select-option
-     * classes (whaleui_style_virtual) and paints from their styles. */
+     * classes (whaleui_style_virtual_host) and paints from their styles.
+     * The popup is the select's SHADOW child: page CSS targets it through
+     * the host (`select .select-popup`, `select.foo .select-option-hover`),
+     * with the bare virtual class as the fallback (themes). */
     WhaleUIComputedStyle popup, opt_hover, opt_sel;
-    whaleui_style_virtual(".select-popup", r->rules, r->rule_count,
-                          r->theme_vars, popup);
-    whaleui_style_virtual(".select-option-hover", r->rules, r->rule_count,
-                          r->theme_vars, opt_hover);
-    whaleui_style_virtual(".select-option-selected", r->rules, r->rule_count,
-                          r->theme_vars, opt_sel);
+    whaleui_style_state st0;
+    whaleui_style_virtual_host(".select-popup", n->el, r->rules,
+                               r->rule_count, r->theme_vars, &st0, popup);
+    whaleui_style_virtual_host(".select-option-hover", n->el, r->rules,
+                               r->rule_count, r->theme_vars, &st0, opt_hover);
+    whaleui_style_virtual_host(".select-option-selected", n->el, r->rules,
+                               r->rule_count, r->theme_vars, &st0, opt_sel);
     int fs = 13;
     unsigned int fg = color_of(popup, "color", 0xFF1a1a1a);
     int list_x = n->border.x;
     int list_y = n->border.y + off_y + n->border.h;
+    /* open transition (CSS-driven): `select .select-popup` may carry
+     * `transition-duration`/`transition-timing-function` (opacity + a 6px
+     * rise); the popup eases in over that duration instead of snapping.
+     * Duration parsing mirrors the transition engine (s/ms first value);
+     * absent/invalid = the 120ms ease-out default. While p < 1 the frame
+     * loop stays alive (see render_frame's open_select branch) so the
+     * transition completes even with no further input. */
+    float pop_op = 1.0f;
+    int pop_dy = 0;
     int list_w = n->border.w;
     int list_h = static_cast<int>(texts.size()) * kSelectItemH;
     /* corner radius + border + background + shadow from .select-popup */
@@ -788,6 +802,69 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     unsigned int hover_bg = color_of(opt_hover, "background", 0x00000000);
     unsigned int sel_bg = color_of(opt_sel, "background", 0xFF0067C0);
     unsigned int sel_fg = color_of(opt_sel, "color", 0xFFFFFFFF);
+    /* open-transition progress (see above): ease opacity + rise from the
+     * open timestamp and the popup's own transition-duration. */
+    {
+        uint64_t now = whaleui_anim_now();
+        uint64_t opened = r->open_select_t;
+        float dur = 0.12f;
+        auto tdi = popup.find("transition-duration");
+        if (tdi != popup.end() && !tdi->second.empty()) {
+            std::string ds = tdi->second;
+            size_t cm = ds.find(',');
+            if (cm != std::string::npos) {
+                ds = ds.substr(0, cm);
+            }
+            char* e2 = nullptr;
+            float v = std::strtof(ds.c_str(), &e2);
+            if (e2 != ds.c_str() && v > 0) {
+                if (e2[0] == 'm' && e2[1] == 's') {
+                    dur = v / 1000.0f;
+                } else {
+                    dur = v; /* s (or unitless = s) */
+                }
+            }
+            if (dur < 0.016f) {
+                dur = 0.016f;
+            }
+            if (dur > 2.0f) {
+                dur = 2.0f;
+            }
+        }
+        float p = opened == 0
+                      ? 1.0f
+                      : static_cast<float>(now >= opened
+                                               ? now - opened
+                                               : 0) /
+                            (dur * 1000.0f);
+        if (p < 0.0f) {
+            p = 0.0f;
+        }
+        if (p < 1.0f) {
+            /* ease-out cubic */
+            float e = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);
+            pop_op = e;
+            pop_dy = static_cast<int>(-6.0f * (1.0f - e));
+        }
+    }
+    list_y += pop_dy;
+    /* fold the open-transition opacity into every popup color up front
+     * (backgrounds, borders, shadows, row washes, glyphs): one scale point
+     * instead of threading it through every emitter below. */
+    auto fade = [&](unsigned int c) {
+        if (pop_op >= 1.0f) {
+            return c;
+        }
+        unsigned int a =
+            static_cast<unsigned int>(((c >> 24) & 0xFF) * pop_op);
+        return (a << 24) | (c & 0x00FFFFFF);
+    };
+    bg = fade(bg);
+    border_c = fade(border_c);
+    hover_bg = fade(hover_bg);
+    sel_bg = fade(sel_bg);
+    sel_fg = fade(sel_fg);
+    fg = fade(fg);
     /* box-shadow: only the first shadow is painted (engine limitation) */
     int sh_ox = 0, sh_oy = 0, sh_blur = 0;
     unsigned int sh_col = 0;
@@ -798,6 +875,7 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
             sv = sv.substr(0, comma);
         }
         parse_shadow(sv, sh_ox, sh_oy, sh_blur, sh_col);
+        sh_col = fade(sh_col);
     }
     if (sh_blur > 0) {
         /* soft shadow under the popup (before the card background) */
@@ -842,8 +920,15 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
             }
         }
         unsigned int row_fg = i == sel ? sel_fg : fg;
+        /* no text-cache key: the run raster cache is keyed on (element,
+         * geometry, color) WITHOUT the string bytes, so every row would
+         * serve row 0's raster ("every option shows the current value").
+         * The rows are re-built from the DOM on every paint (unstable
+         * buffer addresses would defeat a pointer key too); with a handful
+         * of rows the direct raster is the correct cost. */
         draw_text_at(r, texts[i], list_x + 8, iy, list_w - 16,
-                     kSelectItemH, fs, "", row_fg, i == sel, 0, n->el, clip);
+                     kSelectItemH, fs, "", row_fg, i == sel, 0, nullptr,
+                     clip);
     }
     /* border around the list (follows the corner arcs when rounded) */
     fill_round_border(r->pixels, r->fb_w, r->fb_h, list_x, list_y,

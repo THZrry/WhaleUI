@@ -2837,6 +2837,10 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
          * value ("the text renders twice") */
         r->open_select = (was_open_select == hit->el) ? nullptr : hit->el;
         r->open_select_hover = 0;
+        /* timestamp the open for the CSS open transition (paint fades +
+         * rises the popup over transition-duration); a close needs none */
+        r->open_select_t =
+            r->open_select ? whaleui_anim_now() : 0;
         r->scroll_el = hit->el;
         r->scroll_dirty = 1;
     }
@@ -5504,7 +5508,12 @@ d here leaves its ancestors'
                                                &sw, &sh) ||
         !swapchain) {
         SDL_SubmitGPUCommandBuffer(cmd);
-        r->alive = (animating || r->edit_el || r->stream_expand.active) ? 1 : 0;
+        bool pop_anim = r->open_select && r->open_select_t != 0 &&
+                        whaleui_anim_now() < r->open_select_t + 2500;
+        r->alive = (animating || r->edit_el || r->stream_expand.active ||
+                    pop_anim)
+                       ? 1
+                       : 0;
         return 0;
     }
     /* FSR 1.0 upscale: EASU (target2 low-res -> fsr_up) + RCAS sharpen
@@ -5560,8 +5569,21 @@ d here leaves its ancestors'
     SDL_BlitGPUTexture(cmd, &blit);
     SDL_SubmitGPUCommandBuffer(cmd);
     /* keep the frame loop alive while an animation runs or an editable
-     * caret blinks; a static page goes idle (the app loop parks). */
-    r->alive = (animating || r->edit_el || r->stream_expand.active) ? 1 : 0;
+     * caret blinks; a static page goes idle (the app loop parks). An open
+     * select popup keeps frames coming for its open transition (up to a
+     * bounded grace past the open timestamp - the paint computes progress
+     * from the same clock, so this terminates with it). */
+    {
+        bool pop_anim = false;
+        if (r->open_select && r->open_select_t != 0) {
+            uint64_t now = whaleui_anim_now();
+            pop_anim = now < r->open_select_t + 2500;
+        }
+        r->alive = (animating || r->edit_el || r->stream_expand.active ||
+                    pop_anim)
+                       ? 1
+                       : 0;
+    }
     return 0;
 }
 

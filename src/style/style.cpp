@@ -2193,6 +2193,117 @@ extern "C" int whaleui_css_apply(whaleui_dom_document_t* doc,
 extern "C" void whaleui_style_virtual(
     const char* selector, const whaleui_css_rule_t* rules, size_t count,
     const std::map<std::string, std::string>& vars,
+    WhaleUIComputedStyle& out);
+
+/* Shadow-host variant: the popup is the select's shadow child, so page CSS
+ * can target it through the host (`select .select-popup`,
+ * `select.foo .select-option-hover`, `#theme > .select-popup`). A branch
+ * matches when its right-most compound IS the virtual class and the
+ * ancestor part matches the HOST element itself: for `P .popup` the spec
+ * wants P on the virtual child's ancestor-or-self (= host or its
+ * ancestors); for `P > .popup` it wants P on the parent (= host). Feeding
+ * the ancestor part to the normal matcher with the host as the target
+ * satisfies both (descendant matching is transitive over the host's own
+ * ancestors). Bare `.select-popup` (no ancestor part) always matches.
+ * Sibling combinators (`+`/`~`) have no meaning for a shadow child and do
+ * not match. `st` carries the interaction state so `:hover` on the host
+ * (open select is hovered) applies. */
+extern "C" void whaleui_style_virtual_host(
+    const char* vclass, lxb_dom_element* host,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>& vars,
+    const whaleui_style_state* st, WhaleUIComputedStyle& out)
+{
+    if (!vclass || !host || !rules) {
+        return;
+    }
+    const size_t vn = std::strlen(vclass);
+    for (size_t i = 0; i < count; ++i) {
+        const char* sel = rules[i].selector;
+        if (!sel || !*sel) {
+            continue;
+        }
+        /* paren-aware comma split (functional pseudo-classes carry
+         * top-level commas that must not split) */
+        size_t start = 0;
+        int depth = 0;
+        for (size_t k = 0; k <= std::strlen(sel); ++k) {
+            char c = sel[k];
+            if (c == '(') {
+                ++depth;
+            } else if (c == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            }
+            if ((c == '\0' || c == ',') && depth == 0) {
+                std::string branch(sel + start, k - start);
+                start = k + 1;
+                /* trim */
+                size_t b = branch.find_first_not_of(" \t");
+                if (b == std::string::npos) {
+                    continue;
+                }
+                size_t e = branch.find_last_not_of(" \t");
+                branch = branch.substr(b, e - b + 1);
+                if (branch.empty()) {
+                    continue;
+                }
+                /* the branch must END with the virtual class as its own
+                 * compound: strip trailing paren-depth first (a trailing
+                 * `:hover` on the popup itself has no state source - the
+                 * popup rows use open_select_hover instead - so any
+                 * functional/pseudo suffix rejects the branch) */
+                if (branch.size() < vn ||
+                    branch.compare(branch.size() - vn, vn, vclass) != 0) {
+                    continue;
+                }
+                std::string head =
+                    branch.substr(0, branch.size() - vn);
+                size_t hb = head.find_last_not_of(" \t");
+                if (hb == std::string::npos) {
+                    /* bare virtual class: always matches */
+                } else {
+                    head = head.substr(0, hb + 1);
+                    /* the char before the virtual class must be a
+                     * descendant or child combinator */
+                    char comb = head[head.size() - 1];
+                    if (comb != ' ' && comb != '\t' && comb != '>') {
+                        continue; /* `+`/`~`/compound: no shadow meaning */
+                    }
+                    head = head.substr(0, head.size() - 1);
+                    size_t h2 = head.find_last_not_of(" \t");
+                    if (h2 == std::string::npos) {
+                        continue;
+                    }
+                    head = head.substr(0, h2 + 1);
+                    if (!whaleui_style_match(head.c_str(), host, st)) {
+                        continue;
+                    }
+                }
+                for (size_t d = 0; d < rules[i].decl_count; ++d) {
+                    char* kv = rules[i].decls[d];
+                    char* eq = std::strchr(kv, '=');
+                    if (!eq) {
+                        continue;
+                    }
+                    std::string name(kv, static_cast<size_t>(eq - kv));
+                    if (name.empty() ||
+                        (name.size() >= 2 && name[0] == '-' &&
+                         name[1] == '-')) {
+                        continue;
+                    }
+                    std::string val(eq + 1);
+                    resolve_var(val, vars);
+                    out[name] = val;
+                }
+            }
+        }
+    }
+}
+extern "C" void whaleui_style_virtual(
+    const char* selector, const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>& vars,
     WhaleUIComputedStyle& out)
 {
     if (!selector || !rules) {

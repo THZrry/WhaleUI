@@ -743,7 +743,10 @@ int main(void)
             whaleui_dom_element_t* hit =
                 whaleui_render_hit_element(kw->render, 60, 40);
             assert(hit != nullptr);
-            assert(gpixel(kw->render, 60, 40) == 0xFF0000FF);
+            unsigned int px = gpixel(kw->render, 60, 40);
+            std::printf("[chunk-sync] pixel=%08X\n", px);
+            std::fflush(stdout);
+            assert(px == 0xFF0000FF);
         }
         whaleui_window_destroy(kw);
     }
@@ -816,7 +819,11 @@ int main(void)
                                          nullptr));
             std::fflush(stdout);
             assert(dw->render->open_select != nullptr);
-            assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            /* let the open transition finish (120ms default): poll */
+            for (int i = 0; i < 30; ++i) {
+                assert(whaleui_render_frame(dw->render, dw->document) == 0);
+                SDL_Delay(10);
+            }
             /* the popup must actually paint: sample inside option row 0
              * (select bottom 79 + a few px) */
             {
@@ -832,6 +839,28 @@ int main(void)
                 std::printf("[select-demo] popup ink=%d\n", ink);
                 std::fflush(stdout);
                 assert(ink > 0);
+            }
+            /* every option row paints its OWN text (rows used to share row
+             * 0's raster through the text cache): row 1 ("Metro (Win8)")
+             * and row 2 ("Material Design") must differ from row 0. */
+            {
+                auto rowhash = [&](int ry) {
+                    unsigned long long h = 1469598103934665603ULL;
+                    for (int dx = 606; dx < 740; dx += 5) {
+                        unsigned int p = gpixel(dw->render, dx, ry);
+                        h ^= p;
+                        h *= 1099511628211ULL;
+                    }
+                    return h;
+                };
+                /* rows start at select bottom (79): row centers */
+                unsigned long long h0 = rowhash(92);
+                unsigned long long h1 = rowhash(118);
+                unsigned long long h2 = rowhash(144);
+                std::printf("[select-demo] rows %016llx %016llx %016llx\n",
+                            h0, h1, h2);
+                std::fflush(stdout);
+                assert(h0 != h1 && h1 != h2 && h0 != h2);
             }
         }
         whaleui_window_destroy(dw);

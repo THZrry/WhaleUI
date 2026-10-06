@@ -152,3 +152,6 @@ bump el_ver/scroll_el 配 scroll_dirty/值文本基线居中) + DOM 三阶段事
 <31>(SOLVED): checkbox 不同行(inline_member 误杀 relative, 统一在流判定)
 + toggle 去全量重建 + splice 不同步 chunk 链表(rechunk_parent 两处 +
 state 分支 root 重算 + hit 位移块守卫) —— 见 notes/current.md
+<32>(SOLVED): select 文字两遍(箭头命中值文本光栅, 短文本内容哈希进键) +
+下拉全同字(popup 行禁用缓存) + popup 的 CSS 影子树匹配 + 打开过渡 ——
+见 notes/current.md

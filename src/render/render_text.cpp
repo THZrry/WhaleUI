@@ -1500,15 +1500,31 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * is what invalidates this entry when THIS element had a structural
          * edit; hashing the run's bytes here would cost O(run length) on every
          * frame, and a global version would throw away every other run's raster
-         * on any DOM edit. */
-        char key[160];
+         * on any DOM edit.
+         * Short engine-composed strings (select value / arrow / img alt) are
+         * content-hashed INTO the key: several different strings share one
+         * (element, geometry, color) - the select's value "AAA" and its
+         * arrow glyph rasterized from the same key, so the arrow painted a
+         * second copy of the value ("text renders twice, another one on
+         * the right"). The 256-byte cap keeps long layout runs on the
+         * version-only path (a 292k-char FNV was ~0.5ms/frame). */
+        unsigned long long content = 0;
+        if (text.size() < 256) {
+            unsigned long long h = 1469598103934665603ULL;
+            for (size_t i = 0; i < text.size(); ++i) {
+                h ^= static_cast<unsigned char>(text[i]);
+                h *= 1099511628211ULL;
+            }
+            content = h ? h : 1;
+        }
+        char key[192];
         std::unordered_map<lxb_dom_element*, uint64_t>::iterator vit =
             r->el_ver.find(ckey);
         const unsigned long long ever =
             vit != r->el_ver.end() ? vit->second : 0ull;
-        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu",
+        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu|%llx",
                       static_cast<void*>(ckey), fs, style, family.c_str(),
-                      wrap ? bw : -1, color, lsp, ever);
+                      wrap ? bw : -1, color, lsp, ever, content);
         auto it = r->text_cache.find(key);
         if (it != r->text_cache.end() && !it->second.px.empty()) {
             whaleui_render_t::TextCacheEntry& e = it->second;

@@ -718,3 +718,45 @@ header/7 选项/长页面/全 pressed+click 路径): 打开(open=1)、popup 绘�
 
 验证: 10 套件全绿; 4 张主题自检 OK(checkbox 改动 0 差异, select 基线行
 差异延续 <30>); probe_hover 无布局漂移。
+
+
+# <32>: select 文字两遍 + 下拉全同字 + popup 的 CSS 与动画
+
+SOLVED
+
+用户报告: text 被渲染两遍(右侧还有一个); 下拉框文字全变成当前选项;
+popup 不进树 —— CSS 能否改样式、动画是否支持。
+
+**(1) 右侧第二遍 text —— 箭头命中了值文本的光栅。**
+离屏探针实证: 值文本行有两个相同的 AAA 字形块(x≈35 与 x≈163, 后者恰
+在箭头绘制位)。paint_select_value 画值文本与箭头 `▼` 共用同一个
+ckey(select 元素)+同 fs/style/family/color, 而 raster 缓存键**不含文本
+内容**(且 wrap=false 时几何归一为 -1)—— 箭头直接命中值文本 AAA 的光栅,
+在箭头位画出第二个 AAA。修(render_text.cpp): 短文本(<256B, 引擎合成串
+全在此列)把 FNV 内容哈希进键; 长布局 run 保持版本键(292k 字符 FNV 的
+0.5ms/帧不能回来)。探针: 右侧变为真正的 ▼ 三角。
+主题对照(n4->n5): 差异像素恰为两处 select 的箭头区(AAA->▼), 余一致。
+
+**(2) 下拉全同字 —— 同一根因。**
+popup 每行 draw_text_at 传同一 ckey(n->el)+同几何/色, 键不含文本 ->
+行 1..N 全命中行 0 的光栅("全变成当前选项", AAA 恰是默认选项)。
+修: popup 行传 ckey=nullptr 直接光栅(行文本每帧从 DOM 现组, 指针不稳;
+行数个位, 直接画是最对的成本)。
+回归: select-demo 断言三行哈希各异(修前三行相同 FAIL)。
+
+**(3) popup 的 CSS —— 影子树匹配(whaleui_style_virtual_host)。**
+之前只有裸 `.select-popup` 全等匹配: 页面 CSS 写 `select.foo
+.select-popup` 定制不到。popup 是 select 的影子孩子: 分支匹配当且仅当
+最右 compound 是虚拟类, 祖先段对宿主走正常 matcher(后代传递性使
+`P .popup` 与 `P > .popup` 同时正确; `+`/`~` 无影子语义拒绝; 裸类恒中)。
+paint_select_list 三处改 host 版。主题零行为变化(裸类路径保留)。
+
+**(4) popup 的动画 —— CSS 打开过渡。**
+render 加 open_select_t(打开时刻, anim 时钟); paint 按 popup 样式的
+`transition-duration`(首值, s/ms, 缺省 120ms)算 ease-out cubic 的
+opacity + -6px 上浮; alpha 在一处 fade 进所有 popup 颜色; 帧在打开后
+2.5s 内保持 alive(过渡跑完无输入也收敛)。损伤天然覆盖(scroll 整视口
+帧)。回归: select-demo 等过渡跑完再断言行文。
+
+踩坑: 中间一次 chunk-sync 失败是 xmake 增量在 stash 来回切时的 stale
+obj(重建即过, <22> 同类)。教训: stash 二分后必须 clean 重建再下结论。
