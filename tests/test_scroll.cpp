@@ -304,11 +304,27 @@ int main(void)
             whaleui_dom_element_t* under =
                 whaleui_render_hit_element(sw->render, 50, 40);
             lxb_dom_element* b = IdLookup{sw->render, "b"}.run();
-            std::printf("[hover-scroll] hover==hit=%d pixel=%08X\n",
+            size_t ulen = 0;
+            const lxb_char_t* uname =
+                under ? lxb_dom_element_local_name(
+                            reinterpret_cast<lxb_dom_element*>(under), &ulen)
+                      : nullptr;
+            size_t hlen = 0;
+            const lxb_char_t* hname =
+                sw->render->hover_el
+                    ? lxb_dom_element_local_name(sw->render->hover_el, &hlen)
+                    : nullptr;
+            std::printf("[hover-scroll] hover==hit=%d pixel=%08X under=%.*s "
+                        "hover=%.*s\n",
                         static_cast<int>(
                             static_cast<void*>(sw->render->hover_el) ==
                             static_cast<void*>(under)),
-                        gpixel(sw->render, 50, 40));
+                        gpixel(sw->render, 50, 40), static_cast<int>(ulen),
+                        uname ? reinterpret_cast<const char*>(uname)
+                              : "(null)",
+                        static_cast<int>(hlen),
+                        hname ? reinterpret_cast<const char*>(hname)
+                              : "(null)");
             std::fflush(stdout);
             assert(under != nullptr && b != nullptr);
             assert(static_cast<void*>(sw->render->hover_el) ==
@@ -586,6 +602,241 @@ int main(void)
         whaleui_window_destroy(sw2);
     }
 
+
+    /* Regression: a <select> inside a flex header (the demo's theme
+     * switcher) must open on click. The header is a flex row and the UA
+     * gives select a border-color transition: hovering the select
+     * registers a paint-only transition while the flex layout is live.
+     * Click coordinates come from the live tree. */
+    {
+        whaleui_window_t* hw =
+            whaleui_window_create(app, "select-flex", 400, 200);
+        assert(hw != nullptr);
+        assert(whaleui_window_load_html(
+                   hw,
+                   "<html><head><style>body{margin:0}"
+                   ".header{display:flex;align-items:center;"
+                   "justify-content:space-between}"
+                   "select{min-width:150px}</style></head>"
+                   "<body><div class=\"header\"><h1>T</h1>"
+                   "<select id=\"s\"><option>AAA</option>"
+                   "<option>BBB</option></select></div></body></html>") ==
+               0);
+        if (whaleui_window_show(hw) == 0 && hw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(hw->render, hw->document) == 0);
+            }
+            whaleui_layout_node_t* sel = nullptr;
+            for (auto& n : hw->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text && !n.pseudo) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 6 &&
+                        std::memcmp(name, "select", 6) == 0) {
+                        sel = &n;
+                        break;
+                    }
+                }
+            }
+            assert(sel != nullptr);
+            int sx = sel->border.x + sel->border.w / 2;
+            int sy = sel->border.y + sel->border.h / 2;
+            /* hover first (registers the UA border-color transition), then
+             * click the live select box */
+            whaleui_render_set_hover(hw->render, sx, sy);
+            assert(whaleui_render_frame(hw->render, hw->document) == 0);
+            const char* val = nullptr;
+            assert(whaleui_render_handle_click(hw->render, sx, sy, &val) ==
+                   0);
+            assert(whaleui_render_frame(hw->render, hw->document) == 0);
+            std::printf("[select-flex] open=%d\n",
+                        static_cast<int>(hw->render->open_select != nullptr));
+            std::fflush(stdout);
+            assert(hw->render->open_select != nullptr);
+        }
+        whaleui_window_destroy(hw);
+    }
+
+
+    /* Regression: a state-triggered relayout must keep the parent's chunk
+     * list in sync with its child chain. The splice replaced the child
+     * pointer but left the OLD chunk objects in the parent's list: the
+     * paint/hit chunk walks then culled on stale boxes (or skipped the
+     * rebuilt members), so hover/click broke after ANY state change and
+     * whole subtrees could vanish from paint until the next full rebuild
+     * (blank flashes). The check walks every chunk list in the tree:
+     * members resolve through first/next exactly, and every member points
+     * back at its chunk. */
+    {
+        whaleui_window_t* kw =
+            whaleui_window_create(app, "chunk-sync", 300, 200);
+        assert(kw != nullptr);
+        assert(whaleui_window_load_html(
+                   kw,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:20px;top:20px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b:hover{background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(kw) == 0 && kw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(kw->render, kw->document) == 0);
+            }
+            auto chunks_ok = [&](void) {
+                std::function<bool(whaleui_layout_node_t*)> walk =
+                    [&](whaleui_layout_node_t* n) {
+                        if (!n) {
+                            return true;
+                        }
+                        for (whaleui_child_chunk* ck = n->chunks; ck;
+                             ck = ck->next) {
+                            int seen = 0;
+                            for (whaleui_layout_node_t* c = ck->first;
+                                 c && c->chunk == ck; c = c->next) {
+                                if (c->parent != n) {
+                                    return false;
+                                }
+                                ++seen;
+                            }
+                            if (seen != ck->count) {
+                                return false;
+                            }
+                        }
+                        /* every child belongs to exactly one listed chunk */
+                        for (whaleui_layout_node_t* c = n->first_child; c;
+                             c = c->next) {
+                            bool found = false;
+                            for (whaleui_child_chunk* ck = n->chunks; ck;
+                                 ck = ck->next) {
+                                if (c->chunk == ck) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (n->chunks && !found) {
+                                return false;
+                            }
+                        }
+                        for (whaleui_layout_node_t* c = n->first_child; c;
+                             c = c->next) {
+                            if (!walk(c)) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                return walk(kw->render->tree->root);
+            };
+            assert(chunks_ok());
+            /* hover triggers a state relayout (style-only rebuild of the
+             * hovered subtree): chunks must stay consistent, and the box
+             * must still hit-test afterwards */
+            whaleui_render_set_hover(kw->render, 60, 40);
+            assert(whaleui_render_frame(kw->render, kw->document) == 0);
+            assert(whaleui_render_frame(kw->render, kw->document) == 0);
+            std::printf("[chunk-sync] ok=%d\n",
+                        static_cast<int>(chunks_ok()));
+            std::fflush(stdout);
+            assert(chunks_ok());
+            whaleui_dom_element_t* hit =
+                whaleui_render_hit_element(kw->render, 60, 40);
+            assert(hit != nullptr);
+            assert(gpixel(kw->render, 60, 40) == 0xFF0000FF);
+        }
+        whaleui_window_destroy(kw);
+    }
+
+
+    /* Regression: demo-grade select (flex header + 7 options + long page):
+     * drive the FULL app click path (set_pressed_ex + handle_click, the
+     * order app.cpp uses) and require the popup to open. Unit tests that
+     * call handle_click alone bypass the press path that can swallow the
+     * click first (scrollbar-drag priority, modal overlay early-out). */
+    {
+        whaleui_window_t* dw =
+            whaleui_window_create(app, "select-demo", 800, 680);
+        assert(dw != nullptr);
+        assert(whaleui_window_load_html(
+                   dw,
+                   "<html><head><style>body{margin:0}"
+                   ".app{display:flex;flex-direction:column;gap:16px;"
+                   "padding:28px 32px}"
+                   ".header{display:flex;align-items:center;"
+                   "justify-content:space-between}"
+                   "#theme{min-width:150px}"
+                   ".tall{height:1200px}</style></head>"
+                   "<body><div class=\"app\">"
+                   "<div class=\"header\"><h1>WhaleUI Demo</h1>"
+                   "<select id=\"theme\">"
+                   "<option value=\"fluent\">Fluent (Win11)</option>"
+                   "<option value=\"metro\">Metro (Win8)</option>"
+                   "<option value=\"material\">Material Design</option>"
+                   "<option value=\"aero\">Windows 7 Aero</option>"
+                   "<option value=\"gtk\">GTK (Adwaita)</option>"
+                   "<option value=\"macos\">macOS</option>"
+                   "<option value=\"browser\">Browser (UA)</option>"
+                   "</select></div>"
+                   "<div class=\"tall\"></div>"
+                   "</div></body></html>") == 0);
+        if (whaleui_window_show(dw) == 0 && dw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            }
+            whaleui_layout_node_t* sel = nullptr;
+            for (auto& n : dw->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text && !n.pseudo) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 6 &&
+                        std::memcmp(name, "select", 6) == 0) {
+                        sel = &n;
+                        break;
+                    }
+                }
+            }
+            assert(sel != nullptr);
+            int sx = sel->border.x + sel->border.w / 2;
+            int sy = sel->border.y + sel->border.h / 2;
+            std::printf("[select-demo] sel=(%d,%d %dx%d) click=(%d,%d)\n",
+                        sel->border.x, sel->border.y, sel->border.w,
+                        sel->border.h, sx, sy);
+            std::fflush(stdout);
+            /* full app path: press down, click, release */
+            whaleui_render_set_pressed_ex(dw->render, sx, sy, 1, 1, 0);
+            const char* val = nullptr;
+            int rc = whaleui_render_handle_click(dw->render, sx, sy, &val);
+            whaleui_render_set_pressed_ex(dw->render, sx, sy, 0, 1, 0);
+            assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            std::printf("[select-demo] rc=%d open=%d drag=%d\n", rc,
+                        static_cast<int>(dw->render->open_select != nullptr),
+                        static_cast<int>(dw->render->drag_scroll_el !=
+                                         nullptr));
+            std::fflush(stdout);
+            assert(dw->render->open_select != nullptr);
+            assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            /* the popup must actually paint: sample inside option row 0
+             * (select bottom 79 + a few px) */
+            {
+                int ink = 0;
+                for (int dx = 606; dx < 740; dx += 4) {
+                    for (int dy = 82; dy < 102; dy += 4) {
+                        unsigned int p = gpixel(dw->render, dx, dy);
+                        if (((p >> 16) & 0xFF) < 0xC0) {
+                            ++ink;
+                        }
+                    }
+                }
+                std::printf("[select-demo] popup ink=%d\n", ink);
+                std::fflush(stdout);
+                assert(ink > 0);
+            }
+        }
+        whaleui_window_destroy(dw);
+    }
+
     /* Regression: preventDefault on mousedown is observable through the
      * phased dispatch (the engine's press chain consults it). Custom
      * controls need a reliable "don't do the built-in thing" contract:
@@ -649,6 +900,86 @@ int main(void)
             assert(prevented2 == 1);
         }
         whaleui_window_destroy(pw);
+    }
+
+    /* Regression: a checkbox and its label text must share ONE line, and
+     * clicking the checkbox must flip `checked` WITHOUT rebuilding the
+     * tree or blanking the window. The layout gave the 16px control a
+     * 32px-tall line box (a second row); the click then set has_dirty=1
+     * (a whole-tree rebuild) and the repaint raced the rebuild - the
+     * window showed blank frames for seconds ("click clears the window").
+     * The check state is paint-only data on a fixed-size control: the
+     * toggle only needs the control's own repaint. */
+    {
+        whaleui_window_t* cw2 =
+            whaleui_window_create(app, "check-row", 300, 200);
+        assert(cw2 != nullptr);
+        assert(whaleui_window_load_html(
+                   cw2,
+                   "<html><head><style>body{margin:0}"
+                   "p{margin:0}</style></head>"
+                   "<body><p><input type=\"checkbox\" checked>"
+                   " checkbox</p></body></html>") == 0);
+        if (whaleui_window_show(cw2) == 0 && cw2->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(cw2->render, cw2->document) == 0);
+            }
+            whaleui_layout_node_t* box = nullptr;
+            whaleui_layout_node_t* run = nullptr;
+            for (auto& n : cw2->render->tree->arena) {
+                if (!n.visible || !n.el) {
+                    continue;
+                }
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 &&
+                    std::memcmp(name, "input", 5) == 0 && !n.is_text) {
+                    box = &n;
+                }
+                if (n.is_text && n.text.find("checkbox") !=
+                                     std::string::npos) {
+                    run = &n;
+                }
+            }
+            assert(box != nullptr && run != nullptr);
+            std::printf("[check-row] box=(%d,%d %dx%d) run=(%d,%d %dx%d)\n",
+                        box->border.x, box->border.y, box->border.w,
+                        box->border.h, run->border.x, run->border.y,
+                        run->border.w, run->border.h);
+            std::fflush(stdout);
+            /* same line: the rows overlap vertically */
+            assert(box->border.y < run->border.y + run->border.h &&
+                   run->border.y < box->border.y + box->border.h);
+            /* click the box center: checked flips off */
+            const char* val = nullptr;
+            int cx = box->border.x + box->border.w / 2;
+            int cy = box->border.y + box->border.h / 2;
+            whaleui_layout_tree_t* tree_before = cw2->render->tree;
+            assert(whaleui_render_handle_click(cw2->render, cx, cy, &val) ==
+                   0);
+            assert(lxb_dom_element_has_attribute(
+                       box->el, (const lxb_char_t*)"checked", 7) == false);
+            for (int i = 0; i < 6; ++i) {
+                assert(whaleui_render_frame(cw2->render, cw2->document) == 0);
+            }
+            /* NO rebuild: the same tree object serves the click */
+            assert(cw2->render->tree == tree_before);
+            /* and the window is not blank: the control row has ink */
+            int ink = 0;
+            for (int dx = box->border.x;
+                 dx < box->border.x + box->border.w + 60; ++dx) {
+                unsigned int p = gpixel(cw2->render, dx,
+                                        box->border.y + 8);
+                if (((p >> 16) & 0xFF) < 0xF0) {
+                    ++ink;
+                }
+            }
+            std::printf("[check-row] ink=%d\n", ink);
+            std::fflush(stdout);
+            assert(ink > 0);
+        }
+        whaleui_window_destroy(cw2);
     }
     }
 

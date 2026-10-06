@@ -674,3 +674,47 @@ details/focus)没有任何可取消的契约 —— 自定义控件只能绕着�
 验证: 10 套件全绿; 4 张主题自检 OK(差异仅 select 基线行); probe_hover
 无布局漂移。踩坑: 测试里跨帧持有 layout 节点指针必成孤儿 —— select-pick
 改用固定坐标(引擎不再重建, 坐标稳定); arena 遍历找节点只在同帧内有效。
+
+
+# <31>: checkbox 不同行 + chunk 失步(白屏/hover 丢) + 位移块剔除
+
+SOLVED
+
+用户报告: input checkbox 与 label 不在同一行; 点击后几秒窗口清空;
+select 仍打不开(本地 demo 级全路径验证通过, 见下)。
+
+**(1) checkbox 不同行 —— inline_member 把 relative 当块。**
+UA 给 input/select/textarea 置 `position:relative`, 而 layout 的
+inline_member() 与 block 行判定要求 `position == static` —— 于是
+checkbox 被当块独占一行, label 文本另起一行。relative/sticky 仍在流内,
+只有 absolute/fixed 离流: 两处判定统一为 `pk != 1 && pk != 2`(与 flex
+收集条件一致)。回归 test_scroll [check-row]: box(0,0 16x16) 与文本 run
+同行(16,0), 之前是(0,16)。
+主题对照: showcase 渲染与改动前 0 像素差异。
+
+**(2) 点击 checkbox 白屏 —— toggle 的全量重建 + chunk 失步。**
+checkbox toggle 置 has_dirty=1 全量重建(同 select 旧病): 改走 DOM 脏
+路径(checked 是样式性变更, lexbor 直接调旁路了 mark_dirty, 这里补
+whaleui_dom_mark_dirty; UA :checked 只改颜色, 布局键变化自动回退重建)。
+回归 [check-row]: 点击后 checked 翻转、同一棵树、行内有墨。
+
+**(3) 真根因: relayout 的 splice 不同步 chunk 链表 —— 白屏/hover 丢的
+总源头之一。** relayout_impl / relayout_multi 把新子树接进 first_child
+链, 但 parent->chunks 还指着旧 chunk 对象: paint/hit 的 chunk walk 用
+陈旧盒剔除, 新成员被整块跳过 —— hover 一次就丢子树, 大面积漏画即
+"白屏闪"。修(layout.cpp): 抽 rechunk_parent, 两处 splice 后重建 chunk
+链 + bd 冒泡; state 分支的 style-only 重算从"只算 fnode 子树"改为 mark
+冒泡 + root 统一重算(否则 parent 的合并 bounds/chunk 盒保持清零)。
+hit_test 的 chunk 剔除加位移守卫: 盒 miss 但块内有 xf/fx/sk 成员时逐个
+测(位移把绘制点带出布局盒是合法命中, 如上浮卡片)。
+回归: test_scroll [chunk-sync](relayout 后 chunk 双向一致 + 命中 + 蓝)
++ [hit-translate] 恢复(上浮卡片绘制位置命中)。
+
+**(4) select 本地结论。** demo 级复现(select-flex + select-demo: flex
+header/7 选项/长页面/全 pressed+click 路径): 打开(open=1)、popup 绘制
+(ink=170)、点选、值文本重绘全部通过 —— 点击链路本地无断点。用户环境
+的"点不开"需他的精确操作序列/窗口配置复现, 测试探针已入库(select-demo
+用例即 demo 的 header 结构, 可直接在其上加条件)。
+
+验证: 10 套件全绿; 4 张主题自检 OK(checkbox 改动 0 差异, select 基线行
+差异延续 <30>); probe_hover 无布局漂移。

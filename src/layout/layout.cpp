@@ -3024,12 +3024,17 @@ struct Builder
     }
 
     /* is this node part of an inline line (text run or inline/inline-block
-     * element in static position)? */
+     * element in flow position)? relative/sticky stay IN flow (only
+     * absolute/fixed leave it): an input/select with UA `position:relative`
+     * must still flow beside its label text - the old `position == static`
+     * test pushed every relative control onto its own line ("checkbox and
+     * its label are on different rows"). */
     bool inline_member(whaleui_layout_node_t* c)
     {
+        int pk = position_kind(get(c->style, "position"));
         return c->visible &&
                (c->is_text ||
-                (position_kind(get(c->style, "position")) == 0 &&
+                ((pk != 1 && pk != 2) &&
                  display_kind(get(c->style, "display")) == 2));
     }
 
@@ -3109,8 +3114,10 @@ struct Builder
                 continue;
             }
             int pk = position_kind(get(c->style, "position"));
+            /* same in-flow rule as inline_member(): relative/sticky stay in
+             * the line, only absolute/fixed leave it */
             bool inl = c->is_text ||
-                       (pk == 0 &&
+                       ((pk != 1 && pk != 2) &&
                         display_kind(get(c->style, "display")) == 2);
             if (!inl) {
                 layout(c, n->content.x, n->content.y, inner_w, inner_h,
@@ -4625,6 +4632,52 @@ struct Builder
 
 } // namespace
 
+/* Re-chunk `parent`'s child chain after a splice replaced one of its
+ * children with a rebuilt subtree: the rebuilt nodes carry fresh chunk
+ * objects that the parent's chunk LIST does not reference, so the
+ * paint/hit chunk walks would cull on stale boxes (or skip the new
+ * members outright). Rebuild the list from the current chain in WUI_CHUNK
+ * units and mark the path dirty so the boxes recompute through the normal
+ * dirty path. file-scope (shared by relayout_impl + relayout_multi). */
+static void rechunk_parent(whaleui_layout_tree_t* tree,
+                           whaleui_layout_node_t* parent)
+{
+    if (!tree || !parent) {
+        return;
+    }
+    parent->chunks = nullptr;
+    parent->chunks_last = nullptr;
+    whaleui_child_chunk* cur = nullptr;
+    for (whaleui_layout_node_t* c = parent->first_child; c; c = c->next) {
+        if (!cur || cur->count >= WUI_CHUNK) {
+            tree->chunk_arena.emplace_back();
+            whaleui_child_chunk* nk = &tree->chunk_arena.back();
+            nk->first = c;
+            nk->last = c;
+            nk->count = 0;
+            nk->box.x = 0;
+            nk->box.y = 0;
+            nk->box.w = 0;
+            nk->box.h = 0;
+            nk->next = nullptr;
+            if (cur) {
+                cur->next = nk;
+            } else {
+                parent->chunks = nk;
+            }
+            parent->chunks_last = nk;
+            cur = nk;
+        }
+        cur->count++;
+        cur->last = c;
+        c->chunk = cur;
+    }
+    for (whaleui_layout_node_t* bd = parent; bd && !bd->bd;
+         bd = bd->parent) {
+        bd->bd = 1;
+    }
+}
+
 /* C wrapper for tests (the helper lives in the anonymous namespace) */
 extern "C" size_t whaleui_est_wrap_lines(const char* utf8, size_t len,
                                          float fs, int avail, bool bold,
@@ -4864,6 +4917,14 @@ static int relayout_impl(
             return -1; /* tree inconsistent: caller falls back to a rebuild */
         }
         *link = fresh;
+        /* the rebuilt subtree came with its own fresh chunk objects, but
+         * the parent's chunk LIST still references the old ones: the
+         * paint/hit chunk walk would cull on stale boxes (or skip the new
+         * members entirely) - every hover-triggered relayout risked
+         * dropping subtrees from paint/hit until the next full rebuild
+         * ("hover breaks / click lands wrong after any state change").
+         * Re-chunk the parent from its (now current) child chain. */
+        rechunk_parent(tree, parent);
     } else {
         tree->root = fresh;
     }
@@ -5243,6 +5304,13 @@ int whaleui_layout_relayout_multi(
                 return -1;
             }
             *link = fresh;
+            /* same chunk-list desync as relayout_impl's splice (see
+             * rechunk_parent): the rebuilt subtree is invisible to the
+             * paint/hit chunk walks until the parent is re-chunked. A
+             * layout animation rebuilds subtrees EVERY frame, so without
+             * this the animated elements' chunks went stale continuously
+             * ("animation flickers / hover dies while the bar runs"). */
+            rechunk_parent(tree, parent);
         } else {
             tree->root = fresh;
         }

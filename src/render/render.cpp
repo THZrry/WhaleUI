@@ -899,8 +899,26 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
                 hy >= cur->box.y + child_off &&
                 hy < cur->box.y + cur->box.h + child_off;
             if (!has_pt) {
-                c = cur->last ? cur->last->next : nullptr;
-                continue;
+                /* the chunk box is in LAYOUT space but the point is in
+                 * this node's PAINTED frame: a transformed member paints
+                 * outside its laid-out box, so a miss against the merged
+                 * box is only conclusive when no member can move paint
+                 * outside layout (no xf/fx/sk in the chunk). Otherwise
+                 * walk the members (<= WUI_CHUNK probes, miss path only).
+                 * Without this a lifted card's painted position
+                 * hit-tested body ("hover dies once the lift paints"). */
+                bool movable = false;
+                for (whaleui_layout_node_t* m = cur->first;
+                     m && m->chunk == cur; m = m->next) {
+                    if (!m->is_text && (m->xf || m->fx || m->sk)) {
+                        movable = true;
+                        break;
+                    }
+                }
+                if (!movable) {
+                    c = cur->last ? cur->last->next : nullptr;
+                    continue;
+                }
             }
         }
         whaleui_layout_node_t* hit = hit_test(r, c, hx, hy, child_off);
@@ -2997,7 +3015,16 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                 }
             }
         }
-        r->has_dirty = 1;
+        /* NO whole-tree rebuild: flipping `checked` is a style-only DOM
+         * edit in the common case (the UA :checked rules only recolor;
+         * layout-key changes fall back to a rebuild through the normal
+         * DOM-dirty layout-key diff). A rebuild here recreated every node
+         * per click and raced the repaint - blank-window frames for
+         * seconds on control-heavy pages. Mark the edit through the DOM
+         * dirty path instead (lexbor set/remove_attribute do not go
+         * through whaleui_dom_mark_dirty - they bypass the public API). */
+        whaleui_dom_mark_dirty(hit2);
+        r->hover_recheck = 1;
     }
     return 0;
 }
@@ -4280,16 +4307,21 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                      * hover) drives the frame's partial repaint of the
                      * changed box(es). The rebuilt subtree's nodes carry
                      * zeroed paint bounds (only box/bounds passes fill
-                     * them): recompute THIS subtree's bounds only - the
-                     * element's geometry is unchanged (copied), so every
-                     * ancestor's bounds stay valid and paint culls on
-                     * them correctly. A whole-tree bounds walk cost ~40ms
-                     * per hover. */
+                     * them): mark the path dirty and recompute from the
+                     * ROOT once below - the walk early-returns on clean
+                     * nodes, so only the marked path is visited.
+                     * Recomputing just the subtree is NOT enough: the
+                     * relayout re-chunks the parent (fresh chunk objects
+                     * with zeroed boxes), and the parent's merged bounds /
+                     * chunk boxes only refresh on a root-anchored walk -
+                     * otherwise the chunk cull uses zero boxes and the hit
+                     * test misses the rebuilt element ("hover works on the
+                     * first frame, misses from the second"). */
                     {
                         whaleui_layout_node_t* fnode =
                             find_node_by_el(r->tree, el);
                         if (fnode) {
-                            compute_paint_bounds(fnode);
+                            mark_bounds_dirty(fnode);
                         }
                     }
                     /* a first hover (no previous target) still needs the
@@ -4303,6 +4335,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                      * elements (crossed within the frame) are checked by
                      * the same partial branch and cleared there. */
                 }
+            }
+            /* the style-only relayouts above re-chunked their parents: run
+             * one root-anchored bounds pass for all of them (early-returns
+             * on clean subtrees; a whole-tree walk cost ~40ms per hover
+             * before the bd bits, now only the marked paths). Without this
+             * the parents' merged bounds / chunk boxes stay zeroed and the
+             * chunk cull + hit test miss the rebuilt elements. */
+            if (r->tree && r->tree->root) {
+                compute_paint_bounds(r->tree->root);
+                r->bounds_valid = 1;
             }
         }
 #ifdef WHALEUI_BUILD_FULL

@@ -149,3 +149,6 @@ apply_paint_only_anim) + select 三连(开关去全量重建走 scroll 帧/点�
 bump el_ver/scroll_el 配 scroll_dirty/值文本基线居中) + DOM 三阶段事件
 (捕获/目标/冒泡 + currentTarget/phase + preventDefault 取消按下链) ——
 见 notes/current.md
+<31>(SOLVED): checkbox 不同行(inline_member 误杀 relative, 统一在流判定)
++ toggle 去全量重建 + splice 不同步 chunk 链表(rechunk_parent 两处 +
+state 分支 root 重算 + hit 位移块守卫) —— 见 notes/current.md
