@@ -2097,6 +2097,25 @@ extern "C" int whaleui_anim_has_el(const whaleui_anim_t* a,
     return a && el && a->act.count(el) != 0;
 }
 
+extern "C" int whaleui_anim_els(const whaleui_anim_t* a,
+                                lxb_dom_element** out, int max)
+{
+    if (!a) {
+        return 0;
+    }
+    int total = static_cast<int>(a->act.size());
+    if (!out || max <= 0) {
+        return total;
+    }
+    int n = 0;
+    for (std::map<lxb_dom_element*, std::set<std::string> >::const_iterator
+             it = a->act.begin();
+         it != a->act.end() && n < max; ++it) {
+        out[n++] = it->first;
+    }
+    return total;
+}
+
 /* 1 if `el` has a RUNNING animation/transition touching a layout-affecting
  * property. relayout_multi only reflows the flex/grid ancestors of such
  * elements; a paint-only transition (e.g. the UA
@@ -2124,20 +2143,26 @@ extern "C" int whaleui_anim_has_layout_el(const whaleui_anim_t* a,
     return 0;
 }
 
-extern "C" void whaleui_anim_apply_ov(const whaleui_anim_t* a,
-                                      lxb_dom_element* el,
-                                      WhaleUIComputedStyle& style)
+extern "C" int whaleui_anim_apply_ov(const whaleui_anim_t* a,
+                                     lxb_dom_element* el,
+                                     WhaleUIComputedStyle& style)
 {
     if (!a || !el) {
-        return;
+        return 0;
     }
     std::map<lxb_dom_element*, std::map<std::string, std::string> >::const_iterator
         it = a->ov.find(el);
     if (it == a->ov.end()) {
-        return;
+        return 0;
     }
+    int changed = 0;
     for (std::map<std::string, std::string>::const_iterator kv = it->second.begin();
          kv != it->second.end(); ++kv) {
-        style[kv->first] = kv->second;
+        WhaleUIComputedStyle::iterator cur = style.find(kv->first);
+        if (cur == style.end() || cur->second != kv->second) {
+            style[kv->first] = kv->second;
+            changed = 1;
+        }
     }
+    return changed;
 }

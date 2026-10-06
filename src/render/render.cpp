@@ -111,6 +111,57 @@ static bool layout_key_differs(const char* k, const std::string& old_v,
     return old_v != new_v;
 }
 
+/* union ONE element's painted box into a dirty strip: bounds + ancestor
+ * scroll offsets +-2px, widened along transformed ancestors (same math the
+ * interaction-state damage walk applies per node). Used by the hover
+ * re-check to repaint the old + new hover targets of the frame. */
+whaleui_layout_node_t* find_node_by_el(whaleui_layout_tree_t* tree,
+                                       lxb_dom_element* el);
+static void strip_element(whaleui_render_t* r, lxb_dom_element* el,
+                          Clip* strip)
+{
+    if (!el || !r->tree || !strip) {
+        return;
+    }
+    whaleui_layout_node_t* nd = find_node_by_el(r->tree, el);
+    if (!nd) {
+        return;
+    }
+    int off = 0;
+    for (whaleui_layout_node_t* p = nd->parent; p; p = p->parent) {
+        off += scroll_delta(r, p);
+    }
+    int x0 = nd->bounds.x - 2;
+    int y0 = nd->bounds.y + off - 2;
+    int x1 = x0 + nd->bounds.w + 4;
+    int y1 = y0 + nd->bounds.h + 4;
+    for (whaleui_layout_node_t* a = nd; a; a = a->parent) {
+        if (!a->xf) {
+            continue;
+        }
+        whaleui_transform_t tf;
+        if (whaleui_transform_eval(sget(a->style, "transform").c_str(),
+                                   static_cast<float>(a->border.w),
+                                   static_cast<float>(a->border.h),
+                                   &tf) != 0) {
+            continue;
+        }
+        const int ddx = static_cast<int>(tf.tx);
+        const int ddy = static_cast<int>(tf.ty);
+        if (x0 + ddx < x0) x0 += ddx;
+        if (y0 + ddy < y0) y0 += ddy;
+        if (x1 + ddx > x1) x1 += ddx;
+        if (y1 + ddy > y1) y1 += ddy;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > r->fb_w) x1 = r->fb_w;
+    if (y1 > r->fb_h) y1 = r->fb_h;
+    if (x1 > x0 && y1 > y0) {
+        dirty_rect(x0, y0, x1, y1, strip);
+    }
+}
+
 
 #ifdef WHALEUI_BUILD_FULL
 /* real text width for the layout pass: measure with the actual TTF font
@@ -787,42 +838,91 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
         sget(n->style, "pointer-events") == "none") {
         return nullptr;
     }
+    /* position:fixed paints at the viewport origin (paint_node zeroes the
+     * ancestor scroll offsets at the fx node): mirror that here or a
+     * scrolled page hit-tests the fixed header N px ABOVE where it is
+     * drawn - the "fixed header hover/click misses after scrolling" bug. */
+    if (n->fx) {
+        off_y = 0;
+    }
+    /* translate/scale: mirror paint_node's offsets (nox = off + t +
+     * origin*(1-scale); the element's own box is scaled around the origin,
+     * children shift but are NOT scaled). Without this the hit region of a
+     * transformed element and its whole subtree stays at the laid-out spot
+     * while the paint moved - hover/click misses on lifted cards ("hover
+     * only works while the mouse keeps moving"). rot/skew keep their
+     * inverse-transform fallback below (unchanged approximation). */
+    int dxs = 0, dys = 0;
+    int sw = n->border.w, sh = n->border.h;
+    if (n->xf && n->el && !n->is_text) {
+        whaleui_transform_t tf;
+        if (whaleui_transform_eval(sget(n->style, "transform").c_str(),
+                                   static_cast<float>(n->border.w),
+                                   static_cast<float>(n->border.h),
+                                   &tf) == 0 &&
+            (tf.tx != 0.0f || tf.ty != 0.0f || tf.sx != 1.0f ||
+             tf.sy != 1.0f)) {
+            float toox = static_cast<float>(n->border.w) * 0.5f;
+            float tooy = static_cast<float>(n->border.h) * 0.5f;
+            whaleui_transform_origin_eval(
+                sget(n->style, "transform-origin").c_str(),
+                static_cast<float>(n->border.w),
+                static_cast<float>(n->border.h), &toox, &tooy);
+            dxs = static_cast<int>(tf.tx) +
+                  static_cast<int>(toox * (1.0f - tf.sx));
+            dys = static_cast<int>(tf.ty) +
+                  static_cast<int>(tooy * (1.0f - tf.sy));
+            sw = static_cast<int>(static_cast<float>(n->border.w) * tf.sx);
+            sh = static_cast<int>(static_cast<float>(n->border.h) * tf.sy);
+        }
+    }
+    const int hx = x - dxs; /* the point in this node's PAINTED frame */
+    const int hy = y - dys;
     int child_off = off_y + scroll_delta(r, n);
     /* chunked child walk (see paint_node): a chunk whose merged box does not
      * contain the point cannot contain it in any member, so skip it whole.
-     * No cull margin here - hit testing must stay exact. */
+     * No cull margin here - hit testing must stay exact.
+     * NO early return on a hit: paint draws siblings in document order, so
+     * a LATER sibling covers an earlier one - the hit must follow the same
+     * priority (the last matching sibling wins) or an overlapped card under
+     * a later one steals the hover/click ("hover/click lands on the wrong
+     * element where boxes overlap"). Non-overlapping children cost the same
+     * as before (the chunk box still bounds the walk). */
+    whaleui_layout_node_t* child_hit = nullptr;
     whaleui_child_chunk* ck = n->chunks;
     for (whaleui_layout_node_t* c = n->first_child; c;) {
         if (ck && c->chunk == ck) {
             const whaleui_child_chunk* cur = ck;
             ck = ck->next;
             const bool has_pt =
-                x >= cur->box.x && x < cur->box.x + cur->box.w &&
-                y >= cur->box.y + child_off &&
-                y < cur->box.y + cur->box.h + child_off;
+                hx >= cur->box.x && hx < cur->box.x + cur->box.w &&
+                hy >= cur->box.y + child_off &&
+                hy < cur->box.y + cur->box.h + child_off;
             if (!has_pt) {
                 c = cur->last ? cur->last->next : nullptr;
                 continue;
             }
         }
-        whaleui_layout_node_t* hit = hit_test(r, c, x, y, child_off);
+        whaleui_layout_node_t* hit = hit_test(r, c, hx, hy, child_off);
         if (hit) {
-            return hit;
+            child_hit = hit;
         }
         c = c->next;
     }
-    if (x >= n->border.x && x < n->border.x + n->border.w &&
-        y >= n->border.y + off_y && y < n->border.y + off_y + n->border.h) {
+    if (child_hit) {
+        return child_hit;
+    }
+    if (hx >= n->border.x && hx < n->border.x + sw &&
+        hy >= n->border.y + off_y && hy < n->border.y + off_y + sh) {
         return n;
     }
     /* a transformed box's own background/border follows the transform
      * around the transform-origin anchor (whaleui_gpu_rect_rot), so the
      * clickable region must follow too: inverse-transform the point into
-     * the box's local frame and retest. translate/scale hit-testing stays
-     * at the laid-out box (a known approximation); only rotation/skew are
-     * exact here, and only when the precomputed xf flag says this node has
-     * a transform at all. Inverse order mirrors paint (un-rotate, then
-     * un-skew around the same anchor). */
+     * the box's local frame and retest. Only rotation/skew are handled
+     * here (translate/scale were already inverted exactly above); the
+     * anchor mirrors paint (border + translation + origin). Inverse order
+     * mirrors paint (un-rotate, then un-skew around the same anchor). */
     if (n->xf && n->el && !n->is_text) {
         whaleui_transform_t tf;
         if (whaleui_transform_eval(sget(n->style, "transform").c_str(),
@@ -839,8 +939,8 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
             float cx = static_cast<float>(n->border.x) + toox;
             float cy = static_cast<float>(n->border.y + off_y) + toooy;
             const float rad = -tf.rot * 3.14159265f / 180.0f;
-            float dx = static_cast<float>(x) - cx;
-            float dy = static_cast<float>(y) - cy;
+            float dx = static_cast<float>(hx) - cx;
+            float dy = static_cast<float>(hy) - cy;
             float ux = dx * std::cos(rad) - dy * std::sin(rad);
             float uy = dx * std::sin(rad) + dy * std::cos(rad);
             /* un-skew around the anchor (inverse shear) */
@@ -860,11 +960,11 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
                     uy = iy;
                 }
             }
-            const float hx = cx + ux;
-            const float hy = cy + uy;
-            if (hx >= n->border.x && hx < n->border.x + n->border.w &&
-                hy >= n->border.y + off_y &&
-                hy < n->border.y + off_y + n->border.h) {
+            const float rx = cx + ux;
+            const float ry = cy + uy;
+            if (rx >= n->border.x && rx < n->border.x + n->border.w &&
+                ry >= n->border.y + off_y &&
+                ry < n->border.y + off_y + n->border.h) {
                 return n;
             }
         }
@@ -874,8 +974,8 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
      * taller (line-box height -> 32px). Hit the 16x16 paint area so the
      * whole visible control is clickable, not just the narrow layout box. */
     if (n->el && is_check_radio(n->el) &&
-        x >= n->border.x && x < n->border.x + 16 &&
-        y >= n->border.y + off_y && y < n->border.y + off_y + 16) {
+        hx >= n->border.x && hx < n->border.x + 16 &&
+        hy >= n->border.y + off_y && hy < n->border.y + off_y + 16) {
         return n;
     }
     return nullptr;
@@ -2503,13 +2603,24 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         return;
     }
 #ifdef WHALEUI_BUILD_FULL
-    /* text_cache 缂傛挸鍟挎稉?std::vector,閻╁瓨甯村〒鍛敄閸楀啿褰?*/
+    /* text_cache 缂傛挸鍟挎稉?std::vector,閻╁瓨甯村〒鍛敄閸楀啿褰?*/
     r->text_cache.clear();
+    r->tc_bytes = 0;
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
     }
     r->images.clear();
 #endif
+    /* caches keyed on DOM ELEMENTS / TEXT BUFFER POINTERS of the destroyed
+     * document: element versions (text rasters), whole-run widths (keyed on
+     * the text buffer address), wrapped sizes and the line-layout tables.
+     * A later allocation can reuse a freed address with the same length and
+     * silently serve stale data - the pointer-keyed caches must die with
+     * the document, not linger for the next one. */
+    r->el_ver.clear();
+    r->text_w_cache.clear();
+    r->text_size_cache.clear();
+    whaleui_text_caches_reset();
     r->open_select = nullptr;
     r->open_select_hover = 0;
     r->select_index.clear();
@@ -2883,6 +2994,9 @@ extern "C" void whaleui_render_clear_hover(whaleui_render_t* r)
         return;
     }
     std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    /* the pointer is gone: the frame's hover re-check must not re-hit-test
+     * the stale position and resurrect :hover after a scroll/relayout */
+    r->mouse_has = 0;
     if (!r->hover_el) {
         return;
     }
@@ -2902,7 +3016,16 @@ extern "C" void whaleui_render_clear_hover(whaleui_render_t* r)
 
 extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
 {
-    if (!r || !r->tree) {
+    if (!r) {
+        return;
+    }
+    /* remember the raw window-space position for the frame's hover
+     * re-check (see mouse_wx in render.h): relayouts/scrolls can move a
+     * different element under a stationary pointer */
+    r->mouse_wx = static_cast<float>(x);
+    r->mouse_wy = static_cast<float>(y);
+    r->mouse_has = 1;
+    if (!r->tree) {
         return;
     }
     /* serialized against the background fill thread (reads the layout tree) */
@@ -4020,6 +4143,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
                 if (layout_changed) {
                     dom_dirty.push_back(el); /* full relayout + box pass */
+                    /* the box pass can move a different element under the
+                     * (stationary) pointer: re-hit-test before paint */
+                    r->hover_recheck = 1;
                 } else {
                     /* the state move changed no style on this element (no
                      * :hover/:active/:focus rule selects it - e.g. the
@@ -4207,7 +4333,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         !animating && !r->edit_el && !r->hover_old_el &&
         !r->focus_old_el && !r->pressed_old_el && r->hover_prev.empty() &&
         !r->font_scale_pending && !r->fill_dirty.load() &&
-        dom_dirty.empty()) {
+        dom_dirty.empty() && !r->hover_recheck) {
         if (r->fill_running.load()) {
             /* background fill active: cheap poll frames (no paint) so a
              * batch's fill_dirty wakes a repaint without needing input */
@@ -4216,6 +4342,11 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->alive = 0; /* static page: the app loop can park idle */
         }
         return 0;
+    }
+    /* a scroll moved the content under a (possibly stationary) pointer:
+     * the frame re-hit-tests before painting */
+    if (r->scroll_dirty) {
+        r->hover_recheck = 1;
     }
     r->scroll_dirty = 0;
 #ifdef WHALEUI_BUILD_FULL
@@ -4262,6 +4393,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             r->drag_scroll_node = nullptr;
             r->scroll_max_el = nullptr;
             r->wheel_node = nullptr;
+            r->hover_recheck = 1; /* every box moved under the pointer */
             r->has_dirty = 0; /* the in-place pass already reflowed */
             r->scroll_dirty = 1;
             r->alive = 1;
@@ -4277,6 +4409,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * opacity chain is recomputed - the bulk of the per-frame cost
      * (style cascade + box layout) is gone. */
     const bool need_layout = r->has_dirty || !r->tree;
+    /* did the tick's interpolated values actually differ from the styles
+     * this frame (set by the paint-only apply path)? 0 = every animated
+     * value is unchanged (held delay, finished transition): the animation
+     * carries no visual damage and the frame can skip its strip - the
+     * below-fold skip below then parks the paint entirely. */
+    int anim_values_changed = 1;
     bool geom_ok = false;
     if (need_layout) {
         /* plain resize (no DOM/rule change - geometry_only set by
@@ -4300,6 +4438,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 r->wheel_node = nullptr;
                 fix_run_heights(r);
                 fix_scroll_max(r);
+                r->hover_recheck = 1; /* every box moved under the pointer */
                 geom_ok = true;
             }
             /* relayout failed: fall through to the full rebuild */
@@ -4400,6 +4539,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             edit_ensure_visible(r);
             r->edit_scroll_need = 0;
         }
+        /* fresh tree: whatever sits under the (stationary) pointer now is
+         * a fresh question - re-hit-test before painting */
+        r->hover_recheck = 1;
 #ifdef WHALEUI_BUILD_FULL
         g_metric_render = nullptr; /* layout done; paint re-rasterizes */
 #endif
@@ -4417,26 +4559,31 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         st.focus = r->focus_el;
         st.pressed = r->pressed_el;
         std::vector<lxb_dom_element*> anim_els;
-        std::function<void(whaleui_layout_node_t*)> collect =
-            [&](whaleui_layout_node_t* nd) {
-                /* ONLY elements whose running animation touches a layout
-                 * property: relayout_multi reflows their flex/grid
-                 * ancestors. A paint-only transition (the UA
-                 * `select { transition: border-color }` firing on :hover)
-                 * must not come through here - reflowing its flex ancestor
-                 * (the page header) recomputed the container height and
-                 * shifted every centered child, and the shift persisted
-                 * ("hover lifted the header row by a few px and it stayed
-                 * there until a full repaint"). */
-                if (nd->el && whaleui_anim_has_layout_el(r->anim, nd->el)) {
-                    anim_els.push_back(nd->el);
+        {
+            /* ONLY elements whose running animation touches a layout
+             * property: relayout_multi reflows their flex/grid
+             * ancestors. A paint-only transition (the UA
+             * `select { transition: border-color }` firing on :hover)
+             * must not come through here - reflowing its flex ancestor
+             * (the page header) recomputed the container height and
+             * shifted every centered child, and the shift persisted
+             * ("hover lifted the header row by a few px and it stayed
+             * there until a full repaint").
+             * Enumerated from the tick's act table via by_el - O(animated)
+             * instead of a whole-tree walk per frame. */
+            int n = whaleui_anim_els(r->anim, nullptr, 0);
+            std::vector<lxb_dom_element*> act;
+            if (n > 0) {
+                act.resize(static_cast<size_t>(n));
+                whaleui_anim_els(r->anim, act.data(), n);
+            }
+            for (lxb_dom_element* el : act) {
+                if (whaleui_anim_has_layout_el(r->anim, el) &&
+                    find_node_by_el(r->tree, el)) {
+                    anim_els.push_back(el);
                 }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    collect(c);
-                }
-            };
-        collect(r->tree->root);
+            }
+        }
         bool ok = false;
         int m_ok = whaleui_layout_relayout_multi(
             r->tree, anim_els.data(), anim_els.size(), r->rules,
@@ -4484,7 +4631,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * their subtrees (opacity inheritance cannot leave them). The old
          * version walked the whole tree every frame doing a style lookup
          * per node - the fixed per-frame cost that made even a tiny pulse
-         * animation cost ms at 2k. */
+         * animation cost ms at 2k. The animated set comes straight from
+         * the tick's act table resolved through by_el: O(animated) per
+         * frame, zero tree walk. */
         std::function<void(whaleui_layout_node_t*, float)> apply_sub =
             [&](whaleui_layout_node_t* nd, float po) {
                 if (nd->is_text) {
@@ -4508,55 +4657,62 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     apply_sub(c, nd->opacity);
                 }
             };
-        std::function<void(whaleui_layout_node_t*)> find_anim =
-            [&](whaleui_layout_node_t* nd) {
-                /* text runs share their element's animatable style but
-                 * must not have the animation values applied to their own
-                 * style (a translateY would offset the glyphs inside the
-                 * already-transformed box - "ghost text" regression). Their
-                 * opacity is handled by apply_sub above. */
-                if (nd->el && !nd->is_text &&
-                    whaleui_anim_has_el(r->anim, nd->el)) {
-                    whaleui_anim_apply_ov(r->anim, nd->el, nd->style);
-                    /* apply_ov wrote interpolated values straight into the
-                     * style map, behind layout's build: refresh the cached
-                     * paint flags or an interpolated transform keeps xf=0
-                     * (apply_transition pins the style at "none" while the
-                     * transition registers) and paint_node never translates
-                     * - a hover transform transition never lifts. Opacity is
-                     * refreshed right below; position cannot arrive through
-                     * a paint-only animation (is_layout_prop), so the fx/sk
-                     * refresh only keeps the single-writer invariant. */
-                    whaleui_layout_node_refresh_paint_flags(nd);
-                    float o = 1.0f;
-                    std::string ov2 = sget(nd->style, "opacity");
-                    if (!ov2.empty()) {
-                        o = std::strtof(ov2.c_str(), nullptr);
-                        if (o < 0.0f) {
-                            o = 0.0f;
-                        }
-                        if (o > 1.0f) {
-                            o = 1.0f;
-                        }
-                    }
-                    nd->opacity = o;
-                    for (whaleui_layout_node_t* c = nd->first_child; c;
-                         c = c->next) {
-                        apply_sub(c, nd->opacity);
-                    }
+        std::vector<lxb_dom_element*> anim_els;
+        {
+            int n = whaleui_anim_els(r->anim, nullptr, 0);
+            if (n > 0) {
+                anim_els.resize(static_cast<size_t>(n));
+                whaleui_anim_els(r->anim, anim_els.data(), n);
+            }
+        }
+        /* phase 1 - write every animated style + refresh paint flags. */
+        std::vector<whaleui_layout_node_t*> anim_nodes;
+        for (lxb_dom_element* el : anim_els) {
+            whaleui_layout_node_t* nd = find_node_by_el(r->tree, el);
+            /* text runs share their element's animatable style but must
+             * not have the animation values applied to their own style (a
+             * translateY would offset the glyphs inside the already-
+             * transformed box - "ghost text" regression). Their opacity is
+             * handled by apply_sub below. */
+            if (!nd || nd->is_text) {
+                continue;
+            }
+            if (whaleui_anim_apply_ov(r->anim, el, nd->style)) {
+                anim_values_changed = 1;
+            }
+            /* apply_ov wrote interpolated values straight into the style
+             * map, behind layout's build: refresh the cached paint flags
+             * or an interpolated transform keeps xf=0 (apply_transition
+             * pins the style at "none" while the transition registers) and
+             * paint_node never translates - a hover transform transition
+             * never lifts. Opacity is refreshed in phase 2; position
+             * cannot arrive through a paint-only animation
+             * (is_layout_prop), so the fx/sk refresh only keeps the
+             * single-writer invariant. */
+            whaleui_layout_node_refresh_paint_flags(nd);
+            anim_nodes.push_back(nd);
+        }
+        /* phase 2 - opacity chains from the FINAL styles (an animated
+         * ancestor + animated descendant compose identically in any
+         * order because apply_sub re-reads each node's own style). */
+        for (whaleui_layout_node_t* nd : anim_nodes) {
+            float o = 1.0f;
+            std::string ov2 = sget(nd->style, "opacity");
+            if (!ov2.empty()) {
+                o = std::strtof(ov2.c_str(), nullptr);
+                if (o < 0.0f) {
+                    o = 0.0f;
                 }
-                /* an ancestor being animated must not stop the walk: the
-                 * children may carry their own animated values (e.g. a
-                 * hovered cell inside a section whose reveal transition is
-                 * still running). Without this the child's apply_ov never
-                 * runs and its transition stays pinned at the start value
-                 * ("hover changes and snaps straight back"). */
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    find_anim(c);
+                if (o > 1.0f) {
+                    o = 1.0f;
                 }
-            };
-        find_anim(r->tree->root);
+            }
+            nd->opacity = o;
+            for (whaleui_layout_node_t* c = nd->first_child; c;
+                 c = c->next) {
+                apply_sub(c, nd->opacity);
+            }
+        }
     }
     /* DOM mutations: incremental relayout. Only the affected subtrees get
      * a fresh style cascade + build; the box pass re-positions the tree
@@ -4640,8 +4796,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         &r->theme_vars, &st, &r->scrolls, r->anim,
                         r->text_scale,
                         std::numeric_limits<size_t>::max()) > 0) {
-                    continue; /* incremental: geometry grew, no subtree
-                               * rebuild; wide repaint below covers it */
+                    /* incremental: geometry grew, no subtree rebuild;
+                     * wide repaint below covers it */
+                    r->hover_recheck = 1;
+                    continue;
                 }
                 /* a freshly created element (li built by append_rows on its
                  * parent) has no laid-out subtree yet - rebuilding it alone
@@ -4697,6 +4855,10 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             }
         }
         dom_geom_changed = !full_list.empty() || struct_dirty;
+        if (dom_geom_changed) {
+            /* geometry moved: the pointer may be over a different element */
+            r->hover_recheck = 1;
+        }
         /* an animation running on top of the edits: the paint paths do not
          * compose a DOM strip with the anim strip - fall back to full */
         if (animating) {
@@ -4921,76 +5083,23 @@ d here leaves its ancestors'
          * changed; the relayout already re-cascaded, geometry is stable).
          * NOT gated on !animating: an animation running while the mouse
          * moves must still repaint the hovered box - the animation branch
-         * below accumulates its boxes into the SAME strip. */
-        auto is_state_el = [&](lxb_dom_element* e) {
-            if (e == r->hover_old_el || e == r->hover_el ||
-                e == r->focus_old_el || e == r->focus_el ||
-                e == r->pressed_old_el || e == r->pressed_el) {
-                return true;
-            }
-            if (std::find(r->hover_prev.begin(), r->hover_prev.end(), e) !=
-                r->hover_prev.end()) {
-                return true; /* crossed within the frame: revert repaint */
-            }
-            return std::find(dom_repaint.begin(), dom_repaint.end(), e) !=
-                   dom_repaint.end();
-        };
-        std::function<void(whaleui_layout_node_t*)> acc =
-            [&](whaleui_layout_node_t* nd) {
-                if (nd->el && is_state_el(nd->el)) {
-                    /* visual position: the layout bounds are pre-scroll;
-                     * the paint pass draws at bounds + ancestor scroll */
-                    int off = 0;
-                    for (whaleui_layout_node_t* p = nd->parent; p;
-                         p = p->parent) {
-                        off += scroll_delta(r, p);
-                    }
-                    int x0 = nd->bounds.x - 2;
-                    int y0 = nd->bounds.y + off - 2;
-                    int x1 = x0 + nd->bounds.w + 4;
-                    int y1 = y0 + nd->bounds.h + 4;
-                    /* A transformed node - or one inside a transformed ANCESTOR
-                     * - is PAINTED offset from its layout box (see paint_node's
-                     * translate handling), so the strip must cover BOTH the old
-                     * and the new position. The ancestor case is the common one:
-                     * a card lifts on :hover but the pointer usually sits on a
-                     * child (text/icon), so hover_el is that child while the
-                     * transform lives on the card above it. Checking only the
-                     * node itself extended nothing, and the lift only completed
-                     * once the pointer swept the card body and hover_el became
-                     * the card ("moves a bit, completes while the mouse keeps
-                     * moving"). */
-                    for (whaleui_layout_node_t* a = nd; a; a = a->parent) {
-                        if (!a->xf) {
-                            continue;
-                        }
-                        whaleui_transform_t tf;
-                        const std::string tv = sget(a->style, "transform");
-                        if (whaleui_transform_eval(tv.c_str(), a->border.w,
-                                                   a->border.h, &tf) != 0) {
-                            continue;
-                        }
-                        const int ddx = static_cast<int>(tf.tx);
-                        const int ddy = static_cast<int>(tf.ty);
-                        if (x0 + ddx < x0) x0 += ddx;
-                        if (y0 + ddy < y0) y0 += ddy;
-                        if (x1 + ddx > x1) x1 += ddx;
-                        if (y1 + ddy > y1) y1 += ddy;
-                    }
-                    if (x0 < 0) x0 = 0;
-                    if (y0 < 0) y0 = 0;
-                    if (x1 > r->fb_w) x1 = r->fb_w;
-                    if (y1 > r->fb_h) y1 = r->fb_h;
-                    if (x1 > x0 && y1 > y0) {
-                        dirty_rect(x0, y0, x1, y1, &strip);
-                    }
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    acc(c);
-                }
-            };
-        acc(r->tree->root);
+         * below accumulates its boxes into the SAME strip.
+         * The damage set IS the (small) element list, so resolve each
+         * through by_el instead of walking the whole tree testing every
+         * node against the set - O(targets) instead of O(tree) per hover
+         * frame on a 34k-node page. */
+        strip_element(r, r->hover_old_el, &strip);
+        strip_element(r, r->hover_el, &strip);
+        strip_element(r, r->focus_old_el, &strip);
+        strip_element(r, r->focus_el, &strip);
+        strip_element(r, r->pressed_old_el, &strip);
+        strip_element(r, r->pressed_el, &strip);
+        for (lxb_dom_element* e : r->hover_prev) {
+            strip_element(r, e, &strip);
+        }
+        for (lxb_dom_element* e : dom_repaint) {
+            strip_element(r, e, &strip);
+        }
         if (strip.w > 0 && strip.h > 0) {
             partial = true;
         }
@@ -4999,6 +5108,27 @@ d here leaves its ancestors'
         r->pressed_old_el = nullptr;
         r->hover_prev.clear();
         dom_repaint.clear();
+    }
+    /* hover re-check: the relayout/scroll this frame performed can have
+     * moved a DIFFERENT element under the (stationary) pointer. Without
+     * this that element only receives :hover on the next 1px of mouse
+     * movement - "hover dies after scrolling / after a hover-driven layout
+     * change settles". Runs after the strip branches above so their marker
+     * consumption is done; a changed target re-enters the normal state
+     * path next frame (state_pending) while this frame repaints both
+     * boxes. */
+    if (r->hover_recheck) {
+        r->hover_recheck = 0;
+        if (r->mouse_has && r->tree && r->tree->root &&
+            !r->drag_scroll_el && !r->open_select && !r->pressed_el) {
+            lxb_dom_element* was = r->hover_el;
+            whaleui_render_set_hover(r, static_cast<int>(r->mouse_wx),
+                                     static_cast<int>(r->mouse_wy));
+            if (r->hover_el != was) {
+                strip_element(r, was, &strip);
+                strip_element(r, r->hover_el, &strip);
+            }
+        }
     }
     /* animation damage accumulates into the same strip, but only when the
      * frame is NOT a scroll frame (scroll repaints the whole viewport -
@@ -5031,93 +5161,102 @@ d here leaves its ancestors'
          * animated element inflated the 2k strip (and the text-layer
          * upload) for bar/opacity animations that never move. */
         const int AM = 40;
-        std::function<void(whaleui_layout_node_t*)> acc =
-            [&](whaleui_layout_node_t* nd) {
-                if (nd->el && whaleui_anim_has_el(r->anim, nd->el)) {
-                    /* the strip is in VIEWPORT space (paint clips against
-                     * the framebuffer), the layout bounds are DOCUMENT
-                     * space: add the ancestor scroll offsets or a scrolled
-                     * animation's strip lands at the wrong rows, the
-                     * element is culled and the animation appears frozen
-                     * once it is partially scrolled out of view. (The
-                     * hover branch below does the same off accumulation.) */
-                    int off = 0;
-                    for (whaleui_layout_node_t* p = nd->parent; p;
-                         p = p->parent) {
-                        off += scroll_delta(r, p);
+        /* enumerated from the tick's act table via by_el - O(animated)
+         * instead of a whole-tree walk per frame. A paint-only animation
+         * whose values did not change this frame (held delay, finished
+         * transition) adds no damage at all: the strip stays empty and the
+         * skip below parks the paint while the animation stays alive. */
+        std::vector<lxb_dom_element*> anim_els;
+        if (anim_values_changed) {
+            int n = whaleui_anim_els(r->anim, nullptr, 0);
+            if (n > 0) {
+                anim_els.resize(static_cast<size_t>(n));
+                whaleui_anim_els(r->anim, anim_els.data(), n);
+            }
+        }
+        for (lxb_dom_element* el : anim_els) {
+            whaleui_layout_node_t* nd = find_node_by_el(r->tree, el);
+            if (!nd) {
+                continue;
+            }
+            /* the strip is in VIEWPORT space (paint clips against
+             * the framebuffer), the layout bounds are DOCUMENT
+             * space: add the ancestor scroll offsets or a scrolled
+             * animation's strip lands at the wrong rows, the
+             * element is culled and the animation appears frozen
+             * once it is partially scrolled out of view. (The
+             * hover branch above does the same off accumulation.) */
+            int off = 0;
+            for (whaleui_layout_node_t* p = nd->parent; p;
+                 p = p->parent) {
+                off += scroll_delta(r, p);
+            }
+            int x0 = nd->border.x, y0 = nd->border.y + off;
+            int x1 = x0 + nd->border.w, y1 = y0 + nd->border.h;
+            int am = 4;
+            /* widen by the transform translation */
+            std::string tv = sget(nd->style, "transform");
+            if (!tv.empty() && tv != "none") {
+                whaleui_transform_t tf;
+                if (whaleui_transform_eval(
+                        tv.c_str(), static_cast<float>(nd->border.w),
+                        static_cast<float>(nd->border.h), &tf) == 0) {
+                    int dtx = static_cast<int>(tf.tx > 0 ? tf.tx
+                                                         : -tf.tx);
+                    int dty = static_cast<int>(tf.ty > 0 ? tf.ty
+                                                         : -tf.ty);
+                    x0 -= dtx;
+                    y0 -= dty;
+                    x1 += dtx;
+                    y1 += dty;
+                    int sm = static_cast<int>(
+                        (tf.sx > 1.0f ? tf.sx - 1.0f : 0.0f) *
+                            static_cast<float>(nd->border.w) +
+                        (tf.sy > 1.0f ? tf.sy - 1.0f : 0.0f) *
+                            static_cast<float>(nd->border.h) +
+                        4.0f);
+                    if (sm > am) {
+                        am = sm;
                     }
-                    int x0 = nd->border.x, y0 = nd->border.y + off;
-                    int x1 = x0 + nd->border.w, y1 = y0 + nd->border.h;
-                    int am = 4;
-                    /* widen by the transform translation */
-                    std::string tv = sget(nd->style, "transform");
-                    if (!tv.empty() && tv != "none") {
-                        whaleui_transform_t tf;
-                        if (whaleui_transform_eval(
-                                tv.c_str(), static_cast<float>(nd->border.w),
-                                static_cast<float>(nd->border.h), &tf) == 0) {
-                            int dtx = static_cast<int>(tf.tx > 0 ? tf.tx
-                                                                 : -tf.tx);
-                            int dty = static_cast<int>(tf.ty > 0 ? tf.ty
-                                                                 : -tf.ty);
-                            x0 -= dtx;
-                            y0 -= dty;
-                            x1 += dtx;
-                            y1 += dty;
-                            int sm = static_cast<int>(
-                                (tf.sx > 1.0f ? tf.sx - 1.0f : 0.0f) *
-                                    static_cast<float>(nd->border.w) +
-                                (tf.sy > 1.0f ? tf.sy - 1.0f : 0.0f) *
-                                    static_cast<float>(nd->border.h) +
-                                4.0f);
-                            if (sm > am) {
-                                am = sm;
-                            }
-                            if (dtx > am) {
-                                am = dtx;
-                            }
-                            if (dty > am) {
-                                am = dty;
-                            }
-                        }
+                    if (dtx > am) {
+                        am = dtx;
                     }
-                    if (lay_anim && nd->parent && !nd->parent->is_text) {
-                        /* layout animation: the parent's interior re-flows
-                         * (children move within it), cover the whole box */
-                        whaleui_layout_node_t* p = nd->parent;
-                        int poff = 0;
-                        for (whaleui_layout_node_t* q = p->parent; q;
-                             q = q->parent) {
-                            poff += scroll_delta(r, q);
-                        }
-                        x0 = p->border.x < x0 ? p->border.x : x0;
-                        y0 = p->border.y + poff < y0 ? p->border.y + poff : y0;
-                        int px1 = p->border.x + p->border.w;
-                        int py1 = p->border.y + poff + p->border.h;
-                        x1 = px1 > x1 ? px1 : x1;
-                        y1 = py1 > y1 ? py1 : y1;
-                    }
-                    if (am > AM) {
-                        am = AM;
-                    }
-                    x0 -= am;
-                    y0 -= am;
-                    x1 += am;
-                    y1 += am;
-                    if (x0 < 0) x0 = 0;
-                    if (y0 < 0) y0 = 0;
-                    if (x1 > r->fb_w) x1 = r->fb_w;
-                    if (y1 > r->fb_h) y1 = r->fb_h;
-                    if (x1 > x0 && y1 > y0) {
-                        dirty_rect(x0, y0, x1, y1, &strip);
+                    if (dty > am) {
+                        am = dty;
                     }
                 }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    acc(c);
+            }
+            if (lay_anim && nd->parent && !nd->parent->is_text) {
+                /* layout animation: the parent's interior re-flows
+                 * (children move within it), cover the whole box */
+                whaleui_layout_node_t* p = nd->parent;
+                int poff = 0;
+                for (whaleui_layout_node_t* q = p->parent; q;
+                     q = q->parent) {
+                    poff += scroll_delta(r, q);
                 }
-            };
-        acc(r->tree->root);
+                x0 = p->border.x < x0 ? p->border.x : x0;
+                y0 = p->border.y + poff < y0 ? p->border.y + poff : y0;
+                int px1 = p->border.x + p->border.w;
+                int py1 = p->border.y + poff + p->border.h;
+                x1 = px1 > x1 ? px1 : x1;
+                y1 = py1 > y1 ? py1 : y1;
+            }
+            if (am > AM) {
+                am = AM;
+            }
+            x0 -= am;
+            y0 -= am;
+            x1 += am;
+            y1 += am;
+            if (x0 < 0) x0 = 0;
+            if (y0 < 0) y0 = 0;
+            if (x1 > r->fb_w) x1 = r->fb_w;
+            if (y1 > r->fb_h) y1 = r->fb_h;
+            if (x1 > x0 && y1 > y0) {
+                dirty_rect(x0, y0, x1, y1, &strip);
+            }
+        }
         if (strip.w > 0 && strip.h > 0) {
             partial = true;
         } else if (!r->scroll_dirty && !r->hover_old_el &&

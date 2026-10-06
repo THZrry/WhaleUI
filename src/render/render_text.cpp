@@ -147,6 +147,10 @@ static const TextLayout* tl_lookup(uint64_t key)
     return &it->second.L;
 }
 
+/* scratch slot for over-budget inserts: the caller consumes the table
+ * within the same draw_text_at call, so a single reused slot is safe */
+static TextLayout g_tl_scratch;
+
 static const TextLayout* tl_insert(uint64_t key, const TextLayout& L)
 {
     std::unordered_map<uint64_t, TlEntry>::iterator it = g_tl_cache.find(key);
@@ -161,10 +165,28 @@ static const TextLayout* tl_insert(uint64_t key, const TextLayout& L)
     e.L = L;
     e.bytes = tl_bytes_of(L);
     e.last_use = ++g_tl_tick;
-    if (g_tl_bytes + e.bytes <= kTlMaxBytes) {
-        g_tl_bytes += e.bytes;
+    if (g_tl_bytes + e.bytes > kTlMaxBytes) {
+        /* over budget: do NOT emplace. The old code still inserted while
+         * skipping the accounting, so g_tl_bytes stayed flat while the map
+         * grew one multi-megabyte entry per new run - unbounded memory. A
+         * over-budget table is huge by definition (a whole long run); it
+         * is rebuilt per frame from the scratch slot instead. */
+        g_tl_scratch = L;
+        return &g_tl_scratch;
     }
+    g_tl_bytes += e.bytes;
     return &g_tl_cache.emplace(key, std::move(e)).first->second.L;
+}
+
+/* drop every text cache keyed on raw TEXT BUFFER POINTERS (line-layout
+ * tables). The keys dangle once a document is destroyed; a later
+ * allocation can reuse the address with the same length and silently serve
+ * a stale line table. Called from whaleui_render_reset_dom. */
+void whaleui_text_caches_reset(void)
+{
+    g_tl_cache.clear();
+    g_tl_scratch = TextLayout();
+    g_tl_bytes = 0;
 }
 /* 闂傚倷绀侀幉锟犮€冮崱妞曟椽寮介鐔蜂槐閻熸粌绻掗崚鎺楊敇閵忊剝娅囬梺閫炲苯澧寸€规洘娲栭～婵囨綇椤垶缍楅梻浣虹帛閿氭俊顖氾躬瀹?濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴″幐婵炲矈浜弻娑氫沪閻愵剛娈ら梺鍝勵槷缁瑩寮?闂備焦鐪归崺鍕垂娴兼潙鐤い鎰堕檮閸庢垶銇勯幒鎴濐仾闁稿﹦绮妵鍕箼閸曨厾锛熼梺缁樻煥閹虫劙鍩€?ASCII 闂備浇宕垫慨宥夊礋椤愵偅顥嬬紓鍌欑劍閸炵粯淇婇崶顒€鐒? */
 typedef int (*TextGlyphFn)(unsigned int cp, void* st);
@@ -1234,6 +1256,12 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
 #endif
     *tw = L.tw;
     *th = L.th;
+    /* bounded: entries are content-addressed (self-invalidating) but the
+     * map itself grew without limit on text-heavy pages - drop it wholesale
+     * at the cap (safe: a cleared entry is just re-measured). */
+    if (r->text_size_cache.size() >= 65536) {
+        r->text_size_cache.clear();
+    }
     r->text_size_cache[key] = std::make_pair(*tw, *th);
 }
 

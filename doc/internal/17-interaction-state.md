@@ -16,6 +16,34 @@
 
 `:hover` 会沿祖先链冒泡匹配（`style.cpp`），这是 CSS 语义，不是特例。
 
+## 帧内 hover 重命中（2026-10，<28>）
+
+上表第 1 步只在鼠标 motion 时运行。但**滚动与重排会把另一个元素移到
+静止的指针下**——hover 只由 motion 驱动意味着那种情况下 `:hover` 要等
+下一次 1px 移动（"滚动后 hover 死了"）。现在：
+
+- `whaleui_render_t` 记录最后一次指针位置（`mouse_wx/wy/mouse_has`，
+  set_hover 入口写入；MOUSE_LEAVE 清 `mouse_has`）。
+- 帧内任何几何变更——状态重排的布局路径、全量重建、geometry-only
+  reflow、字体缩放、DOM 结构变更、滚动——置 `hover_recheck`。
+- 帧在 paint 之前（条带分支消费完旧标记之后）用最后位置重跑一次
+  `set_hover`；命中变化时本帧把新旧两盒并进损伤条带，样式变更走下一帧
+  的 state_pending 路径——与 motion 触发完全同一条链。
+
+## hit/paint 一致性（<28>）
+
+命中区域必须等于画出来的区域，`hit_test` 与 `paint_node` 逐条对齐：
+
+| 行为 | paint | hit_test |
+|------|-------|----------|
+| position:fixed | fx 节点清零祖先偏移 | 同（fx 清 off_y） |
+| translate/scale | 自身盒按 origin 缩放，子树平移 t+origin*(1-scale) | 同（点先减去平移，自身盒用缩放尺寸） |
+| rot/skew | 顶点旋转（SDF 仿射不变） | 逆旋转/逆剪切近似（锚点同 paint） |
+| 兄弟重叠 | 文档序后画者在上 | 最后一个命中者胜（与 paint 优先级一致） |
+
+回归：`tests/test_scroll.cpp` 的 hover-scroll / hit-translate / hit-fixed
+（修前 FAIL 修后 PASS，均实测，见 notes/current.md <28>）。
+
 ## 两个根因（都已修）
 
 ### 1. 重排路径缺文本度量上下文 `g_metric_render`

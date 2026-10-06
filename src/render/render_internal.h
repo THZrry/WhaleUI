@@ -123,6 +123,10 @@ unsigned int border_side_color(const WhaleUIComputedStyle& s, int side,
 /* --- paint primitives (render_paint.cpp) --- */
 
 void dirty_rect(int x0, int y0, int x1, int y1, Clip* out);
+/* drop the text caches keyed on raw buffer pointers (line-layout tables in
+ * render_text.cpp): the keys dangle with their document. Called from
+ * whaleui_render_reset_dom. */
+void whaleui_text_caches_reset(void);
 void clip_rect(int& x0, int& y0, int& x1, int& y1, const Clip* clip);
 void fill_rect(std::vector<unsigned int>& fb, int fbw, int fbh,
                int x, int y, int w, int h, unsigned int color,

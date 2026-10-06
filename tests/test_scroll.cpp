@@ -232,6 +232,190 @@ int main(void)
         }
         whaleui_window_destroy(tw);
     }
+
+    /* find an element by id attribute in the current layout tree */
+    struct IdLookup
+    {
+        whaleui_render_t* r;
+        const char* id;
+        lxb_dom_element* found = nullptr;
+        void walk(whaleui_layout_node_t* n)
+        {
+            if (found || !n || n->is_text || !n->el) {
+                return;
+            }
+            size_t len = 0;
+            const lxb_char_t* v = lxb_dom_element_get_attribute(
+                n->el, (const lxb_char_t*)"id", 2, &len);
+            if (v && len == std::strlen(id) &&
+                std::memcmp(v, id, len) == 0) {
+                found = n->el;
+                return;
+            }
+            for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+                walk(c);
+            }
+        }
+        lxb_dom_element* run()
+        {
+            walk(r->tree->root);
+            return found;
+        }
+    };
+
+    /* Regression: SCROLL must keep :hover alive under a stationary pointer.
+     * hover was only ever updated from mouse-motion events, so after a
+     * wheel scroll the element now under the pointer kept its plain style
+     * (and the scrolled-away one kept :hover) until the next 1px of mouse
+     * movement - "hover dies when you scroll". The frame now re-hit-tests
+     * the last pointer position after any relayout/scroll. */
+    {
+        whaleui_window_t* sw =
+            whaleui_window_create(app, "hover-scroll", 300, 200);
+        assert(sw != nullptr);
+        assert(whaleui_window_load_html(
+                   sw,
+                   "<html><head><style>body{margin:0}"
+                   ".c{height:400px;background-color:#ffff00}"
+                   "#a{position:absolute;left:20px;top:20px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b{position:absolute;left:20px;top:150px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b:hover{background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div class=\"c\"></div><div id=\"a\"></div>"
+                   "<div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(sw) == 0 && sw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(sw->render, sw->document) == 0);
+            }
+            /* pointer over A (y 20..60), stationary from here on */
+            whaleui_render_set_hover(sw->render, 50, 40);
+            assert(whaleui_render_frame(sw->render, sw->document) == 0);
+            /* scroll the page 120px down: B (doc y 150..190) lands at
+             * viewport y 30..70 - under the pointer */
+            for (int i = 0; i < 3; ++i) {
+                whaleui_render_handle_wheel(sw->render, 50, 40, -1.0f);
+            }
+            /* the scroll frame re-hit-tests; the state pass applies the
+             * :hover style on the next frame - run both */
+            assert(whaleui_render_frame(sw->render, sw->document) == 0);
+            assert(whaleui_render_frame(sw->render, sw->document) == 0);
+            whaleui_dom_element_t* under =
+                whaleui_render_hit_element(sw->render, 50, 40);
+            lxb_dom_element* b = IdLookup{sw->render, "b"}.run();
+            std::printf("[hover-scroll] hover==hit=%d pixel=%08X\n",
+                        static_cast<int>(
+                            static_cast<void*>(sw->render->hover_el) ==
+                            static_cast<void*>(under)),
+                        gpixel(sw->render, 50, 40));
+            std::fflush(stdout);
+            assert(under != nullptr && b != nullptr);
+            assert(static_cast<void*>(sw->render->hover_el) ==
+                   static_cast<void*>(b));
+            assert(static_cast<void*>(under) == static_cast<void*>(b));
+            /* and the style followed: B paints its :hover blue */
+            assert(gpixel(sw->render, 50, 40) == 0xFF0000FF);
+        }
+        whaleui_window_destroy(sw);
+    }
+
+    /* Regression: a hover TRANSLATE must move the HIT region with the
+     * paint. hit_test tested the untranslated laid-out box, so once the
+     * lift had painted the card 40px higher, the card could no longer be
+     * hit at its painted position (its :hover was lost / clicks missed) -
+     * "the lift works, then hover stops responding". */
+    {
+        whaleui_window_t* tw2 =
+            whaleui_window_create(app, "hit-translate", 300, 200);
+        assert(tw2 != nullptr);
+        assert(whaleui_window_load_html(
+                   tw2,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:40px;top:100px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b:hover{transform:translateY(-40px);"
+                   "background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"b\"><span>x</span></div></body></html>") ==
+            0);
+        if (whaleui_window_show(tw2) == 0 && tw2->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(tw2->render, tw2->document) == 0);
+            }
+            whaleui_render_set_hover(tw2->render, 80, 120);
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(tw2->render, tw2->document) == 0);
+            }
+            /* the card is painted at y 60..100 now (lifted); (80, 70) is
+             * inside the PAINTED box and outside the laid-out one */
+            whaleui_dom_element_t* hit =
+                whaleui_render_hit_element(tw2->render, 80, 70);
+            lxb_dom_element* b = IdLookup{tw2->render, "b"}.run();
+            std::printf("[hit-translate] hit==b=%d\n",
+                        static_cast<int>(static_cast<void*>(hit) ==
+                                         static_cast<void*>(b)));
+            std::fflush(stdout);
+            assert(b != nullptr);
+            assert(static_cast<void*>(hit) == static_cast<void*>(b));
+        }
+        whaleui_window_destroy(tw2);
+    }
+
+    /* Regression: a position:fixed bar must stay hoverable after the page
+     * scrolls. paint pins fixed boxes to the viewport (offsets zeroed) but
+     * hit_test kept the ancestor scroll offset, so the header was
+     * hit-tested 120px ABOVE its painted rows - hover/click fell through
+     * to the content beneath after scrolling ("the fixed nav stops
+     * reacting once you scroll"). Also covers sibling priority: the bar is
+     * LAST in the DOM and paints on top, so at the overlap point the bar -
+     * not the earlier content div - must win the hit. */
+    {
+        whaleui_window_t* fw =
+            whaleui_window_create(app, "hit-fixed", 300, 200);
+        assert(fw != nullptr);
+        assert(whaleui_window_load_html(
+                   fw,
+                   "<html><head><style>body{margin:0}"
+                   ".c{height:400px;margin-top:50px;background-color:#ffff00}"
+                   "#h{position:fixed;left:0;top:0;width:300px;height:40px;"
+                   "background-color:#00ff00}"
+                   "#h:hover{background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div class=\"c\"></div><div id=\"h\"></div></body>"
+                   "</html>") == 0);
+        if (whaleui_window_show(fw) == 0 && fw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(fw->render, fw->document) == 0);
+            }
+            lxb_dom_element* h = IdLookup{fw->render, "h"}.run();
+            whaleui_render_set_hover(fw->render, 150, 20);
+            assert(whaleui_render_frame(fw->render, fw->document) == 0);
+            assert(whaleui_render_frame(fw->render, fw->document) == 0);
+            assert(gpixel(fw->render, 150, 20) == 0xFF0000FF); /* hovered */
+            /* scroll 120px: the content slides up under the bar's rows */
+            for (int i = 0; i < 3; ++i) {
+                whaleui_render_handle_wheel(fw->render, 150, 100, -1.0f);
+            }
+            assert(whaleui_render_frame(fw->render, fw->document) == 0);
+            assert(whaleui_render_frame(fw->render, fw->document) == 0);
+            whaleui_dom_element_t* under =
+                whaleui_render_hit_element(fw->render, 150, 20);
+            std::printf("[hit-fixed] hover==h=%d pixel=%08X\n",
+                        static_cast<int>(
+                            static_cast<void*>(fw->render->hover_el) ==
+                            static_cast<void*>(h)),
+                        gpixel(fw->render, 150, 20));
+            std::fflush(stdout);
+            assert(h != nullptr);
+            assert(static_cast<void*>(under) == static_cast<void*>(h));
+            assert(static_cast<void*>(fw->render->hover_el) ==
+                   static_cast<void*>(h));
+            /* :hover survived the scroll: the bar still paints blue */
+            assert(gpixel(fw->render, 150, 20) == 0xFF0000FF);
+        }
+        whaleui_window_destroy(fw);
+    }
     }
 
     /* 2. textarea with wrapped content: scroll_max reflects the real

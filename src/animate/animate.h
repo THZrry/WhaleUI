@@ -74,6 +74,15 @@ int whaleui_anim_needs_layout(const whaleui_anim_t* a);
 /* 1 if `el` has any running animation (for the paint fast path). */
 int whaleui_anim_has_el(const whaleui_anim_t* a, struct lxb_dom_element* el);
 
+/* Enumerate every element with a running animation (the tick's act table,
+ * so the list is valid until the next tick). Writes up to `max` pointers
+ * and returns how many were written (the total when out is NULL/max==0).
+ * The renderer's per-frame damage/apply passes walk THIS list and resolve
+ * nodes through tree->by_el - O(animated) instead of a full-tree
+ * whaleui_anim_has_el walk per frame. */
+int whaleui_anim_els(const whaleui_anim_t* a, struct lxb_dom_element** out,
+                     int max);
+
 /* 1 if `el`'s running animations touch a LAYOUT-affecting property (width,
  * margin, font-size, ...). relayout_multi must only reflow the flex/grid
  * ancestors of such elements - a paint-only transition (UA
@@ -84,9 +93,12 @@ int whaleui_anim_has_layout_el(const whaleui_anim_t* a,
                                struct lxb_dom_element* el);
 
 /* Overwrite `style` with the current animated values for `el` (recorded by
- * whaleui_anim_tick). Used by the repaint-only fast path. */
-void whaleui_anim_apply_ov(const whaleui_anim_t* a, struct lxb_dom_element* el,
-                           WhaleUIComputedStyle& style);
+ * whaleui_anim_tick). Used by the repaint-only fast path. Returns 1 when at
+ * least one value actually CHANGED vs the style's current content (0 = the
+ * interpolated values are identical: the frame carries no visual damage and
+ * the renderer can skip the paint while staying alive). */
+int whaleui_anim_apply_ov(const whaleui_anim_t* a, struct lxb_dom_element* el,
+                          WhaleUIComputedStyle& style);
 
 /* Milliseconds clock (SDL_GetTicks). */
 uint64_t whaleui_anim_now(void);

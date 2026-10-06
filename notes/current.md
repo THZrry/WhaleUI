@@ -496,3 +496,67 @@ is_layout_props, position 变化会走 needs_layout -> relayout -> build),
 hover 后轮询帧直到盒子上方采样带变色(0.2s 过渡, 1s 预算, 抗时钟抖动);
 **修前 lifted=0 断言失败, 修后 lifted=1**(均实测)。
 验证: xmake b -y 通过; 10 项测试全绿。
+
+
+# <28>: hover 失效的链路级根因(四处) + 动画帧无效操作 + 无界缓存
+
+SOLVED
+
+现象: hover 修过多次(度量上下文/display 归一/mouse_pending/祖先链补齐/
+xf 标志/MOUSE_LEAVE)仍会复发。本轮把 事件->命中->级联->重排->重绘 整条
+链重走一遍, 找到四处此前每次只修掉一个症状的结构性缺陷, 全部落在通用
+机制层:
+
+**(1) hit_test 与 paint 三处不一致 —— 命中的不是画出来的区域。**
+  a. position:fixed: paint 在 fx 节点清零祖先滚动偏移, hit_test 没有 ->
+     页面滚动 N px 后 fixed 头部被按"绘制位置上方 N px"命中, hover/点击
+     落到下层内容("滚动后导航条失灵")。
+  b. translate/scale: paint 对变换元素自身盒按 origin 缩放、对整棵子树
+     平移 t + origin*(1-scale), hit_test 完全没镜像 -> 上浮/放大卡片在
+     画出的位置点不中("hover 只在鼠标持续移动时有效"的另一半根因)。
+     rot/skew 逆变换保留原近似, 锚点改用画出的盒。
+  c. 兄弟重叠: paint 按文档序后画者盖前画者, hit_test 却"首中即返回" ->
+     先画(下层)的兄弟抢走 hover/点击。改为"最后一个命中者胜"(与 paint
+     优先级一致); chunk 合并盒剔除照旧, 非重叠时代价不变。
+
+**(2) hover 只由 motion 驱动。** 滚动/重排把另一个元素移到静止指针下时,
+:hover 要等下一次 1px 移动才更新。现在 render 记录最后指针位置
+(mouse_wx/wy/mouse_has), 任何几何变更(状态重排的布局路径/全量重建/几何
+reflow/字体缩放/DOM 结构/滚动)置 hover_recheck, 帧内 paint 前用最后位置
+重命中; 命中变化走与 motion 相同的状态路径(state_pending), 本帧把新旧
+两盒并进损伤条带。MOUSE_LEAVE 清 mouse_has, 防止指针离开窗口后重命中
+复活 :hover。
+
+**(3) 动画帧的无效操作。** 动画/悬停损伤累积、paint-only 动画查找、
+layout 动画收集合计 3-4 次全树 std::function 走访/帧 -> 新增
+whaleui_anim_els(枚举 tick 的 act 表), 配合 tree->by_el 直取, 全部改为
+O(动画元素); whaleui_anim_apply_ov 改为返回"值是否真的变了", 暂停/
+延迟期(值不变)帧不加损伤, 条带为空走既有 below-fold 跳过, 绘制整帧省掉。
+GPU 侧合成早已按条带 dispatch(layer_rx/rw), 本轮补的是 CPU 侧。
+
+**(4) 帧率策略落地。** max_fps 缺省时读显示器刷新率(动态刷新率), 电池+
+省电模式 60 —— goal.md 的既定策略此前只写在注释里, 代码永远 60。
+
+**内存:**
+- g_tl_cache(行表)超预算时"跳过记账但仍 emplace" -> g_tl_bytes 不涨而
+  map 无限生长; 改为超预算不入缓存, 单 scratch 槽交付(调用方当帧消费)。
+- whaleui_render_reset_dom 漏清 el_ver/text_w_cache/text_size_cache/
+  g_tl_cache —— 全是元素/文本缓冲指针键, 文档销毁后地址复用可静默命中
+  旧数据 -> 全清 + tc_bytes=0; text_size_cache 加 65536 条上限(内容寻址,
+  清空安全)。
+
+**回归(修前 FAIL / 修后 PASS 均实测; 方法: git stash src 仅留测试):**
+- test_scroll [hover-scroll]: 滚动 120px 后静止指针下的 B 须获得 :hover
+  并画蓝 -- 修前 hover==b=0 像素红, 修后 1/蓝。
+- test_scroll [hit-translate]: translateY(-40px) 上浮后的卡片在绘制位置
+  (80,70)须命中 -- 修前 hit==b=0, 修后 1。
+- test_scroll [hit-fixed]: fixed 头部滚动后 (150,20) 须命中头部且 :hover
+  保持 -- 修前 under==h=0(命中下层内容), 修后 1 且像素蓝。
+
+验证: 10 套件全绿; 4 张主题离屏自检 OK(fluent/material x 深浅);
+probe_hover(demo_full) hover 段无布局漂移、scroll_max 不变; 旧代码下探针
+[scroll] 输出与新版相同(scroll_y 打印的是布局字段, 探针口径, 非回归)。
+
+踩坑: xmake f --tests=y 会触发 lexbor 重装报 "vs not found"(包已在,
+忽略该报错, 直接 xmake b test_scroll 即可); hit 顺序改"末中者胜"后,
+重叠兄弟的 hover 归属与 paint 一致, 既有非重叠用例全部不受影响。

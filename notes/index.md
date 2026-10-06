@@ -135,3 +135,7 @@ counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.m
 <26>(SOLVED): 首行/首字 —— match_pseudo 4/5 + fl/flt位 + paint首行wrap拆分/
 首字形独立绘制。见 notes/current.md
 <27>(SOLVED): :has() —— 后代/子/兄弟相对选择器求值 + 取参最大权重。见 notes/current.md
+<28>(SOLVED): hover 失效的链路级根因四处(hit/paint 不一致×3: fixed 偏移/
+translate 子树/兄弟优先序 + hover 只由 motion 驱动补帧内重命中) +
+动画帧 3-4 次全树走访改 O(动画元素) + 值不变跳帧 + 动态刷新率帧率策略 +
+tl 缓存超预算无界生长/reset_dom 指针键缓存漏清 —— 见 notes/current.md

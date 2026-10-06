@@ -560,9 +560,20 @@ void render_worker_fn(whaleui_app_t* app)
             if (alive) {
                 app->frame_request.store(1);
             }
-            /* frame cap: max_fps wins; default 60 on battery and AC alike.
-             * Sleep OUTSIDE the queue lock so event pushes stay cheap. */
-            int fps = app->max_fps > 0 ? app->max_fps : 60;
+            /* frame cap: an explicit max_fps wins. Otherwise the display's
+             * refresh rate is the cap (dynamic refresh rate - a 144Hz panel
+             * animates at 144), dropping to 60 while on battery with
+             * battery saver enabled (the documented power policy; FSR has
+             * its own battery trigger in fsr_want_active). Sleep OUTSIDE
+             * the queue lock so event pushes stay cheap. */
+            int fps = app->max_fps;
+            if (fps <= 0) {
+                if (app->battery_saver && app->on_battery) {
+                    fps = 60;
+                } else {
+                    fps = app->display_refresh > 0 ? app->display_refresh : 60;
+                }
+            }
             if (fps < 1) {
                 fps = 60;
             }

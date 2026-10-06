@@ -159,6 +159,21 @@ struct whaleui_render
 
     /* element under the mouse (for :hover rules) */
     struct lxb_dom_element* hover_el;
+    /* last pointer position seen by set_hover, in WINDOW coordinates (raw
+     * SDL motion coords, before the fb scaling). The frame re-hit-tests
+     * this position after any relayout/scroll: a hover-driven layout
+     * change, a wheel scroll or a window resize can move a DIFFERENT
+     * element under a stationary pointer, and without the re-check that
+     * element only receives :hover on the next 1px of mouse movement
+     * ("hover dies after scroll / after the lift completes"). mouse_has=0
+     * once the pointer leaves the window (MOUSE_LEAVE) so the re-check
+     * cannot resurrect :hover for a pointer that is gone. */
+    float mouse_wx, mouse_wy;
+    int mouse_has;
+    /* set by the frame when the tree geometry may have moved under the
+     * pointer (state relayout, full/DOM relayout, scroll, resize, font
+     * scale): consumed once per frame right before paint. */
+    int hover_recheck;
     /* previous hover target, dirtied for a partial repaint on change.
      * The mouse can cross several elements between two frames (fast
      * moves), so every element that LEFT :hover since the last frame is
