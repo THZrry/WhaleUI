@@ -144,3 +144,8 @@ inset/filter/mixblend)改记录包围盒 dispatch(uniform 偏移, 输出逐字�
 一致) + shadow 清零 RMW 改 clear pass + backdrop/filter 源 blit 区域化
 (mip 足迹外扩/偶对齐) + partial 帧主 raster 条带 scissor + 边缘线程
 越界守卫 —— 见 notes/current.md
+<30>(SOLVED): hover 延迟真因(布局动画与 paint-only 过渡不组合, 通用
+apply_paint_only_anim) + select 三连(开关去全量重建走 scroll 帧/点选
+bump el_ver/scroll_el 配 scroll_dirty/值文本基线居中) + DOM 三阶段事件
+(捕获/目标/冒泡 + currentTarget/phase + preventDefault 取消按下链) ——
+见 notes/current.md

@@ -416,6 +416,240 @@ int main(void)
         }
         whaleui_window_destroy(fw);
     }
+
+    /* Regression: a PAINT-ONLY transition must progress while a LAYOUT
+     * animation runs elsewhere on the page. The frame's layout-animation
+     * branch (relayout_multi) applied animated styles only inside the
+     * rebuilt subtrees; a hover transform transition on any OTHER element
+     * never received its interpolated values (the paint-only apply path
+     * was skipped on those frames), so the card stayed pinned at the
+     * transition's start value until the next state relayout - on the demo
+     * page (infinite width bar) the card lifted only after the mouse had
+     * left ("hover reacts after the mouse moved away"). The two animation
+     * paths must compose every frame. */
+    {
+        whaleui_window_t* cw =
+            whaleui_window_create(app, "anim-compose", 300, 200);
+        assert(cw != nullptr);
+        assert(whaleui_window_load_html(
+                   cw,
+                   "<html><head><style>body{margin:0}"
+                   "#bar{position:absolute;left:0;top:0;height:8px;"
+                   "background-color:#00ff00;"
+                   "animation:barw 0.4s linear infinite alternate}"
+                   "@keyframes barw{from{width:10%}to{width:90%}}"
+                   "#b{position:absolute;left:40px;top:100px;width:80px;"
+                   "height:40px;background-color:#ff0000;"
+                   "transition:transform 0.15s}"
+                   "#b:hover{transform:translateY(-40px);"
+                   "background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"bar\"></div><div id=\"b\"></div></body>"
+                   "</html>") == 0);
+        if (whaleui_window_show(cw) == 0 && cw->render != nullptr) {
+            /* let the bar animation run a few frames: the frame loop is
+             * now on the layout-animation path */
+            for (int i = 0; i < 6; ++i) {
+                assert(whaleui_render_frame(cw->render, cw->document) == 0);
+                SDL_Delay(10);
+            }
+            unsigned int before = gpixel(cw->render, 80, 75);
+            whaleui_render_set_hover(cw->render, 80, 120);
+            /* poll to completion; the bar keeps the layout path busy the
+             * whole time - the hover transition must still lift */
+            bool lifted = false;
+            for (int i = 0; i < 100 && !lifted; ++i) {
+                assert(whaleui_render_frame(cw->render, cw->document) == 0);
+                lifted = gpixel(cw->render, 80, 75) != before;
+                SDL_Delay(10); /* 1s budget > 0.15s transition */
+            }
+            std::printf("[anim-compose] before=%08X lifted=%d\n", before,
+                        static_cast<int>(lifted));
+            std::fflush(stdout);
+            assert(lifted);
+        }
+        whaleui_window_destroy(cw);
+    }
+
+    /* Regression: <select> open -> close -> open -> pick must work through
+     * the real click path, and picking an option must update the control's
+     * VALUE TEXT. The value raster is cached keyed on (element, geometry,
+     * color) - none of which change when the selection changes - so the
+     * control kept painting the OLD option's text until some unrelated
+     * invalidation ("select shows the previous value / the text is
+     * wrong"). */
+    {
+        whaleui_window_t* sw2 =
+            whaleui_window_create(app, "select-pick", 300, 220);
+        assert(sw2 != nullptr);
+        assert(whaleui_window_load_html(
+                   sw2,
+                   "<html><head><style>body{margin:0}"
+                   "select{position:absolute;left:20px;top:20px;"
+                   "width:160px}</style></head>"
+                   "<body><select id=\"s\">"
+                   "<option>AAA</option><option>BBB</option>"
+                   "<option>CCC</option></select></body></html>") == 0);
+        if (whaleui_window_show(sw2) == 0 && sw2->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            }
+            /* the select never moves: fixed coordinates (the popup paints
+             * outside the tree and never relayouts it, so the control's
+             * node stays live across open/close/pick) */
+            const int sx = 30, sy = 30, pick_y = 52 + 26 + 13;
+            /* FNV over a pixel strip across the value text: any glyph
+             * change moves some pixel */
+            auto strip_hash = [&](void) {
+                unsigned long long h = 1469598103934665603ULL;
+                /* scan the full control box rows: the value text may sit
+                 * anywhere inside (vy = content.y - 2) */
+                for (int yy = 22; yy < 50; yy += 2) {
+                    for (int dx = 24; dx < 120; dx += 5) {
+                        unsigned int p = gpixel(sw2->render, dx, yy);
+                        h ^= p;
+                        h *= 1099511628211ULL;
+                    }
+                }
+                return h;
+            };
+            /* dump the raw pixels of one value-text row for eyeballing */
+            auto dump_row = [&](int yy, const char* tag) {
+                std::string line = std::string(tag) + " y=" +
+                                   std::to_string(yy) + ":";
+                int ink = 0;
+                for (int dx = 22; dx < 90; ++dx) {
+                    unsigned int p = gpixel(sw2->render, dx, yy);
+                    /* control bg is light gray ~F5; ink is dark */
+                    unsigned int rr = (p >> 16) & 0xFF;
+                    line += (rr < 0x80) ? '#' : '.';
+                    if (rr < 0x80) {
+                        ++ink;
+                    }
+                }
+                std::printf("[select-pick] %s ink=%d\n", line.c_str(), ink);
+                std::fflush(stdout);
+            };
+            const unsigned long long h_aaa = strip_hash();
+            for (int yy = 24; yy <= 48; yy += 4) {
+                dump_row(yy, "aaa");
+            }
+            const char* val = nullptr;
+            /* 1. first click opens */
+            assert(whaleui_render_handle_click(sw2->render, sx, sy, &val) ==
+                   0);
+            assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            std::printf("[select-pick] after open: open=%d\n",
+                        static_cast<int>(sw2->render->open_select != nullptr));
+            std::fflush(stdout);
+            assert(sw2->render->open_select != nullptr);
+            assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            /* 2. second click at the control closes (toggle) */
+            assert(whaleui_render_handle_click(sw2->render, sx, sy, &val) ==
+                   0);
+            assert(sw2->render->open_select == nullptr);
+            assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            /* 3. reopen and pick the SECOND option row (popup starts at
+             * the select's bottom edge; row 1 center) */
+            assert(whaleui_render_handle_click(sw2->render, sx, sy, &val) ==
+                   0);
+            assert(sw2->render->open_select != nullptr);
+            assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            int picked = whaleui_render_handle_click(sw2->render, 50, pick_y,
+                                                     &val);
+            std::printf("[select-pick] picked=%d val=%s\n", picked,
+                        val ? val : "(null)");
+            std::fflush(stdout);
+            assert(picked == 1 && val && std::strcmp(val, "BBB") == 0);
+            assert(sw2->render->open_select == nullptr);
+            /* 4. the control's value text must repaint as BBB */
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(sw2->render, sw2->document) == 0);
+            }
+            {
+                auto it = sw2->render->select_index.begin();
+                std::printf("[select-pick] select_index entries=%d\n",
+                            static_cast<int>(sw2->render->select_index.size()));
+                for (; it != sw2->render->select_index.end(); ++it) {
+                    std::printf("[select-pick] select_index=%d\n", it->second);
+                }
+            }
+            const unsigned long long h_bbb = strip_hash();
+            for (int yy = 24; yy <= 48; yy += 4) {
+                dump_row(yy, "bbb");
+            }
+            std::printf("[select-pick] aaa=%016llx bbb=%016llx\n", h_aaa,
+                        h_bbb);
+            std::fflush(stdout);
+            assert(h_bbb != h_aaa);
+        }
+        whaleui_window_destroy(sw2);
+    }
+
+    /* Regression: preventDefault on mousedown is observable through the
+     * phased dispatch (the engine's press chain consults it). Custom
+     * controls need a reliable "don't do the built-in thing" contract:
+     * without it the engine always focuses/presses under the listener. */
+    {
+        whaleui_window_t* pw =
+            whaleui_window_create(app, "prevent-press", 300, 200);
+        assert(pw != nullptr);
+        assert(whaleui_window_load_html(
+                   pw,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:20px;top:20px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "</style></head>"
+                   "<body><div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(pw) == 0 && pw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(pw->render, pw->document) == 0);
+            }
+            lxb_dom_element* bel = nullptr;
+            for (auto& n : pw->render->tree->arena) {
+                if (n.visible && n.el && !n.is_text && !n.pseudo) {
+                    size_t len = 0;
+                    const lxb_char_t* name =
+                        lxb_dom_element_local_name(n.el, &len);
+                    if (name && len == 3 &&
+                        std::memcmp(name, "div", 3) == 0) {
+                        size_t alen = 0;
+                        const lxb_char_t* av =
+                            lxb_dom_element_get_attribute(
+                                n.el, (const lxb_char_t*)"id", 2, &alen);
+                        if (av && alen == 1 && av[0] == 'b') {
+                            bel = n.el;
+                            break;
+                        }
+                    }
+                }
+            }
+            assert(bel != nullptr);
+            struct Pv {
+                static void on_down(whaleui_dom_event_t* ev, void* ud) {
+                    (void)ud;
+                    whaleui_dom_event_prevent_default(ev);
+                }
+            };
+            assert(whaleui_dom_add_event_listener(
+                       reinterpret_cast<whaleui_dom_element_t*>(bel),
+                       "mousedown", Pv::on_down, nullptr) == 0);
+            int prevented = 0;
+            assert(whaleui_dom_dispatch_phased(
+                       reinterpret_cast<whaleui_dom_element_t*>(bel),
+                       "mousedown", 0, 30, 30, 0, 0, 0, &prevented) == 0);
+            std::printf("[prevent-press] prevented=%d\n", prevented);
+            std::fflush(stdout);
+            assert(prevented == 1);
+            /* the compat entry still dispatches (return code unchanged) */
+            int prevented2 = 0;
+            assert(whaleui_dom_dispatch_phased(
+                       reinterpret_cast<whaleui_dom_element_t*>(bel),
+                       "mousedown", 0, 30, 30, 0, 0, 0, &prevented2) == 0);
+            assert(prevented2 == 1);
+        }
+        whaleui_window_destroy(pw);
+    }
     }
 
     /* 2. textarea with wrapped content: scroll_max reflects the real

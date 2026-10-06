@@ -2778,8 +2778,24 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             int idx = (y - list_y) / kSelectItemH;
             if (idx >= 0 && idx < static_cast<int>(values.size())) {
                 r->select_index[r->open_select] = idx;
+                /* the value raster is keyed on (element, geometry, color)
+                 * - none of which change with the selection. Bump this
+                 * element's version so its value re-rasterizes instead of
+                 * serving the old option's glyphs ("select shows the
+                 * previous value"). */
+                r->el_ver[r->open_select] = ++r->el_ver_seq;
                 r->open_select = nullptr;
-                r->has_dirty = 1;
+                /* no relayout: opening/closing/picking changes NO style or
+                 * geometry (the popup paints outside the tree) - only the
+                 * viewport must repaint at the same offsets. A whole-tree
+                 * rebuild here recreated every node: tests holding node
+                 * pointers saw orphans, and every toggle paid a full
+                 * layout. scroll_el (+ scroll_dirty, otherwise the frame's
+                 * idle check skips the paint entirely) forces exactly one
+                 * full-viewport paint (scroll_frame semantics) and clears
+                 * stale hover damage. */
+                r->scroll_el = s->el;
+                r->scroll_dirty = 1;
                 if (out_value) {
                     static std::string chosen;
                     chosen = values[idx];
@@ -2790,7 +2806,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         }
         /* click outside the list closes it */
         r->open_select = nullptr;
-        r->has_dirty = 1;
+        r->scroll_el = s->el;
+        r->scroll_dirty = 1;
     }
     /* 2. clicking a <select> toggles it open */
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
@@ -2802,7 +2819,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
          * value ("the text renders twice") */
         r->open_select = (was_open_select == hit->el) ? nullptr : hit->el;
         r->open_select_hover = 0;
-        r->has_dirty = 1;
+        r->scroll_el = hit->el;
+        r->scroll_dirty = 1;
     }
     /* 3. clicking a <summary> toggles its parent <details> (collapse/
      * expand is a C++ behavior, not pure CSS). The hit may be the summary
@@ -3062,7 +3080,10 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
             }
             if (hov != r->open_select_hover) {
                 r->open_select_hover = hov;
-                r->has_dirty = 1;
+                /* repaint only (the highlight paints outside the tree):
+                 * a full rebuild here recreated every node per mouse move */
+                r->scroll_el = s->el;
+                r->scroll_dirty = 1;
             }
         }
         /* the popup is a modal overlay: hover styles must NOT fall through
@@ -3942,6 +3963,88 @@ static void fill_worker_fn(whaleui_render_t* r)
     r->fill_finished.store(1);
 }
 
+/* recompute the cascaded opacity of `nd`'s subtree: each element reads its
+ * own style, text runs inherit the chain product */
+static void anim_apply_opacity(whaleui_layout_node_t* nd, float po)
+{
+    if (nd->is_text) {
+        nd->opacity = po;
+        return;
+    }
+    float o = 1.0f;
+    std::string ov2 = sget(nd->style, "opacity");
+    if (!ov2.empty()) {
+        o = std::strtof(ov2.c_str(), nullptr);
+        if (o < 0.0f) {
+            o = 0.0f;
+        }
+        if (o > 1.0f) {
+            o = 1.0f;
+        }
+    }
+    nd->opacity = o * po;
+    for (whaleui_layout_node_t* c = nd->first_child; c; c = c->next) {
+        anim_apply_opacity(c, nd->opacity);
+    }
+}
+
+/* apply the animation tick's interpolated values to every running-animation
+ * element NOT in `skip` (elements in `skip` had their values applied by the
+ * layout build during a relayout — their whole subtree was rebuilt). Phase
+ * 1 writes the styles + refreshes the cached paint flags (xf/fx/sk single
+ * writer), phase 2 recomputes the opacity chains from the final styles.
+ * Returns 1 when at least one style value actually changed (a frame whose
+ * interpolated values all equal the current styles carries no visual
+ * damage). This is the COMPOSITION glue between the two animation paths:
+ * while a layout animation runs (demo: .anim-bar width), the frame takes
+ * the relayout_multi branch and previously never applied paint-only
+ * transitions (demo: .anim-card:hover lift) — the hover transform stayed
+ * pinned at its transition's start value until the next state relayout,
+ * so the card lifted only after the mouse left ("hover reacts after the
+ * mouse moved away"). */
+static int apply_paint_only_anim(whaleui_render_t* r,
+                                 const std::vector<lxb_dom_element*>* skip)
+{
+    int n = whaleui_anim_els(r->anim, nullptr, 0);
+    if (n <= 0 || !r->tree) {
+        return 0;
+    }
+    std::vector<lxb_dom_element*> act;
+    act.resize(static_cast<size_t>(n));
+    whaleui_anim_els(r->anim, act.data(), n);
+    std::vector<whaleui_layout_node_t*> nodes;
+    int changed = 0;
+    for (lxb_dom_element* el : act) {
+        if (skip && std::find(skip->begin(), skip->end(), el) != skip->end()) {
+            continue;
+        }
+        /* text runs share their element's animatable style but must not
+         * have the animation values applied to their own style (a
+         * translateY would offset the glyphs inside the already-
+         * transformed box - "ghost text" regression). Their opacity is
+         * handled by anim_apply_opacity. */
+        whaleui_layout_node_t* nd = find_node_by_el(r->tree, el);
+        if (!nd || nd->is_text) {
+            continue;
+        }
+        if (whaleui_anim_apply_ov(r->anim, el, nd->style)) {
+            changed = 1;
+        }
+        /* apply_ov wrote interpolated values straight into the style map,
+         * behind layout's build: refresh the cached paint flags or an
+         * interpolated transform keeps xf=0 and paint_node never
+         * translates. Position cannot arrive through a paint-only
+         * animation (is_layout_prop), so the fx/sk refresh only keeps the
+         * single-writer invariant. */
+        whaleui_layout_node_refresh_paint_flags(nd);
+        nodes.push_back(nd);
+    }
+    for (whaleui_layout_node_t* nd : nodes) {
+        anim_apply_opacity(nd, 1.0f);
+    }
+    return changed;
+}
+
 extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t* doc)
 {
     if (!r || !doc) {
@@ -4619,6 +4722,13 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
              * container is rare, and the range corrects on the next full
              * relayout (scroll/hover/DOM/edit); the walk is per-frame
              * baseline cost otherwise. */
+            /* the build applied animated styles only INSIDE the rebuilt
+             * subtrees: paint-only animated elements elsewhere (a hover
+             * transform transition concurrent with the width bar) still
+             * need this frame's interpolated values - see
+             * apply_paint_only_anim for the composition rationale. */
+            anim_values_changed |=
+                apply_paint_only_anim(r, &anim_els);
         } else {
             r->has_dirty = 1; /* tree inconsistent: full rebuild */
         }
@@ -4634,85 +4744,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
          * animation cost ms at 2k. The animated set comes straight from
          * the tick's act table resolved through by_el: O(animated) per
          * frame, zero tree walk. */
-        std::function<void(whaleui_layout_node_t*, float)> apply_sub =
-            [&](whaleui_layout_node_t* nd, float po) {
-                if (nd->is_text) {
-                    nd->opacity = po;
-                    return;
-                }
-                float o = 1.0f;
-                std::string ov2 = sget(nd->style, "opacity");
-                if (!ov2.empty()) {
-                    o = std::strtof(ov2.c_str(), nullptr);
-                    if (o < 0.0f) {
-                        o = 0.0f;
-                    }
-                    if (o > 1.0f) {
-                        o = 1.0f;
-                    }
-                }
-                nd->opacity = o * po;
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    apply_sub(c, nd->opacity);
-                }
-            };
-        std::vector<lxb_dom_element*> anim_els;
-        {
-            int n = whaleui_anim_els(r->anim, nullptr, 0);
-            if (n > 0) {
-                anim_els.resize(static_cast<size_t>(n));
-                whaleui_anim_els(r->anim, anim_els.data(), n);
-            }
-        }
-        /* phase 1 - write every animated style + refresh paint flags. */
-        std::vector<whaleui_layout_node_t*> anim_nodes;
-        for (lxb_dom_element* el : anim_els) {
-            whaleui_layout_node_t* nd = find_node_by_el(r->tree, el);
-            /* text runs share their element's animatable style but must
-             * not have the animation values applied to their own style (a
-             * translateY would offset the glyphs inside the already-
-             * transformed box - "ghost text" regression). Their opacity is
-             * handled by apply_sub below. */
-            if (!nd || nd->is_text) {
-                continue;
-            }
-            if (whaleui_anim_apply_ov(r->anim, el, nd->style)) {
-                anim_values_changed = 1;
-            }
-            /* apply_ov wrote interpolated values straight into the style
-             * map, behind layout's build: refresh the cached paint flags
-             * or an interpolated transform keeps xf=0 (apply_transition
-             * pins the style at "none" while the transition registers) and
-             * paint_node never translates - a hover transform transition
-             * never lifts. Opacity is refreshed in phase 2; position
-             * cannot arrive through a paint-only animation
-             * (is_layout_prop), so the fx/sk refresh only keeps the
-             * single-writer invariant. */
-            whaleui_layout_node_refresh_paint_flags(nd);
-            anim_nodes.push_back(nd);
-        }
-        /* phase 2 - opacity chains from the FINAL styles (an animated
-         * ancestor + animated descendant compose identically in any
-         * order because apply_sub re-reads each node's own style). */
-        for (whaleui_layout_node_t* nd : anim_nodes) {
-            float o = 1.0f;
-            std::string ov2 = sget(nd->style, "opacity");
-            if (!ov2.empty()) {
-                o = std::strtof(ov2.c_str(), nullptr);
-                if (o < 0.0f) {
-                    o = 0.0f;
-                }
-                if (o > 1.0f) {
-                    o = 1.0f;
-                }
-            }
-            nd->opacity = o;
-            for (whaleui_layout_node_t* c = nd->first_child; c;
-                 c = c->next) {
-                apply_sub(c, nd->opacity);
-            }
-        }
+        anim_values_changed |= apply_paint_only_anim(r, nullptr);
     }
     /* DOM mutations: incremental relayout. Only the affected subtrees get
      * a fresh style cascade + build; the box pass re-positions the tree

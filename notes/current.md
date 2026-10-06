@@ -610,3 +610,67 @@ fb 尺寸丢弃边缘线程; kTextCompositeCS 的 uniform zw 分量(原来恒 0)
 
 遗留: GenerateMipmapsForGPUTexture 全纹理(SDL 无区域 API); 最终
 swapchain blit 全屏(present 本性); FSR 两 pass 全窗(仅 FSR 激活时)。
+
+
+# <30>: hover 延迟真因(动画两路径不组合) + select 三连修 + DOM 三阶段事件
+
+SOLVED
+
+用户报告: demo 卡片 hover"鼠标移走才反应"; select"点不开 + 文字错位"。
+三件事, 逐条都是"之前修过又复发"的链路级问题。
+
+**(1) hover 延迟的真因 —— 两条动画路径不能组合。**
+demo 卡片 `.anim-card:hover{transform}` 是 paint-only 过渡, 同一页的
+`.anim-bar` 是 width 布局动画(infinite)。只要有布局动画在跑, 帧走
+relayout_multi 分支, 而该分支只给重建集里的元素应用插值 —— paint-only
+过渡的 apply_ov 路径被整段跳过, hover 的 transform 永远钉在过渡起点,
+直到鼠标移开触发重级联才把中间值写进 style("移走才反应")。
+修(通用机制, render.cpp): paint-only 应用抽成 apply_paint_only_anim,
+两分支共用; layout-anim 分支在 relayout 后对重建集之外的动画元素同样
+应用插值 + 刷新 xf + 重算 opacity 链; changed 标记并入
+anim_values_changed(值不变帧仍可跳过绘制)。
+回归: test_scroll [anim-compose] —— width 无限动画进行中悬停过渡必须
+上浮; 修前 lifted=0 FAIL / 修后 lifted=1 PASS(均实测)。
+
+**(2) select 三连修(handle_click 不再全量重建)。**
+调试 select-pick 用例时逐层剥开三层:
+  a. 开/关/选都置 has_dirty=1 -> 每次开关全量重建整树: 外部持有的布局
+     节点指针变孤儿("点第二次打不开"的直接表象), 每次 toggle 付全布局
+     代价。popup 画在树外, 开关不改任何样式/几何 —— 改走 scroll_el +
+     scroll_dirty(整视口重绘一帧, 无 relayout)。附带: motion 高亮分支
+     的 has_dirty 同样改为 scroll 帧。
+  b. 点选后值文本不变: 值 raster 缓存键(元素/几何/颜色)都不随选择变 ->
+     选 option 时 bump 该元素 el_ver, 旧光栅失效。
+  c. pick 后帧根本没画: scroll_el 只在 wheel 路径连带 scroll_dirty, 帧的
+     idle 早退只看 scroll_dirty -> select 三处同时置 scroll_dirty=1。
+     (idle 早退不认 scroll_el 是链路洞, 本轮在调用点补齐。)
+  d. 值文本基线: paint_select_value 用 content.y - 2 贴顶画, input 用
+     content 盒居中 -> 高控件里 select 文字偏上("文字错位")。改 vy =
+     content.y(与 input 同盒同居中); popup 行本来就是居中, 不动。
+     主题对照: 差异像素只在两处 select 的值文本行(y≈47/655, 上移 2px),
+     其余逐字节一致, 自检 OK。
+回归: test_scroll [select-pick](开/关/重开/点选 BBB/值文本重绘) +
+[prevent-press](phased 派发报告 prevented)。
+
+**(3) DOM 三阶段事件(控件可靠性的地基)。**
+监听 API 之前只有目标单点派发, 引擎默认行为(select toggle/checkbox/
+details/focus)没有任何可取消的契约 —— 自定义控件只能绕着引擎行为打
+补丁("控件容易坏"的根子)。现在:
+- events.cpp: 捕获(根->父) -> 目标(先捕获监听后冒泡监听) -> 冒泡
+  (父->根); Listener 加 capture 位; event 对象加 currentTarget + phase
+  (1/2/3); stopPropagation 中断; 任一阶段 preventDefault 由
+  whaleui_dom_dispatch_phased 经 out_prevented 带出。
+- 公开 API(whaleui.h): add_event_listener_ex(el,type,cb,ud,capture),
+  dispatch_phased, event_current_target/event_phase; 旧 add/dispatch 签名
+  与语义不变(冒泡注册/目标派发是其子集)。
+- app.cpp: mousedown 先派发(返回 prevented)再决定整条按下链
+  (set_pressed + handle_click + click 派发); mouseup 同理。mousedown 被
+  prevent 则整链取消(浏览器语义)。click 的 toggle 仍在 handle_click 内
+  先执行(顺序保持本轮不变, 注释写明 follow-up: 把 toggle 移到 click
+  派发之后需要 hit 在树编辑后存活)。
+回归: test_dom 三阶段顺序
+(bodyC1;divC1;spanC2;spanB2;divB3;bodyB3) + divB 处 stop 截断 bodyB。
+
+验证: 10 套件全绿; 4 张主题自检 OK(差异仅 select 基线行); probe_hover
+无布局漂移。踩坑: 测试里跨帧持有 layout 节点指针必成孤儿 —— select-pick
+改用固定坐标(引擎不再重建, 坐标稳定); arena 遍历找节点只在同帧内有效。

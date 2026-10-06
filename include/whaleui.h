@@ -546,8 +546,9 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
 
 /* ======================= DOM events ======================= */
 
-/* Event listeners mirror addEventListener(type, listener) with a plain C
- * callback. `type` is a lowercase DOM event name; supported types:
+/* Event listeners mirror addEventListener(type, listener[, useCapture])
+ * with a plain C callback. `type` is a lowercase DOM event name; supported
+ * types:
  *
  *   Mouse:    click, dblclick, mousedown, mouseup, mousemove,
  *             mouseenter, mouseleave, contextmenu, wheel
@@ -556,9 +557,13 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
  *   Form:     change, input, submit
  *   Document: load, scroll, resize
  *
- * Dispatch model: listeners fire on the target element only (no bubbling /
- * capture phase yet - see doc/more-dom-api.md). The callback receives a
- * transient event object valid for the duration of the call only. */
+ * Dispatch model: the DOM three-phase model - capture down the ancestor
+ * chain (capture listeners), target (capture, then bubble listeners),
+ * bubble back up (bubble listeners). stopPropagation() halts the walk;
+ * preventDefault() cancels the engine's default behavior for the event
+ * (select toggle, checkbox flip, details expand, focus move). The callback
+ * receives a transient event object valid for the duration of the call
+ * only. */
 
 typedef struct whaleui_dom_event whaleui_dom_event_t;
 
@@ -569,6 +574,11 @@ typedef void (*whaleui_event_cb)(whaleui_dom_event_t* ev, void* userdata);
  * a no-op success). */
 int whaleui_dom_add_event_listener(whaleui_dom_element_t* el, const char* type,
                                    whaleui_event_cb cb, void* userdata);
+/* Register a capture-phase listener (fires on the way down the ancestor
+ * chain and at the target before bubble listeners). */
+int whaleui_dom_add_event_listener_ex(whaleui_dom_element_t* el,
+                                      const char* type, whaleui_event_cb cb,
+                                      void* userdata, int capture);
 int whaleui_dom_remove_event_listener(whaleui_dom_element_t* el, const char* type,
                                       whaleui_event_cb cb, void* userdata);
 
@@ -576,10 +586,27 @@ int whaleui_dom_remove_event_listener(whaleui_dom_element_t* el, const char* typ
  * success (listeners may call prevent_default). */
 int whaleui_dom_dispatch_event(whaleui_dom_element_t* el, const char* type);
 
+/* Full dispatch with input data + default-behavior reporting: runs the
+ * three-phase dispatch and reports via out_prevented (may be NULL) whether
+ * any listener called prevent_default. The engine's own click/key handlers
+ * use this to decide whether their default behavior runs. */
+int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el, const char* type,
+                                int key_code, int mouse_x, int mouse_y,
+                                int mouse_button, float wheel_x,
+                                float wheel_y, int* out_prevented);
+
 /* --- event object accessors (valid inside the callback only) --- */
 
 /* The element the event was dispatched on. */
 whaleui_dom_element_t* whaleui_dom_event_target(const whaleui_dom_event_t* ev);
+
+/* The node whose listeners are currently running (the ancestor during
+ * capture/bubble, the target at the target phase). */
+whaleui_dom_element_t* whaleui_dom_event_current_target(
+    const whaleui_dom_event_t* ev);
+
+/* The current phase: 1 = capture, 2 = target, 3 = bubble. */
+int whaleui_dom_event_phase(const whaleui_dom_event_t* ev);
 
 /* The event type string ("click", ...). */
 const char* whaleui_dom_event_type(const whaleui_dom_event_t* ev);

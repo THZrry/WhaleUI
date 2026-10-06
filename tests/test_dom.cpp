@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <string>
 
 /* Regression: document/stylesheet encodings that Windows editors write.
  *
@@ -332,6 +333,65 @@ int main(void)
         assert(whaleui_dom_remove_event_listener(a, "click", Local::on_click, ud) == 0);
         assert(whaleui_dom_dispatch_event(a, "click") == 0);
         assert(clicks == 1); /* removed */
+
+        /* three-phase dispatch: capture (root -> parent), target, bubble
+         * (parent -> root). A grandchild click must visit body-capture,
+         * div-capture, target-capture, target-bubble, div-bubble,
+         * body-bubble in that order, and stopPropagation halts the rest. */
+        {
+            static std::string order;
+            static bool do_stop = false;
+            /* ud encodes "tag+cap": e.g. "divC" = div's capture listener.
+             * The record prints the registration owner + the phase number
+             * (1 = capture, 2 = target, 3 = bubble). */
+            struct Ph {
+                static void rec(whaleui_dom_event_t* ev, void* ud) {
+                    const char* tag = static_cast<const char*>(ud);
+                    order += tag;
+                    order += ('0' + whaleui_dom_event_phase(ev));
+                    order += ";";
+                    assert(whaleui_dom_event_current_target(ev) != nullptr);
+                    if (do_stop && tag[0] == 'd' && tag[1] == 'i' &&
+                        whaleui_dom_event_phase(ev) == 3) {
+                        whaleui_dom_event_stop_propagation(ev);
+                    }
+                }
+            };
+            whaleui_dom_document_t* doc2 = whaleui_dom_parse_html(
+                "<html><body><div id=\"d\">"
+                "<span id=\"s\">x</span></div>"
+                "</body></html>",
+                0);
+            assert(doc2 != nullptr);
+            whaleui_dom_element_t* body2 = whaleui_dom_body(doc2);
+            whaleui_dom_element_t* d = whaleui_dom_get_element_by_id(doc2, "d");
+            whaleui_dom_element_t* s = whaleui_dom_get_element_by_id(doc2, "s");
+            assert(body2 && d && s);
+            assert(whaleui_dom_add_event_listener_ex(body2, "click", Ph::rec,
+                                                     (void*)"bodyC", 1) == 0);
+            assert(whaleui_dom_add_event_listener(body2, "click", Ph::rec,
+                                                  (void*)"bodyB") == 0);
+            assert(whaleui_dom_add_event_listener_ex(d, "click", Ph::rec,
+                                                     (void*)"divC", 1) == 0);
+            assert(whaleui_dom_add_event_listener(d, "click", Ph::rec,
+                                                  (void*)"divB") == 0);
+            assert(whaleui_dom_add_event_listener_ex(s, "click", Ph::rec,
+                                                     (void*)"spanC", 1) == 0);
+            assert(whaleui_dom_add_event_listener(s, "click", Ph::rec,
+                                                  (void*)"spanB") == 0);
+            order.clear();
+            do_stop = false;
+            assert(whaleui_dom_dispatch_event(s, "click") == 0);
+            std::printf("[events] order=%s\n", order.c_str());
+            std::fflush(stdout);
+            assert(order == "bodyC1;divC1;spanC2;spanB2;divB3;bodyB3;");
+            /* stopPropagation at div-bubble: body-bubble never runs */
+            order.clear();
+            do_stop = true;
+            assert(whaleui_dom_dispatch_event(s, "click") == 0);
+            assert(order == "bodyC1;divC1;spanC2;spanB2;divB3;");
+            whaleui_dom_document_destroy(doc2);
+        }
 
         /* clone: deep copy is independent */
         whaleui_dom_element_t* clone = whaleui_dom_clone(a, 1);

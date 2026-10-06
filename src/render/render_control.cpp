@@ -730,15 +730,17 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     int fs = 13;
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
-    /* value text left, arrow pinned to the right edge. Both are nudged up
-     * 2px: segoe's glyphs sit ~2px below the line-box center, so metric
-     * centering alone leaves the text looking low inside the control. */
+    /* value text left, arrow pinned to the right edge. The value fills
+     * the content box like an input's text (same by/bh): draw_text_at
+     * centers the glyph box by itself, so the value sits on the same
+     * baseline as an <input> - the old content.y - 2 pinned the text to
+     * the top of tall controls ("select text is misplaced"). */
     int arrow_x = n->content.x + off_x + n->content.w - 16;
     int text_w = arrow_x - n->content.x - off_x - 8;
     if (text_w < 10) {
         text_w = 10;
     }
-    int vy = n->content.y + off_y - 2;
+    int vy = n->content.y + off_y;
     draw_text_at(r, texts[sel], n->content.x + off_x + 2, vy,
                  text_w, n->content.h, fs, "", fg, 0, 0, n->el, clip);
     /* large solid triangle ▲: the small ? is only a few px tall and looks

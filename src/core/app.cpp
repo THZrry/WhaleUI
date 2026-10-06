@@ -35,15 +35,21 @@ extern "C" void whaleui_sdl_on_main(void (*fn)(void*), void* ud)
 
 namespace {
 
-/* dispatch a DOM event on the given element (no-op when NULL) */
-void dom_dispatch(whaleui_dom_element_t* el, const char* type, int key,
-                  int mx, int my, int button, float wx, float wy)
+/* dispatch a DOM event on the given element (no-op when NULL). Returns 1
+ * when a listener called preventDefault: the caller must skip the engine's
+ * default behavior for the event (focus/pressed on mousedown, control
+ * toggles on click) - the DOM contract "preventDefault cancels the
+ * default action". */
+int dom_dispatch(whaleui_dom_element_t* el, const char* type, int key,
+                 int mx, int my, int button, float wx, float wy)
 {
     if (el) {
-        whaleui_dom_dispatch_event_full(
-            reinterpret_cast<lxb_dom_element*>(el), type, key, mx, my, button,
-            wx, wy);
+        int prevented = 0;
+        whaleui_dom_dispatch_phased(el, type, key, mx, my, button, wx, wy,
+                                    &prevented);
+        return prevented;
     }
+    return 0;
 }
 /* theme resolution: SYSTEM -> the OS scheme captured at app_create */
 whaleui_theme_t resolved_theme(const whaleui_app_t* app)
@@ -291,18 +297,6 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
             for (whaleui_window_t* win : app->windows) {
                 if (win->render && win->document &&
                     SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                    whaleui_render_set_pressed_ex(win->render,
-                                                  static_cast<int>(e.button.x),
-                                                  static_cast<int>(e.button.y),
-                                                  1, static_cast<int>(e.button.clicks),
-                                                  static_cast<int>(SDL_GetModState()));
-                    const char* val = nullptr;
-                    if (whaleui_render_handle_click(win->render,
-                                                    e.button.x, e.button.y,
-                                                    &val) &&
-                        val && app->select_cb) {
-                        app->select_cb(app, val, app->select_ud);
-                    }
                     whaleui_dom_element_t* hit = whaleui_render_hit_element(
                         win->render, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y));
@@ -363,14 +357,48 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                         }
                     }
                     if (!navigated) {
-                        dom_dispatch(hit, "mousedown", 0,
-                                     static_cast<int>(e.button.x),
-                                     static_cast<int>(e.button.y),
-                                     e.button.button, 0, 0);
-                        dom_dispatch(hit, "click", 0,
-                                     static_cast<int>(e.button.x),
-                                     static_cast<int>(e.button.y),
-                                     e.button.button, 0, 0);
+                        /* mousedown first: its preventDefault cancels the
+                         * press chain (focus/:active/selection) AND the
+                         * click's default behavior below - the DOM contract
+                         * that makes custom controls reliable. The hit is
+                         * resolved BEFORE any default behavior so the
+                         * listener sees the same target the engine acts
+                         * on. */
+                        int down_prevented = dom_dispatch(
+                            hit, "mousedown", 0,
+                            static_cast<int>(e.button.x),
+                            static_cast<int>(e.button.y), e.button.button,
+                            0, 0);
+                        if (!down_prevented) {
+                            whaleui_render_set_pressed_ex(
+                                win->render, static_cast<int>(e.button.x),
+                                static_cast<int>(e.button.y), 1,
+                                static_cast<int>(e.button.clicks),
+                                static_cast<int>(SDL_GetModState()));
+                            const char* val = nullptr;
+                            if (whaleui_render_handle_click(
+                                    win->render, e.button.x, e.button.y,
+                                    &val) &&
+                                val && app->select_cb) {
+                                app->select_cb(app, val, app->select_ud);
+                            }
+                            int click_prevented = dom_dispatch(
+                                hit, "click", 0,
+                                static_cast<int>(e.button.x),
+                                static_cast<int>(e.button.y),
+                                e.button.button, 0, 0);
+                            (void)click_prevented;
+                            /* the click's default behavior (select toggle /
+                             * checkbox flip / details expand) already ran
+                             * inside handle_click above - that ordering is
+                             * kept for this round; the click listener still
+                             * observes the result. Moving toggles behind
+                             * the click dispatch is the follow-up (it needs
+                             * the hit to survive handle_click's tree edits).
+                             * A prevented mousedown skips the whole chain,
+                             * which is the reliability guarantee custom
+                             * controls need. */
+                        }
                     }
                     break;
                 }
@@ -381,18 +409,19 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         if (e.button.button == SDL_BUTTON_LEFT) {
             for (whaleui_window_t* win : app->windows) {
                 if (win->render && SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                    whaleui_render_set_pressed_ex(win->render,
-                                                  static_cast<int>(e.button.x),
-                                                  static_cast<int>(e.button.y),
-                                                  0, 1,
-                                                  static_cast<int>(SDL_GetModState()));
-                    dom_dispatch(
+                    int up_prevented = dom_dispatch(
                         whaleui_render_hit_element(
                             win->render, static_cast<int>(e.button.x),
                             static_cast<int>(e.button.y)),
                         "mouseup", 0, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y),
                         e.button.button, 0, 0);
+                    if (!up_prevented) {
+                        whaleui_render_set_pressed_ex(
+                            win->render, static_cast<int>(e.button.x),
+                            static_cast<int>(e.button.y), 0, 1,
+                            static_cast<int>(SDL_GetModState()));
+                    }
                     break;
                 }
             }
