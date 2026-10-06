@@ -2508,6 +2508,38 @@ int main(void)
         std::fflush(stdout);
     }
 
+    /* contain: paint clips overflowing children like overflow:hidden.
+     * The child box (red) sticks 20px past the parent's bottom edge;
+     * inside it stays red, outside it is the page background. */
+    {
+        whaleui_window_t* w =
+            whaleui_window_create(app, "contain", 200, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(
+                   w,
+                   "<html><head><style>body{margin:0}"
+                   "#u{position:absolute;left:20px;top:20px;width:100px;"
+                   "height:60px;background-color:#ffffff;contain:paint}"
+                   "#u div{width:100px;height:40px;background-color:#ff0000}"
+                   "</style></head>"
+                   "<body><div id=\"u\"><div style=\"margin-top:50px\">"
+                   "</div></div></body></html>") == 0);
+        if (whaleui_window_show(w) == 0 && w->render != nullptr) {
+            for (int i = 0; i < 3; ++i) {
+                assert(whaleui_render_frame(w->render, w->document) == 0);
+            }
+            /* child starts 50px into the 60px parent: visible strip red */
+            unsigned int inside = gpixel(w->render, 70, 75);
+            /* 20px past the parent edge: clipped away */
+            unsigned int outside = gpixel(w->render, 70, 95);
+            std::printf("[contain] in=%08X out=%08X\n", inside, outside);
+            std::fflush(stdout);
+            assert((inside & 0xFFFFFFu) == 0xFF0000u);
+            assert((outside & 0xFFFFFFu) != 0xFF0000u);
+        }
+        whaleui_window_destroy(w);
+    }
+
     whaleui_app_destroy(app);
     std::printf("[scroll] OK\n");
     return 0;

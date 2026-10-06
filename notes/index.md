@@ -130,3 +130,5 @@ srgb-linear/hsl精确, oklab近似) + conic(CPU精确/GPU留底) + repeating取�
 (CPU精确, GPU轴向条带/10层)。见 notes/current.md
 <24>(SOLVED): 计数器 —— reset/increment/set作用域栈(RAII) + counter()/
 counters()取值(decimal/alpha/roman) + content混合token。见 notes/current.md
+<25>(SOLVED): 权重与媒体 —— :is/:not取参最大/:where零 + 选择器逗号括号感知切分
++ @media高/方向/比例/hover/pointer/分辨率 + contain:paint裁剪。见 notes/current.md

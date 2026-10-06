@@ -106,9 +106,9 @@ python temp\rect_color.py temp/gaps7.ppm 24 96 60 112   # 像素判决
 |----|------|------|
 | 基础 | `*`、`tag`、`.class`、`#id`、`[attr]`、`[attr="v"]`、`A,B` | ✅ |
 | 组合器 | 后代、`>`、`+`、`~` | ✅ |
-| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()` `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` | ✅ |
-| 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()` `:where()` `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
-| 20% | `:is()` `:where()` `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible`、`::first-line` `::first-letter` | ⚠️ 多数未实现 |
+| 80% | `:hover` `:active` `:focus` `:link` `:visited` `:first-child` `:last-child` `:not()`（取参数最大权重） `:enabled` `:required` `:optional` `:empty` `::before` `::after` `::placeholder` `::marker` | ✅ |
+| 50% | `[attr^=]` `[attr$=]` `[attr*=]` `[attr~=]` `[attr|=]`、`:nth-child()` `:nth-of-type()` `:target` `:focus-within` `:is()`（取参数最大权重） `:where()`（零权重） `:disabled` `:checked` `:valid` `:invalid`、`::selection` | ⚠️ |
+| 20% | `:has()` `:nth-last-child()` `:nth-last-of-type()` `:only-child` `:only-of-type` `:first-of-type` `:last-of-type` `:dir()` `:lang()` `:user-valid` `:user-invalid` `:focus-visible`、`::first-line` `::first-letter` | ⚠️ 多数未实现 |
 
 - `:checked` 匹配 `checked` / `selected` **属性**（点击引擎画的原生 checkbox
   会 set/remove 该属性，因此动态勾选也能命中）。

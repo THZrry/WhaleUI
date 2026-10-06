@@ -47,16 +47,19 @@ int whaleui_style_match(const char* selector, lxb_dom_element* el,
 int whaleui_style_match_pseudo(const char* selector, lxb_dom_element* el,
                                const whaleui_style_state* st, int* pseudo);
 
-/* Evaluate an @media condition against the current theme + viewport width.
- * Unsupported conditions evaluate to false (safe default). */
+/* Evaluate an @media condition against the current theme + viewport.
+ * viewport_h < 0 means unknown (height/orientation/aspect conditions then
+ * evaluate to false... see the impl: height-gated conditions need h).
+ * Unsupported conditions evaluate to true (paint more, not less). */
 int whaleui_style_media_ok(const char* media, int theme, int viewport_w,
-                           int reduced_motion);
+                           int reduced_motion, int viewport_h = -1);
 
 /* Drop rules whose @media condition does not match the current context
- * (theme, viewport width, reduced-motion). In-place compaction of the
+ * (theme, viewport, reduced-motion). In-place compaction of the
  * array; destroyed rules are freed. */
 int whaleui_style_filter_media(whaleui_css_rule_t* rules, size_t* count,
-                               int theme, int viewport_w, int reduced_motion);
+                               int theme, int viewport_w, int reduced_motion,
+                               int viewport_h = -1);
 
 /* Collect custom properties (--*) defined on root into vars. */
 void whaleui_style_collect_vars(lxb_dom_element* root,

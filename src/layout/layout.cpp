@@ -2882,13 +2882,20 @@ struct Builder
                  * keeps the content reachable (page height covers it),
                  * but overflow:hidden clips instead of stretching (a
                  * height:100% app pane must stay at its viewport share).
-                 * overflow-y:hidden counts like the shorthand. */
+                 * overflow-y:hidden counts like the shorthand; contain:
+                 * paint/strict/content clips the same way (the paint pass
+                 * cuts the overflow, so the box must not stretch). */
                 std::string ov2 = get(n->style, "overflow");
                 if (ov2.empty()) {
                     ov2 = get(n->style, "overflow-y");
                 }
                 if (ov2 != "hidden") {
-                    bh = kid_cursor;
+                    std::string cn2 = get(n->style, "contain");
+                    if (cn2.find("paint") == std::string::npos &&
+                        cn2.find("strict") == std::string::npos &&
+                        cn2.find("content") == std::string::npos) {
+                        bh = kid_cursor;
+                    }
                 }
             }
         } else {

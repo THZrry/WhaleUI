@@ -92,10 +92,11 @@ void window_reload_css(whaleui_window_t* win)
         return;
     }
     /* drop rules whose @media condition does not match the current window
-     * (theme, viewport width, reduced-motion preference) */
+     * (theme, viewport, reduced-motion preference) */
     whaleui_style_filter_media(rules, &count,
                                whaleui_app_resolved_theme(win->app),
-                               win->width, win->app->reduced_motion);
+                               win->width, win->app->reduced_motion,
+                               win->height);
     /* identical to the active ruleset? (e.g. a plain window RESIZE with no
      * @media breakpoint crossed - the common case while dragging) Skip the
      * hand-off so the style cascade cache / CSS vars survive: without this

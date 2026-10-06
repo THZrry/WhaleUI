@@ -323,6 +323,31 @@ GPU 10 层最小 t=0.1 的固有粒度; 断言仍过, CPU 精确)。
 回归:test_layout [counter](外层 1./2. + 嵌套 1.1-i + 混合 A0B + set 41 白盒)。
 验证:10 套件全绿;14 张主题自检全 OK。
 
+# <25>: :is/:where 权重 + @media 剩余条件 + contain
+
+SOLVED
+
+三块小改, 追加式:
+权重: sel_specificity 括号感知 —— `:where()` 整段跳过(零权重, 连冒号都不计),
+`:is()`/`:not()` 取逗号分支最大权重(递归 sel_specificity, better 比较)。
+附带修根因级 bug: emit_style_rule 按裸逗号切选择器, `:is(#y, .x)` 被拆成
+`:is(#y` + `.x)` 两条坏规则(cascade 里 :is 多参从未生效, match 白盒因直传
+字符串才过) —— 改括号深度感知切分。
+@media: min/max-height、orientation(视口比较)、aspect-ratio(含 min/max,
+±0.01)、hover/pointer(桌面常量 hover+fine)、resolution(96dpi 基准,
+dppx/dpcm 换算); media_ok/filter_media 加 viewport_h 尾参(缺省 -1,
+height 门控 fail-closed), window.cpp 传入 win->height。未知条件仍默认匹配。
+contain: paint/strict/content 含即按 overflow:hidden 裁剪 —— paint 侧 eff
++ layout 定高钳制(visible 拉伸改不拉伸)。layout/size/style 无实现 no-op。
+isolation/will-change 解析保留(cascade 无白名单)、零消费(文档写明)。
+踩坑: contain 初版包在 `if (ov.empty())` 里, UA 的 `overflow:visible` 显式值
+绕过检查 —— 改 `ov.empty() || ov == "visible"`; 更深一层是父盒被子撑高致裁剪
+盒同步变大, layout 钳制处也要认 contain(调试打印 box=100x90 抓到)。
+回归:test_style 级联白盒(:is green/:where red/:not green)+[media] evaluator
+白盒(高/方向/比例/hover/pointer/分辨率)+[contain] cascade 存活白盒;
+test_scroll [contain] 像素(内红/外背景)。
+验证:10 套件全绿;14 张主题自检全 OK。
+
 # <20>: transform skew/matrix/3D(顶点剪切近似栈)
 
 SOLVED

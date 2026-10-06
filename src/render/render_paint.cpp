@@ -1765,7 +1765,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
     /* overflow: hidden/auto/scroll clips descendants to the border box
      * (auto/scroll containers also shift children by scroll_y at layout).
-     * overflow-x/-y longhands count when the shorthand is absent. */
+     * overflow-x/-y longhands count when the shorthand is absent.
+     * contain: paint (or strict/content, which include paint) clips the
+     * same way - the cheapest correct subset of CSS containment
+     * (layout/size/style containment are no-ops, documented). */
     Clip self;
     const Clip* eff = clip;
     std::string ov = sget(n->style, "overflow");
@@ -1775,6 +1778,16 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
         if (ox == "hidden" || ox == "auto" || ox == "scroll" ||
             oy == "hidden" || oy == "auto" || oy == "scroll") {
             ov = "hidden"; /* clip; scroll deltas still come from layout */
+        }
+    }
+    /* contain: paint/strict/content clips even when overflow is an
+     * explicit "visible" (the check above only fills an EMPTY ov) */
+    if (ov.empty() || ov == "visible") {
+        std::string cn = sget(n->style, "contain");
+        if (cn.find("paint") != std::string::npos ||
+            cn.find("strict") != std::string::npos ||
+            cn.find("content") != std::string::npos) {
+            ov = "hidden"; /* paint containment ~= overflow clip */
         }
     }
     if (ov == "hidden" || ov == "auto" || ov == "scroll") {

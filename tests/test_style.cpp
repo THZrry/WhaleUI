@@ -504,6 +504,146 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* :is() takes its most-specific argument; :where() is zero;
+     * :not() likewise takes its argument (not the pseudo-class) */
+    {
+        const char* css =
+            ".x { color: red; }\n"
+            ":where(.x) { color: blue; }\n"
+            ":is(#y, .x) { color: green; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p class=\"x\" id=\"y\">hi</p></body>", 38);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* p = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "p"));
+        assert(p != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(p, rules, count, vars, nullptr);
+        /* :is(#y,.x) = (1,0,0) beats .x = (0,1,0) beats :where = (0,0,0) */
+        assert(cs["color"] == "green");
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+    {
+        const char* css =
+            ".x { color: red; }\n"
+            ":where(#y) { color: blue; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p class=\"x\" id=\"y\">hi</p></body>", 38);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* p = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "p"));
+        assert(p != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(p, rules, count, vars, nullptr);
+        /* :where(#y) is zero: the plain class wins (old code counted the
+         * inner # and the colon, so blue won) */
+        assert(cs["color"] == "red");
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+    {
+        const char* css =
+            ".x { color: red; }\n"
+            ":not(#z) { color: green; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><p class=\"x\">hi</p></body>", 26);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* p = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "p"));
+        assert(p != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(p, rules, count, vars, nullptr);
+        /* :not(#z) = (1,0,0): green wins */
+        assert(cs["color"] == "green");
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* @media extended conditions (direct evaluator white-box) */
+    {
+        /* contain/isolation/will-change survive the cascade (dead hints
+         * except contain:paint, which the paint pass clips on) */
+        const char* css = "#u { contain: paint; isolation: isolate; "
+                          "will-change: transform; }\n";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"u\">x</div></body>", 27);
+        assert(doc != nullptr);
+        std::map<std::string, std::string> vars;
+        lxb_dom_element* u = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_query_selector(doc, "#u"));
+        assert(u != nullptr);
+        WhaleUIComputedStyle cs =
+            whaleui_style_compute(u, rules, count, vars, nullptr);
+        std::printf("[contain] cascade contain=[%s] isolation=[%s] "
+                    "will-change=[%s]\n",
+                    cs["contain"].c_str(), cs["isolation"].c_str(),
+                    cs["will-change"].c_str());
+        std::fflush(stdout);
+        assert(cs["contain"] == "paint");
+        assert(cs["isolation"] == "isolate");
+        assert(cs["will-change"] == "transform");
+        whaleui_css_rules_destroy(rules, count);
+        whaleui_dom_document_destroy(doc);
+    }
+    {
+        /* width gates (pre-existing) */
+        assert(whaleui_style_media_ok("(min-width: 100px)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(max-width: 100px)", 0, 200, 0, 400));
+        /* height gates */
+        assert(whaleui_style_media_ok("(min-height: 100px)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(min-height: 500px)", 0, 200, 0, 400));
+        assert(whaleui_style_media_ok("(max-height: 500px)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(max-height: 100px)", 0, 200, 0, 400));
+        /* unknown height: height-gated conditions fail closed */
+        assert(!whaleui_style_media_ok("(min-height: 100px)", 0, 200, 0, -1));
+        /* orientation (200x400 = portrait) */
+        assert(whaleui_style_media_ok("(orientation: portrait)", 0, 200, 0,
+                                      400));
+        assert(!whaleui_style_media_ok("(orientation: landscape)", 0, 200, 0,
+                                       400));
+        assert(whaleui_style_media_ok("(orientation: landscape)", 0, 400, 0,
+                                      200));
+        /* aspect-ratio 1/2 on a 200x400 viewport */
+        assert(whaleui_style_media_ok("(aspect-ratio: 1/2)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(aspect-ratio: 1/1)", 0, 200, 0, 400));
+        assert(whaleui_style_media_ok("(min-aspect-ratio: 1/4)", 0, 200, 0,
+                                      400));
+        assert(!whaleui_style_media_ok("(min-aspect-ratio: 1/1)", 0, 200, 0,
+                                       400));
+        assert(whaleui_style_media_ok("(max-aspect-ratio: 1/1)", 0, 200, 0,
+                                      400));
+        /* desktop constants: hover + fine pointer match */
+        assert(whaleui_style_media_ok("(hover: hover)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(hover: none)", 0, 200, 0, 400));
+        assert(whaleui_style_media_ok("(pointer: fine)", 0, 200, 0, 400));
+        assert(!whaleui_style_media_ok("(pointer: coarse)", 0, 200, 0, 400));
+        /* resolution: 96dpi reference */
+        assert(whaleui_style_media_ok("(min-resolution: 72dpi)", 0, 200, 0,
+                                      400));
+        assert(!whaleui_style_media_ok("(min-resolution: 300dpi)", 0, 200, 0,
+                                       400));
+        assert(whaleui_style_media_ok("(max-resolution: 300dpi)", 0, 200, 0,
+                                      400));
+        std::printf("[media] extended OK\n");
+        std::fflush(stdout);
+    }
+
     return 0;
 }
 

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <mutex>
 #include <functional>
 #include <vector>
@@ -714,6 +715,17 @@ bool part_match(const SelPart& p, lxb_dom_element* el)
 
 struct Specificity { int a, b, c; };
 
+inline bool better(const Specificity& a, const Specificity& b)
+{
+    if (a.a != b.a) {
+        return a.a > b.a;
+    }
+    if (a.b != b.b) {
+        return a.b > b.b;
+    }
+    return a.c > b.c;
+}
+
 Specificity sel_specificity(const char* sel)
 {
     Specificity sp = {0, 0, 0};
@@ -723,21 +735,89 @@ Specificity sel_specificity(const char* sel)
         } else if (*p == '.') {
             ++sp.b;
         } else if (*p == ':') {
+            /* :where() contributes nothing (not even the colon); :is()
+             * and :not() contribute their most-specific argument (ditto).
+             * Both are matched case-insensitively like the rest of the
+             * parser. */
+            bool is_where = (p[1] == 'w' || p[1] == 'W') &&
+                            (p[2] == 'h' || p[2] == 'H') &&
+                            (p[3] == 'e' || p[3] == 'E') &&
+                            (p[4] == 'r' || p[4] == 'R') &&
+                            (p[5] == 'e' || p[5] == 'E') && p[6] == '(';
+            bool is_is = !is_where && (p[1] == 'i' || p[1] == 'I') &&
+                         (p[2] == 's' || p[2] == 'S') && p[3] == '(';
+            bool is_not = !is_where && !is_is &&
+                          (p[1] == 'n' || p[1] == 'N') &&
+                          (p[2] == 'o' || p[2] == 'O') &&
+                          (p[3] == 't' || p[3] == 'T') && p[4] == '(';
+            if (is_where || is_is || is_not) {
+                const char* open = std::strchr(p, '(');
+                if (!open) {
+                    ++sp.b;
+                    continue;
+                }
+                int depth = 1;
+                const char* q = open + 1;
+                while (*q && depth > 0) {
+                    if (*q == '(') {
+                        ++depth;
+                    } else if (*q == ')') {
+                        --depth;
+                    }
+                    ++q;
+                }
+                /* [open+1, q-1) is the argument list */
+                if (is_is || is_not) {
+                    /* max over the comma-separated arguments */
+                    Specificity best = {0, 0, 0};
+                    const char* a0 = open + 1;
+                    const char* end = q - 1;
+                    int d2 = 0;
+                    for (const char* k = a0;; ++k) {
+                        char c = k >= end ? ',' : *k;
+                        if (c == '(') {
+                            ++d2;
+                        } else if (c == ')') {
+                            if (d2 > 0) {
+                                --d2;
+                            }
+                        }
+                        if ((c == ',' && d2 == 0) || k >= end) {
+                            std::string arg(a0, static_cast<size_t>(
+                                                    (k >= end ? end : k) -
+                                                    a0));
+                            size_t b = arg.find_first_not_of(" \t");
+                            if (b != std::string::npos) {
+                                size_t e = arg.find_last_not_of(" \t");
+                                arg = arg.substr(b, e - b + 1);
+                                Specificity sa =
+                                    sel_specificity(arg.c_str());
+                                if (better(sa, best)) {
+                                    best = sa;
+                                }
+                            }
+                            a0 = k + 1;
+                            if (k >= end) {
+                                break;
+                            }
+                        }
+                        if (k >= end) {
+                            break;
+                        }
+                    }
+                    sp.a += best.a;
+                    sp.b += best.b;
+                    sp.c += best.c;
+                }
+                /* :where: nothing. Either way the whole (...) is skipped
+                 * (inner #/. chars must not leak into the raw count). */
+                p = q - 1;
+                continue;
+            }
             ++sp.b; /* pseudo-class counts as class */
         }
     }
     return sp;
-}
-
-bool better(const Specificity& a, const Specificity& b)
-{
-    if (a.a != b.a) {
-        return a.a > b.a;
-    }
-    if (a.b != b.b) {
-        return a.b > b.b;
-    }
-    return a.c > b.c;
 }
 
 /* --- value helpers --- */
@@ -1267,7 +1347,8 @@ extern "C" int whaleui_style_match_pseudo(const char* selector,
 }
 
 extern "C" int whaleui_style_media_ok(const char* media, int theme,
-                                      int viewport_w, int reduced_motion)
+                                      int viewport_w, int reduced_motion,
+                                      int viewport_h)
 {
     if (!media || !*media) {
         return 1;
@@ -1328,6 +1409,153 @@ extern "C" int whaleui_style_media_ok(const char* media, int theme,
             }
         }
         pos += 9;
+    }
+    /* ---- extended conditions (viewport_h < 0 = unknown: height-gated
+     * ones fail closed, device-constant ones evaluate) ---- */
+    pos = 0;
+    while ((pos = m.find("min-height", pos)) != std::string::npos) {
+        size_t colon = m.find(':', pos);
+        size_t close = m.find(')', pos);
+        if (colon != std::string::npos && close != std::string::npos) {
+            float v = static_cast<float>(std::atof(m.substr(colon + 1, close - colon - 1).c_str()));
+            if (viewport_h < 0 || viewport_h < static_cast<int>(v)) {
+                return 0;
+            }
+        }
+        pos += 10;
+    }
+    pos = 0;
+    while ((pos = m.find("max-height", pos)) != std::string::npos) {
+        size_t colon = m.find(':', pos);
+        size_t close = m.find(')', pos);
+        if (colon != std::string::npos && close != std::string::npos) {
+            float v = static_cast<float>(std::atof(m.substr(colon + 1, close - colon - 1).c_str()));
+            if (viewport_h < 0 || viewport_h > static_cast<int>(v)) {
+                return 0;
+            }
+        }
+        pos += 10;
+    }
+    pos = 0;
+    while ((pos = m.find("orientation", pos)) != std::string::npos) {
+        size_t colon = m.find(':', pos);
+        if (colon != std::string::npos) {
+            std::string v = m.substr(colon + 1);
+            size_t b = v.find_first_not_of(" \t");
+            bool portrait = b != std::string::npos &&
+                            v.compare(b, 8, "portrait") == 0;
+            bool landscape = b != std::string::npos &&
+                             v.compare(b, 9, "landscape") == 0;
+            if (viewport_h < 0) {
+                return 0;
+            }
+            bool is_portrait = viewport_h >= viewport_w;
+            if ((portrait && !is_portrait) ||
+                (landscape && is_portrait)) {
+                return 0;
+            }
+        }
+        pos += 11;
+    }
+    /* aspect-ratio: "W/H" (also min-/max-). Compares viewport_w/h. */
+    {
+        const char* keys[3] = {"min-aspect-ratio", "max-aspect-ratio",
+                               "aspect-ratio"};
+        for (int ki = 0; ki < 3; ++ki) {
+            size_t klen = std::strlen(keys[ki]);
+            pos = 0;
+            while ((pos = m.find(keys[ki], pos)) != std::string::npos) {
+                /* the bare scan must not eat the min-/max- forms */
+                if (ki == 2 &&
+                    ((pos >= 4 && m.compare(pos - 4, 4, "min-") == 0) ||
+                     (pos >= 4 && m.compare(pos - 4, 4, "max-") == 0))) {
+                    pos += klen;
+                    continue;
+                }
+                size_t colon = m.find(':', pos);
+                size_t close = m.find(')', pos);
+                if (colon != std::string::npos &&
+                    close != std::string::npos) {
+                    std::string v = m.substr(colon + 1, close - colon - 1);
+                    size_t slash = v.find('/');
+                    if (slash != std::string::npos && viewport_h > 0) {
+                        float aw =
+                            static_cast<float>(std::atof(v.c_str()));
+                        float ah = static_cast<float>(
+                            std::atof(v.c_str() + slash + 1));
+                        if (ah > 0) {
+                            float have = viewport_w /
+                                         static_cast<float>(viewport_h);
+                            float want = aw / ah;
+                            if ((ki == 0 && have < want - 0.01f) ||
+                                (ki == 1 && have > want + 0.01f) ||
+                                (ki == 2 && std::fabs(have - want) > 0.01f)) {
+                                return 0;
+                            }
+                        }
+                    } else if (viewport_h <= 0) {
+                        return 0;
+                    }
+                }
+                pos += klen;
+            }
+        }
+    }
+    /* hover/pointer: this engine is a desktop mouse renderer - hover is
+     * always available, the primary pointer is always fine. */
+    pos = 0;
+    while ((pos = m.find("hover", pos)) != std::string::npos) {
+        /* careful: "hover" is also inside... no other keyword contains it */
+        size_t colon = m.find(':', pos);
+        if (colon != std::string::npos) {
+            std::string v = m.substr(colon + 1);
+            size_t b = v.find_first_not_of(" \t");
+            /* "(hover: hover)" matches; "(hover: none)" does not */
+            bool want_hover = b != std::string::npos &&
+                              v.compare(b, 5, "hover") == 0;
+            if (!want_hover) {
+                return 0;
+            }
+        }
+        pos += 5;
+    }
+    pos = 0;
+    while ((pos = m.find("pointer", pos)) != std::string::npos) {
+        size_t colon = m.find(':', pos);
+        if (colon != std::string::npos) {
+            std::string v = m.substr(colon + 1);
+            size_t b = v.find_first_not_of(" \t");
+            /* "(pointer: fine)" matches; coarse/none do not */
+            bool fine = b != std::string::npos &&
+                        v.compare(b, 4, "fine") == 0;
+            if (!fine) {
+                return 0;
+            }
+        }
+        pos += 7;
+    }
+    /* resolution: layout px are CSS px (96dpi reference). min- fails only
+     * above 96, max- fails only below 96. dppx/x units convert. */
+    pos = 0;
+    while ((pos = m.find("resolution", pos)) != std::string::npos) {
+        bool is_min = pos >= 4 && m.compare(pos - 4, 4, "min-") == 0;
+        bool is_max = pos >= 4 && m.compare(pos - 4, 4, "max-") == 0;
+        size_t colon = m.find(':', pos);
+        size_t close = m.find(')', pos);
+        if ((is_min || is_max) && colon != std::string::npos &&
+            close != std::string::npos) {
+            std::string v = m.substr(colon + 1, close - colon - 1);
+            float dpi = static_cast<float>(std::atof(v.c_str()));
+            if (v.find("dppx") != std::string::npos) {
+                dpi *= 96.0f;
+            } else if (v.find("dpcm") != std::string::npos) {
+                dpi *= 2.54f;
+            }
+            if ((is_min && 96.0f < dpi) || (is_max && 96.0f > dpi)) {
+                return 0;
+            }
+        }
+        pos += 10;
     }
     return 1;
 }

@@ -130,14 +130,26 @@ void copy_decls(const whaleui_css_rule_t* src, whaleui_css_rule_t* dst)
     }
 }
 
-/* emit one rule per comma-separated selector from a style rule */
+/* emit one rule per comma-separated selector from a style rule.
+ * The split is paren-depth-aware: functional pseudo-classes (:is(),
+ * :where(), :not()) carry top-level commas that must NOT split the rule
+ * (`:is(#y, .x)` used to become two broken rules `:is(#y` + `.x)`). */
 void emit_style_rule(const whaleui_css_rule_t* tmp, const std::string& sel,
                      const char* media,
                      whaleui_css_rule_t** arr, size_t* count, size_t* cap)
 {
     size_t start = 0;
+    int depth = 0;
     for (size_t i = 0; i <= sel.size(); ++i) {
-        if (i == sel.size() || sel[i] == ',') {
+        char c = i < sel.size() ? sel[i] : ',';
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            if (depth > 0) {
+                --depth;
+            }
+        }
+        if ((i == sel.size() || c == ',') && depth == 0) {
             std::string one = css_slice(sel.c_str(), start, i);
             start = i + 1;
             if (one.empty()) {
@@ -500,7 +512,8 @@ extern "C" int whaleui_css_has_property(const whaleui_css_rule_t* rule,
  * (theme, viewport width, reduced-motion). In-place compaction. */
 extern "C" int whaleui_style_filter_media(whaleui_css_rule_t* rules,
                                           size_t* count, int theme,
-                                          int viewport_w, int reduced_motion)
+                                          int viewport_w, int reduced_motion,
+                                          int viewport_h)
 {
     if (!rules || !count) {
         return -1;
@@ -509,7 +522,7 @@ extern "C" int whaleui_style_filter_media(whaleui_css_rule_t* rules,
     for (size_t i = 0; i < *count; ++i) {
         if (rules[i].media &&
             !whaleui_style_media_ok(rules[i].media, theme, viewport_w,
-                                    reduced_motion)) {
+                                    reduced_motion, viewport_h)) {
             rule_destroy(&rules[i]);
             continue;
         }
