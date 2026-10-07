@@ -216,6 +216,10 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->mouse_pending = 0;
     win->mouse_x = 0.0f;
     win->mouse_y = 0.0f;
+    win->wheel_pending = 0;
+    win->wheel_acc = 0.0f;
+    win->wheel_acc_x = 0.0f;
+    win->wheel_acc_y = 0.0f;
     app->windows.push_back(win);
     return win;
 }

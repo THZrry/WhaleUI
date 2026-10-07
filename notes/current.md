@@ -801,3 +801,34 @@ FAIL) + 既有 [chunk-sync] 在修偏中间态时抓到一次回退(见下); 10 
 让信号帧继续误判; 又试"root 有 range 则滚"—— 同样误判。正确信号是
 scroll_dirty(位置本帧真动了), 与 wheel/drag 的写入点配对。chunk-sync
 的 pixel 回退(FF0F0F0F)证实判据写错, 改回 scroll_dirty 后恢复蓝。
+
+
+# <34>: 滚动拖影 —— wheel 逐事件滚动 + scroll 帧误判 + 死代码清理
+
+SOLVED
+
+用户报告: 页面滚动有拖影(渲染不及时或某几帧状态不对)。
+
+**根因(三处, input -> frame -> present 全链):**
+
+(1) wheel 逐事件滚动。MOUSE_WHEEL 到一个处理一个(handle_wheel 直接改
+scrolls + 置 scroll 脏): 一次快速拨轮一帧进几个事件, worker 每唤醒只画
+一帧, 事件队列排在 live 偏移后面 —— 每帧都漆一个陈旧中间态("拖影/
+滞后一节")。motion 早就是合并的, wheel 不是。修(app.cpp/window.h):
+事件只累积(wheel_acc/wheel_acc_x/y + wheel_pending), worker 每唤醒应用
+一次; 应用后 frame_request=1 保证排空期内帧不断(否则第二波 burst 落在
+帧 cap 睡眠里仍漆旧偏移)。
+
+(2) scroll 帧的标记语义(<33> 的延续)。上一轮把"裸 scroll_el(无
+scroll_dirty)=纯重绘信号"从 scroll_frame 摘出是对的, 但实现里 scroll
+帧清全部 hover/focus/pressed_old 标记 —— hover 卡片那几行就不在损伤集
+里(只是整视口漆盖住, 平时看不出; 与动画/hover 帧交错时露出来)。修:
+scroll 帧保留标记走 partial 分支(用 live 的 post-scroll bounds), 只跳过
+animation 分支(它的 strip 会把漆面缩到动画盒)。
+
+(3) 死代码: scroll_dy 整套移位/条带/memmove 早已 pin 0(注释写明视口模
+型), 但 60 行分支还在帧里(含 per-pixel text_layer memmove + 全树 acca
+走访/帧)。删; scroll_dy 改 const 0, 相关分支编译期折叠。
+
+验证: 10 套件全绿(scroll-smear 双帧标记位移 + 无残留通过); 4 张主题与
+上轮 0 差异; probe_hover 无漂移。

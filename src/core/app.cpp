@@ -234,10 +234,16 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     case SDL_EVENT_MOUSE_WHEEL: {
         for (whaleui_window_t* win : app->windows) {
             if (win->render && SDL_GetWindowID(win->sdl) == e.wheel.windowID) {
-                whaleui_render_handle_wheel(win->render,
-                                            static_cast<int>(e.wheel.mouse_x),
-                                            static_cast<int>(e.wheel.mouse_y),
-                                            e.wheel.y);
+                /* coalesce wheel bursts: a fast flick delivers several
+                 * events per frame; each one used to scroll + repaint
+                 * separately, so a burst queued N frames behind the live
+                 * position - every frame painted a stale intermediate
+                 * offset ("scrolling trails / ghosts"). Accumulate the
+                 * ticks, apply ONCE per worker wake-up below. */
+                win->wheel_acc += e.wheel.y;
+                win->wheel_acc_x = static_cast<float>(e.wheel.mouse_x);
+                win->wheel_acc_y = static_cast<float>(e.wheel.mouse_y);
+                win->wheel_pending = 1;
                 break;
             }
         }
@@ -568,9 +574,31 @@ void render_worker_fn(whaleui_app_t* app)
                                          static_cast<int>(win->mouse_y));
             }
         }
+        /* apply accumulated wheel ticks ONCE per wake-up (same coalescing
+         * as motion): one scroll update per frame, so a burst paints the
+         * live offset instead of replaying stale intermediates. A wheel
+         * burst implies CONTINUED motion: request one more frame so the
+         * scroll repaints even when the queue is otherwise quiet - without
+         * this a second burst landing during the frame cap sleep painted
+         * a stale intermediate offset ("scrolling trails one notch"). */
+        bool wheel_dirty = false;
+        for (whaleui_window_t* win : app->windows) {
+            if (win->render && win->wheel_pending) {
+                win->wheel_pending = 0;
+                float acc = win->wheel_acc;
+                win->wheel_acc = 0.0f;
+                if (acc != 0.0f) {
+                    wheel_dirty = true;
+                    whaleui_render_handle_wheel(
+                        win->render, static_cast<int>(win->wheel_acc_x),
+                        static_cast<int>(win->wheel_acc_y), acc);
+                    app->frame_request.store(1);
+                }
+            }
+        }
         Uint64 now = SDL_GetTicks();
         bool want = !evs.empty() || app->frame_request.load() ||
-                    app->frames_alive.load() || hover_dirty;
+                    app->frames_alive.load() || hover_dirty || wheel_dirty;
         if (apply_resizes(app, now)) {
             want = true;
         }

@@ -977,6 +977,56 @@ int main(void)
         whaleui_window_destroy(bw);
     }
 
+
+    /* Regression: scrolling must not smear. Two consecutive wheel frames
+     * at different scroll positions must paint the same content rows at
+     * their new offsets - if the second frame reuses the first frame's
+     * pixels (scroll-shift blit) or skips the repaint (stale damage), the
+     * content visibly trails ("scrolling leaves ghosts"). The test scrolls
+     * twice and asserts the marker row moved by exactly the scrolled
+     * distance, with no leftover at the old position. */
+    {
+        whaleui_window_t* sw3 =
+            whaleui_window_create(app, "scroll-smear", 300, 200);
+        assert(sw3 != nullptr);
+        assert(whaleui_window_load_html(
+                   sw3,
+                   "<html><head><style>body{margin:0}"
+                   "#m{position:absolute;left:0;top:300px;width:300px;"
+                   "height:20px;background-color:#ff0000}"
+                   ".sp{height:600px}</style></head>"
+                   "<body><div class=\"sp\"></div><div id=\"m\"></div></body>"
+                   "</html>") == 0);
+        if (whaleui_window_show(sw3) == 0 && sw3->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(sw3->render, sw3->document) == 0);
+            }
+            /* marker at doc y 300..320, viewport shows 0..200: scroll the
+             * page down 160px (4 notches x 40px): marker lands at y 140 */
+            for (int i = 0; i < 4; ++i) {
+                whaleui_render_handle_wheel(sw3->render, 150, 100, -1.0f);
+            }
+            assert(whaleui_render_frame(sw3->render, sw3->document) == 0);
+            unsigned int at140 = gpixel(sw3->render, 150, 150);
+            std::printf("[scroll-smear] f1 y150=%08X\n", at140);
+            std::fflush(stdout);
+            assert(at140 == 0xFFFF0000);
+            /* scroll 40 more: marker at y 100; the old row (y 150) must
+             * show background, not a red ghost */
+            whaleui_render_handle_wheel(sw3->render, 150, 100, -1.0f);
+            assert(whaleui_render_frame(sw3->render, sw3->document) == 0);
+            unsigned int at100 = gpixel(sw3->render, 150, 110);
+            unsigned int old150 = gpixel(sw3->render, 150, 150);
+            unsigned int bg = gpixel(sw3->render, 10, 10);
+            std::printf("[scroll-smear] f2 y110=%08X y150=%08X bg=%08X\n",
+                        at100, old150, bg);
+            std::fflush(stdout);
+            assert(at100 == 0xFFFF0000);
+            assert(old150 == bg);
+        }
+        whaleui_window_destroy(sw3);
+    }
+
     /* Regression: a checkbox and its label text must share ONE line, and
      * clicking the checkbox must flip `checked` WITHOUT rebuilding the
      * tree or blanking the window. The layout gave the 16px control a

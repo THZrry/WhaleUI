@@ -158,3 +158,5 @@ state 分支 root 重算 + hit 位移块守卫) —— 见 notes/current.md
 <33>(SOLVED): 点击闪一下(scroll_el 信号误判真滚动吞损伤 +
 mouse-up 的 :active 恢复无损伤) + scrollbar 列全树走访改注册表 ——
 见 notes/current.md
+<34>(SOLVED): 滚动拖影(wheel 逐事件滚动改合并 + 帧请求续帧 +
+scroll 帧保留状态标记 + scroll_dy 死代码清理) —— 见 notes/current.md

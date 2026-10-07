@@ -5098,7 +5098,7 @@ d here leaves its ancestors'
      * disagreed. Repainting the whole viewport at the new scroll offset is
      * the correct, artifact-free model, so scroll_dy is pinned to 0 and
      * every scroll frame repaints the visible region. */
-    int scroll_dy = 0;
+    const int scroll_dy = 0;
 
     /* paint: collect batched GPU draw commands. Text goes to the CPU layer
      * (moved on scroll), uploaded + composited by a compute pass. */
@@ -5109,72 +5109,6 @@ d here leaves its ancestors'
      * and every "partial" frame repainted the whole window (the animation
      * frame-drop report). */
     Clip strip = {0, 0, 0, 0};
-    if (scroll_dy != 0) {
-        /* the scroll strip spans the full width */
-        strip.x = 0;
-        strip.w = full.w;
-        /* shift the existing text layer rows FIRST (opposite of the
-         * scroll): the shift copies from [dy, fb_h) into [0, fb_h-dy), so
-         * the old bottom-strip content lands above the strip. Clearing the
-         * strip before shifting would wipe exactly those rows. */
-        int rows = r->fb_h - (scroll_dy < 0 ? -scroll_dy : scroll_dy);
-        if (scroll_dy > 0) { /* content up: row y takes row y+dy */
-            for (int y = 0; y < rows; ++y) {
-                std::memcpy(&r->text_layer[static_cast<size_t>(y) * r->fb_w],
-                            &r->text_layer[static_cast<size_t>(y + scroll_dy) * r->fb_w],
-                            static_cast<size_t>(r->fb_w) * 4);
-            }
-        } else { /* content down: row y-dy takes row y */
-            for (int y = rows - 1; y >= 0; --y) {
-                std::memcpy(&r->text_layer[static_cast<size_t>(y - scroll_dy) * r->fb_w],
-                            &r->text_layer[static_cast<size_t>(y) * r->fb_w],
-                            static_cast<size_t>(r->fb_w) * 4);
-            }
-        }
-    }
-    if (scroll_dy > 0) { /* content moved up: bottom strip is new */
-        strip.y = r->fb_h - scroll_dy;
-        strip.h = scroll_dy < r->fb_h ? scroll_dy : r->fb_h;
-        std::fill(r->text_layer.begin() + static_cast<size_t>(strip.y) * r->fb_w,
-                  r->text_layer.end(), 0);
-    } else if (scroll_dy < 0) { /* content moved down: top strip is new */
-        strip.y = 0;
-        strip.h = -scroll_dy;
-        std::fill(r->text_layer.begin(),
-                  r->text_layer.begin() + static_cast<size_t>(strip.h) * r->fb_w,
-                  0);
-    }
-    /* scroll + paint-only animation: an animating element inside the
-     * viewport but OUTSIDE the strip moves (translate), and the strip-only
-     * repaint leaves its PREVIOUS position as a ghost (same root cause as
-     * the animation partial branch, applied to the scroll strip). Widen the
-     * strip to cover every visible animating element. */
-    if (scroll_dy != 0 && animating && !whaleui_anim_needs_layout(r->anim)) {
-        const int AM = 40; /* ponytail: anim-travel margin (see above) */
-        std::function<void(whaleui_layout_node_t*)> acca =
-            [&](whaleui_layout_node_t* nd) {
-                if (nd->el && !nd->is_text &&
-                    whaleui_anim_has_el(r->anim, nd->el)) {
-                    int oy = node_scroll_off(r, nd);
-                    int x0 = nd->border.x - AM;
-                    int y0 = nd->border.y + oy - AM;
-                    int x1 = x0 + nd->border.w + AM + AM;
-                    int y1 = y0 + nd->border.h + AM + AM;
-                    if (x0 < 0) x0 = 0;
-                    if (y0 < 0) y0 = 0;
-                    if (x1 > r->fb_w) x1 = r->fb_w;
-                    if (y1 > r->fb_h) y1 = r->fb_h;
-                    if (x1 > x0 && y1 > y0) {
-                        dirty_rect(x0, y0, x1, y1, &strip);
-                    }
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    acca(c);
-                }
-            };
-        acca(r->tree->root);
-    }
     bool partial = false; /* load-only repaint of a dirty region */
     /* partial strips (hover / animation) are computed from node bounds -
      * compute them BEFORE the strip math. After a relayout bounds_valid
@@ -5232,17 +5166,14 @@ d here leaves its ancestors'
     const bool scroll_frame = scrolled || r->drag_scroll_el;
     if (scroll_frame) {
         r->scroll_el = nullptr;
-        r->hover_old_el = nullptr;
-        r->focus_old_el = nullptr;
-        r->pressed_old_el = nullptr;
-        r->hover_prev.clear();
-        dom_repaint.clear();
-        /* a scroll frame repaints the WHOLE viewport at the new offset;
-         * it must NOT fall into the animation/strip branches below (they
-         * would shrink the paint to the animated boxes and leave the
-         * scrolled content unrepainted - "scrolling leaves trails on
-         * animated pages"). Rendering behavior is independent of whether
-         * an animation is running. */
+        /* a real scroll repaints the WHOLE viewport at the new offset, so
+         * no partial strip is needed - but hover/focus/pressed markers are
+         * kept: the partial branch below accumulates their (live,
+         * post-scroll) boxes into the strip, and a full-viewport paint
+         * covers the rest. Clearing them here dropped the hovered card's
+         * rows from the repaint ("scrolling smears the hovered element").
+         * The animation branch below is still skipped on scroll frames
+         * (its strip would shrink the paint to the animated boxes only). */
     } else if (r->scroll_el) {
         /* repaint-only signal (select open/close/pick): the content did
          * NOT scroll, so keep the state markers - but the select popup
@@ -5310,7 +5241,10 @@ d here leaves its ancestors'
      * an animation strip would shrink it to the animated boxes and leave
      * the scrolled content unrepainted - "scrolling leaves trails / the
      * page freezes mid-scroll on animated pages"). Rendering behavior is
-     * independent of whether an animation is running. */
+     * independent of whether an animation is running.
+     * A scroll frame clears nothing explicitly - the whole viewport
+     * repaints, so any strip from a previous partial frame is simply not
+     * consulted (strip is frame-local). */
     if (!scroll_frame && animating && !need_layout && !r->has_dirty &&
         !r->edit_el && !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes

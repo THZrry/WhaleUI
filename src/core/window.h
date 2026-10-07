@@ -79,6 +79,14 @@ struct whaleui_window
     int mouse_pending;
     float mouse_x;
     float mouse_y;
+    /* coalesced wheel: same pattern as motion (a flick delivers several
+     * WHEEL events per frame; each one scrolled + repainted separately, so
+     * frames queued behind the live offset and the content trailed). The
+     * worker applies the accumulated ticks once per wake-up. */
+    int wheel_pending;
+    float wheel_acc;
+    float wheel_acc_x;
+    float wheel_acc_y;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or
