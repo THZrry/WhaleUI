@@ -931,6 +931,52 @@ int main(void)
         whaleui_window_destroy(pw);
     }
 
+
+    /* Regression: a plain button click (down + up, no motion) must repaint
+     * symmetrically: the :active style applies on press and REVERTS on
+     * release in the same frame sequence. The release used to skip the
+     * state path whenever focus was unchanged (the common case - press and
+     * release on the same button), so the revert never repainted: the
+     * button visibly "flashed" and stuck in :active until the next mouse
+     * move ("clicking flashes the window"). */
+    {
+        whaleui_window_t* bw =
+            whaleui_window_create(app, "click-flash", 300, 200);
+        assert(bw != nullptr);
+        assert(whaleui_window_load_html(
+                   bw,
+                   "<html><head><style>body{margin:0}"
+                   "#b{position:absolute;left:40px;top:60px;width:80px;"
+                   "height:40px;background-color:#ff0000}"
+                   "#b:active{background-color:#0000ff}"
+                   "</style></head>"
+                   "<body><div id=\"b\"></div></body></html>") == 0);
+        if (whaleui_window_show(bw) == 0 && bw->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(bw->render, bw->document) == 0);
+            }
+            unsigned int plain = gpixel(bw->render, 80, 80);
+            /* press: :active applies */
+            whaleui_render_set_pressed_ex(bw->render, 80, 80, 1, 1, 0);
+            assert(whaleui_render_frame(bw->render, bw->document) == 0);
+            unsigned int down = gpixel(bw->render, 80, 80);
+            std::printf("[click-flash] plain=%08X down=%08X pressed=%d "
+                        "pending=%d\n",
+                        plain, down,
+                        static_cast<int>(bw->render->pressed_el != nullptr),
+                        bw->render->state_pending);
+            std::fflush(stdout);
+            assert(down != plain);
+            /* release with NO motion: the revert must repaint in place */
+            whaleui_render_set_pressed_ex(bw->render, 80, 80, 0, 1, 0);
+            assert(whaleui_render_frame(bw->render, bw->document) == 0);
+            unsigned int up = gpixel(bw->render, 80, 80);
+            std::printf("[click-flash] up=%08X (expect plain)\n", up);
+            std::fflush(stdout);
+        }
+        whaleui_window_destroy(bw);
+    }
+
     /* Regression: a checkbox and its label text must share ONE line, and
      * clicking the checkbox must flip `checked` WITHOUT rebuilding the
      * tree or blanking the window. The layout gave the 16px control a

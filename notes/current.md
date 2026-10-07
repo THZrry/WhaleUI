@@ -760,3 +760,44 @@ opacity + -6px 上浮; alpha 在一处 fade 进所有 popup 颜色; 帧在打开
 
 踩坑: 中间一次 chunk-sync 失败是 xmake 增量在 stash 来回切时的 stale
 obj(重建即过, <22> 同类)。教训: stash 二分后必须 clean 重建再下结论。
+
+
+# <33>: 点击闪一下 + scrollbar 列全树走访
+
+SOLVED
+
+用户报告: 点点鼠标窗口内容闪一下(脏渲染相关)。
+
+**根因(两处, 同一帧管线):**
+
+(1) `scroll_el` 一身两任。select 开/关/选举复用它做"重绘一帧"信号,
+但帧把它无条件当"页面滚了": scroll_frame 分支清掉全部 hover/focus/
+pressed_old 标记并整视口重绘 —— 于是任何 :hover/:active 损伤都被吞,
+press 显示 :active、release 那帧却什么都不画, 下一次 motion 才补上
+("点一下闪一下", 对称性破坏: 下去有漆, 上来无漆)。
+修: 真滚动(scroll_dirty 置位, wheel/drag 路径)才走 scroll_frame;
+裸 scroll_el(无 scroll_dirty)是纯重绘信号 —— 保留状态标记, 只强制整
+视口漆一帧(popup 在树外, 无其他损伤源)。click-flash 用例: 按下蓝、
+抬起红, 对称。
+
+(2) mouse-up 的 :active 恢复从无损伤。pressed 在 up 里直接清零, 而
+state_pending 只在 focus/pressed 变化时置位 —— 同按钮按下抬起(最常见
+的点击)focus 不变, up 那帧 state_pending=0, state 段不跑, 恢复无损伤。
+修两处: up 记录 pressed_old_el(=old_pressed); 门条件加
+pressed_reverted; state 段对 cascade 未变但身为状态端点的元素钉住
+old 标记(hover/focus/pressed 三对, 原来只钉 hover), 于是 partial 分支
+必有它的损伤盒。
+
+**性能(同轮, 脏渲染热路径):**
+partial 帧的 scrollbar 列拓宽原来是全树 `add_bars` 走访/帧。fix_scroll_max
+(写 scroll_max 的唯一写点)顺手建 `scroll_boxes` 注册表; partial 帧经
+by_el 直取, 34k 节点页每 partial 帧省一次全树 std::function 走访。
+
+回归: test_scroll [click-flash](plain红/down蓝/up红, 修前 down==plain
+FAIL) + 既有 [chunk-sync] 在修偏中间态时抓到一次回退(见下); 10 套件
+全绿; 4 张主题与上一轮 0 像素差异; probe_hover 无漂移。
+
+踩坑: 中间把 scroll_frame 判据写成"scrolls[] 非零"—— 陈旧非零滚动位置
+让信号帧继续误判; 又试"root 有 range 则滚"—— 同样误判。正确信号是
+scroll_dirty(位置本帧真动了), 与 wheel/drag 的写入点配对。chunk-sync
+的 pixel 回退(FF0F0F0F)证实判据写错, 改回 scroll_dirty 后恢复蓝。

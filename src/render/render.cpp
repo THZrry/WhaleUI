@@ -698,6 +698,7 @@ void fix_run_heights(whaleui_render_t* r)
  * range, the thumb grows and the wheel stops early. */
 void fix_scroll_max(whaleui_render_t* r)
 {
+    r->scroll_boxes.clear();
     std::function<int(whaleui_layout_node_t*, int)> fix_sm =
         [&](whaleui_layout_node_t* nd, int scomp) -> int {
         bool scrollable = false;
@@ -738,6 +739,19 @@ void fix_scroll_max(whaleui_render_t* r)
                 cmax = 0;
             }
             nd->scroll_max = cmax;
+            /* the root is the page scroller on demand: its scroll position
+             * only matters when content overflows (cmax == 0 means the
+             * whole page fits - no wheel/scroll frames, no scrollbar
+             * columns to extend partial strips with). Registering it
+             * unconditionally made EVERY scroll_el assignment (including
+             * the select open/close repaint signal) look like a page
+             * scroll: hover/focus/pressed markers were cleared and the
+             * whole viewport repainted, so :hover/:active changes painted
+             * nothing - "clicking flashes / hover sticks until the next
+             * move". */
+            if (cmax > 0) {
+                r->scroll_boxes.push_back(nd->el);
+            }
             auto it = r->scrolls.find(nd->el);
             if (it != r->scrolls.end()) {
                 if (it->second > nd->scroll_max) {
@@ -2780,6 +2794,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (!s) {
             r->open_select = nullptr;
+            r->open_select_t = 0;
             return 0;
         }
         std::vector<std::string> texts, values;
@@ -2803,6 +2818,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                  * previous value"). */
                 r->el_ver[r->open_select] = ++r->el_ver_seq;
                 r->open_select = nullptr;
+                r->open_select_t = 0;
                 /* no relayout: opening/closing/picking changes NO style or
                  * geometry (the popup paints outside the tree) - only the
                  * viewport must repaint at the same offsets. A whole-tree
@@ -2822,8 +2838,11 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                 return 1;
             }
         }
-        /* click outside the list closes it */
+        /* click outside the list closes it: the popup region must
+         * repaint (it is drawn outside the tree, so no state/dirty path
+         * covers it) - a scroll frame repaints the whole viewport once */
         r->open_select = nullptr;
+        r->open_select_t = 0;
         r->scroll_el = s->el;
         r->scroll_dirty = 1;
     }
@@ -3527,6 +3546,17 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             r->sel_anchor = r->sel_focus = 0;
         }
         r->selecting = 0;
+        /* mouse-up clears :active on `old_pressed` (== the pre-release
+         * pressed element): the element below records it as pressed_old
+         * so the state pass reverts its :active style through the same
+         * path as focus. Without this the up never produced a repaint
+         * when focus was unchanged (the common plain-button click):
+         * the :active style was applied on press, but the revert never
+         * repainted - the button "flashed" and stuck until the next
+         * motion. */
+        if (old_pressed && old_pressed != r->pressed_el) {
+            r->pressed_old_el = old_pressed;
+        }
     }
     /* focus/pressed state change on a NON-editing path goes through the
      * unified interaction-state relayout (state_pending): :active / :focus
@@ -3535,8 +3565,15 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
      * selection / popup) keeps the full repaint - those paths carry their
      * own state and repaint needs. */
     bool st_changed = r->focus_el != old_focus || r->pressed_el != old_pressed;
-    if (st_changed && !r->edit_el && !r->open_select && !r->drag_sel &&
-        !r->drag_sel_active && r->has_interact_rules && r->rule_count > 0) {
+    /* mouse-up's pressed_old (set above) also counts: pressed no longer
+     * equals old_pressed, so the equality above already covers it - but
+     * when the press landed on the SAME element as focus it neither
+     * differs (focus unchanged) - the explicit pressed_old check keeps
+     * the revert on the state path instead of a full rebuild. */
+    bool pressed_reverted = !down && r->pressed_old_el != nullptr;
+    if ((st_changed || pressed_reverted) && !r->edit_el && !r->open_select &&
+        !r->drag_sel && !r->drag_sel_active && r->has_interact_rules &&
+        r->rule_count > 0) {
         r->focus_old_el = old_focus;
         r->pressed_old_el = old_pressed;
         r->state_pending = 1;
@@ -4297,6 +4334,35 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                             break;
                         }
                     }
+                    /* a state change on an element whose cascade did NOT
+                     * change must still repaint the PRESS/FOCUS pair: the
+                     * state pass compares per-element cascades, so a no-op
+                     * element is skipped - but the partial-repaint branch
+                     * keys off hover/focus/pressed_old markers, and those
+                     * are the ONLY thing that repaints the CHANGED element.
+                     * Pin them whenever this target is a state endpoint,
+                     * even when its own cascade is identical. Without this
+                     * the changed element's damage was never recorded and
+                     * the frame painted the OLD pixels (the "flash": press
+                     * shows :active, release repaints nothing until the
+                     * next motion). */
+                    bool is_endpoint = el == r->hover_el ||
+                                       el == r->hover_old_el ||
+                                       el == r->focus_el ||
+                                       el == r->focus_old_el ||
+                                       el == r->pressed_el ||
+                                       el == r->pressed_old_el;
+                    if (is_endpoint) {
+                        if (el == r->hover_el && !r->hover_old_el) {
+                            r->hover_old_el = el;
+                        }
+                        if (el == r->focus_el && !r->focus_old_el) {
+                            r->focus_old_el = el;
+                        }
+                        if (el == r->pressed_el && !r->pressed_old_el) {
+                            r->pressed_old_el = el;
+                        }
+                    }
                     if (!cascade_changed) {
                         continue;
                     }
@@ -4329,9 +4395,18 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                         }
                     }
                     /* a first hover (no previous target) still needs the
-                     * partial-repaint machinery: pin the hovered element */
+                     * partial-repaint machinery: pin the hovered element.
+                     * Same for focus/pressed endpoints (their old markers
+                     * may have been consumed by an earlier frame while the
+                     * new endpoint still needs its own repaint). */
                     if (el == r->hover_el && !r->hover_old_el) {
                         r->hover_old_el = el;
+                    }
+                    if (el == r->focus_el && !r->focus_old_el) {
+                        r->focus_old_el = el;
+                    }
+                    if (el == r->pressed_el && !r->pressed_old_el) {
+                        r->pressed_old_el = el;
                     }
                     /* the style-only relayout changed this element: its box
                      * must be repainted this frame. hover_el/hover_old_el
@@ -5137,8 +5212,24 @@ d here leaves its ancestors'
      * change right before the drag leaves hover_old_el set - the partial
      * branch below would then repaint ONLY the two hover boxes and the
      * scrolled content stayed frozen until mouse-up ("half the page does
-     * not move while dragging the scrollbar"). */
-    const bool scroll_frame = r->scroll_el || r->drag_scroll_el;
+     * not move while dragging the scrollbar").
+     * scroll_el is ALSO the repaint signal for non-scroll events (select
+     * open/close/pick changes nothing scrollable): only a REAL scroll
+     * position change takes the scroll_frame path. A signal-only frame
+     * falls through so hover/focus/pressed damage accumulates normally -
+     * treating every signal as a page scroll cleared those markers and
+     * the state repaint never happened ("clicking flashes / hover
+     * sticks"). */
+    bool scrolled = false;
+    if (r->scroll_el && r->scroll_dirty) {
+        /* the scroll position actually moved this frame (wheel/drag set
+         * scroll_dirty alongside scroll_el): a REAL scroll takes the
+         * scroll_frame path. A bare scroll_el without scroll_dirty is a
+         * repaint-only signal (select open/close/pick) - it falls through
+         * so hover/focus/pressed damage accumulates normally. */
+        scrolled = true;
+    }
+    const bool scroll_frame = scrolled || r->drag_scroll_el;
     if (scroll_frame) {
         r->scroll_el = nullptr;
         r->hover_old_el = nullptr;
@@ -5152,6 +5243,12 @@ d here leaves its ancestors'
          * scrolled content unrepainted - "scrolling leaves trails on
          * animated pages"). Rendering behavior is independent of whether
          * an animation is running. */
+    } else if (r->scroll_el) {
+        /* repaint-only signal (select open/close/pick): the content did
+         * NOT scroll, so keep the state markers - but the select popup
+         * paints outside the tree, so force a full-viewport paint for
+         * this frame (the popup region has no other damage source). */
+        r->scroll_el = nullptr;
     } else if (!r->edit_el && !r->open_select &&
                (r->hover_old_el || r->focus_old_el ||
                 r->pressed_old_el || !r->hover_prev.empty() ||
@@ -5358,36 +5455,33 @@ d here leaves its ancestors'
          * the strip touches it - the thumb can straddle the strip edge,
          * and a relayout right before this frame (hover) can have moved
          * the thumb so the OLD half-cleaned thumb shows through the new
-         * track. Repaint every visible scrollbar column with the strip
-         * (cheap: 8px x the box height), so the column always carries
-         * freshly-painted content + track + thumb. */
-        std::function<void(whaleui_layout_node_t*)> add_bars =
-            [&](whaleui_layout_node_t* nd) {
-                if (nd->visible && nd->el && !nd->is_text &&
-                    nd != r->tree->root && nd->scroll_max > 0 &&
-                    nd->border.h >= 24) {
-                    int oy = node_scroll_off(r, nd);
-                    int bx0 = nd->border.x + nd->border.w - 8;
-                    int by0 = nd->border.y + oy;
-                    int bx1 = bx0 + 8;
-                    int by1 = by0 + nd->border.h;
-                    /* only columns the strip already touches: a scrollbar
-                     * far from the animated region must not widen the strip
-                     * to full-screen (that negated the dirty-rect work) */
-                    if (bx1 > strip.x && bx0 < strip.x + strip.w &&
-                        by1 > strip.y && by0 < strip.y + strip.h) {
-                        dirty_rect(bx0 < 0 ? 0 : bx0, by0 < 0 ? 0 : by0,
-                                   bx1 > r->fb_w ? r->fb_w : bx1,
-                                   by1 > r->fb_h ? r->fb_h : by1,
-                                   &strip);
-                    }
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    add_bars(c);
-                }
-            };
-        add_bars(r->tree->root);
+         * track. Widen the strip to every visible scrollbar column it
+         * already touches (cheap: 8px x the box height), so the column
+         * always carries freshly-painted content + track + thumb.
+         * Columns are resolved through by_el (no tree walk): scroll
+         * containers are rare, so track them in a persistent per-render
+         * registry instead of discovering them per partial frame. */
+        for (lxb_dom_element* bel : r->scroll_boxes) {
+            whaleui_layout_node_t* nd = find_node_by_el(r->tree, bel);
+            if (!nd || !nd->visible || nd->is_text || nd == r->tree->root ||
+                nd->scroll_max <= 0 || nd->border.h < 24) {
+                continue;
+            }
+            int oy = node_scroll_off(r, nd);
+            int bx0 = nd->border.x + nd->border.w - 8;
+            int by0 = nd->border.y + oy;
+            int bx1 = bx0 + 8;
+            int by1 = by0 + nd->border.h;
+            /* only columns the strip already touches: a scrollbar far
+             * from the animated region must not widen the strip to
+             * full-screen (that negated the dirty-rect work) */
+            if (bx1 > strip.x && bx0 < strip.x + strip.w &&
+                by1 > strip.y && by0 < strip.y + strip.h) {
+                dirty_rect(bx0 < 0 ? 0 : bx0, by0 < 0 ? 0 : by0,
+                           bx1 > r->fb_w ? r->fb_w : bx1,
+                           by1 > r->fb_h ? r->fb_h : by1, &strip);
+            }
+        }
         /* clear only the dirty text-layer region */
         for (int yy = strip.y; yy < strip.y + strip.h; ++yy) {
             std::fill(r->text_layer.begin() +

@@ -210,6 +210,11 @@ struct whaleui_render
 
     /* vertical scroll per element (overflow:auto/scroll), applied at layout */
     std::map<struct lxb_dom_element*, int> scrolls;
+    /* every element that owns a scroll range (scroll_max > 0) in the current
+     * tree: the partial-repaint path resolves scrollbar columns through
+     * this registry (by_el) instead of walking the whole tree per partial
+     * frame. Rebuilt by fix_scroll_max (the single writer of scroll_max). */
+    std::vector<struct lxb_dom_element*> scroll_boxes;
     /* horizontal scroll for single-line inputs (content wider than the
      * box): the caret scrolls the text sideways, never the box */
     std::map<struct lxb_dom_element*, int> hscrolls;

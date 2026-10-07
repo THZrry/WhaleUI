@@ -155,3 +155,6 @@ state 分支 root 重算 + hit 位移块守卫) —— 见 notes/current.md
 <32>(SOLVED): select 文字两遍(箭头命中值文本光栅, 短文本内容哈希进键) +
 下拉全同字(popup 行禁用缓存) + popup 的 CSS 影子树匹配 + 打开过渡 ——
 见 notes/current.md
+<33>(SOLVED): 点击闪一下(scroll_el 信号误判真滚动吞损伤 +
+mouse-up 的 :active 恢复无损伤) + scrollbar 列全树走访改注册表 ——
+见 notes/current.md
