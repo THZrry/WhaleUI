@@ -394,36 +394,56 @@ bool tag_eq(lxb_dom_element* el, const char* tag)
     return n == tlen && std::memcmp(name, tag, tlen) == 0;
 }
 
-/* input[type=checkbox/radio]: native control drawn + toggled by the engine */
+/* input[type=checkbox/radio]: native control drawn + toggled by the engine.
+ * Single writer of the check/radio question (layout's whaleui_input_kind
+ * answers the same via tag_id + type): keep both in sync. */
 bool is_check_radio(lxb_dom_element* el)
 {
     if (!tag_eq(el, "input")) {
         return false;
     }
-    size_t alen = 0;
-    const lxb_char_t* t = lxb_dom_element_get_attribute(
-        el, (const lxb_char_t*)"type", 4, &alen);
-    return t && ((alen == 8 && std::memcmp(t, "checkbox", 8) == 0) ||
-                 (alen == 5 && std::memcmp(t, "radio", 5) == 0));
+    return whaleui_input_kind(el) == 2;
 }
 
-/* is this element a text-editing target? text-ish input/textarea, or any
- * element with contenteditable != "false". text-ish = any input type that
- * holds text: text, password, number, email, search, tel, url, ... (not
- * button/checkbox/radio/file/color/submit/reset/hidden/image/range) */
-bool is_non_text_input(const lxb_char_t* t, size_t alen)
+/* Single-line text input: <input> whose kind is text-like (0). textarea and
+ * contenteditable wrap, so they are multi-line and return false. This is
+ * the only place that interprets the kind code for geometry; every caret /
+ * wrap / scroll / selection / click / wheel branch asks this function. */
+bool is_single_line_input(const whaleui_layout_node_t* n)
 {
-    static const char* kSpecial[] = {
-        "button", "checkbox", "radio", "file", "color", "submit",
-        "reset", "hidden", "image", "range", "select",
-    };
-    for (size_t i = 0; i < sizeof(kSpecial) / sizeof(kSpecial[0]); ++i) {
-        size_t n = std::strlen(kSpecial[i]);
-        if (alen == n && std::memcmp(t, kSpecial[i], n) == 0) {
-            return true;
-        }
+    return n && !n->is_text && n->tag_id == WUI_TAG_INPUT &&
+           whaleui_input_kind(n->el) == 0;
+}
+
+bool is_single_line_input_el(lxb_dom_element* el)
+{
+    return tag_eq(el, "input") && whaleui_input_kind(el) == 0;
+}
+
+/* <input type=password>: value shows as mask chars, caret/selection still
+ * use the plaintext. Single writer of the password question. */
+bool is_password_box_el(lxb_dom_element* el)
+{
+    if (!tag_eq(el, "input")) {
+        return false;
     }
-    return false;
+    size_t tlen = 0;
+    const lxb_char_t* tv = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &tlen);
+    return tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
+}
+
+/* <input type=number>: only digits + number-syntax chars pass the insert
+ * filter, and the whole value keeps at most one dot. Single writer. */
+bool is_number_box_el(lxb_dom_element* el)
+{
+    if (!tag_eq(el, "input")) {
+        return false;
+    }
+    size_t tlen = 0;
+    const lxb_char_t* tv = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &tlen);
+    return tv && tlen == 6 && std::memcmp(tv, "number", 6) == 0;
 }
 
 bool is_editable(lxb_dom_element* el)
@@ -431,16 +451,10 @@ bool is_editable(lxb_dom_element* el)
     if (!el) {
         return false;
     }
-    if (tag_eq(el, "input") || tag_eq(el, "textarea")) {
-        if (tag_eq(el, "input")) {
-            size_t alen = 0;
-            const lxb_char_t* t = lxb_dom_element_get_attribute(
-                el, (const lxb_char_t*)"type", 4, &alen);
-            /* button/checkbox/radio/... are not text-editable */
-            if (t && alen > 0 && is_non_text_input(t, alen)) {
-                return false;
-            }
-        }
+    if (tag_eq(el, "input")) {
+        return whaleui_input_kind(el) == 0;
+    }
+    if (tag_eq(el, "textarea")) {
         return true;
     }
     size_t alen = 0;
@@ -459,17 +473,10 @@ bool is_editable_node(whaleui_layout_node_t* n)
     if (!n || !n->el) {
         return false;
     }
-    if (n->tag_id == WUI_TAG_INPUT || n->tag_id == WUI_TAG_TEXTAREA) {
-        if (n->tag_id == WUI_TAG_INPUT) {
-            size_t alen = 0;
-            const lxb_char_t* t = lxb_dom_element_get_attribute(
-                n->el, (const lxb_char_t*)"type", 4, &alen);
-            /* non-text input types (button/checkbox/radio/...) are not
-             * text-editable */
-            if (t && alen > 0 && is_non_text_input(t, alen)) {
-                return false;
-            }
-        }
+    if (n->tag_id == WUI_TAG_INPUT) {
+        return whaleui_input_kind(n->el) == 0;
+    }
+    if (n->tag_id == WUI_TAG_TEXTAREA) {
         return true;
     }
     size_t alen = 0;
@@ -1263,12 +1270,12 @@ size_t caret_from_point(whaleui_render_t* r, lxb_dom_element* el,
     bool bold;
     node_font(r, box, &fs, &family, &bold);
     int tx = 0, ty = 0;
-    int ww = tag_eq(el, "input") ? 0 : run_wrap_w(geo);
+    int ww = is_single_line_input_el(el) ? 0 : run_wrap_w(geo);
     text_origin(r, geo, val, fs, family, bold, &tx, &ty, ww);
     int off = node_scroll_off(r, hit);
     /* single-line input content scrolls horizontally with the caret */
     int hx = 0;
-    if (tag_eq(el, "input")) {
+    if (is_single_line_input_el(el)) {
         auto hi = r->hscrolls.find(el);
         hx = hi == r->hscrolls.end() ? 0 : hi->second;
     }
@@ -1442,12 +1449,13 @@ static std::string edit_lines_replace(whaleui_render_t* r,
     return nv;
 }
 
-/* input type 宸紓閫氳繃缁熶竴鐨勫瓧绗﹁繃婊よ〃杈?搴曞眰閫氱敤,type 鏄厤缃?:
- * - disabled: 鎷掔粷涓€鍒囩紪杈?鑱氱劍/鎻掑叆/绮樿创/IME)
- * - type=number: 鍙斁琛屾暟瀛椾笌鏁板瓧鏂囨硶瀛楃(0-9 . - + e E);
- *   鍏朵綑 type(text/password/email/...)鍘熸牱鏀捐銆?
- * 椤甸潰鏈潵鍙湪姝ゅ鎸傞挬鑷畾涔夎繃婊ゅ洖璋?whaleui.h 棰勭暀)銆?
- * 杩斿洖杩囨护鍚庡厑璁告彃鍏ョ殑瀛楃涓?涓虹┖琛ㄧず鏁存鎷掔粷銆?*/
+/* input type differences go through one filter expression at the generic
+ * layer, the type is the config:
+ * - disabled: rejects all editing (focus/insert/paste/IME)
+ * - type=number: only digits + number-syntax chars (0-9 . - + e E);
+ *   other types (text/password/email/...) pass through unchanged.
+ * Page-level custom filter hooks can attach here later (reserved in
+ * whaleui.h). Returns the filtered insertable string; empty rejects. */
 static std::string input_insert_filter(lxb_dom_element* el,
                                        const std::string& ins)
 {
@@ -1458,22 +1466,17 @@ static std::string input_insert_filter(lxb_dom_element* el,
             el, (const lxb_char_t*)"disabled", 8)) {
         return std::string();
     }
-    if (tag_eq(el, "input")) {
-        size_t alen = 0;
-        const lxb_char_t* t = lxb_dom_element_get_attribute(
-            el, (const lxb_char_t*)"type", 4, &alen);
-        if (t && alen == 6 && std::memcmp(t, "number", 6) == 0) {
-            std::string out;
-            out.reserve(ins.size());
-            for (size_t i = 0; i < ins.size(); ++i) {
-                unsigned char c = static_cast<unsigned char>(ins[i]);
-                if ((c >= '0' && c <= '9') || c == '.' || c == '-' ||
-                    c == '+' || c == 'e' || c == 'E') {
-                    out.push_back(static_cast<char>(c));
-                }
+    if (is_number_box_el(el)) {
+        std::string out;
+        out.reserve(ins.size());
+        for (size_t i = 0; i < ins.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(ins[i]);
+            if ((c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                c == '+' || c == 'e' || c == 'E') {
+                out.push_back(static_cast<char>(c));
             }
-            return out;
         }
+        return out;
     }
     return ins;
 }
@@ -1600,14 +1603,14 @@ static void edit_ensure_visible(whaleui_render_t* r)
     bool bold;
     node_font(r, n, &fs, &family, &bold);
     whaleui_layout_node_t* geo = editable_geo(n);
-    int wrap_w = tag_eq(r->edit_el, "input") ? 0 : run_wrap_w(geo);
+    int wrap_w = is_single_line_input_el(r->edit_el) ? 0 : run_wrap_w(geo);
     int cx = 0, cy = 0, ch = 16;
     caret_pos(r, val, fs, family, bold,
               static_cast<size_t>(r->sel_focus), &cx, &cy, &ch, wrap_w);
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty, wrap_w);
     int off = node_scroll_off(r, n);
-    if (tag_eq(r->edit_el, "input")) {
+    if (is_single_line_input_el(r->edit_el)) {
         /* horizontal: keep the caret inside the content box. The text
          * paints at tx - hscroll, so the caret sits at tx - hscroll + cx. */
         int& hcur = r->hscrolls[r->edit_el];
@@ -1659,10 +1662,10 @@ static void edit_ensure_visible(whaleui_render_t* r)
 
 bool is_contenteditable(lxb_dom_element* el)
 {
-    if (!el || tag_eq(el, "input") || tag_eq(el, "textarea")) {
+    if (!el || !is_editable(el)) {
         return false;
     }
-    return is_editable(el);
+    return !tag_eq(el, "input") && !tag_eq(el, "textarea");
 }
 
 size_t line_start(const std::string& s, size_t b)
@@ -2188,8 +2191,9 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
     if (!el) {
         return;
     }
-    /* disabled 鎺т欢:涓嶅搷搴斾换浣曠紪杈?绉诲姩閿?閫氱敤鎷︽埅,checkbox/button
-     * 绛夋帶浠剁殑 disabled 涓€骞剁敱鍚勮嚜鐨勮仛鐒?鐐瑰嚮澶勭悊鎷掔粷) */
+    /* disabled controls ignore all editing keys (movement included, via
+     * this generic gate; checkbox/button disabled is also refused by
+     * their own focus/click handlers) */
     if (lxb_dom_element_has_attribute(
             el, (const lxb_char_t*)"disabled", 8)) {
         return;
@@ -2329,7 +2333,9 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
         }
         break;
     case WHALEUI_KEY_ENTER:
-        if (tag_eq(el, "textarea") || is_contenteditable(el)) {
+        /* multi-line editable inserts a newline; single-line inputs ignore
+         * Enter (no form to submit in this engine) */
+        if (!is_single_line_input_el(el) && is_editable(el)) {
             edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "\n");
         }
         break;
@@ -2499,7 +2505,7 @@ extern "C" void whaleui_render_destroy(whaleui_render_t* r)
             TTF_CloseFont(f);
         }
     }
-    /* text_cache 閻ㄥ嫭鐖￠弽鐓庡缂傛挸鍟块弰?std::vector,闂?map 閺嬫劖鐎懛顏勫З闁插﹥鏂?*/
+    /* decoded image surfaces (owned per src, NULL = unloadable) */
     for (auto& im : r->images) {
         SDL_DestroySurface(im.second);
     }
@@ -2635,7 +2641,8 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         return;
     }
 #ifdef WHALEUI_BUILD_FULL
-    /* text_cache 缂傛挸鍟挎稉?std::vector,閻╁瓨甯村〒鍛敄閸楀啿褰?*/
+    /* run-raster cache: entries are owned vectors keyed by the full string
+     * key (see draw_text_at) - clearing drops every raster at once */
     r->text_cache.clear();
     r->tc_bytes = 0;
     for (auto& im : r->images) {
@@ -2811,6 +2818,37 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             int idx = (y - list_y) / kSelectItemH;
             if (idx >= 0 && idx < static_cast<int>(values.size())) {
                 r->select_index[r->open_select] = idx;
+                /* write the pick back into the DOM (`selected` on the
+                 * option): the DOM is the source of truth for the value -
+                 * get_value/set_value and both paint paths read it through
+                 * select_current_index. The click-time select_index stays
+                 * as the tiebreak for this frame. */
+                {
+                    int n = 0;
+                    for (lxb_dom_node* c = r->open_select->node.first_child;
+                         c; c = c->next) {
+                        if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                            continue;
+                        }
+                        lxb_dom_element* opt = lxb_dom_interface_element(c);
+                        size_t olen = 0;
+                        const lxb_char_t* nm =
+                            lxb_dom_element_local_name(opt, &olen);
+                        if (!nm || olen != 6 ||
+                            std::memcmp(nm, "option", 6) != 0) {
+                            continue;
+                        }
+                        if (n == idx) {
+                            lxb_dom_element_set_attribute(
+                                opt, (const lxb_char_t*)"selected", 8,
+                                (const lxb_char_t*)"", 0);
+                        } else {
+                            lxb_dom_element_remove_attribute(
+                                opt, (const lxb_char_t*)"selected", 8);
+                        }
+                        ++n;
+                    }
+                }
                 /* the value raster is keyed on (element, geometry, color)
                  * - none of which change with the selection. Bump this
                  * element's version so its value re-rasterizes instead of
@@ -2848,7 +2886,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
     }
     /* 2. clicking a <select> toggles it open */
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
-    if (hit && is_select_node(hit)) {
+    if (hit && !hit->is_text && hit->tag_id == WUI_TAG_SELECT) {
         /* actually TOGGLE, from the pre-click state (was_open_select): an
          * unconditional assignment re-opened the dropdown in the very click
          * that should have closed it, so it could never be closed ("the click
@@ -3082,6 +3120,46 @@ extern "C" void whaleui_render_clear_hover(whaleui_render_t* r)
     r->has_dirty = 1;
 }
 
+/* pointer cursor for natively clickable elements (links / controls).
+ * Single writer: UA CSS already declares cursor:pointer for these tags, so
+ * this only covers what the cascade did NOT set (an unstyled UA-less page).
+ * Keep in sync with theme_css.cpp's cursor rules. */
+static bool natively_clickable(lxb_dom_element* el)
+{
+    if (!el) {
+        return false;
+    }
+    size_t tlen = 0;
+    const lxb_char_t* tname = lxb_dom_element_local_name(el, &tlen);
+    return tname &&
+           ((tlen == 1 && tname[0] == 'a') ||
+            (tlen == 6 &&
+             (std::memcmp(tname, "select", 6) == 0 ||
+              std::memcmp(tname, "button", 6) == 0)) ||
+            (tlen == 7 && std::memcmp(tname, "summary", 7) == 0));
+}
+
+/* resolve the system cursor for the hovered element: I-beam over editable
+ * text, pointer over links/clickable controls (explicit `cursor` style
+ * first, natively-clickable tags as fallback), arrow otherwise */
+static SDL_Cursor* cursor_for_hover(whaleui_render_t* r,
+                                    whaleui_layout_node_t* hit)
+{
+    SDL_Cursor* want = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
+    lxb_dom_element* el = hit ? hit->el : nullptr;
+    if (!el) {
+        return want;
+    }
+    if (is_editable(el)) {
+        return render_cursor(r, SDL_SYSTEM_CURSOR_TEXT);
+    }
+    std::string c = sget(hit->style, "cursor");
+    if (c == "pointer" || (c.empty() && natively_clickable(el))) {
+        want = render_cursor(r, SDL_SYSTEM_CURSOR_POINTER);
+    }
+    return want;
+}
+
 extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
 {
     if (!r) {
@@ -3139,12 +3217,11 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         /* the popup is a modal overlay: hover styles must NOT fall through
          * to the elements underneath it (an input below the list would
          * switch to an I-beam / apply its :hover). But the cursor is not
-         * frozen: it follows the element under the pointer - the select
-         * itself stays pointer (its UA cursor), the popup options are
-         * default arrow (unless they set their own), and anything else on
-         * the page shows its own cursor ("娑撳濯洪悙鐟扮磻閸氬酣绱堕弽鍥ф躬閸濐亪鍏橀弰?pointer"
-         * was the select's pointer leaking to the whole page because
-         * hover_el stayed pinned to the select). */
+         * frozen: it follows the element under the pointer - the popup
+         * options use the default arrow (unless they set their own cursor),
+         * and anything outside the list shows its own cursor (the select's
+         * own pointer must not leak to the whole page while its hover
+         * stays pinned to the select). */
         whaleui_layout_node_t* s2 = find_node_by_el(r->tree, r->open_select);
         int lx = 0, ly = 0, lw = 0, lh = 0;
         if (s2) {
@@ -3162,28 +3239,11 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         bool in_list = x >= lx && x < lx + lw && y >= ly && y < ly + lh;
         whaleui_layout_node_t* hit2 =
             in_list ? nullptr : hit_test(r, r->tree->root, x, y, 0);
+        /* popup options use the default arrow (unless they set their own
+         * cursor); anything below the list follows its own cursor */
         SDL_Cursor* want = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
-        lxb_dom_element* cur_el =
-            in_list ? (s2 ? s2->el : nullptr) : (hit2 ? hit2->el : nullptr);
-        if (cur_el) {
-            std::string c = in_list ? std::string()
-                                    : sget(hit2->style, "cursor");
-            bool pointer = c == "pointer";
-            if (!pointer) {
-                size_t tlen = 0;
-                const lxb_char_t* tname =
-                    lxb_dom_element_local_name(cur_el, &tlen);
-                pointer = tname &&
-                          ((tlen == 1 && tname[0] == 'a') ||
-                           (tlen == 6 &&
-                            (std::memcmp(tname, "select", 6) == 0 ||
-                             std::memcmp(tname, "button", 6) == 0)) ||
-                           (tlen == 7 &&
-                            std::memcmp(tname, "summary", 7) == 0));
-            }
-            if (pointer) {
-                want = render_cursor(r, SDL_SYSTEM_CURSOR_POINTER);
-            }
+        if (!in_list && hit2) {
+            want = cursor_for_hover(r, hit2);
         }
         if (want) {
             SDL_SetCursor(want);
@@ -3208,32 +3268,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
             r->hover_prev.clear(); /* no state rules: nothing to revert */
         }
         r->hover_el = el;
-        /* switch the system cursor: I-beam over editable text, pointer
-         * over links/clickable controls, arrow otherwise */
-        SDL_Cursor* want = render_cursor(r, SDL_SYSTEM_CURSOR_DEFAULT);
-        if (el) {
-            if (is_editable(el)) {
-                want = render_cursor(r, SDL_SYSTEM_CURSOR_TEXT);
-            } else {
-                std::string c = sget(hit->style, "cursor");
-                bool pointer = c == "pointer";
-                if (!pointer) {
-                    size_t tlen = 0;
-                    const lxb_char_t* tname = lxb_dom_element_local_name(el, &tlen);
-                    pointer = tname &&
-                              ((tlen == 1 && tname[0] == 'a') ||
-                               (tlen == 6 &&
-                                (std::memcmp(tname, "select", 6) == 0 ||
-                                 std::memcmp(tname, "button", 6) == 0)) ||
-                               (tlen == 7 &&
-                                std::memcmp(tname, "summary", 7) == 0));
-                }
-                if (pointer) {
-                    want = render_cursor(r, SDL_SYSTEM_CURSOR_POINTER);
-                }
-            }
-        }
-        SDL_SetCursor(want);
+        SDL_SetCursor(cursor_for_hover(r, hit));
         /* interaction-state rules present -> a hover change can alter
          * styles: relayout only the previous + current element (incremental
          * DOM-dirty path in the frame loop). Without such rules hover is
@@ -3687,14 +3722,7 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
          * horizontally the wheel scrolls the value sideways (like the
          * caret-driven hscroll); with no horizontal overflow they fall
          * through to the page. */
-        bool is_input = false;
-        if (n->el) {
-            size_t ilen = 0;
-            const lxb_char_t* iname =
-                lxb_dom_element_local_name(n->el, &ilen);
-            is_input = ilen == 5 && std::memcmp(iname, "input", 5) == 0;
-        }
-        if (is_input) {
+        if (is_single_line_input(n)) {
             std::string val = edit_value(n->el);
             int hmax = 0;
             if (!val.empty()) {
@@ -3733,9 +3761,8 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
             do_scroll(n);
             /* a container at its edge must NOT swallow the wheel forever:
              * once it cannot move (already at top/bottom), fall through to
-             * the next scrollable ancestor so the page keeps scrolling
-             * ("姒х姵鐖ｉ崷?card/textarea 娑撳﹥妫ゅ▔鏇熺泊閸斻劌鍩屾惔? - the container
-             * claimed every wheel event and never bubbled). */
+             * the next scrollable ancestor so the page keeps scrolling (an
+             * inner card/textarea used to claim every wheel event). */
             if (r->scrolls[n->el] != before) {
                 return;
             }
@@ -3924,25 +3951,20 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
     if (ins.empty()) {
         return;
     }
-    /* type=number:鏁翠釜鍊兼渶澶氫竴涓皬鏁扮偣(娴忚鍣ㄥ悓);鎻掑叆鍚庡嚭鐜扮浜屼釜
-     * 鐐瑰垯鏁存鎷掔粷(鏁板瓧鏂囨硶鐨勭偣鍙厑璁镐竴涓? */
-    if (tag_eq(r->edit_el, "input")) {
-        size_t tlen = 0;
-        const lxb_char_t* tv = lxb_dom_element_get_attribute(
-            r->edit_el, (const lxb_char_t*)"type", 4, &tlen);
-        if (tv && tlen == 6 && std::memcmp(tv, "number", 6) == 0) {
-            std::string vv = edit_value(r->edit_el);
-            std::string nv2 = vv.substr(0, static_cast<size_t>(a)) + ins +
-                              vv.substr(static_cast<size_t>(b));
-            size_t dots = 0;
-            for (size_t i = 0; i < nv2.size(); ++i) {
-                if (nv2[i] == '.') {
-                    ++dots;
-                }
+    /* type=number keeps at most one dot in the whole value (browser
+     * behavior): a second dot after insertion rejects the segment. */
+    if (is_number_box_el(r->edit_el)) {
+        std::string vv = edit_value(r->edit_el);
+        std::string nv2 = vv.substr(0, static_cast<size_t>(a)) + ins +
+                          vv.substr(static_cast<size_t>(b));
+        size_t dots = 0;
+        for (size_t i = 0; i < nv2.size(); ++i) {
+            if (nv2[i] == '.') {
+                ++dots;
             }
-            if (dots > 1) {
-                return;
-            }
+        }
+        if (dots > 1) {
+            return;
         }
     }
     edit_replace(r, r->edit_el, static_cast<size_t>(a), static_cast<size_t>(b),
@@ -4301,15 +4323,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     }
                 }
                 /* stale cached style for this element (keyed on the old
-                 * interaction state) would feed relayout's style cache */
+                 * interaction state) would feed relayout's style cache:
+                 * erase via the per-element index, O(entries) */
                 {
-                    auto& sc = r->tree->style_cache;
-                    for (auto it = sc.begin(); it != sc.end();) {
-                        if (it->first.el == el) {
-                            it = sc.erase(it);
-                        } else {
-                            ++it;
+                    auto bit = r->tree->style_cache_by_el.find(el);
+                    if (bit != r->tree->style_cache_by_el.end()) {
+                        for (size_t bi = 0; bi < bit->second.size(); ++bi) {
+                            r->tree->style_cache.erase(bit->second[bi]);
                         }
+                        r->tree->style_cache_by_el.erase(bit);
                     }
                 }
                 if (layout_changed) {
@@ -4835,7 +4857,7 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
              * (checkbox input + text in one <p>) kept a 2-line estimate
              * (32px) while full frames painted it at 19px. The run
              * shrank/grew every other frame -> the checkbox label visibly
-             * jumped ("label 抽搐") while a width animation ran. Same
+             * jumped  while a width animation ran. Same
              * correction as the full-rebuild tail, so both paths agree. */
             fix_run_heights(r);
             /* ponytail: skip the full-tree fix_scroll_max walk on layout-
@@ -4900,13 +4922,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 if (!el) {
                     continue;
                 }
-                auto& sc = r->tree->style_cache;
-                for (auto it = sc.begin(); it != sc.end();) {
-                    if (it->first.el == el) {
-                        it = sc.erase(it);
-                    } else {
-                        ++it;
+                auto bit = r->tree->style_cache_by_el.find(el);
+                if (bit != r->tree->style_cache_by_el.end()) {
+                    for (size_t bi = 0; bi < bit->second.size(); ++bi) {
+                        r->tree->style_cache.erase(bit->second[bi]);
                     }
+                    r->tree->style_cache_by_el.erase(bit);
                 }
             }
             if (whaleui_dom_take_vars_dirty()) {
@@ -5113,9 +5134,8 @@ d here leaves its ancestors'
     /* partial strips (hover / animation) are computed from node bounds -
      * compute them BEFORE the strip math. After a relayout bounds_valid
      * is 0 and every bound reads (0,0,0,0), so the hover strip came out
-     * empty and a hover change repainted nothing (background-color :hover
-     * "娑撳秴鎼锋惔?; the relayout had applied the style, the paint just never
-     * covered the box). */
+     * empty and a hover change repainted nothing (the relayout had applied
+     * the style, the paint just never covered the box). */
     if (r->tree && r->tree->geom_relaid) {
         /* a style-only/local relayout fell back to a whole-tree box pass
          * (relayout_impl set this): every node's geometry was recomputed,
@@ -5485,7 +5505,7 @@ d here leaves its ancestors'
      * other content cannot cover it; its position follows the select's
      * scroll-offset ancestors. Like every z-raised layer it clears the old
      * text under its area first, otherwise lower elements' glyphs show
-     * through the popup ("娑撳濯洪柅澶愩€嶇悮顐＄瑓鐏炲倹鏋冪€涙鈹涢柅?). */
+     * through the popup. */
     if (r->open_select) {
         whaleui_layout_node_t* s = find_node_by_el(r->tree, r->open_select);
         if (s) {

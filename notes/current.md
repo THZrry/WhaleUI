@@ -832,3 +832,104 @@ animation 分支(它的 strip 会把漆面缩到动画盒)。
 
 验证: 10 套件全绿(scroll-smear 双帧标记位移 + 无残留通过); 4 张主题与
 上轮 0 差异; probe_hover 无漂移。
+
+# <35>: 元素特判点统一 + input 三分类 + 字体/字形/级联三处热路径
+
+SOLVED
+
+用户要求: 代码优化 + 性能 + 找 bug(尤其元素特判: 名义上不特判, 但特定
+元素仍有事件响应/绘制/几何差异, 要仔细检查)。
+
+## A. 全仓特判扫描(结论先行)
+
+扫 `src/layout + src/render + src/style + src/dom + src/core` 全部
+`tag_eq/local_name/tag_id` 命中(含 render 七个 paint/control/text/color
+文件)。结论: 绝大多数已是通用机制(UA 默认 CSS 声明行为 + C++/脚本配置,
+如 `:checked`、`cursor:pointer`、`details/summary` 折叠), 剩余的是**行为
+分类**(元素天然有不同的事件/绘制/几何语义, 不是"某个标签走后门"):
+select 值渲染/option 列表、`input[type]` 三态、textarea 多行、img 内容盒、
+table 行组、details/summary。这是本轮统一的对象 —— 不是删分类, 而是让
+每个分类问题只有一个写点(single writer)。
+
+修前的问题恰好证明"散落的特判"才是 bug 之源, 不是分类本身:
+
+- (C1) select 当前值有**两个**写点: 点击写 `select_index`, `set_value()`
+  写 DOM `selected` 属性, `paint_select_value` 只读前者 -> API 设值与
+  点击永远对不上; option 计数按 DOM 子节点数(把空白/注释也算进去)与
+  `select_options`(只收 option)不一致 -> 错位。
+- (C2) 单行 input 的判定散落在 12 处, 每处手写一次 `tag_eq(el,"input")`:
+  `type=submit/button` 被当成文本框走 caret/换行/横滚/ENTER 换行分支。
+- (C3) hover 光标两处手写同样的 a/select/button/summary 名单; UA CSS 只给
+  了后三者 `cursor:pointer`, `a` 没有 -> 无样式页面下行为与级联不联动。
+
+## B. 改动
+
+**B1 input 三分类单写点(layout.h/layout.cpp)。** `whaleui_input_kind(el)`
+extern "C": 0=text-like(可编辑文本, 缺省/未知也归 0, 与 is_editable 的
+"只排除已知非文本"一致), 1=button/file/color/submit/reset/hidden/image/
+range(无文本无原生开关), 2=checkbox/radio(原生控件外观)。修掉了 C2 的根:
+submit 此前返回 0(被当文本框)。
+
+**B2 render 侧单写点(render.cpp/render_internal.h/render_control.cpp)。**
+`is_check_radio` 改调 `whaleui_input_kind==2`(删手写 type 比对);
+新增 `is_single_line_input(_el)`(input 且 kind==0; textarea/
+contenteditable 是多行, 返回 false), caret/换行/横滚/edit_ensure/
+ENTER/wheel/paint_editable 的 12 处 `tag_eq(input)` 全改调它;
+新增 `is_password_box_el`/`is_number_box_el`, 掩码/插入过滤/dot 校验
+共 7 处手写 type 比对全改调它们。`is_editable(_node)` 的两份手写排除表
+(含 "select" 这种根本不该出现在 input 表里的词)删, 改调 kind。
+
+**B3 光标统一 + UA 联动(render.cpp/theme_css.cpp)。** `natively_clickable`
++ `cursor_for_hover` 两个单写点(可编辑->I-beam, `cursor` 样式优先,
+原生可点击标签兜底); set_hover 正常段与 popup 段共用。UA 的
+`a{cursor:pointer}` 补上, 与 select/button/summary 的既有规则对齐。
+
+**B4 select 值 DOM 同步(render.cpp/render_control.cpp)。**
+`select_current_index(r, sel, texts)`: 点击期 `select_index` 优先(含尚无
+selected 属性的新值), 否则按 option 顺序读 DOM `selected`(跳过非 option
+子节点, 修计数错位), 都没有则 0。`paint_select_value`/`paint_select_list`
+共用。点击 pick 时把结果写回 DOM(option 的 selected 增删) + el_ver
+bump + scroll 脏重绘(不重建), DOM 成为值的唯一真相, C1 关闭。
+
+**B5 绘制分发单点(render_paint.cpp/render_control.cpp/layout.cpp)。**
+`paint_node` 首部 `CtrlKind` 一次分类(checkRadio/progress/editable/
+select), 下面各臂只画不再复测标签; `img`/`select` 走 `tag_id`;
+`is_select_node` 改 tag_id(O(1) 命名谓词, 点击/popup 共用)。
+layout 侧: `tag_id_of` 补 THEAD/TBODY/TFOOT; `is_row_group` 改 tag_id
+(仍保留 display 通用回退: div 配 display:table-row-group 同样工作);
+value 型控件判定(is_sel/is_inp)改 tag_id + kind; textarea 默认高度去掉
+误写的 `input_kind==0` 条件; `append_rows` 三处手写 li 比对收敛为
+`is_li_el` lambda(DOM 节点本就没有 tag_id, 这是该路径唯一剩下的裸名
+检查, 已注释说明)。
+
+## C. 性能: 三处热路径
+
+- (P1) `style_cache` std::map -> unordered_map + `operator==` + FNV hash +
+  `style_cache_by_el` 单元素索引: 帧内两处"清某元素缓存"从 O(cache) 全表
+  扫描改 O(条目)擦除。
+- (P2) `render_get_font` 每 miss 一次 `split_families`(vector<string>
+  分配, 文本页每帧数千次) -> `fam_cache` 按原始 family 串缓存。
+- (P3) `fallback_tried` vector 线性扫描 -> 按 family 分桶的 map;
+  `glyph_w_cache` map<tuple> -> unordered_map<uint64 打包键>
+  (font 低 32 ^ size<<32 ^ cp*FNV); `ensure_font_state` 的同字体刷尺寸
+  清键改为低 32 比对一次遍历。
+- 另: 全仓 mojibake 注释块改英文(render.cpp/render_control.cpp/
+  render_paint.cpp/render_text.cpp, 约 20 处, 注释唯一改动, 零语义);
+  其中 render_text.cpp 一处补了缺失的 `*/`(此前 TextLayoutLine 块注释
+  未闭合, 顺手关上)。
+
+## D. 回归与备注
+
+构建 ok; **11/11 套件 exit=0**(含新增的 hover/scroll/select/chunk
+用例)。`test_style` 中间红过一次: `cs["font-size"]=="20px"` 在 343 行
+断言失败 —— 二分证明干净树也红(与本轮无关), 根因是级联的
+`RuleTagIndex` 按 rules 数组地址+数量做缓存键, `rules_destroy` 后下一
+次 parse 拿到同一地址+同数量就复用旧索引, 上一张表的 class 桶直接把
+新表的 `.f` 规则漏掉。修: `whaleui_style_index_drop` +
+`whaleui_css_rules_destroy` 首部显式失效。教训: 地址复用做缓存键必须
+配显式失效, 不能只靠"指针变了=内容变了"。
+
+遗留(未做, 明确延期): P2 的 UA 默认样式下沉(img/option/table/meta/
+控件尺寸)、C3 的 is_editable 合并后续、C4 number 校验强度统一、C5
+radio 组漫游改索引 —— 本轮只收敛判定写点, 不动行为。
+

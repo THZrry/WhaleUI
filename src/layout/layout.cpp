@@ -1301,9 +1301,11 @@ static bool text_is_blank(const lxb_char_t* d, size_t n)
     return true;
 }
 
-/* input type classification: 0 = text-like, 1 = button/other, 2 = checkbox
- * or radio (native control look, no field chrome) */
-int input_kind(lxb_dom_element* el)
+/* input type classification: 0 = text-like (holds editable text), 1 =
+ * button/other (no text, no native toggle), 2 = checkbox or radio (native
+ * control look, no field chrome). Missing/unknown type = text (matches the
+ * renderer's is_editable, which only excludes the known non-text list). */
+extern "C" int whaleui_input_kind(lxb_dom_element* el)
 {
     size_t alen = 0;
     const lxb_char_t* t = lxb_dom_element_get_attribute(
@@ -1313,8 +1315,23 @@ int input_kind(lxb_dom_element* el)
             (alen == 5 && std::memcmp(t, "radio", 5) == 0)) {
             return 2;
         }
+        static const char* kOther[] = {
+            "button", "file", "color", "submit", "reset",
+            "hidden", "image", "range",
+        };
+        for (size_t i = 0; i < sizeof(kOther) / sizeof(kOther[0]); ++i) {
+            size_t n = std::strlen(kOther[i]);
+            if (alen == n && std::memcmp(t, kOther[i], n) == 0) {
+                return 1;
+            }
+        }
     }
     return 0;
+}
+
+int input_kind(lxb_dom_element* el)
+{
+    return whaleui_input_kind(el);
 }
 
 /* tag name -> WUI_TAG_* id (ECS component). The name comes from lexbor
@@ -1374,6 +1391,9 @@ int tag_id_of(lxb_dom_element* el)
         if (std::memcmp(name, "meter", 5) == 0) return WUI_TAG_METER;
         if (std::memcmp(name, "table", 5) == 0) return WUI_TAG_TABLE;
         if (std::memcmp(name, "aside", 5) == 0) return WUI_TAG_ASIDE;
+        if (std::memcmp(name, "thead", 5) == 0) return WUI_TAG_THEAD;
+        if (std::memcmp(name, "tbody", 5) == 0) return WUI_TAG_TBODY;
+        if (std::memcmp(name, "tfoot", 5) == 0) return WUI_TAG_TFOOT;
         return WUI_TAG_UNKNOWN;
     case 6:
         if (std::memcmp(name, "select", 6) == 0) return WUI_TAG_SELECT;
@@ -1835,6 +1855,7 @@ struct Builder
                 n->style = whaleui_style_compute(el, rules, rule_count, vars,
                                                  &st);
                 tree->style_cache[sk] = n->style;
+                tree->style_cache_by_el[el].push_back(sk);
             }
         } else {
             n->style = whaleui_style_compute(el, rules, rule_count, vars,
@@ -2005,7 +2026,7 @@ struct Builder
         /* textarea default height must apply regardless of the width check
          * above (an explicit width skips that block entirely) */
         if (tname0 && tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
-            input_kind(n->el) == 0 && !positioned) {
+            !positioned) {
             if (n->style.find("height") == n->style.end()) {
                 n->style["height"] = "60px";
             }
@@ -2872,16 +2893,12 @@ struct Builder
 
         /* position:absolute children search the nearest positioned ancestor;
          * simplified: any positioned ancestor. */
-        bool is_sel = false, is_inp = false;
-        if (n->el) {
-            size_t tlen = 0;
-            const lxb_char_t* tname =
-                lxb_dom_element_local_name(n->el, &tlen);
-            is_sel = tname && tlen == 6 &&
-                     std::memcmp(tname, "select", 6) == 0;
-            is_inp = tname && tlen == 5 && std::memcmp(tname, "input", 5) == 0 &&
-                     input_kind(n->el) == 0;
-        }
+        /* value-sourced controls render their value from an attribute,
+         * not from child text runs: <select> (options) and text-like
+         * <input> (value). Other input kinds (button/submit/checkbox/...)
+         * have no value text: they lay out normally. */
+        bool is_sel = n->tag_id == WUI_TAG_SELECT;
+        bool is_inp = n->tag_id == WUI_TAG_INPUT && input_kind(n->el) == 0;
         if (dk == 1) {
             layout_flex(n, inner_w, inner_h, font_px, kid_cursor);
         } else if (dk == 4 || dk == 5) {
@@ -4032,17 +4049,14 @@ struct Builder
         return ih > 0 ? ih : 1;
     }
 
-    /* table helpers: row-group (thead/tbody/tfoot) and row/cell tags */
+    /* table helpers: row-group (thead/tbody/tfoot) and row/cell tags.
+     * Tag id first (O(1)), display kind as the generic fallback (a div
+     * with display:table-row-group works like the .divtable pattern). */
     static bool is_row_group(whaleui_layout_node_t* k)
     {
-        if (!k || !k->el) {
-            return false;
-        }
-        size_t len = 0;
-        const lxb_char_t* name = lxb_dom_element_local_name(k->el, &len);
-        return (len == 5 && std::memcmp(name, "thead", 5) == 0) ||
-               (len == 5 && std::memcmp(name, "tbody", 5) == 0) ||
-               (len == 5 && std::memcmp(name, "tfoot", 5) == 0);
+        return k && (k->tag_id == WUI_TAG_THEAD ||
+                     k->tag_id == WUI_TAG_TBODY ||
+                     k->tag_id == WUI_TAG_TFOOT);
     }
     static bool is_table_row(whaleui_layout_node_t* k)
     {
@@ -5070,16 +5084,21 @@ extern "C" int whaleui_layout_append_rows(
             ++tree_rows;
         }
     }
-    /* count DOM <li> children of the list element */
+    /* count DOM <li> children of the list element. DOM nodes carry no
+     * tag_id (computed at layout), so match the name here - the single
+     * remaining bare-name check in this path (the layout-side uses
+     * tag_id). */
+    auto is_li_el = [](lxb_dom_element* e) {
+        size_t elen = 0;
+        const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
+        return ename && elen == 2 && ename[0] == 'l' && ename[1] == 'i';
+    };
     size_t dom_rows = 0;
     for (lxb_dom_node* c = list_el->node.first_child; c; c = c->next) {
         if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
             continue;
         }
-        lxb_dom_element* e = lxb_dom_interface_element(c);
-        size_t elen = 0;
-        const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
-        if (ename && elen == 2 && ename[0] == 'l' && ename[1] == 'i') {
+        if (is_li_el(lxb_dom_interface_element(c))) {
             ++dom_rows;
         }
     }
@@ -5115,10 +5134,7 @@ extern "C" int whaleui_layout_append_rows(
             if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
                 continue;
             }
-            lxb_dom_element* e = lxb_dom_interface_element(c);
-            size_t elen = 0;
-            const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
-            if (ename && elen == 2 && ename[0] == 'l' && ename[1] == 'i') {
+            if (is_li_el(lxb_dom_interface_element(c))) {
                 if (idx == tree_rows) {
                     next_dom = c;
                     break;
@@ -5186,9 +5202,7 @@ extern "C" int whaleui_layout_append_rows(
             continue;
         }
         lxb_dom_element* e = lxb_dom_interface_element(c);
-        size_t elen = 0;
-        const lxb_char_t* ename = lxb_dom_element_local_name(e, &elen);
-        if (!ename || elen != 2 || ename[0] != 'l' || ename[1] != 'i') {
+        if (!is_li_el(e)) {
             continue;
         }
         int c0 = cursor;

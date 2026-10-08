@@ -104,6 +104,13 @@ void whaleui_style_virtual_host(const char* vclass, lxb_dom_element* host,
                                 const whaleui_style_state* st,
                                 WhaleUIComputedStyle& out);
 
+/* Drop the cached rule tag index for a destroyed rule set. The cascade
+ * index is keyed on the rules array identity; the allocator can hand the
+ * same address to the next parse, so a destroyed set must explicitly
+ * invalidate it (otherwise the next document reuses a stale index and its
+ * class rules never match). Called from whaleui_css_rules_destroy. */
+void whaleui_style_index_drop(const whaleui_css_rule_t* rules);
+
 #ifdef __cplusplus
 }
 #endif

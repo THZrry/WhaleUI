@@ -1846,18 +1846,31 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     }
 #endif
     /* <img>: bitmap (object-fit) or placeholder replaces the background */
-    if (n->el && tag_eq(n->el, "img")) {
+    if (n->el && n->tag_id == WUI_TAG_IMG) {
         paint_img(r, n, nox, noy, eff);
     }
     /* native controls (checkbox/radio/progress) own their box appearance
      * (painted at a fixed native size by paint_checkbox/progress below),
      * so the layout box's background/border must NOT also paint - that
-     * drew a second larger frame around the control ("checkbox 外面更大
-     * 的框"). */
-    bool native_ctrl = !n->pseudo && n->el &&
-                       (is_check_radio(n->el) ||
-                        n->tag_id == WUI_TAG_PROGRESS ||
-                        n->tag_id == WUI_TAG_METER);
+     * drew a second larger frame around the control. Single dispatch
+     * point: kind() classifies the node once, the arms below only paint
+     * (no second tag test per arm). */
+    enum CtrlKind { kCtrlNone, kCtrlCheckRadio, kCtrlProgress, kCtrlEditable,
+                    kCtrlSelect };
+    CtrlKind kind = kCtrlNone;
+    if (!n->pseudo && n->el) {
+        if (n->tag_id == WUI_TAG_INPUT && is_check_radio(n->el)) {
+            kind = kCtrlCheckRadio;
+        } else if (n->tag_id == WUI_TAG_PROGRESS ||
+                   n->tag_id == WUI_TAG_METER) {
+            kind = kCtrlProgress;
+        } else if (is_editable_node(n)) {
+            kind = kCtrlEditable;
+        } else if (n->tag_id == WUI_TAG_SELECT) {
+            kind = kCtrlSelect;
+        }
+    }
+    bool native_ctrl = kind == kCtrlCheckRadio || kind == kCtrlProgress;
     /* mix-blend state lives outside the native_ctrl block (the CPU blend
      * at the tail of paint_node needs it) */
     int mb_mode = -1;
@@ -2222,21 +2235,19 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
      * attribute checks. Pseudo-element boxes share el with their owner but
      * must not trigger the owner's control painting (an input's ::after
      * focus underline is a plain painted box). */
-    const int tid = n->tag_id;
-    if (!n->pseudo && n->el && tid == WUI_TAG_INPUT && is_check_radio(n->el)) {
+    if (kind == kCtrlCheckRadio) {
         paint_checkbox(r, n, nox, noy, eff);
-    } else if (!n->pseudo && n->el &&
-               (tid == WUI_TAG_PROGRESS || tid == WUI_TAG_METER)) {
+    } else if (kind == kCtrlProgress) {
         paint_progress(r, n, nox, noy, eff);
-    } else if (!n->pseudo && n->el && is_editable_node(n)) {
+    } else if (kind == kCtrlEditable) {
         paint_editable(r, n, nox, noy, eff);
     }
     /* <select> control: value + arrow painted here; the expanded list is
      * painted LAST in render_frame so nothing occludes it. Pseudo-element
      * boxes (the focus underline) share el with the select but must not
      * trigger the value paint - its transform (scaleX) shifts nox and
-     * drew a second value+arrow offset right and down ("鍙充笅瑙掗噸澶嶆寜閽?). */
-    if (!n->pseudo && is_select_node(n)) {
+     * drew a second offset value+arrow. */
+    if (kind == kCtrlSelect) {
         paint_select_value(r, n, nox, noy, eff);
     }
     /* CPU filter: the 4x5 color matrix over this element's painted box

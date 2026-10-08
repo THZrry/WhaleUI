@@ -1766,6 +1766,26 @@ struct RuleTagIndex
 RuleTagIndex g_rule_index;
 std::mutex g_rule_index_mtx;
 
+/* The index is keyed on the rules array identity, but the allocator can
+ * hand the same heap address to the next whaleui_css_parse after the old
+ * set was destroyed. The destroy path must invalidate explicitly, or the
+ * next document silently reuses a stale index (its class rules land in
+ * buckets built for the previous sheet and never match). */
+extern "C" void whaleui_style_index_drop(const whaleui_css_rule_t* rules)
+{
+    if (!rules) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_rule_index_mtx);
+    if (g_rule_index.rules == rules) {
+        g_rule_index.rules = nullptr;
+        g_rule_index.count = 0;
+        g_rule_index.tag_idx.clear();
+        g_rule_index.class_idx.clear();
+        g_rule_index.generic_idx.clear();
+    }
+}
+
 } // namespace
 
 extern "C" WhaleUIComputedStyle whaleui_style_compute(

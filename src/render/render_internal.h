@@ -268,6 +268,8 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
                         int off_x, int off_y, const Clip* clip);
 void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
                        int off_y, const Clip* clip);
+int select_current_index(whaleui_render_t* r, lxb_dom_element* sel,
+                         const std::vector<std::string>& texts);
 
 /* --- interaction helpers (defined in render.cpp) --- */
 
@@ -276,6 +278,19 @@ bool tag_eq(lxb_dom_element* el, const char* tag);
 bool is_check_radio(lxb_dom_element* el);
 bool is_editable(lxb_dom_element* el);
 bool is_editable_node(whaleui_layout_node_t* n);
+/* Single-line (non-wrapping) text input: <input> with a text-like type.
+ * Single writer: layout's whaleui_input_kind answers the kind question;
+ * every geometry branch (caret/wrap/scroll/selection/click/wheel) asks
+ * this, never a bare tag_eq(el,"input"). textarea/contenteditable are
+ * multi-line and return false here. */
+bool is_single_line_input(const whaleui_layout_node_t* n);
+bool is_single_line_input_el(lxb_dom_element* el);
+/* Password box: <input type=password>. Single writer of the password
+ * question; value masking + caret geometry both ask this. */
+bool is_password_box_el(lxb_dom_element* el);
+/* Number box: <input type=number>. Single writer; insert filter + dot
+ * validation both ask this. */
+bool is_number_box_el(lxb_dom_element* el);
 std::string edit_value(lxb_dom_element* el);
 void edit_set_value(lxb_dom_element* el, const std::string& s);
 void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,

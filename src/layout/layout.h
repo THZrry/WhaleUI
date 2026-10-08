@@ -27,6 +27,13 @@ struct whaleui_anim;
 extern "C" {
 #endif
 
+/* input type classification: 0 = text-like (editable text), 1 =
+ * button/other (no text, no native toggle), 2 = checkbox or radio
+ * (native control look, no field chrome). Missing/unknown type = text.
+ * Single writer: render/is_editable/is_check_radio answer the same
+ * question from these codes - keep them in sync. */
+int whaleui_input_kind(struct lxb_dom_element* el);
+
 typedef struct whaleui_rect
 {
     int x, y, w, h;
@@ -50,6 +57,7 @@ enum
     WUI_TAG_DETAILS, WUI_TAG_SUMMARY,
     WUI_TAG_PROGRESS, WUI_TAG_METER,
     WUI_TAG_TABLE, WUI_TAG_TR, WUI_TAG_TD, WUI_TAG_TH,
+    WUI_TAG_THEAD, WUI_TAG_TBODY, WUI_TAG_TFOOT,
     WUI_TAG_HEADER, WUI_TAG_FOOTER, WUI_TAG_MAIN, WUI_TAG_SECTION,
     WUI_TAG_ARTICLE, WUI_TAG_NAV, WUI_TAG_ASIDE,
     WUI_TAG_CODE, WUI_TAG_PRE, WUI_TAG_BLOCKQUOTE,
@@ -154,6 +162,31 @@ struct whaleui_layout_style_key
         if (focus != o.focus) return focus < o.focus;
         return pressed < o.pressed;
     }
+    bool operator==(const whaleui_layout_style_key& o) const
+    {
+        return el == o.el && hover == o.hover && focus == o.focus &&
+               pressed == o.pressed;
+    }
+};
+
+struct whaleui_layout_style_key_hash
+{
+    size_t operator()(const whaleui_layout_style_key& k) const
+    {
+        /* pointer mix (FNV-1a over the four addresses): the cache is keyed
+         * on identity, never on content */
+        size_t h = 1469598103934665603ULL;
+        const uintptr_t w[4] = {
+            reinterpret_cast<uintptr_t>(k.el),
+            reinterpret_cast<uintptr_t>(k.hover),
+            reinterpret_cast<uintptr_t>(k.focus),
+            reinterpret_cast<uintptr_t>(k.pressed),
+        };
+        for (int i = 0; i < 4; ++i) {
+            h ^= w[i] + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+        }
+        return h;
+    }
 };
 
 struct whaleui_layout_tree
@@ -216,8 +249,16 @@ struct whaleui_layout_tree
      * and whaleui_style_compute re-matches every candidate rule per build
      * - the per-frame cost. The cascade is static (animations are applied
      * on top afterwards), so keying on (el, hover, focus, pressed) makes
-     * stable frames O(1). Cleared alongside vars when the DOM changes. */
-    std::map<whaleui_layout_style_key, WhaleUIComputedStyle> style_cache;
+     * stable frames O(1). Cleared alongside vars when the DOM changes.
+     * unordered_map (was std::map: O(logN) + 4-pointer compare per lookup
+     * on every cascade); style_cache_by_el is the per-element index so a
+     * single element's entries erase in O(entries), not O(cache). */
+    std::unordered_map<whaleui_layout_style_key, WhaleUIComputedStyle,
+                       whaleui_layout_style_key_hash>
+        style_cache;
+    std::unordered_map<struct lxb_dom_element*,
+                       std::vector<whaleui_layout_style_key>>
+        style_cache_by_el;
 
     /* set when a relayout re-ran the whole-tree box pass even though the
      * caller asked for a style-only/local relayout (whaleui_layout_

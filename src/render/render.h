@@ -76,6 +76,11 @@ struct whaleui_render
     /* last-applied (size, style) per font; ensure_font_state skips the
      * SDL3_ttf calls when unchanged */
     std::map<TTF_Font*, std::pair<int, int>> font_state;
+    /* family-list split cache: split_families("A, B, sans-serif") is pure
+     * string work, but render_get_font ran it on EVERY miss (every text
+     * run's first measure per size) - thousands of vector<string> allocs
+     * per frame on text-heavy pages. Keyed on the raw family string. */
+    std::unordered_map<std::string, std::vector<std::string>> fam_cache;
     /* primary font -> its fallback chain (rendered glyphs sync the chain's
      * sizes to the current run before rasterizing) */
     std::map<TTF_Font*, std::vector<TTF_Font*>> font_chain;
@@ -86,8 +91,11 @@ struct whaleui_render
     /* (family, codepoint) pairs verified NOT to be provided by that font
      * (checked without keeping the font open): skipped on later misses so
      * a useless font is not reopened per glyph, but the same family can
-     * still serve OTHER codepoints (msyh has CJK but not emoji) */
-    std::vector<std::pair<std::string, unsigned int>> fallback_tried;
+     * still serve OTHER codepoints (msyh has CJK but not emoji).
+     * unordered_set of packed (family-hash, cp): the old vector did a
+     * linear scan per miss, O(misses) per glyph on CJK pages. */
+    std::unordered_map<std::string, std::unordered_map<unsigned int, char>>
+        fallback_tried;
     TTF_Font* font_default;
     /* family of font_default (its registry family name); lazy fallback
      * skips re-opening it */
@@ -103,8 +111,11 @@ struct whaleui_render
      * codepoint) keeps layout linear. The size is part of the key because
      * render_get_font reuses one TTF_Font per (family,style) and switches
      * its size with TTF_SetFontSize - a size-less key would return a stale
-     * advance after a size change (and re-layout the whole page wrong). */
-    std::map<std::tuple<TTF_Font*, int, unsigned int>, int> glyph_w_cache;
+     * advance after a size change (and re-layout the whole page wrong).
+     * Packed 64-bit key (font lo32/size mid16/cp hi16 via hash mix):
+     * unordered_map replaces the old std::map<tuple> (O(logN) + tuple
+     * compare per glyph on every CJK measure). */
+    std::unordered_map<uint64_t, int> glyph_w_cache;
 
     /* whole-string width cache for the layout metric hook: the box pass
      * and fix_run_heights re-measure the same stable text every frame

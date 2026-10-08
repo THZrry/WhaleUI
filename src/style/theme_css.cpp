@@ -169,7 +169,7 @@ caption { padding: 4px; font-size: var(--text-sm); color: var(--muted); }
  * =================================================================== */
 const char* const kWhaleuiComponentsCss = R"CSS(
 /* --- 链接 --- */
-a { color: var(--link); text-decoration: none; transition: color 0.12s linear; }
+a { color: var(--link); text-decoration: none; cursor: pointer; transition: color 0.12s linear; }
 a:hover { color: var(--link-hover); text-decoration: underline; }
 
 /* --- 按钮基线 --- */

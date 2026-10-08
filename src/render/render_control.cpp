@@ -227,7 +227,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     whaleui_layout_node_t* geo = editable_geo(n);
     /* editable text wraps like the painted run does (textarea/content-
      * editable wrap at their content width; input stays single-line) */
-    int wrap_w = tag_eq(el, "input") ? 0 : run_wrap_w(geo);
+    int wrap_w = is_single_line_input_el(el) ? 0 : run_wrap_w(geo);
     int tx = 0, ty = 0;
     text_origin(r, geo, val, fs, family, bold, &tx, &ty, wrap_w);
     tx += off_x;
@@ -237,10 +237,11 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * this delta the first line stays shifted out of view and the caret
      * renders below the text. */
     ty += off_y + scroll_delta(r, n);
-    /* 单行 input:caret/选区/IME 与值文字共用字形盒居中基准 —— 值绘制
-     * (draw_text_at)按字形盒 gh 居中,text_origin 按行高 th 居中会让
-     * caret 比文字高 (th-gh)/2(垂直修正后 caret 仍偏上)。 */
-    if (tag_eq(el, "input")) {
+    /* Single-line input: caret/selection/IME share the glyph-box centering
+     * with the value text - draw_text_at centers by glyph height gh while
+     * text_origin centers by line height th, which puts the caret (th-gh)/2
+     * too high. */
+    if (is_single_line_input_el(el)) {
         int ghx = text_glyph_h(r, fs, family, bold);
         if (ghx >= 1) {
             ty = n->content.y + off_y + scroll_delta(r, n) +
@@ -253,7 +254,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     int hx = 0;
     Clip iclip;
     bool clip_input = false;
-    if (tag_eq(el, "input")) {
+    if (is_single_line_input_el(el)) {
         auto hi = r->hscrolls.find(el);
         hx = hi == r->hscrolls.end() ? 0 : hi->second;
         tx -= hx;
@@ -282,7 +283,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
     }
     const Clip* ic = clip_input ? &iclip : clip;
 
-    if (tag_eq(el, "input")) {
+    if (is_single_line_input_el(el)) {
         /* input has no text children: paint the value here, always.
          * The y MUST carry the scroll offset (off_y + own scroll_delta)
          * like iclip does - the layout tree keeps the pre-scroll position,
@@ -292,17 +293,12 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
          * vertically itself, so pass the uncentered content top. */
         unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
         std::string shown = val;
-        /* password: 每个可见字符掩码为配置字符(默认 •);值/光标/选区
-         * 仍用明文(输入过滤与复制逻辑不变,只替换显示形态) */
-        bool pw_box = tag_eq(el, "input") && !val.empty();
+        /* password: each visible char shows the configured mask (default
+         * U+2022); value/caret/selection still use the plaintext (input
+         * filtering and copy logic unchanged, only the glyphs swap) */
+        bool pw_box = is_password_box_el(el) && !val.empty();
         if (pw_box) {
-            size_t tlen = 0;
-            const lxb_char_t* tv = lxb_dom_element_get_attribute(
-                el, (const lxb_char_t*)"type", 4, &tlen);
-            pw_box = tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
-            if (pw_box) {
-                shown = mask_password_value(r, val);
-            }
+            shown = mask_password_value(r, val);
         }
         unsigned int pc = fg;
         if (shown.empty()) {
@@ -328,16 +324,12 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                 }
             }
         }
-        bool pw = false;
-        {
-            size_t tlen = 0;
-            const lxb_char_t* tv = lxb_dom_element_get_attribute(
-                el, (const lxb_char_t*)"type", 4, &tlen);
-            pw = tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
-        }
-        /* IME 组合期(input,含密码):先画 caret 前的值;拼音与 caret
-         * 后的值由 focused 块在拼音右侧续画(不重叠、可退格到拼音中间)。
-         * 密码框的值段是掩码点,head/tail 按可见字符截取(不是明文字节)。 */
+        bool pw = is_password_box_el(el);
+        /* IME composition (input, incl. password): paint the pre-caret
+         * value first; the pinyin + post-caret value continue right of it
+         * in the focused block (no overlap, backspace can reach into the
+         * pinyin). Password segments are mask dots, so head/tail split by
+         * visible char, not plaintext bytes. */
         bool comp = focused && !r->compose.empty();
         size_t comp_caret_b =
             static_cast<size_t>(r->sel_focus > 0 ? r->sel_focus : 0);
@@ -410,7 +402,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
      * double-rendered it (ghosted text). tx/ty below still anchor the
      * focused selection/caret geometry. */
     bool comp_ime = focused && !r->compose.empty() &&
-                    tag_eq(el, "input") && r->compose_flow_x >= 0;
+                    is_single_line_input_el(el) && r->compose_flow_x >= 0;
     size_t caret = focused
                        ? static_cast<size_t>(r->sel_focus)
                        : 0;
@@ -421,7 +413,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                                                  a, b, wrap_w);
             expand_hl_rects(rects, text_line_h(r, fs, family, bold));
             unsigned int hl = sel_hl_color(r, n, 0x3C);
-            if (tag_eq(el, "input") && geo->content.h > 0) {
+            if (is_single_line_input_el(el) && geo->content.h > 0) {
                 /* single-line input: the wash fills the whole content box
                  * (native control look); the text sits vertically centered,
                  * so the top edge is (content.h - text height)/2 above the
@@ -443,27 +435,23 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (caret2 > val.size()) {
             caret2 = val.size();
         }
-        /* caret/IME 几何文本:密码框按掩码文本测量(caret 在明文字节
-         * 处,换算成掩码文本里对应的字符前缀) */
+        /* caret/IME measure the masked text for password boxes (the caret
+         * sits at a plaintext byte; map it to the matching mask-text
+         * prefix) */
         std::string geom_text = val;
         size_t geom_caret = caret2;
-        if (tag_eq(el, "input") && !val.empty()) {
-            size_t tl0 = 0;
-            const lxb_char_t* tv0 = lxb_dom_element_get_attribute(
-                el, (const lxb_char_t*)"type", 4, &tl0);
-            if (tv0 && tl0 == 8 && std::memcmp(tv0, "password", 8) == 0) {
-                geom_text = mask_password_value(r, val);
-                size_t nchars = utf8_count_upto(val, caret2);
-                size_t gi = 0;
-                for (size_t k = 0; k < nchars && gi < geom_text.size(); ++k) {
-                    unsigned char c0 =
-                        static_cast<unsigned char>(geom_text[gi]);
-                    gi += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
-                                            ? 2
-                                            : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
-                }
-                geom_caret = gi;
+        if (is_password_box_el(el) && !val.empty()) {
+            geom_text = mask_password_value(r, val);
+            size_t nchars = utf8_count_upto(val, caret2);
+            size_t gi = 0;
+            for (size_t k = 0; k < nchars && gi < geom_text.size(); ++k) {
+                unsigned char c0 =
+                    static_cast<unsigned char>(geom_text[gi]);
+                gi += (c0 < 0x80) ? 1 : ((c0 & 0xE0) == 0xC0)
+                                        ? 2
+                                        : ((c0 & 0xF0) == 0xE0) ? 3 : 4;
             }
+            geom_caret = gi;
         }
         /* keep the IME candidate window anchored at the caret */
         update_ime_area(r, geom_text, fs, family, bold, geom_caret, tx, ty,
@@ -478,8 +466,9 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
                       wrap_w);
             draw_text_at(r, r->compose, tx + cxx, ty + cyy, 300, chh,
                          fs, family, comp, style, 0, el, ic);
-            /* 未确认组合文本:下方细下划线(浏览器 IME 风格,提示这段
-             * 拼音尚未上屏;候选列表由系统 IME 窗口负责,引擎不接管) */
+            /* uncommitted composition: thin underline in browser IME
+             * style (marks the pinyin as not-yet-committed; the candidate
+             * list stays with the system IME window, not the engine) */
             int ctw = 0, cth = 0;
             text_size(r, r->compose, fs, family, bold, &ctw, &cth, 0);
             if (ctw > 0) {
@@ -489,9 +478,10 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             }
         }
     } else if (comp_ime) {
-        /* IME 组合期(input 非密码):值的前段(head)已画,这里把拼音画在
-         * head 右侧,再把 caret 之后的值画在拼音右侧 —— 拼音像浏览器一样
-         * 挤在中间,不覆盖后文。caret 画在拼音内部(SDL 事件的 start)。 */
+        /* IME composition (non-password input): the pre-caret head already
+         * painted; the pinyin goes right of it and the post-caret value
+         * right of the pinyin - squeezed in between like a browser, never
+         * covering the tail. The caret sits inside the pinyin (SDL start). */
         unsigned int fg2 = color_of(n->style, "color", 0xFF1a1a1a);
         unsigned int cc = (0xC8 << 24) | (fg2 & 0x00FFFFFF);
         int fx = r->compose_flow_x;
@@ -500,18 +490,14 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
         if (lh < 1) {
             lh = fs;
         }
-        /* 与 value 同一个内容盒高度(bh=content.h),draw_text_at 内部
-         * 垂直居中 —— 拼音/后续文字和 value 共用同一垂直位置(基线) */
+        /* same content-box height as the value (bh=content.h):
+         * draw_text_at centers vertically inside it, so pinyin/tail share
+         * the value's vertical position */
         int bhx = n->content.h > lh ? n->content.h : lh;
         int text_top = fy + (bhx - lh) / 2;
         std::string tail;
         {
-            bool pwb = false;
-            size_t tl9 = 0;
-            const lxb_char_t* tv9 = lxb_dom_element_get_attribute(
-                el, (const lxb_char_t*)"type", 4, &tl9);
-            pwb = tv9 && tl9 == 8 && std::memcmp(tv9, "password", 8) == 0;
-            if (pwb) {
+            if (is_password_box_el(el)) {
                 std::string msk = mask_password_value(r, val);
                 size_t nc = utf8_count_upto(
                     val, caret > val.size() ? val.size() : caret);
@@ -539,7 +525,7 @@ void paint_editable(whaleui_render_t* r, whaleui_layout_node_t* n,
             draw_text_at(r, tail, fx + cw2, fy, 300, bhx, fs, family, fg2,
                          style, 0, el, ic);
         }
-        /* caret: 拼音内 compose_caret 个字符之后(head + 拼音前缀的宽度) */
+        /* caret: ccnt chars into the pinyin (head + pinyin-prefix width) */
         std::string headx = val.substr(0, caret > val.size() ? val.size() : caret);
         int hw2 = 0;
         if (!headx.empty()) {
@@ -707,14 +693,54 @@ void select_options(lxb_dom_element* sel, std::vector<std::string>& texts,
     }
 }
 
+/* select node test (tag component, O(1)): kept as a named predicate so
+ * the click path and any future popup path share one writer */
 bool is_select_node(whaleui_layout_node_t* n)
 {
-    if (!n || !n->el) {
-        return false;
+    return n && !n->is_text && n->tag_id == WUI_TAG_SELECT;
+}
+
+/* selected option index: the click-time select_index wins (user's latest
+ * pick, including a value that has no `selected` attribute yet); otherwise
+ * the DOM `selected` attribute (set_value / parser default); 0 when
+ * neither exists. Single writer of the "which option shows" question -
+ * paint_select_value and paint_select_list both ask this, so set_value()
+ * and clicking can never disagree again (C1). */
+int select_current_index(whaleui_render_t* r, lxb_dom_element* sel,
+                         const std::vector<std::string>& texts)
+{
+    if (texts.empty()) {
+        return 0;
     }
-    size_t len = 0;
-    const lxb_char_t* name = lxb_dom_element_local_name(n->el, &len);
-    return name && len == 6 && std::memcmp(name, "select", 6) == 0;
+    auto it = r->select_index.find(sel);
+    if (it != r->select_index.end() && it->second >= 0 &&
+        it->second < static_cast<int>(texts.size())) {
+        return it->second;
+    }
+    /* option order, not DOM child order: select_options skips non-option
+     * children (whitespace/comments), so the index must count options */
+    int idx = 0;
+    int n = 0;
+    for (lxb_dom_node* c = sel->node.first_child; c; c = c->next) {
+        if (c->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            continue;
+        }
+        lxb_dom_element* opt = lxb_dom_interface_element(c);
+        size_t olen = 0;
+        const lxb_char_t* nm = lxb_dom_element_local_name(opt, &olen);
+        if (!nm || olen != 6 || std::memcmp(nm, "option", 6) != 0) {
+            continue;
+        }
+        if (lxb_dom_element_has_attribute(opt, (const lxb_char_t*)"selected",
+                                           8)) {
+            idx = n;
+        }
+        ++n;
+    }
+    if (idx < 0 || idx >= static_cast<int>(texts.size())) {
+        idx = 0;
+    }
+    return idx;
 }
 
 void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
@@ -725,10 +751,7 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (texts.empty()) {
         return;
     }
-    int sel = r->select_index.count(n->el) ? r->select_index[n->el] : 0;
-    if (sel < 0 || sel >= static_cast<int>(texts.size())) {
-        sel = 0;
-    }
+    int sel = select_current_index(r, n->el, texts);
     int fs = 13;
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
     /* value text left, arrow pinned to the right edge. The value fills
@@ -758,10 +781,7 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     if (texts.empty()) {
         return;
     }
-    int sel = r->select_index.count(n->el) ? r->select_index[n->el] : 0;
-    if (sel < 0 || sel >= static_cast<int>(texts.size())) {
-        sel = 0;
-    }
+    int sel = select_current_index(r, n->el, texts);
     /* popup chrome comes from the theme stylesheet, not hard-coded colors:
      * the renderer computes the virtual .select-popup / .select-option
      * classes (whaleui_style_virtual_host) and paints from their styles.

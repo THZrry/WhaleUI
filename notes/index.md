@@ -160,3 +160,7 @@ mouse-up 的 :active 恢复无损伤) + scrollbar 列全树走访改注册表 �
 见 notes/current.md
 <34>(SOLVED): 滚动拖影(wheel 逐事件滚动改合并 + 帧请求续帧 +
 scroll 帧保留状态标记 + scroll_dy 死代码清理) —— 见 notes/current.md
+<35>(SOLVED): 元素特判点统一(input 三分类单写点 + select 值 DOM 同步 +
+绘制 CtrlKind 单分发 + thead/tbody/tfoot/li 标签号) + 三处热路径
+(style_cache/fam/glyph 哈希化) + RuleTagIndex 悬空复用回归修复 ——
+见 notes/current.md

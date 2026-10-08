@@ -452,6 +452,10 @@ extern "C" void whaleui_css_rules_destroy(whaleui_css_rule_t* rules, size_t coun
     if (!rules) {
         return;
     }
+    /* invalidate the cascade tag index BEFORE freeing: the allocator may
+     * hand this same address to the next parse, and a stale index would
+     * silently serve the old sheet's buckets to the new document */
+    whaleui_style_index_drop(rules);
     for (size_t i = 0; i < count; ++i) {
         rule_destroy(&rules[i]);
     }

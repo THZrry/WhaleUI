@@ -61,17 +61,17 @@ std::vector<std::string> split_families(const std::string& s)
     return out;
 }
 
-/* --- 缂傚倸鍊风粈渚€顢栭崨鎼晞闁告侗鍨垫慨铏亜閹惧崬鐏╃紒鈧崘顔界厱婵炴垵宕弸鐔兼煟鎼搭喖娅嶉柡宀嬬節瀹曞ジ顢曢姀鐙€娼介梺姹囧焺閸ㄩ亶骞戦崶顒€绠?闂傚倷绀侀幗婊堝磿閹版澘鍨傛い鏍ㄧ矌閸楁岸鎮楅悽鐢点€婇柛瀣崌瀹曠兘顢橀悙鐗堝煕婵?full 婵?stb 闂傚倷鑳堕…鍫㈡崲濡や胶顩叉い鎺戝閺?---
- * 闂傚倷绀佸﹢閬嶅磿閵堝洦鏆滈柣鎰摠濞呯姵淇婇妶鍛殲閻庢艾顭烽弻锝夊籍閸パ冩優闂?UTF-8 闂備浇宕甸崰鎰版偡鏉堚晛绶ら柛褎顨嗛崑澶嬬節婵犲倻澧曟潻婵囩箾鏉堝墽鎮奸柟铏尰缁傛帒顫滈埀顒勫蓟濞戙垹绠抽柡鍥╁枔閵嗘劙姊洪悜鈺侇潚闁告侗鍨抽悾鍫曟⒑閹稿孩纾甸柛瀣尰閵囧嫰鏁傜憴鍕彋闂佽鍠栭悥鐓庣暦闁秴鍗抽柣妯虹仛閸犳盯姊绘担鍛婅础妞ゎ厼鐗撹棟妞ゆ牜鍋涚壕鎸庢叏濡潡鍝烘い顐ｆ礋閺岋絽螣閻戞ǚ鏋欓梺鍝ュ枎缁夊綊鐛弽銊︾秶闁诡垎灞惧枠婵?soft-wrap;
- * 濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴″幐婵?SDL3_ttf / stb_truetype)闂傚倷绀侀幉锟犳偡椤栨稓顩叉繝闈涱焾娴滅懓霉閿濆懏璐￠柣鐔活潐缁绘盯骞嬮悘娲讳簽缁牏鈧綆鍠楅崐鍨箾閹寸偟鎳愭繛鍫熒戦妵鍕箣濠婂棗鍘￠梺閫炲苯澧版い銏狅工铻為柛鏇ㄥ幐閸嬫挾鎲撮崟顐熸灆閻庤娲栭悥濂稿箖濞嗘挸绀堝ù锝堫嚃閸熲偓婵犵數鍋為崹鍫曞箰閸涘娈介柟闂寸劍閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存煏韫囧鐏╃紒妤嬬節濮婃椽宕ㄦ繝鍌滎儎缂傚倸鐗呴崡鎶藉春閳?
- * 缂傚倸鍊搁崐鎼佸磹瑜版帗鍋嬮柣鎰仛椤愯姤銇勯幇鍓佺暠闁哄绶氶弻鈩冨緞鐎ｉ潧鍔岄梺?caret/selection/hit-test)婵犵數鍋為崹鍫曞箰缁嬫５瑙勵槹鎼粹€崇亰濡炪倖鐗滈崑娑氱矆閸℃稒鍋ｉ柛婵嗗閹牏鎲搁悧鍫㈡噰闁哄矉缍侀敐鐐侯敆閳ь剚淇婃總鍛婄厵妞ゆ棁濮ょ亸鎵磼鐎ｎ亶妯€闁糕斁鍋撳銈嗗笂閼冲爼銆呴悜鑺ョ厱濠电姴瀚▍蹇涙煛閳ь剚绂掔€ｎ偄浠哄銈嗙墬閼归箖寮冲▎鎾寸厽?
- * 闂傚倷绀佸﹢閬嶃€傛禒瀣；闁规崘绉?full 婵?lite/minimal 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸樺ジ鎮鹃悜鑺ュ殤妞ゆ帊绀佹禒鎺楁煟韫囨洖浠╅柛瀣姉缁梻鈧潧鎽滅壕浠嬫煕閹邦厼鍔ら柡瀣閺屽秷顧侀柛蹇旂洴閹偤鏁傞悙顒佹闂佸壊鍋呭ú鏍矆閸℃稒鍋ｅΔ锔藉椤忕娀鏌熼悾灞芥灁缂佽鲸甯掕灃閻庯綆鍓涢弳銏狀渻閵堝啫鐏柛銊ュ缁瑦寰勯幇顑跨炊闂佸憡娲﹂崢钘夆枔椤曗偓濮婅櫣绮欑捄銊х杽闂佸憡鏌ㄩ鍥╁垝閳哄懎绠绘い鏃囨濞堟粌鈹戦悜鍥╃У闁稿繑锕㈠畷?*/
-
+/* --- display/line model (decoded text + wrap lines, both backends) ---
+ * TextLayout normalizes the source run once (UTF-8 decode, tabs/newlines,
+ * control-char filtering) into display text plus per-char source maps,
+ * then wraps it into [cstart,cend) line segments with pixel widths.
+ * Used by caret/selection/hit-test on both SDL3_ttf and stb paths.
+ */
 struct TextLayoutLine { size_t cstart; size_t cend; int w; };
 struct TextLayout {
-    std::string disp;          /* 闂傚倷绀侀幖顐も偓姘煎墯閺呰埖绂掔€ｎ€附鎱ㄥΟ鎸庣【婵☆偅锕㈤弻娑㈠Ψ閿濆懎顬夐梺?闂傚倷鑳堕、濠囨儗閸ヮ剙绀冮柕濞у啫绠戦梻浣筋嚙鐎涒晝绮欓幒妞尖偓鍐醇閵夘喗鏅炴繛杈剧秬濡椼劌鈻介鍫熺厸闁搞儮鏅涙禒褏鐥?缂傚倸鍊风粈渚€藝椤栫偐鈧箑鐣￠幍铏€洪柟鍏肩暘閸斿瞼鎲撮敃鍌氱閺夊牆澧界粙濠氭煟?UTF-8 */
-    std::vector<size_t> map;   /* disp 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鎵閸嬨倗鎲歌箛鏇炲灊妞ゆ挶鍨洪弲婵喢归敐鍥ㄥ殌闂傚偆鍨跺?闂?闂傚倷绀侀幉锟犫€﹂崶顒€绐楅柟鐗堟緲閸戠娀鏌涢幇闈涙灈閻庢艾顦伴妵鍕箳閸℃ぞ澹曢梻浣哄劦婵秹宕堕妸銉︾枀闂備胶顭堥張顒勬儗椤曗偓閹偞绻濋崟顓狅紲?*/
-    std::vector<size_t> dbytes;/* disp 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鎵閸嬨倗鎲歌箛鏇炲灊妞ゆ挶鍨洪弲婵喢归敐鍥ㄥ殌闂傚偆鍨跺?闂?disp 闂備浇顕х€涒晝绮欓幒妞尖偓鍐╁緞鐎ｂ晝绠氬銈嗘尪閸ㄥ湱澹曟繝姘卞彄闁搞儯鍔嶉梹?*/
+    std::string disp;          /* display text (decoded, tab/newline folded) */
+    std::vector<size_t> map;   /* display char -> source byte offset */
+    std::vector<size_t> dbytes;/* display char -> display byte offset */
     std::vector<TextLayoutLine> lines;
     int tw, th;
 };
@@ -188,7 +188,7 @@ void whaleui_text_caches_reset(void)
     g_tl_scratch = TextLayout();
     g_tl_bytes = 0;
 }
-/* 闂傚倷绀侀幉锟犮€冮崱妞曟椽寮介鐔蜂槐閻熸粌绻掗崚鎺楊敇閵忊剝娅囬梺閫炲苯澧寸€规洘娲栭～婵囨綇椤垶缍楅梻浣虹帛閿氭俊顖氾躬瀹?濠电姷鏁搁崑鐐哄箰缁嬫鍤曢柛顐ｆ礃閸嬪倿鎮楅敐搴″幐婵炲矈浜弻娑氫沪閻愵剛娈ら梺鍝勵槷缁瑩寮?闂備焦鐪归崺鍕垂娴兼潙鐤い鎰堕檮閸庢垶銇勯幒鎴濐仾闁稿﹦绮妵鍕箼閸曨厾锛熼梺缁樻煥閹虫劙鍩€?ASCII 闂備浇宕垫慨宥夊礋椤愵偅顥嬬紓鍌欑劍閸炵粯淇婇崶顒€鐒? */
+/* glyph advance callback type: codepoint + opaque state. ASCII fast path in the caller; CJK/emoji go through the font fallback below. */
 typedef int (*TextGlyphFn)(unsigned int cp, void* st);
 
 /* 闂備浇宕甸崰鎰版偡鏉堚晛绶ら柛褎顨嗛崑澶嬬節婵犲倻澧曢柛灞诲姂閺岋綁寮幐搴℃殘闂佽瀵掗崳锝夊蓟閿熺姴閱囨い鎰╁灩楠炴劙鏌ｉ悩鍐插闁哥姵鐗曢锝嗗閺夋垹顦悷婊冾儐缁傛帒鈽夐姀锛勫幐闂佺鏈喊宥嗗緞閸曨剛绡€闁? \r 闂傚倸顭崑鍕洪妸鈺佺柧妞ゆ劧绠戝Ч?CRLF),\n 闂傚倷绀侀幖顐﹀磻閸℃稑鐭楅柍褜鍓氶妵?\t 闂備浇顕х换鎺楀磻閻愯娲冀椤愶綆娼熼梺鐟邦嚟閸嬬喖鍩?4 缂傚倸鍊风粈渚€鎯夋總绋跨？闁靛牆顦伴崑?
@@ -502,10 +502,14 @@ static void ensure_font_state(whaleui_render_t* r, TTF_Font* font, int size,
          * measured 12px, so fix_run_heights wrapped "本地部署友好" onto a
          * second line and only "吃白饭没吃饱" (advances that happened to
          * round the same) stayed on one. Flush so the next measure and
-         * paint both read the glyphs at THIS size. */
+         * paint both read the glyphs at THIS size. The packed key carries
+         * the font pointer in its low 32 bits (see glyph_w_key), so one
+         * pass over the unordered map suffices - no tuple compare. */
+        uint32_t flo =
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(font));
         auto it = r->glyph_w_cache.begin();
         while (it != r->glyph_w_cache.end()) {
-            if (std::get<0>(it->first) == font) {
+            if (static_cast<uint32_t>(it->first & 0xFFFFFFFFu) == flo) {
                 it = r->glyph_w_cache.erase(it);
             } else {
                 ++it;
@@ -570,11 +574,9 @@ static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
             continue; /* handled by the fallback_open pass above */
         }
         bool tried = false;
-        for (auto& t : r->fallback_tried) {
-            if (t.first == fam && t.second == cp) {
-                tried = true;
-                break;
-            }
+        auto tit = r->fallback_tried.find(fam);
+        if (tit != r->fallback_tried.end() && tit->second.count(cp)) {
+            tried = true;
         }
         if (tried) {
             continue;
@@ -589,7 +591,7 @@ static TTF_Font* ensure_fallback(whaleui_render_t* r, TTF_Font* font,
              * so this codepoint does not reopen it, while other codepoints
              * the font DOES provide (CJK vs emoji in msyh) still reach it */
             TTF_CloseFont(fb);
-            r->fallback_tried.emplace_back(fam, cp);
+            r->fallback_tried[fam][cp] = 1;
             continue;
         }
         r->fallback_open.push_back(fb);
@@ -639,10 +641,21 @@ TTF_Font* render_get_font(whaleui_render_t* r, const std::string& family, int si
             return f.second;
         }
     }
-    /* try each family in the CSS list, in order */
-    std::vector<std::string> fams = split_families(family);
-    if (fams.empty()) {
-        fams.push_back("");
+    /* try each family in the CSS list, in order. The split is cached on
+     * the raw family string: a text-heavy page measures thousands of runs
+     * per frame and the split cost (vector<string> allocs) is pure. */
+    std::vector<std::string> fams;
+    {
+        auto fit = r->fam_cache.find(family);
+        if (fit != r->fam_cache.end()) {
+            fams = fit->second;
+        } else {
+            fams = split_families(family);
+            if (fams.empty()) {
+                fams.push_back("");
+            }
+            r->fam_cache[family] = fams;
+        }
     }
     TTF_Font* font = nullptr;
     for (const std::string& fam : fams) {
@@ -743,8 +756,15 @@ static int glyph_ttf(unsigned int cp, void* st)
         ensure_font_state(c->r, gfont, c->fs,
                           c->bold ? kFontBold : 0);
     }
-    std::tuple<TTF_Font*, int, unsigned int> key(
-        gfont, static_cast<int>(c->fs), cp);
+    /* packed key: font pointer lo32 ^ (size << 32) ^ fnv(cp). The font's
+     * size is part of the key (SetFontSize reuses one TTF_Font per
+     * family/style) and the unordered lookup replaces the old
+     * std::map<tuple> O(logN) + tuple-compare per CJK glyph. */
+    uint64_t key = static_cast<uint64_t>(
+                       reinterpret_cast<uintptr_t>(gfont)) ^
+                   (static_cast<uint64_t>(static_cast<uint32_t>(c->fs))
+                    << 32) ^
+                   (static_cast<uint64_t>(cp) * 1099511628211ull);
     auto it = c->r->glyph_w_cache.find(key);
     if (it != c->r->glyph_w_cache.end()) {
         return it->second;
@@ -755,12 +775,7 @@ static int glyph_ttf(unsigned int cp, void* st)
     return adv;
 }
 
-/* full: 闂備浇顕х€涒晝绮欓幒妞尖偓鍐川鐎涙ê娈濋梺缁橆殔閻楀﹥鍒婄€电硶鍋撻獮鍨姎闁瑰啿绻掔划?缂傚倸鍊搁崐鐑芥嚄閸洖绐楃€广儱娲ㄩ崡?GlyphImg 闂傚倷娴囬～澶嬬娴犲纾块弶鍫亖娴?闂傚倷绶氬褍螞閺冨倹宕插ǎ鍥ф尵_GetGlyphImage 闂?fallback 闂?
- * TTF_IMAGE_COLOR(COLR 闂佽崵鍠愮划宥嗙珶鐎ｎ喖鐤鹃柣鎰嚟閻濊泛鈹戦悩鎻掝仱闁稿鎸搁埥澶娾枎濡崵鏆ラ梻?闂?闂傚倷鑳堕…鍫㈢矓鐎靛憡宕查柟鐑樻⒒閻棛鈧厜鍋撻柛鏇ㄥ墮濞堟粌顪冮妶鍛閻庢凹鍣ｅ顐﹀Ω閵夊孩鐩幃褔宕奸姀銏㈠帞濠?TTF_IMAGE_ALPHA(闂傚倷娴囬褏鎹㈤幋婵愮唵婵☆垰鐨烽崑?
- * 闂?婵?fg 闂傚倷娴囬崑鎰板箠閹剧粯鍎戝ù鍏兼綑閻掑灚銇勯幒鍡椾壕闂佺锕ラ幃鍌炲箖妤ｅ啯鍊锋い鎺嶇椤?x = pen + minx(bitmap_left), y = baseline - maxy
- * (bitmap_top),婵?TTF_GetGlyphMetrics 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭濞差亜鍐€闁靛ě鈧弸鏍⒑闁偛鑻晶鎾煙?advance 婵?glyph_ttf 闂傚倷绀侀幉锟犳嚌妤ｅ啫瀚夋い鎺戝€芥慨铏亜閺囨浜炬繝?
- * ponytail: 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鎵閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存煟濡吋鏆╁?闂傚倸鍊风粈浣鸿姳闁秴纾婚柟鎯х摠閸欏繘鏌ㄥ┑鍡楊仾妞わ箓顥撶槐鎺楀棘鐠恒劍鎲肩紓?SDL_Surface,闂?ckey 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸ㄥ爼骞嗗畝鍕畾鐟滄粓宕?select 婵犵數鍋為崹鍫曞箰閹间緡鏁勯柛鈩兠崹鏃堟煣韫囨挻璐″?
- * 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鐗堟緲缁狀喗鎱ㄥΟ鍨厫闁绘帒顭烽弻鐔兼焽閿曗偓婢т即鏌熼悾灞芥灁闁瑰弶鎮傞幊婊堫敆閳ь剟鎮橀鍫熷仭闁哄洨鍋為ˉ銏⑩偓?闂傚倷绀侀崥瀣儑瑜版帒纾块悗闈涙啞瀹曟煡鏌″搴′簽閻忓繒鏁婚弻銈嗘叏閹邦兘鍋撳Δ鍛煑婵鍩栭悡娑㈡煕鐏炲墽顣插璺哄缁绘繈鍩€椤掍礁顕遍柡澶嬪灩椤撴椽姊鸿ぐ鎺戜喊闁哥姵顨婇獮濠囧即閻?闂?(font,cp) 缂傚倸鍊搁崐鎼佸磹瑜版帒绠伴柟闂寸劍閸嬨倝鏌曟繛褉鍋撻柛瀣尭閳藉鈻庡Ο鑽ゆ殽闂備胶鍘ч幗婊勬櫠濡ゅ懎绠柛娑卞弾閸氬鏌涘☉鍗炴灓妞も晩鍙冨?*/
+/* full: per-glyph bitmap for the rasterizer (TTF_GetGlyphImage + fallback). TTF_IMAGE_COLOR carries COLR color-emoji data, TTF_IMAGE_ALPHA is the plain coverage mask; fg tints the latter. Pen math: x = pen + minx (bitmap_left), y = baseline - maxy (bitmap_top). */
 static bool glyph_img_ttf(whaleui_render_t* r, const std::string& family,
                           int fs, int style, unsigned int cp, unsigned int fg,
                           GlyphImg& out)
