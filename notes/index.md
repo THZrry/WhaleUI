@@ -164,3 +164,7 @@ scroll 帧保留状态标记 + scroll_dy 死代码清理) —— 见 notes/curre
 绘制 CtrlKind 单分发 + thead/tbody/tfoot/li 标签号) + 三处热路径
 (style_cache/fam/glyph 哈希化) + RuleTagIndex 悬空复用回归修复 ——
 见 notes/current.md
+<36>(SOLVED): 输入类残留收敛(kind 3/4 + contenteditable 单写点 + number
+过滤合一 + radio 组迭代漫游 + label for 接通) + UA 默认尺寸下沉
+(checkbox/input/textarea/select/progress/meter/img) + 热路径去重解析
+(inset/min-max/transform) —— 见 notes/current.md

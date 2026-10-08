@@ -67,18 +67,31 @@ void paint_checkbox(whaleui_render_t* r, whaleui_layout_node_t* n,
         el, (const lxb_char_t*)"checked", 7);
     int bx = n->border.x + off_x;
     int by = n->border.y + off_y;
-    /* native control size 16x16, regardless of the layout box: flex/inline
-     * flows can mis-size an unchecked checkbox (11px wide, 32px tall - the
-     * inline-block height takes the line box), which painted a squashed
-     * sliver instead of a checkbox. The position still comes from the box,
-     * centered inside it so a taller line box (label row height) does not
-     * leave the control stuck in the top-left corner. */
-    const int bw = 16, bh = 16;
-    if (n->border.h > bh) {
-        by += (n->border.h - bh) / 2;
+    /* native control size follows the layout box (the UA stylesheet sizes
+     * checkbox/radio at 16x16, with the C++ fallback mirroring it when no
+     * stylesheet is present): flex/inline flows used to mis-size an
+     * unchecked checkbox (11px wide, 32px tall), which painted a squashed
+     * sliver - the UA rule closed that. Clamp defensively so a hostile
+     * stylesheet (width:0/1px) still paints a recognizable control, and
+     * center inside a taller line box so a label row does not leave the
+     * control stuck in the top-left corner. */
+    int bw = n->border.w > 0 ? n->border.w : 16;
+    int bh = n->border.h > 0 ? n->border.h : 16;
+    if (bw < 12) {
+        bx -= (12 - bw) / 2;
+        bw = 12;
     }
-    if (n->border.w > bw) {
-        bx += (n->border.w - bw) / 2;
+    if (bh < 12) {
+        by -= (12 - bh) / 2;
+        bh = 12;
+    }
+    if (bw > 24) {
+        bx += (bw - 24) / 2;
+        bw = 24;
+    }
+    if (bh > 24) {
+        by += (bh - 24) / 2;
+        bh = 24;
     }
     if (bw <= 0 || bh <= 0) {
         return;
@@ -752,7 +765,19 @@ void paint_select_value(whaleui_render_t* r, whaleui_layout_node_t* n,
         return;
     }
     int sel = select_current_index(r, n->el, texts);
-    int fs = 13;
+    /* value font follows the element's own font-size (UA --text-base via
+     * inheritance in real pages, 16px default when stylesheet-less): the
+     * old hardcoded 13 painted small text in a 28px field. */
+    int fs = 16;
+    {
+        std::string fsv = sget(n->style, "font-size");
+        if (!fsv.empty()) {
+            int f = font_size_px(r, fsv);
+            if (f > 0) {
+                fs = f;
+            }
+        }
+    }
     unsigned int fg = color_of(n->style, "color", 0xFF1a1a1a);
     /* value text left, arrow pinned to the right edge. The value fills
      * the content box like an input's text (same by/bh): draw_text_at
@@ -797,6 +822,18 @@ void paint_select_list(whaleui_render_t* r, whaleui_layout_node_t* n,
     whaleui_style_virtual_host(".select-option-selected", n->el, r->rules,
                                r->rule_count, r->theme_vars, &st0, opt_sel);
     int fs = 13;
+    {
+        /* popup rows follow the host select's font-size when set (same
+         * rule as the value text); the 13px stays as the stylesheet-less
+         * default so popup rows keep their 26px rhythm. */
+        std::string fsv = sget(n->style, "font-size");
+        if (!fsv.empty()) {
+            int f = font_size_px(r, fsv);
+            if (f > 0) {
+                fs = f;
+            }
+        }
+    }
     unsigned int fg = color_of(popup, "color", 0xFF1a1a1a);
     int list_x = n->border.x;
     int list_y = n->border.y + off_y + n->border.h;

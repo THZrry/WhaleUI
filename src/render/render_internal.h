@@ -273,6 +273,10 @@ int select_current_index(whaleui_render_t* r, lxb_dom_element* sel,
 
 /* --- interaction helpers (defined in render.cpp) --- */
 
+/* contenteditable element (single writer, render.cpp): non-false
+ * contenteditable on a non-input/textarea. is_editable(_node) ask this
+ * for the attribute case. */
+bool is_contenteditable(lxb_dom_element* el);
 std::string sget(const WhaleUIComputedStyle& s, const char* k);
 bool tag_eq(lxb_dom_element* el, const char* tag);
 bool is_check_radio(lxb_dom_element* el);
@@ -285,12 +289,15 @@ bool is_editable_node(whaleui_layout_node_t* n);
  * multi-line and return false here. */
 bool is_single_line_input(const whaleui_layout_node_t* n);
 bool is_single_line_input_el(lxb_dom_element* el);
-/* Password box: <input type=password>. Single writer of the password
- * question; value masking + caret geometry both ask this. */
+/* Password box: <input type=password> (kind 3). Single writer of the
+ * password question; value masking + caret geometry both ask this. */
 bool is_password_box_el(lxb_dom_element* el);
-/* Number box: <input type=number>. Single writer; insert filter + dot
- * validation both ask this. */
+/* Number box: <input type=number> (kind 4). Single writer; the insert
+ * filter owns both the char filter and the one-dot validation. */
 bool is_number_box_el(lxb_dom_element* el);
+/* Radio exclusion: clears `checked` on same-name radios when one is picked.
+ * Single writer of the peer question (the click path asks this). */
+void radio_uncheck_peers(lxb_dom_element* picked);
 std::string edit_value(lxb_dom_element* el);
 void edit_set_value(lxb_dom_element* el, const std::string& s);
 void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,

@@ -207,13 +207,29 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 input:disabled, select:disabled, textarea:disabled { opacity: var(--disabled-opacity); }
 /* checkbox/radio 是 16px 原生控件：不吃输入框的 min-height / padding，
  * 否则布局盒被撑成 32px，而绘制仍是 16x16 —— 命中区与画面不一致
- * （temp/engine-gaps.md P0#2 实测 20x32）。 */
+ * （temp/engine-gaps.md P0#2 实测 20x32）。尺寸是 UA 默认（单写点）：
+ * 布局不再手写 16px，引擎的绘制盒与命中盒都从这里来。 */
 input[type="checkbox"], input[type="radio"] {
     min-height: 0; min-width: 0; padding: 0;
+    width: 16px; height: 16px; border: none; background: none;
 }
 textarea { padding: 6px var(--in-px); overflow: auto; }
+/* form-control UA default sizes (primary source - the C++ in layout.cpp
+ * mirrors these values as the stylesheet-less fallback only): text input
+ * 12em wide, textarea 12em x 60px scrolling, select + input 28px field
+ * height. Explicit author width/height win by cascade. */
+input[type="text"], input:not([type]) { width: 12em; }
+select, input[type="text"], input:not([type]),
+input[type="password"], input[type="number"], input[type="email"],
+input[type="search"], input[type="tel"], input[type="url"] { height: 28px; }
+textarea { width: 12em; height: 60px; }
 select { cursor: pointer; }
-progress { width: 100%; height: 4px; }
+/* progress/meter share the renderer's track+fills paint: wide track, fixed
+ * height. One UA rule for both (the old C++ 16em/6px and the old
+ * `progress{100%/4px}` disagreed - this is the single source). */
+progress, meter { width: 16em; height: 6px; padding: 0; border: none; }
+/* replaced-element intrinsic size (browser default when no src/dimensions) */
+img { width: 300px; height: 150px; }
 
 /* --- 布局工具 --- */
 .row { display: flex; flex-direction: row; gap: 10px; }

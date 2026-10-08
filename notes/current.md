@@ -933,3 +933,68 @@ value 型控件判定(is_sel/is_inp)改 tag_id + kind; textarea 默认高度去�
 控件尺寸)、C3 的 is_editable 合并后续、C4 number 校验强度统一、C5
 radio 组漫游改索引 —— 本轮只收敛判定写点, 不动行为。
 
+# <36>: 输入类残留收敛 + UA 默认尺寸下沉 + 热路径去重解析
+
+SOLVED
+
+<35> 的延期项落地 + 热路径一轮。
+
+## A. C3/C4/C5 输入类残留收敛(render.cpp/render_internal.h/layout.*)
+
+- kind 码 0/1/2 -> 0/1/2/3/4: password=3、number=4 独立成码(此前
+  `is_password/number_box_el` 各自手读 type 属性, 与 kind 表各说各话)。
+  `is_editable(_node)` 改为 kind 0/3/4 可编辑, `is_single_line_input(_el)`
+  同步 0/3/4(password/number 是单行, 此前 kind==0 把它们排除在几何分支
+  之外是错的 —— 与 is_editable 矛盾)。
+- `is_contenteditable` 提升为具名单写点(render.cpp 定义 +
+  render_internal.h 声明): input/textarea 永假(属性不能把 input 变成
+  多行), 其余看 contenteditable 非 false。`is_editable(_node)` 的属性
+  分支改调它, 删第二份手写判定(此前 render.cpp 有两份同名函数, 后一份
+  覆盖前一份, 实际靠运气)。
+- C4 number 校验合一: `input_insert_filter(el, ins, rep_a, rep_b)`
+  吃替换区间, char 过滤 + 全值单点检查一步完成; paste(CTRL+V)与
+  handle_text 两个调用点传区间, handle_text 里手写的第二份 dot 检查删
+  (此前两份检查并存, 调用点还没传区间, paste 路径实际只走了 char 过滤)。
+- C5 radio 组: `radio_uncheck_peers(picked)` 单写点(owner document 为根,
+  iterative 栈漫游 —— 旧递归 lambda 深页爆栈; 按 name 精确比对, checkbox
+  误伤排除, 每个被清的 peer 补 `whaleui_dom_mark_dirty`)。点击路径删 30 行
+  手写递归, 改调它。附带修两处: `label for="id"` 经布局树 `find_el_by_id`
+  (新建, render 上下文无 document 句柄, 走布局树迭代查找)真正接通(此前
+  注释写"尚未接线"); wrapped label 改深搜(此前只看直接子节点); radio
+  判定收敛为 `is_radio_type` 单写点。
+
+## B. P2 UA 默认尺寸下沉(theme_css.cpp + layout.cpp 回退)
+
+- UA 新增(主源): checkbox/radio 16px 无 chrome(并入既有 reset 规则);
+  text 类 input 12em + 28px(select 同高, `input[type=text]/:not([type])`
+  等文本族精确列出 —— 裸 `input{}` 会误伤 checkbox/radio/submit 等,
+  属选择器 + `:not([type])` 均已验证引擎支持); textarea 12em x 60px;
+  progress/meter 共用 16em x 6px(关闭了 C++ 16em/6px 与旧 UA 100%/4px
+  的分歧, 以此为准); img 300x150。
+- C++ 保留 UA-less 回退(裸 layout_compute rules=nullptr, 单测/嵌入方):
+  同值镜像, 仅当属性缺席时填。教训三连(全是回退写法误伤正常流, 逐个修):
+  (1) 高度回退未限定 select/input, textarea 被盖 28px(应 60px);
+  (2) 高度回退写在"缺宽度"大块里, 显式宽度丢默认高度;
+  (3) 宽度回退缺控件门, div/body 坍缩 12em(50% 按 192 算)—— 门只认
+  select/input/textarea/progress/meter。
+- checkbox 绘制跟随布局盒(12~24px clamp + 居中), 命中同步同盒(此前两处
+  硬编码 16x16, 与 UA 规则各说各话); hit_test 的 transform 解析由每节点
+  两次改为一次(translate/scale 与 rot/skew 逆变换共用)。
+- select 值字体跟随元素 font-size(UA --text-base 继承, 无样式 16px),
+  popup 行同规则(13px 保留为无样式缺省, 保住 26px 行节奏)。
+
+## C. 热路径去重解析(layout.cpp/render.cpp, 零行为)
+
+- `inset` 5 解析 -> 1: 删 4 次 `len_px(ins)` 预解析, 只留 `sides()` 一次
+  TRBL 展开(旧代码先 4 次 len_px 再 sides, 后者覆盖前者, 前 4 次纯浪费)。
+- min/max-width 与 min/max-height: compare + assign 各解析一次 -> 解析
+  一次存局部(4 处)。
+- hit_test 每节点 `whaleui_transform_eval` 2 次 -> 1 次(translate/scale
+  分支与 rot/skew 逆变换分支共用 `htf`)。
+- 文本 atlas/顶点缓冲经代码审计确认为已最优(常驻 vector + clear 保容量
+  + 脏矩形上传): 不动。
+
+验证: 全量构建 ok; 11/11 套件 exit=0(layout/style/scroll/render 四套
+回归中修绿: textarea/input 高度门、div 宽度门、select 值字体; scroll
+的 check-row/select 像素行仅数值漂移, 断言结构未动)。
+

@@ -1303,8 +1303,10 @@ static bool text_is_blank(const lxb_char_t* d, size_t n)
 
 /* input type classification: 0 = text-like (holds editable text), 1 =
  * button/other (no text, no native toggle), 2 = checkbox or radio (native
- * control look, no field chrome). Missing/unknown type = text (matches the
- * renderer's is_editable, which only excludes the known non-text list). */
+ * control look, no field chrome), 3 = password (masked text-like), 4 =
+ * number (text-like with a digit filter). Missing/unknown type = text
+ * (matches the renderer's is_editable, which only excludes the known
+ * non-text list). */
 extern "C" int whaleui_input_kind(lxb_dom_element* el)
 {
     size_t alen = 0;
@@ -1314,6 +1316,12 @@ extern "C" int whaleui_input_kind(lxb_dom_element* el)
         if ((alen == 8 && std::memcmp(t, "checkbox", 8) == 0) ||
             (alen == 5 && std::memcmp(t, "radio", 5) == 0)) {
             return 2;
+        }
+        if (alen == 8 && std::memcmp(t, "password", 8) == 0) {
+            return 3;
+        }
+        if (alen == 6 && std::memcmp(t, "number", 6) == 0) {
+            return 4;
         }
         static const char* kOther[] = {
             "button", "file", "color", "submit", "reset",
@@ -1914,11 +1922,18 @@ struct Builder
                 n->style["display"] = "none";
             }
         }
-        /* form controls get the browser-default inline size (~20ch): as
-         * inline-blocks their content estimate is 0 (option/value text is
-         * not a text run), which would collapse them to zero width.
-         * checkbox/radio are sized by the renderer (native control look)
-         * and drop the field border/padding. */
+        /* form-control default size: PRIMARY source is the UA stylesheet
+         * (theme_css.cpp: input/textarea/select/checkbox/progress/meter/img
+         * rules) - when the cascade already produced a width/height, this
+         * block does nothing. The C++ below is the UA-LESS fallback (bare
+         * layout_compute with rules=nullptr, e.g. unit tests / embedders):
+         * it mirrors the UA values so a stylesheet-free tree still sizes
+         * controls like a browser. Do not diverge the two: UA wins when
+         * present (cascade fills the property, fallback skips), fallback
+         * applies only when the property is absent. Absolute/fixed controls
+         * are sized by their offsets (inset:0 fills the positioned
+         * ancestor), not by either default. The select longest-option
+         * measure stays here unconditionally: CSS cannot express it. */
         std::string cw0 = get(n->style, "width");
         bool cw_missing = cw0.empty() || cw0 == "auto";
         /* absolute/fixed controls are sized by their offsets (inset:0
@@ -1926,114 +1941,135 @@ struct Builder
         std::string ppos = get(n->style, "position");
         bool positioned = ppos == "absolute" || ppos == "fixed";
         if (tname0 && cw_missing && !positioned) {
-            bool ctrl = (tlen0 == 6 && std::memcmp(tname0, "select", 6) == 0) ||
-                        (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0) ||
-                        (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0) ||
-                        (tlen0 == 8 && std::memcmp(tname0, "progress", 8) == 0) ||
-                        (tlen0 == 5 && std::memcmp(tname0, "meter", 5) == 0);
-            if (ctrl) {
-                if (tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0 &&
-                    input_kind(n->el) == 2) {
-                    /* checkbox/radio: fixed control box, no field chrome */
-                    n->style["width"] = "16px";
-                    n->style["height"] = "16px";
-                    n->style["padding"] = "0";
-                    n->style["border"] = "none";
-                    n->style["background"] = "none";
-                } else if (tlen0 == 8 && std::memcmp(tname0, "progress", 8) == 0) {
-                    /* progress/meter: wide track, fixed height */
-                    n->style["width"] = "16em";
-                    n->style["height"] = "6px";
-                    n->style["padding"] = "0";
-                    n->style["border"] = "none";
-                } else if (tlen0 == 5 && std::memcmp(tname0, "meter", 5) == 0) {
-                    n->style["width"] = "16em";
-                    n->style["height"] = "6px";
-                    n->style["padding"] = "0";
-                    n->style["border"] = "none";
-                } else if (tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
-                           n->style.find("height") == n->style.end()) {
-                    /* textarea: fixed default height (browser-like); the
-                     * content scrolls inside (overflow:auto) instead of
-                     * growing the control as lines are added. Set even when
-                     * a width is present (the width block below is gated on
-                     * an absent width, so this must be its own check). */
-                    n->style["width"] = "12em";
+            bool is_sel_tag = tlen0 == 6 && std::memcmp(tname0, "select", 6) == 0;
+            bool is_inp_tag = tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0;
+            bool is_ta_tag = tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0;
+            bool is_prog_tag = tlen0 == 8 && std::memcmp(tname0, "progress", 8) == 0;
+            bool is_meter_tag = tlen0 == 5 && std::memcmp(tname0, "meter", 5) == 0;
+            bool is_ctrl_tag = is_sel_tag || is_inp_tag || is_ta_tag ||
+                               is_prog_tag || is_meter_tag;
+            /* controls only: a missing width on div/body/span is normal
+             * flow (fill/shrink), never a 12em default - without this gate
+             * the parents collapse to 12em and every %-width child
+             * mis-resolves (50% of 192 instead of 400) */
+            if (!is_ctrl_tag) {
+                /* not a form control: no default size */;
+            } else if (is_inp_tag && input_kind(n->el) == 2) {
+                /* checkbox/radio fallback (mirrors the UA rule): fixed
+                 * control box, no field chrome */
+                n->style["width"] = "16px";
+                n->style["height"] = "16px";
+                n->style["padding"] = "0";
+                n->style["border"] = "none";
+                n->style["background"] = "none";
+            } else if (is_prog_tag || is_meter_tag) {
+                /* progress/meter fallback (mirrors the UA rule): wide
+                 * track, fixed height */
+                n->style["width"] = "16em";
+                n->style["height"] = "6px";
+                n->style["padding"] = "0";
+                n->style["border"] = "none";
+            } else if (is_ta_tag) {
+                /* textarea fallback (mirrors the UA rule): fixed default
+                 * size; the content scrolls inside (overflow:auto, set
+                 * below) instead of growing the control as lines are
+                 * added. The width block only runs on a missing width, so
+                 * an explicit width keeps its author height path. */
+                n->style["width"] = "12em";
+                if (n->style.find("height") == n->style.end()) {
                     n->style["height"] = "60px";
-                } else {
-                    /* select + text input: browser-like field height so the
-                     * control doesn't stretch in a flex row (e.g. the demo
-                     * header) or grow to its option count. A select's width
-                     * adapts to its longest option (browser default) - the
-                     * fixed 12em clipped long option labels (the value text
-                     * overflowed the field). */
-                    bool is_sel_tag = tname0 && tlen0 == 6 &&
-                                      std::memcmp(tname0, "select", 6) == 0;
-                    if (is_sel_tag && n->el) {
-                        float fs2 = len_px(get(n->style, "font-size"), 0,
-                                           16.0f);
-                        if (fs2 <= 0) {
-                            fs2 = 16.0f;
-                        }
-                        float maxw = 0;
-                        for (lxb_dom_node* oc = n->el->node.first_child; oc;
-                             oc = oc->next) {
-                            if (oc->type != LXB_DOM_NODE_TYPE_ELEMENT) {
-                                continue;
-                            }
-                            lxb_dom_element* oe =
-                                lxb_dom_interface_element(oc);
-                            size_t olen = 0;
-                            const lxb_char_t* on =
-                                lxb_dom_element_local_name(oe, &olen);
-                            if (!on || olen != 6 ||
-                                std::memcmp(on, "option", 6) != 0) {
-                                continue;
-                            }
-                            std::string txt;
-                            for (lxb_dom_node* t = oe->node.first_child; t;
-                                 t = t->next) {
-                                if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
-                                    const lexbor_str_t* s =
-                                        &lxb_dom_interface_text(t)
-                                             ->char_data.data;
-                                    if (s->data) {
-                                        txt.append(
-                                            reinterpret_cast<const char*>(
-                                                s->data),
-                                            s->length);
-                                    }
-                                }
-                            }
-                            float w = text_measure(
-                                txt, fs2, get(n->style, "font-family"),
-                                false, 0);
-                            if (w > maxw) {
-                                maxw = w;
-                            }
-                        }
-                        char wbuf[32];
-                        std::snprintf(wbuf, sizeof(wbuf), "%dpx",
-                                      static_cast<int>(maxw + 26));
-                        n->style["width"] = wbuf;
-                    } else {
-                        n->style["width"] = "12em";
-                    }
-                    n->style["height"] = "28px";
                 }
+            } else if (is_sel_tag && n->el) {
+                float fs2 =
+                    len_px(get(n->style, "font-size"), 0, 16.0f);
+                if (fs2 <= 0) {
+                    fs2 = 16.0f;
+                }
+                float maxw = 0;
+                for (lxb_dom_node* oc = n->el->node.first_child; oc;
+                     oc = oc->next) {
+                    if (oc->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                        continue;
+                    }
+                    lxb_dom_element* oe = lxb_dom_interface_element(oc);
+                    size_t olen = 0;
+                    const lxb_char_t* on =
+                        lxb_dom_element_local_name(oe, &olen);
+                    if (!on || olen != 6 ||
+                        std::memcmp(on, "option", 6) != 0) {
+                        continue;
+                    }
+                    std::string txt;
+                    for (lxb_dom_node* t = oe->node.first_child; t;
+                         t = t->next) {
+                        if (t->type == LXB_DOM_NODE_TYPE_TEXT) {
+                            const lexbor_str_t* s =
+                                &lxb_dom_interface_text(t)->char_data.data;
+                            if (s->data) {
+                                txt.append(
+                                    reinterpret_cast<const char*>(s->data),
+                                    s->length);
+                            }
+                        }
+                    }
+                    float w = text_measure(txt, fs2,
+                                           get(n->style, "font-family"),
+                                           false, 0);
+                    if (w > maxw) {
+                        maxw = w;
+                    }
+                }
+                char wbuf[32];
+                std::snprintf(wbuf, sizeof(wbuf), "%dpx",
+                              static_cast<int>(maxw + 26));
+                n->style["width"] = wbuf;
+            } else {
+                /* everything else without a width (text inputs, buttons,
+                 * selects with no options to measure): mirror the input
+                 * default */
+                n->style["width"] = "12em";
+            }
+            /* height half of the fallback: text inputs/selects without a
+             * height get the browser-like field height (mirrors the UA
+             * rule). Textareas keep their own height path below (an
+             * explicit textarea width must still get 60px, not 28px).
+             * Text inputs are covered again below when only the width was
+             * missing here - the find check makes the second write a
+             * no-op. */
+            bool is_text_inp = is_inp_tag &&
+                               (input_kind(n->el) == 0 ||
+                                input_kind(n->el) == 3 ||
+                                input_kind(n->el) == 4);
+            if ((is_sel_tag || is_text_inp) &&
+                n->style.find("height") == n->style.end()) {
+                n->style["height"] = "28px";
             }
         }
-        /* textarea default height must apply regardless of the width check
-         * above (an explicit width skips that block entirely) */
-        if (tname0 && tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0 &&
-            !positioned) {
-            if (n->style.find("height") == n->style.end()) {
-                n->style["height"] = "60px";
+        /* text input / textarea UA-less fallback: applies even when a width
+         * IS present (the width block above is gated on a missing width, so
+         * this is its own check - mirrors the UA rule). Fills only the
+         * missing half: an explicit width keeps its author/UA height path
+         * (textarea 60px, input 28px via the width block / cascade). */
+        if (tname0 && !positioned) {
+            bool is_inp_tag = tlen0 == 5 && std::memcmp(tname0, "input", 5) == 0;
+            bool is_ta_tag =
+                tlen0 == 8 && std::memcmp(tname0, "textarea", 8) == 0;
+            if (is_inp_tag &&
+                (input_kind(n->el) == 0 || input_kind(n->el) == 3 ||
+                 input_kind(n->el) == 4)) {
+                if (n->style.find("height") == n->style.end()) {
+                    n->style["height"] = "28px";
+                }
+            } else if (is_ta_tag) {
+                if (n->style.find("height") == n->style.end()) {
+                    n->style["height"] = "60px";
+                }
             }
             /* textarea scrolls its content by default (browser UA style),
              * so typing more lines never stretches the control - the fixed
              * height stays and the content scrolls inside */
-            if (n->style.find("overflow") == n->style.end()) {
+            if (is_ta_tag &&
+                n->style.find("overflow") == n->style.end()) {
                 n->style["overflow"] = "auto";
             }
         }
@@ -2664,30 +2700,28 @@ struct Builder
         int pkind = position_kind(get(n->style, "position"));
         std::string pos_v = get(n->style, "position");
         /* inset: top/right/bottom/left shorthand ("inset:0" fills a
-         * positioned ancestor); longhands win when both are present */
+         * positioned ancestor); longhands win when both are present.
+         * Parsed ONCE via sides() (TRBL like margin): the old code ran
+         * len_px(ins) four times first and then sides() on top - five
+         * parses of the same value per positioned node per relayout. */
         std::string ins = get(n->style, "inset");
         bool has_inset = !ins.empty();
+        int iv[4] = {0, 0, 0, 0};
+        if (has_inset) {
+            sides(ins, iv, static_cast<float>(cw), em, 0);
+        }
         float off_top = has_inset
-                            ? len_px(ins, static_cast<float>(ch), em)
+                            ? static_cast<float>(iv[0])
                             : len_px_vp(get(n->style, "top"), static_cast<float>(ch), em, vw, vh);
         float off_left = has_inset
-                             ? len_px(ins, static_cast<float>(cw), em)
+                             ? static_cast<float>(iv[3])
                              : len_px_vp(get(n->style, "left"), static_cast<float>(cw), em, vw, vh);
         float off_right = has_inset
-                              ? len_px(ins, static_cast<float>(cw), em)
+                              ? static_cast<float>(iv[1])
                               : len_px_vp(get(n->style, "right"), static_cast<float>(cw), em, vw, vh);
         float off_bottom = has_inset
-                               ? len_px(ins, static_cast<float>(ch), em)
+                               ? static_cast<float>(iv[2])
                                : len_px_vp(get(n->style, "bottom"), static_cast<float>(ch), em, vw, vh);
-        /* "inset: a b c d" expands like margin */
-        if (has_inset) {
-            int iv[4] = {0, 0, 0, 0};
-            sides(ins, iv, static_cast<float>(cw), em, 0);
-            off_top = static_cast<float>(iv[0]);
-            off_right = static_cast<float>(iv[1]);
-            off_bottom = static_cast<float>(iv[2]);
-            off_left = static_cast<float>(iv[3]);
-        }
         bool has_left = has_inset || !get(n->style, "left").empty();
         bool has_right = has_inset || !get(n->style, "right").empty();
         bool has_top = has_inset || !get(n->style, "top").empty();
@@ -2833,20 +2867,24 @@ struct Builder
         /* min/max-width clamp the box BEFORE children are laid out: a
          * max-width container must not hand its pre-clamp width to them
          * (a .app{max-width:1120px} inside a 1280 viewport would otherwise
-         * lay every child out at 1260px and overflow) */
+         * lay every child out at 1260px and overflow). Each bound parses
+         * once: the old code ran len_px_vp twice per bound (compare +
+         * assign). */
         std::string mnw = get(n->style, "min-width");
         std::string mxw = get(n->style, "max-width");
-        if (!mnw.empty() &&
-            n->border.w < static_cast<int>(
-                              len_px_vp(mnw, static_cast<float>(cw), em, vw, vh))) {
-            n->border.w = static_cast<int>(
+        if (!mnw.empty()) {
+            int mnw_px = static_cast<int>(
                 len_px_vp(mnw, static_cast<float>(cw), em, vw, vh));
+            if (n->border.w < mnw_px) {
+                n->border.w = mnw_px;
+            }
         }
-        if (!mxw.empty() &&
-            n->border.w > static_cast<int>(
-                              len_px_vp(mxw, static_cast<float>(cw), em, vw, vh))) {
-            n->border.w = static_cast<int>(
+        if (!mxw.empty()) {
+            int mxw_px = static_cast<int>(
                 len_px_vp(mxw, static_cast<float>(cw), em, vw, vh));
+            if (n->border.w > mxw_px) {
+                n->border.w = mxw_px;
+            }
         }
 
         /* children */
@@ -2992,14 +3030,23 @@ struct Builder
             n->content.h = 28 - p[0] - p[2] - n->border_w[0] - n->border_w[2];
         }
 
-        /* min/max-height (viewport units resolve via len_px_vp) */
+        /* min/max-height (viewport units resolve via len_px_vp). Each
+         * bound parses once (compare + assign shared the value). */
         std::string mnh = get(n->style, "min-height");
         std::string mxh = get(n->style, "max-height");
-        if (!mnh.empty() && n->border.h < static_cast<int>(len_px_vp(mnh, static_cast<float>(ch), em, vw, vh))) {
-            n->border.h = static_cast<int>(len_px_vp(mnh, static_cast<float>(ch), em, vw, vh));
+        if (!mnh.empty()) {
+            int mnh_px = static_cast<int>(
+                len_px_vp(mnh, static_cast<float>(ch), em, vw, vh));
+            if (n->border.h < mnh_px) {
+                n->border.h = mnh_px;
+            }
         }
-        if (!mxh.empty() && n->border.h > static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh))) {
-            n->border.h = static_cast<int>(len_px_vp(mxh, static_cast<float>(ch), em, vw, vh));
+        if (!mxh.empty()) {
+            int mxh_px = static_cast<int>(
+                len_px_vp(mxh, static_cast<float>(ch), em, vw, vh));
+            if (n->border.h > mxh_px) {
+                n->border.h = mxh_px;
+            }
         }
         /* the min/max clamp above can change the border height: keep the
          * content box in sync (scroll ranges read content.h) */
@@ -3307,10 +3354,13 @@ struct Builder
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
             /* checkbox/radio UA default 16x16 must be visible BEFORE the
-             * flex main-size pass reads width: the per-node default lives
-             * in layout() (1228), which runs AFTER flex sizes the items -
-             * an unchecked checkbox then sized as an empty inline-block
-             * (11px wide) instead of 16px and painted squashed. */
+             * flex main-size pass reads width: the cascade normally
+             * provides it (UA rule), but a stylesheet-less tree (bare
+             * layout_compute, rules=nullptr) has no cascade - mirror the
+             * UA values here as the UA-less fallback. The per-node
+             * fallback in build() runs AFTER flex sizes the items, so
+             * without this an unchecked checkbox sizes as an empty
+             * inline-block (11px wide) instead of 16px. */
             if (k->el && input_kind(k->el) == 2) {
                 if (k->style.find("width") == k->style.end()) {
                     k->style["width"] = "16px";

@@ -405,45 +405,126 @@ bool is_check_radio(lxb_dom_element* el)
     return whaleui_input_kind(el) == 2;
 }
 
-/* Single-line text input: <input> whose kind is text-like (0). textarea and
- * contenteditable wrap, so they are multi-line and return false. This is
- * the only place that interprets the kind code for geometry; every caret /
- * wrap / scroll / selection / click / wheel branch asks this function. */
+/* radio type test (single writer): kind==2 narrows to check/radio, this
+ * picks the radio half. The toggle + peer walk ask this, never a hand
+ * type-attribute compare. */
+bool is_radio_type(lxb_dom_element* el)
+{
+    size_t tlen = 0;
+    const lxb_char_t* tv = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"type", 4, &tlen);
+    return tv && tlen == 5 && std::memcmp(tv, "radio", 5) == 0;
+}
+
+/* Single-line text input: <input> whose kind is text-like (0), password
+ * (3) or number (4). textarea and contenteditable wrap, so they are
+ * multi-line and return false. This is the only place that interprets
+ * the kind code for geometry; every caret / wrap / scroll / selection /
+ * click / wheel branch asks this function. */
 bool is_single_line_input(const whaleui_layout_node_t* n)
 {
-    return n && !n->is_text && n->tag_id == WUI_TAG_INPUT &&
-           whaleui_input_kind(n->el) == 0;
+    if (!n || n->is_text || n->tag_id != WUI_TAG_INPUT) {
+        return false;
+    }
+    int k = whaleui_input_kind(n->el);
+    return k == 0 || k == 3 || k == 4;
 }
 
 bool is_single_line_input_el(lxb_dom_element* el)
 {
-    return tag_eq(el, "input") && whaleui_input_kind(el) == 0;
+    if (!tag_eq(el, "input")) {
+        return false;
+    }
+    int k = whaleui_input_kind(el);
+    return k == 0 || k == 3 || k == 4;
 }
 
 /* <input type=password>: value shows as mask chars, caret/selection still
- * use the plaintext. Single writer of the password question. */
+ * use the plaintext. Single writer of the password question (reads the
+ * kind code, never the attribute directly). */
 bool is_password_box_el(lxb_dom_element* el)
 {
-    if (!tag_eq(el, "input")) {
-        return false;
-    }
-    size_t tlen = 0;
-    const lxb_char_t* tv = lxb_dom_element_get_attribute(
-        el, (const lxb_char_t*)"type", 4, &tlen);
-    return tv && tlen == 8 && std::memcmp(tv, "password", 8) == 0;
+    return tag_eq(el, "input") && whaleui_input_kind(el) == 3;
 }
 
 /* <input type=number>: only digits + number-syntax chars pass the insert
- * filter, and the whole value keeps at most one dot. Single writer. */
+ * filter, and the whole value keeps at most one dot. Single writer (reads
+ * the kind code, never the attribute directly). */
 bool is_number_box_el(lxb_dom_element* el)
 {
-    if (!tag_eq(el, "input")) {
+    return tag_eq(el, "input") && whaleui_input_kind(el) == 4;
+}
+
+/* radio-group peer walk, rooted at the picked element's owner document:
+ * clears `checked` on same-name radios when one is picked (browser
+ * exclusivity). Single writer of the peer question (the click path asks
+ * this, never a hand recursive walk). */
+void radio_uncheck_peers(lxb_dom_element* picked)
+{
+    size_t nlen = 0;
+    const lxb_char_t* nm = lxb_dom_element_get_attribute(
+        picked, (const lxb_char_t*)"name", 4, &nlen);
+    if (!nm || nlen == 0) {
+        return;
+    }
+    lxb_dom_document* doc2 = picked->node.owner_document;
+    lxb_dom_element* docroot =
+        doc2 ? lxb_dom_document_element(doc2) : nullptr;
+    if (!docroot) {
+        return;
+    }
+    /* iterative stack walk (no recursion: deep pages blew the C++ stack
+     * through the old recursive lambda) */
+    std::vector<lxb_dom_node*> stack;
+    stack.push_back(&docroot->node);
+    while (!stack.empty()) {
+        lxb_dom_node* nd = stack.back();
+        stack.pop_back();
+        while (nd) {
+            if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* e = lxb_dom_interface_element(nd);
+                if (e != picked &&
+                    lxb_dom_element_has_attribute(
+                        e, (const lxb_char_t*)"checked", 7) &&
+                    tag_eq(e, "input") &&
+                    whaleui_input_kind(e) ==
+                        2 /* radio (checkbox never reaches here) */) {
+                    size_t nn = 0;
+                    const lxb_char_t* en = lxb_dom_element_get_attribute(
+                        e, (const lxb_char_t*)"name", 4, &nn);
+                    if (en && nn == nlen && std::memcmp(en, nm, nlen) == 0) {
+                        size_t tl = 0;
+                        const lxb_char_t* tv = lxb_dom_element_get_attribute(
+                            e, (const lxb_char_t*)"type", 4, &tl);
+                        if (tv && tl == 5 && std::memcmp(tv, "radio", 5) == 0) {
+                            lxb_dom_element_remove_attribute(
+                                e, (const lxb_char_t*)"checked", 7);
+                            whaleui_dom_mark_dirty(e);
+                        }
+                    }
+                }
+                if (nd->first_child) {
+                    stack.push_back(nd->first_child);
+                }
+            }
+            nd = nd->next;
+        }
+    }
+}
+
+/* contenteditable test (single writer): non-false contenteditable, and
+ * never an input/textarea (those are editable by tag+kind, not by the
+ * attribute - an input contenteditable=false stays a single-line field). */
+bool is_contenteditable(lxb_dom_element* el)
+{
+    if (!el || tag_eq(el, "input") || tag_eq(el, "textarea")) {
         return false;
     }
-    size_t tlen = 0;
-    const lxb_char_t* tv = lxb_dom_element_get_attribute(
-        el, (const lxb_char_t*)"type", 4, &tlen);
-    return tv && tlen == 6 && std::memcmp(tv, "number", 6) == 0;
+    size_t alen = 0;
+    const lxb_char_t* ce = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"contenteditable", 15, &alen);
+    return ce && alen > 0 &&
+           !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
 }
 
 bool is_editable(lxb_dom_element* el)
@@ -452,18 +533,13 @@ bool is_editable(lxb_dom_element* el)
         return false;
     }
     if (tag_eq(el, "input")) {
-        return whaleui_input_kind(el) == 0;
+        int k = whaleui_input_kind(el);
+        return k == 0 || k == 3 || k == 4;
     }
     if (tag_eq(el, "textarea")) {
         return true;
     }
-    size_t alen = 0;
-    const lxb_char_t* ce = lxb_dom_element_get_attribute(
-        el, (const lxb_char_t*)"contenteditable", 15, &alen);
-    if (ce && alen > 0) {
-        return !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
-    }
-    return false;
+    return is_contenteditable(el);
 }
 
 /* editable check via the layout node's tag component (O(1), skips the
@@ -474,18 +550,13 @@ bool is_editable_node(whaleui_layout_node_t* n)
         return false;
     }
     if (n->tag_id == WUI_TAG_INPUT) {
-        return whaleui_input_kind(n->el) == 0;
+        int k = whaleui_input_kind(n->el);
+        return k == 0 || k == 3 || k == 4;
     }
     if (n->tag_id == WUI_TAG_TEXTAREA) {
         return true;
     }
-    size_t alen = 0;
-    const lxb_char_t* ce = lxb_dom_element_get_attribute(
-        n->el, (const lxb_char_t*)"contenteditable", 15, &alen);
-    if (ce && alen > 0) {
-        return !(alen == 5 && std::memcmp(ce, "false", 5) == 0);
-    }
-    return false;
+    return is_contenteditable(n->el);
 }
 
 /* editable value: input -> value attribute; textarea/contenteditable -> the
@@ -875,26 +946,32 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
      * inverse-transform fallback below (unchanged approximation). */
     int dxs = 0, dys = 0;
     int sw = n->border.w, sh = n->border.h;
+    /* the transform string parses once per visited node: the translate/scale
+     * branch below and the rot/skew inverse branch share the result (the
+     * old code ran whaleui_transform_eval twice per node per hit query). */
+    whaleui_transform_t htf;
+    bool has_htf = false;
     if (n->xf && n->el && !n->is_text) {
-        whaleui_transform_t tf;
         if (whaleui_transform_eval(sget(n->style, "transform").c_str(),
                                    static_cast<float>(n->border.w),
                                    static_cast<float>(n->border.h),
-                                   &tf) == 0 &&
-            (tf.tx != 0.0f || tf.ty != 0.0f || tf.sx != 1.0f ||
-             tf.sy != 1.0f)) {
+                                   &htf) == 0) {
+            has_htf = true;
+        }
+        if (has_htf && (htf.tx != 0.0f || htf.ty != 0.0f ||
+                        htf.sx != 1.0f || htf.sy != 1.0f)) {
             float toox = static_cast<float>(n->border.w) * 0.5f;
             float tooy = static_cast<float>(n->border.h) * 0.5f;
             whaleui_transform_origin_eval(
                 sget(n->style, "transform-origin").c_str(),
                 static_cast<float>(n->border.w),
                 static_cast<float>(n->border.h), &toox, &tooy);
-            dxs = static_cast<int>(tf.tx) +
-                  static_cast<int>(toox * (1.0f - tf.sx));
-            dys = static_cast<int>(tf.ty) +
-                  static_cast<int>(tooy * (1.0f - tf.sy));
-            sw = static_cast<int>(static_cast<float>(n->border.w) * tf.sx);
-            sh = static_cast<int>(static_cast<float>(n->border.h) * tf.sy);
+            dxs = static_cast<int>(htf.tx) +
+                  static_cast<int>(toox * (1.0f - htf.sx));
+            dys = static_cast<int>(htf.ty) +
+                  static_cast<int>(tooy * (1.0f - htf.sy));
+            sw = static_cast<int>(static_cast<float>(n->border.w) * htf.sx);
+            sh = static_cast<int>(static_cast<float>(n->border.h) * htf.sy);
         }
     }
     const int hx = x - dxs; /* the point in this node's PAINTED frame */
@@ -962,60 +1039,76 @@ whaleui_layout_node_t* hit_test(whaleui_render_t* r, whaleui_layout_node_t* n,
      * here (translate/scale were already inverted exactly above); the
      * anchor mirrors paint (border + translation + origin). Inverse order
      * mirrors paint (un-rotate, then un-skew around the same anchor). */
-    if (n->xf && n->el && !n->is_text) {
-        whaleui_transform_t tf;
-        if (whaleui_transform_eval(sget(n->style, "transform").c_str(),
-                                   static_cast<float>(n->border.w),
-                                   static_cast<float>(n->border.h),
-                                   &tf) == 0 &&
-            (tf.rot != 0.0f || tf.skx != 0.0f || tf.sky != 0.0f)) {
-            float toox = static_cast<float>(n->border.w) * 0.5f;
-            float toooy = static_cast<float>(n->border.h) * 0.5f;
-            whaleui_transform_origin_eval(
-                sget(n->style, "transform-origin").c_str(),
-                static_cast<float>(n->border.w),
-                static_cast<float>(n->border.h), &toox, &toooy);
-            float cx = static_cast<float>(n->border.x) + toox;
-            float cy = static_cast<float>(n->border.y + off_y) + toooy;
-            const float rad = -tf.rot * 3.14159265f / 180.0f;
-            float dx = static_cast<float>(hx) - cx;
-            float dy = static_cast<float>(hy) - cy;
-            float ux = dx * std::cos(rad) - dy * std::sin(rad);
-            float uy = dx * std::sin(rad) + dy * std::cos(rad);
-            /* un-skew around the anchor (inverse shear) */
-            if (tf.skx != 0.0f || tf.sky != 0.0f) {
-                float tx = 0, ty = 0;
-                if (tf.skx != 0.0f) {
-                    tx = std::tan(tf.skx * 3.14159265f / 180.0f);
-                }
-                if (tf.sky != 0.0f) {
-                    ty = std::tan(tf.sky * 3.14159265f / 180.0f);
-                }
-                float det = 1.0f - tx * ty;
-                if (det != 0.0f) {
-                    float ix = (ux - tx * uy) / det;
-                    float iy = (uy - ty * ux) / det;
-                    ux = ix;
-                    uy = iy;
-                }
+    if (has_htf &&
+        (htf.rot != 0.0f || htf.skx != 0.0f || htf.sky != 0.0f)) {
+        float toox = static_cast<float>(n->border.w) * 0.5f;
+        float toooy = static_cast<float>(n->border.h) * 0.5f;
+        whaleui_transform_origin_eval(
+            sget(n->style, "transform-origin").c_str(),
+            static_cast<float>(n->border.w),
+            static_cast<float>(n->border.h), &toox, &toooy);
+        float cx = static_cast<float>(n->border.x) + toox;
+        float cy = static_cast<float>(n->border.y + off_y) + toooy;
+        const float rad = -htf.rot * 3.14159265f / 180.0f;
+        float dx = static_cast<float>(hx) - cx;
+        float dy = static_cast<float>(hy) - cy;
+        float ux = dx * std::cos(rad) - dy * std::sin(rad);
+        float uy = dx * std::sin(rad) + dy * std::cos(rad);
+        /* un-skew around the anchor (inverse shear) */
+        if (htf.skx != 0.0f || htf.sky != 0.0f) {
+            float tx = 0, ty = 0;
+            if (htf.skx != 0.0f) {
+                tx = std::tan(htf.skx * 3.14159265f / 180.0f);
             }
-            const float rx = cx + ux;
-            const float ry = cy + uy;
-            if (rx >= n->border.x && rx < n->border.x + n->border.w &&
-                ry >= n->border.y + off_y &&
-                ry < n->border.y + off_y + n->border.h) {
-                return n;
+            if (htf.sky != 0.0f) {
+                ty = std::tan(htf.sky * 3.14159265f / 180.0f);
+            }
+            float det = 1.0f - tx * ty;
+            if (det != 0.0f) {
+                float ix = (ux - tx * uy) / det;
+                float iy = (uy - ty * ux) / det;
+                ux = ix;
+                uy = iy;
             }
         }
+        const float rx = cx + ux;
+        const float ry = cy + uy;
+        if (rx >= n->border.x && rx < n->border.x + n->border.w &&
+            ry >= n->border.y + off_y &&
+            ry < n->border.y + off_y + n->border.h) {
+            return n;
+        }
     }
-    /* checkbox/radio: the painted control is 16x16 but the layout box can
-     * be smaller (flex main-size before the UA default -> 11px wide) or
-     * taller (line-box height -> 32px). Hit the 16x16 paint area so the
-     * whole visible control is clickable, not just the narrow layout box. */
-    if (n->el && is_check_radio(n->el) &&
-        hx >= n->border.x && hx < n->border.x + 16 &&
-        hy >= n->border.y + off_y && hy < n->border.y + off_y + 16) {
-        return n;
+    /* checkbox/radio: the painted control follows the layout box (UA 16x16,
+     * 12-24px clamp in paint_checkbox), but the layout box can be taller
+     * (line-box height) while the paint centers inside it. Hit the painted
+     * control area so the whole visible control is clickable. */
+    if (n->el && is_check_radio(n->el)) {
+        int cbw = n->border.w > 0 ? n->border.w : 16;
+        int cbh = n->border.h > 0 ? n->border.h : 16;
+        if (cbw < 12) {
+            cbw = 12;
+        }
+        if (cbh < 12) {
+            cbh = 12;
+        }
+        if (cbw > 24) {
+            cbw = 24;
+        }
+        if (cbh > 24) {
+            cbh = 24;
+        }
+        int cbx = n->border.x;
+        int cby = n->border.y + off_y;
+        if (n->border.w > cbw) {
+            cbx += (n->border.w - cbw) / 2;
+        }
+        if (n->border.h > cbh) {
+            cby += (n->border.h - cbh) / 2;
+        }
+        if (hx >= cbx && hx < cbx + cbw && hy >= cby && hy < cby + cbh) {
+            return n;
+        }
     }
     return nullptr;
 }
@@ -1366,6 +1459,37 @@ void update_selection_focus(whaleui_render_t* r, whaleui_layout_node_t* hit,
 static void edit_ensure_visible(whaleui_render_t* r);
 whaleui_layout_node_t* find_node_by_el(whaleui_layout_tree_t* tree,
                                        lxb_dom_element* el);
+/* find an element by its id attribute under a layout subtree (the render
+ * context carries no document handle, so <label for="id"> resolves through
+ * the layout tree instead of lxb_dom_document). Iterative: shares the
+ * radio peer walk's no-recursion discipline. Returns nullptr when absent. */
+static lxb_dom_element* find_el_by_id(whaleui_layout_node_t* root,
+                                      const lxb_char_t* id, size_t idlen)
+{
+    if (!root || !id || idlen == 0) {
+        return nullptr;
+    }
+    std::vector<whaleui_layout_node_t*> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+        whaleui_layout_node_t* n = stack.back();
+        stack.pop_back();
+        for (whaleui_layout_node_t* c = n; c; c = c->next) {
+            if (!c->is_text && c->el) {
+                size_t ilen = 0;
+                const lxb_char_t* iv = lxb_dom_element_get_attribute(
+                    c->el, (const lxb_char_t*)"id", 2, &ilen);
+                if (iv && ilen == idlen && std::memcmp(iv, id, idlen) == 0) {
+                    return c->el;
+                }
+            }
+            if (c->first_child) {
+                stack.push_back(c->first_child);
+            }
+        }
+    }
+    return nullptr;
+}
 bool is_contenteditable(lxb_dom_element* el); /* defined below */
 
 /* split a string into lines; a trailing \n keeps an empty last line
@@ -1452,12 +1576,16 @@ static std::string edit_lines_replace(whaleui_render_t* r,
 /* input type differences go through one filter expression at the generic
  * layer, the type is the config:
  * - disabled: rejects all editing (focus/insert/paste/IME)
- * - type=number: only digits + number-syntax chars (0-9 . - + e E);
- *   other types (text/password/email/...) pass through unchanged.
+ * - type=number: only digits + number-syntax chars (0-9 . - + e E), and
+ *   the whole value keeps at most one dot (browser behavior: a second dot
+ *   rejects the segment). Single writer of the number question: kind code
+ *   picks the branch, no per-callsite type reads.
+ * - other types (text/password/email/...) pass through unchanged.
  * Page-level custom filter hooks can attach here later (reserved in
  * whaleui.h). Returns the filtered insertable string; empty rejects. */
 static std::string input_insert_filter(lxb_dom_element* el,
-                                       const std::string& ins)
+                                       const std::string& ins,
+                                       size_t rep_a, size_t rep_b)
 {
     if (ins.empty()) {
         return ins;
@@ -1474,6 +1602,29 @@ static std::string input_insert_filter(lxb_dom_element* el,
             if ((c >= '0' && c <= '9') || c == '.' || c == '-' ||
                 c == '+' || c == 'e' || c == 'E') {
                 out.push_back(static_cast<char>(c));
+            }
+        }
+        if (!out.empty()) {
+            std::string cur = edit_value(el);
+            if (rep_a > cur.size()) {
+                rep_a = cur.size();
+            }
+            if (rep_b > cur.size()) {
+                rep_b = cur.size();
+            }
+            if (rep_a > rep_b) {
+                std::swap(rep_a, rep_b);
+            }
+            std::string nv2 =
+                cur.substr(0, rep_a) + out + cur.substr(rep_b);
+            size_t dots = 0;
+            for (size_t i = 0; i < nv2.size(); ++i) {
+                if (nv2[i] == '.') {
+                    ++dots;
+                }
+            }
+            if (dots > 1) {
+                return std::string();
             }
         }
         return out;
@@ -1660,13 +1811,7 @@ static void edit_ensure_visible(whaleui_render_t* r)
     }
 }
 
-bool is_contenteditable(lxb_dom_element* el)
-{
-    if (!el || !is_editable(el)) {
-        return false;
-    }
-    return !tag_eq(el, "input") && !tag_eq(el, "textarea");
-}
+bool is_contenteditable(lxb_dom_element* el);
 
 size_t line_start(const std::string& s, size_t b)
 {
@@ -2228,7 +2373,8 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
             char* cl = SDL_GetClipboardText();
             if (cl) {
                 std::string pv = input_insert_filter(
-                    el, std::string(cl));
+                    el, std::string(cl), static_cast<size_t>(a),
+                    static_cast<size_t>(b));
                 SDL_free(cl);
                 if (pv.empty()) {
                     return;
@@ -2999,17 +3145,40 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         toggle_el = hit->el;
     } else if (hit && hit->el && tag_eq(hit->el, "label")) {
         lxb_dom_element* lab = hit->el;
-        /* wrapped input: first input descendant of the label (the common
-         * <label><input>...</label> form). for="id" association is not yet
-         * wired (no document handle on the render context). */
-        for (lxb_dom_node* nd = lab->node.first_child; nd; nd = nd->next) {
-            if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-                lxb_dom_element* e = lxb_dom_interface_element(nd);
-                size_t elen = 0;
-                const lxb_char_t* en = lxb_dom_element_local_name(e, &elen);
-                if (en && elen == 5 && std::memcmp(en, "input", 5) == 0) {
-                    toggle_el = e;
-                    break;
+        /* for="id": the labelled input anywhere in the document (needs the
+         * renderer's tree root as the document proxy - the render context
+         * carries no document handle) */
+        size_t flen = 0;
+        const lxb_char_t* forv = lxb_dom_element_get_attribute(
+            lab, (const lxb_char_t*)"for", 3, &flen);
+        if (forv && flen > 0 && r->tree && r->tree->root) {
+            toggle_el = find_el_by_id(r->tree->root, forv, flen);
+            if (toggle_el && !is_check_radio(toggle_el)) {
+                toggle_el = nullptr;
+            }
+        }
+        /* wrapped input: first check/radio descendant of the label (the
+         * common <label><input>...</label> form; deep, not just direct
+         * children) */
+        if (!toggle_el) {
+            std::vector<lxb_dom_node*> stack;
+            stack.push_back(lab->node.first_child);
+            while (!stack.empty() && !toggle_el) {
+                lxb_dom_node* nd = stack.back();
+                stack.pop_back();
+                while (nd) {
+                    if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                        lxb_dom_element* e =
+                            lxb_dom_interface_element(nd);
+                        if (is_check_radio(e)) {
+                            toggle_el = e;
+                            break;
+                        }
+                        if (nd->first_child) {
+                            stack.push_back(nd->first_child);
+                        }
+                    }
+                    nd = nd->next;
                 }
             }
         }
@@ -3018,11 +3187,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         lxb_dom_element* hit2 = toggle_el;
         bool was_checked = lxb_dom_element_has_attribute(
             hit2, (const lxb_char_t*)"checked", 7);
-        size_t tlen0 = 0;
-        const lxb_char_t* tname0 = lxb_dom_element_get_attribute(
-            hit2, (const lxb_char_t*)"type", 4, &tlen0);
-        bool r0 = tname0 && tlen0 == 5 &&
-                  std::memcmp(tname0, "radio", 5) == 0;
+        bool r0 = whaleui_input_kind(hit2) == 2 &&
+                  is_radio_type(hit2);
         if (was_checked) {
             /* a checked radio does NOT un-toggle on a second click (browser
              * behavior: it only switches to another radio in the group). A
@@ -3034,46 +3200,8 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
         } else {
             lxb_dom_element_set_attribute(hit2, (const lxb_char_t*)"checked", 7,
                                           (const lxb_char_t*)"", 0);
-            size_t nlen = 0;
-            const lxb_char_t* nm = lxb_dom_element_get_attribute(
-                hit2, (const lxb_char_t*)"name", 4, &nlen);
-            size_t tlen = 0;
-            const lxb_char_t* tname = lxb_dom_element_get_attribute(
-                hit2, (const lxb_char_t*)"type", 4, &tlen);
-            bool radio = tname && tlen == 5 &&
-                         std::memcmp(tname, "radio", 5) == 0;
-            if (radio && nm && nlen > 0) {
-                /* clear checked on every other radio with the same name */
-                std::function<void(lxb_dom_node*)> uncheck =
-                    [&](lxb_dom_node* nd) {
-                        while (nd) {
-                            if (nd->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-                                lxb_dom_element* e = lxb_dom_interface_element(nd);
-                                if (e != hit2 &&
-                                    lxb_dom_element_has_attribute(
-                                        e, (const lxb_char_t*)"checked", 7)) {
-                                    size_t nn = 0;
-                                    const lxb_char_t* en = lxb_dom_element_get_attribute(
-                                        e, (const lxb_char_t*)"name", 4, &nn);
-                                    if (en && nn == nlen &&
-                                        std::memcmp(en, nm, nlen) == 0) {
-                                        lxb_dom_element_remove_attribute(
-                                            e, (const lxb_char_t*)"checked", 7);
-                                    }
-                                }
-                                if (nd->first_child) {
-                                    uncheck(nd->first_child);
-                                }
-                            }
-                            nd = nd->next;
-                        }
-                    };
-                lxb_dom_document* doc2 = hit2->node.owner_document;
-                lxb_dom_element* docroot =
-                    doc2 ? lxb_dom_document_element(doc2) : nullptr;
-                if (docroot) {
-                    uncheck(&docroot->node);
-                }
+            if (r0) {
+                radio_uncheck_peers(hit2);
             }
         }
         /* NO whole-tree rebuild: flipping `checked` is a style-only DOM
@@ -3947,25 +4075,11 @@ extern "C" void whaleui_render_handle_text(whaleui_render_t* r, const char* utf8
     if (a > b) {
         std::swap(a, b);
     }
-    std::string ins = input_insert_filter(r->edit_el, std::string(utf8));
+    std::string ins = input_insert_filter(r->edit_el, std::string(utf8),
+                                              static_cast<size_t>(a),
+                                              static_cast<size_t>(b));
     if (ins.empty()) {
         return;
-    }
-    /* type=number keeps at most one dot in the whole value (browser
-     * behavior): a second dot after insertion rejects the segment. */
-    if (is_number_box_el(r->edit_el)) {
-        std::string vv = edit_value(r->edit_el);
-        std::string nv2 = vv.substr(0, static_cast<size_t>(a)) + ins +
-                          vv.substr(static_cast<size_t>(b));
-        size_t dots = 0;
-        for (size_t i = 0; i < nv2.size(); ++i) {
-            if (nv2[i] == '.') {
-                ++dots;
-            }
-        }
-        if (dots > 1) {
-            return;
-        }
     }
     edit_replace(r, r->edit_el, static_cast<size_t>(a), static_cast<size_t>(b),
                  ins);

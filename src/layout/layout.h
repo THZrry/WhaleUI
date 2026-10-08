@@ -29,9 +29,10 @@ extern "C" {
 
 /* input type classification: 0 = text-like (editable text), 1 =
  * button/other (no text, no native toggle), 2 = checkbox or radio
- * (native control look, no field chrome). Missing/unknown type = text.
- * Single writer: render/is_editable/is_check_radio answer the same
- * question from these codes - keep them in sync. */
+ * (native control look, no field chrome), 3 = password (masked text),
+ * 4 = number (digit + number-syntax filter). Missing/unknown type = text.
+ * Single writer: render/is_editable/is_check_radio/is_password/is_number
+ * answer the same question from these codes - keep them in sync. */
 int whaleui_input_kind(struct lxb_dom_element* el);
 
 typedef struct whaleui_rect
