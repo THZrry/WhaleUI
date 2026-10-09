@@ -235,6 +235,10 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
 void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
                  int fs, const std::string& family, bool bold,
                  size_t off, const Clip* clip, int wrap_w = 0);
+/* current caret-blink phase (0/1, 500ms halves): the frame loop skips the
+ * caret-only repaint when the phase is unchanged since the last painted
+ * frame (no visual difference) - single writer, paint_caret reads it too. */
+int caret_blink_phase(void);
 void update_ime_area(whaleui_render_t* r, const std::string& val, int fs,
                      const std::string& family, bool bold, size_t caret,
                      int tx, int ty, int wrap_w = 0);

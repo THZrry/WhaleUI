@@ -2283,6 +2283,7 @@ static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
     r->compose.clear();
     r->compose_caret = -1;
     r->has_dirty = 1;
+    r->caret_phase_painted = -1; /* new focus: repaint unconditionally */
     r->edit_scroll_need = 1;
     if (r->window) {
         SDL_Window* ww = r->window;
@@ -2555,6 +2556,7 @@ extern "C" whaleui_render_t* whaleui_render_create(SDL_GPUDevice* device, SDL_Wi
     r->text_scale = 1.0f;
     r->nav_col = -1;
     r->partial = 0;
+    r->caret_phase_painted = -1;
     r->pixels.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0xFF202020);
     r->text_layer.resize(static_cast<size_t>(r->fb_w) * r->fb_h, 0);
 
@@ -3638,6 +3640,9 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             !lxb_dom_element_has_attribute(
                 el, (const lxb_char_t*)"disabled", 8)) {
             /* focus the editable control and place the caret / word / line */
+            if (r->edit_el != el) {
+                r->caret_phase_painted = -1; /* new focus: repaint */
+            }
             r->edit_el = el;
             r->sel_anchor_el = r->sel_focus_el = el;
             r->nav_col = -1;
@@ -4725,13 +4730,25 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * Repaint when the layout/state is dirty, a wheel scroll happened, an
      * animation/transition is running, an editable caret is blinking, the
      * DOM was mutated, or a hover change is waiting for its partial
-     * repaint (hover_old_el set by set_hover / the state-relayout pass). */
+     * repaint (hover_old_el set by set_hover / the state-relayout pass).
+     * A focused caret does NOT force a repaint by itself: only a blink
+     * PHASE flip does (caret_dirty below) - otherwise an idle focused
+     * input burns a full repaint every frame at the refresh rate. */
+    bool caret_dirty = false;
+    if (r->edit_el) {
+        caret_dirty = caret_blink_phase() != r->caret_phase_painted;
+    }
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
-        !animating && !r->edit_el && !r->hover_old_el &&
+        !animating && !caret_dirty && !r->hover_old_el &&
         !r->focus_old_el && !r->pressed_old_el && r->hover_prev.empty() &&
         !r->font_scale_pending && !r->fill_dirty.load() &&
         dom_dirty.empty() && !r->hover_recheck) {
-        if (r->fill_running.load()) {
+        if (r->edit_el) {
+            /* focused but visually unchanged (same blink phase): park the
+             * paint, keep the loop ticking cheaply so the next phase flip
+             * repaints */
+            r->alive = 1;
+        } else if (r->fill_running.load()) {
             /* background fill active: cheap poll frames (no paint) so a
              * batch's fill_dirty wakes a repaint without needing input */
             r->alive = 1;
@@ -5363,13 +5380,16 @@ d here leaves its ancestors'
          * paints outside the tree, so force a full-viewport paint for
          * this frame (the popup region has no other damage source). */
         r->scroll_el = nullptr;
-    } else if (!r->edit_el && !r->open_select &&
+    } else if (!r->open_select &&
                (r->hover_old_el || r->focus_old_el ||
                 r->pressed_old_el || !r->hover_prev.empty() ||
                 !dom_repaint.empty())) {
         /* interaction-state / paint-only DOM edits: repaint only the old +
          * new state elements and the changed DOM elements (their styles
          * changed; the relayout already re-cascaded, geometry is stable).
+         * NOT gated on edit_el: a focused input's hover/selection changes
+         * must still repaint its box - the caret gate below only skips
+         * fully unchanged phases, and caret_dirty forces a paint then.
          * NOT gated on !animating: an animation running while the mouse
          * moves must still repaint the hovered box - the animation branch
          * below accumulates its boxes into the SAME strip.
@@ -5448,7 +5468,8 @@ d here leaves its ancestors'
      * branch (an unchanged-values frame must not grow a strip). Scroll
      * frames never reach here: scroll_dirty is set above. */
     if (r->presented_valid && r->tree && !scroll_frame && !need_layout &&
-        !r->has_dirty && !want_scroll_frame && !r->edit_el &&
+        !r->has_dirty && !want_scroll_frame &&
+        (!r->edit_el || !caret_dirty) &&
         !r->open_select && dom_dirty.empty() && !r->hover_recheck &&
         !anim_values_changed && !animating && !r->state_pending &&
         !partial) {
@@ -5815,8 +5836,13 @@ d here leaves its ancestors'
     SDL_SubmitGPUCommandBuffer(cmd);
     /* the image on screen now matches the current inputs: arm the
      * presented-frame fast path (a later frame whose tick reports no value
-     * change and no other dirty state skips paint + GPU work). */
+     * change and no other dirty state skips paint + GPU work). Snapshot
+     * the caret phase painted into this image (the caret gate above
+     * compares against it). */
     r->presented_valid = 1;
+    if (r->edit_el) {
+        r->caret_phase_painted = caret_blink_phase();
+    }
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). An open
      * select popup keeps frames coming for its open transition (up to a

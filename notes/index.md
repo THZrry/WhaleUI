@@ -171,3 +171,8 @@ scroll 帧保留状态标记 + scroll_dy 死代码清理) —— 见 notes/curre
 <37>(SOLVED): 小窗口功耗爆炸(presented 快路径: 值不变帧跳 paint+GPU,
 后台/遮挡/最小化停渲+tick 保活) + 纯滚动永久拖影(scroll 判定快照,
 消费后 paint 侧恒假) + scroll-each 五帧回归 —— 见 notes/current.md
+<38>(SOLVED): CPU 占用三板斧 —— (1) caret 跳帧(500ms 相位门, 同相位停
+paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双帧率门
+(事件帧 60fps 保输入, 无输入自驱跟 display_refresh, 高刷屏省 CPU);
+(3) 多窗口后台节流(失焦兄弟窗口 10Hz paint + tick 保活, 单窗口零行为
+变更) + caret-blink 回归 —— 见 notes/current.md

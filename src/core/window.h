@@ -84,6 +84,10 @@ struct whaleui_window
      * still ticks cheaply) until the next exposure. Set/cleared by the event
      * path in app.cpp; read by the worker's per-window render gate. */
     int occluded;
+    /* last background-throttle paint timestamp, ms (worker-thread only):
+     * unfocused multi-window siblings paint at most every ~100ms so a
+     * background demo stops burning a full core. */
+    unsigned long long bg_last;
     /* coalesced wheel: same pattern as motion (a flick delivers several
      * WHEEL events per frame; each one scrolled + repainted separately, so
      * frames queued behind the live offset and the content trailed). The

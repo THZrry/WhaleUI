@@ -2152,11 +2152,16 @@ unsigned int sel_hl_color(whaleui_render_t* r, whaleui_layout_node_t* n,
     return accent_hl(r, alpha);
 }
 
+int caret_blink_phase(void)
+{
+    return (SDL_GetTicks() / 500) & 1;
+}
+
 void paint_caret(whaleui_render_t* r, int tx, int ty, const std::string& text,
                  int fs, const std::string& family, bool bold,
                  size_t off, const Clip* clip, int wrap_w)
 {
-    if ((SDL_GetTicks() / 500) & 1) {
+    if (caret_blink_phase()) {
         return; /* blink: off half the time */
     }
     int cx = 0, cy = 0, ch = 16;

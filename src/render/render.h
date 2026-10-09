@@ -314,6 +314,12 @@ struct whaleui_render
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
     struct lxb_dom_element* edit_el;
+    /* caret-blink phase of the last PAINTED frame (0/1, 500ms halves): when
+     * the focused edit state is otherwise unchanged, a frame whose phase
+     * equals this skips the repaint (same 1px pixels) - the loop still
+     * ticks cheaply so the next phase flip repaints. -1 = no frame painted
+     * yet / state changed (repaint unconditionally). */
+    int caret_phase_painted;
     /* IME composition text (SDL_EVENT_TEXT_EDITING), drawn at the caret */
     std::string compose;
     /* caret position INSIDE the composition text, in UTF-8 code points

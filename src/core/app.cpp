@@ -510,10 +510,14 @@ static int apply_resizes(whaleui_app_t* app, Uint64 now)
  * Fully unseeable windows (minimized / hidden / occluded) skip paint +
  * present but still advance cheap animation clocks, so an uncover/expose
  * resumes mid-motion instead of jumping. The tick mutates no geometry -
- * the next real frame repaints from current values. */
+ * the next real frame repaints from current values.
+ * Multi-window background: an unfocused window with siblings paints at most
+ * every ~100ms (state still ticks cheaply between paints) - a background
+ * demo stops burning a full core while the focused window is unaffected. */
 static int render_all_windows(whaleui_app_t* app)
 {
     int alive = 0;
+    const bool multi = app->windows.size() > 1;
     for (whaleui_window_t* win : app->windows) {
         if (win->visible && win->sdl && win->render && win->document) {
             Uint64 flags = SDL_GetWindowFlags(win->sdl);
@@ -531,6 +535,22 @@ static int render_all_windows(whaleui_app_t* app)
                 }
                 alive |= win->render ? win->render->alive : 0;
                 continue;
+            }
+            /* background throttle (multi-window only): without input focus
+             * the window is behind another app window - paint at 10Hz, tick
+             * cheaply between paints so animations resume mid-motion. A
+             * lone window always paints (single-window apps/tests never hit
+             * this path, so no behavior change there). */
+            if (multi && !(flags & SDL_WINDOW_INPUT_FOCUS)) {
+                Uint64 now = SDL_GetTicks();
+                if (now - win->bg_last < 100) {
+                    if (win->render) {
+                        whaleui_render_tick_only(win->render);
+                    }
+                    alive |= win->render ? win->render->alive : 0;
+                    continue;
+                }
+                win->bg_last = now;
             }
             whaleui_render_frame(win->render, win->document);
             alive |= win->render->alive;
@@ -652,18 +672,25 @@ void render_worker_fn(whaleui_app_t* app)
             if (alive) {
                 app->frame_request.store(1);
             }
-            /* frame cap: an explicit max_fps wins. Otherwise the display's
-             * refresh rate is the cap (dynamic refresh rate - a 144Hz panel
-             * animates at 144), dropping to 60 while on battery with
-             * battery saver enabled (the documented power policy; FSR has
+            /* frame pacing (single budget): an explicit max_fps wins.
+             * Otherwise event-driven frames (input/resize/wheel/motion)
+             * cap at 60fps - input stays snappy without burning a core -
+             * while SELF-DRIVEN animation frames (no input, the loop kept
+             * itself alive) pace to the display refresh (144Hz -> 144fps)
+             * so motion stays smooth on high-refresh panels. Battery saver
+             * keeps 60 in both paths (the documented power policy; FSR has
              * its own battery trigger in fsr_want_active). Sleep OUTSIDE
              * the queue lock so event pushes stay cheap. */
+            const bool self_driven =
+                alive && evs.empty() && !hover_dirty && !wheel_dirty;
             int fps = app->max_fps;
             if (fps <= 0) {
-                if (app->battery_saver && app->on_battery) {
-                    fps = 60;
+                if (self_driven &&
+                    !(app->battery_saver && app->on_battery)) {
+                    fps = app->display_refresh > 0 ? app->display_refresh
+                                                   : 60;
                 } else {
-                    fps = app->display_refresh > 0 ? app->display_refresh : 60;
+                    fps = 60;
                 }
             }
             if (fps < 1) {

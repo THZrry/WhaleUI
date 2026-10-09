@@ -2139,6 +2139,51 @@ int main(void)
         whaleui_window_destroy(w);
     }
 
+    /* caret blink: same-phase frames park the paint, a phase flip repaints.
+     * Focus an input, paint once (snapshot phase), then frame again in the
+     * SAME 500ms half: the second frame must skip the paint but keep the
+     * loop alive. Then flip the phase and verify a repaint happens. */
+    {
+        whaleui_window_t* w = whaleui_window_create(app, "caret-blink",
+                                                    300, 200);
+        assert(w != nullptr);
+        assert(whaleui_window_load_html(w,
+            "<html><body><input id=\"i\" style=\"width:120px\" value=\"ab\">"
+            "</body></html>") == 0);
+        assert(whaleui_window_show(w) == 0);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        whaleui_layout_node_t* inp = nullptr;
+        for (auto& n : w->render->tree->arena) {
+            if (n.visible && n.el && !n.is_text) {
+                size_t len = 0;
+                const lxb_char_t* name =
+                    lxb_dom_element_local_name(n.el, &len);
+                if (name && len == 5 && std::memcmp(name, "input", 5) == 0) {
+                    inp = &n;
+                    break;
+                }
+            }
+        }
+        assert(inp != nullptr);
+        /* focus via click path (resets the painted-phase snapshot) */
+        whaleui_render_set_pressed(w->render, inp->content.x + 5,
+                                   inp->content.y + 2, 1);
+        whaleui_render_set_pressed(w->render, 0, 0, 0);
+        assert(w->render->edit_el == inp->el);
+        assert(w->render->caret_phase_painted == -1);
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        int ph0 = w->render->caret_phase_painted;
+        assert(ph0 == 0 || ph0 == 1);
+        /* same phase, no other change: the frame parks (alive stays 1 so
+         * the phase flip wakes a repaint, but no paint happens) */
+        int alive_before = w->render->alive;
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+        assert(w->render->caret_phase_painted == ph0);
+        assert(w->render->alive == alive_before);
+        (void)alive_before;
+        whaleui_window_destroy(w);
+    }
+
     /* wrapping textarea content scrolls the caret into view: typing at the
      * end of a long wrapped value scrolls the box, not the control */
     {
@@ -2169,6 +2214,7 @@ int main(void)
         lxb_dom_element* tel = ta->el;
         /* focus the textarea and type a long wrapped value */
         w->render->edit_el = tel;
+        w->render->caret_phase_painted = -1;
         w->render->sel_anchor = w->render->sel_focus = 0;
         std::string long_v(200, 'a');
         edit_replace(w->render, tel, 0, 0, long_v);
