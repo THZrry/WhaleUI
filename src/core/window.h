@@ -79,6 +79,11 @@ struct whaleui_window
     int mouse_pending;
     float mouse_x;
     float mouse_y;
+    /* occlusion state (SDL_EVENT_WINDOW_OCCLUDED / EXPOSED): a fully covered
+     * window presents nothing - the render worker parks its frames (state
+     * still ticks cheaply) until the next exposure. Set/cleared by the event
+     * path in app.cpp; read by the worker's per-window render gate. */
+    int occluded;
     /* coalesced wheel: same pattern as motion (a flick delivers several
      * WHEEL events per frame; each one scrolled + repainted separately, so
      * frames queued behind the live offset and the content trailed). The

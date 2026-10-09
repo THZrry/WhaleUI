@@ -168,3 +168,6 @@ scroll 帧保留状态标记 + scroll_dy 死代码清理) —— 见 notes/curre
 过滤合一 + radio 组迭代漫游 + label for 接通) + UA 默认尺寸下沉
 (checkbox/input/textarea/select/progress/meter/img) + 热路径去重解析
 (inset/min-max/transform) —— 见 notes/current.md
+<37>(SOLVED): 小窗口功耗爆炸(presented 快路径: 值不变帧跳 paint+GPU,
+后台/遮挡/最小化停渲+tick 保活) + 纯滚动永久拖影(scroll 判定快照,
+消费后 paint 侧恒假) + scroll-each 五帧回归 —— 见 notes/current.md

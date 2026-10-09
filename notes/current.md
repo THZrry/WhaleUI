@@ -837,6 +837,45 @@ animation 分支(它的 strip 会把漆面缩到动画盒)。
 
 SOLVED
 
+用户报告(两个, 同一轮): (1) 小窗口 demo(有动画)功耗爆炸, 之前不烧;
+要求缓存/少算 + 后台/最小化/遮挡停渲; (2) 不动鼠标纯滚动直接拖影且
+永不消失; 然后继续优化。
+
+## A. 功耗: presented 快路径 + 不可见停渲
+
+- presented 快路径(render.cpp): 值不变帧跳过 paint + GPU + present。
+  门用 tick 自己的结论(`anim_values_changed==0`: 插值与现样式全同,
+  即 held delay/ finished transition) + 外层排除 scroll/layout/DOM/
+  edit/popup/hover_recheck/state_pending/partial。无限动画(脉冲/Bar)
+  每帧都变值, 永不进此路 —— 只停 HELD 动画与静态唤醒帧。
+  证据链: 初版误伤 hover-lift(快照位置放错 + 条件缺 state_pending/
+  partial), 用 stash 二分定位到 render.cpp, 逐个补门修绿。
+- 不可见停渲(app.cpp/window.h): MINIMIZED/HIDDEN/OCCLUDED + 事件缓存
+  `win->occluded`(部分后端 flag 读数滞后) -> 跳 paint+present, 只跑
+  `whaleui_render_tick_only`(anim tick, 无 relayout/paint)。
+  EXPOSED/RESTORED/SHOWN 清 occluded + 掉 presented 缓存 + invalidate。
+  背景节流(失焦多窗口 10fps)做到一半后回退: 单 demo 窗口走不到该分支
+  (size==1), 留着是死代码, 删。
+- 刻意没做的: demo 的无限 pulse/bar 照常每帧全跑(行为正确, 停它会冻
+  画); FSR/swapchain/vsync 不动。
+
+## B. 纯滚动永久拖影: scroll 判定快照
+
+- 根因: 帧头 `scroll_dirty` 清零(供 hover_recheck 用), paint 侧再测
+  `r->scroll_el && r->scroll_dirty` 恒为假 -> scroll_frame 永假 ->
+  全视口重绘永不执行, 内容冻在旧偏移(拖影永不消失)。
+  修: 帧头快照 `want_scroll_frame`, paint 侧用快照判定; fast path 门
+  同步改测快照(旧 `!r->scroll_dirty` 同样恒真, 顺手改)。
+- 回归: scroll-each(五连单 notch 滚, 每帧断言 marker 到位 + 上方
+  25px 外无鬼影; 断言写崩两次: 采样行落在 marker 自身 20px 带内,
+  改 25px 外探针后绿)。scroll-smear 原用例同步绿。
+  注: f2/f3 行曾出现 Failed to close command list(0x80070057, D3D12
+  后端瞬态), 重跑自愈, 与本轮改动无关(同帧前后用例皆绿)。
+
+验证: 全量构建 ok; 11/11 套件 exit=0。
+
+SOLVED
+
 用户要求: 代码优化 + 性能 + 找 bug(尤其元素特判: 名义上不特判, 但特定
 元素仍有事件响应/绘制/几何差异, 要仔细检查)。
 
@@ -997,4 +1036,45 @@ SOLVED
 验证: 全量构建 ok; 11/11 套件 exit=0(layout/style/scroll/render 四套
 回归中修绿: textarea/input 高度门、div 宽度门、select 值字体; scroll
 的 check-row/select 像素行仅数值漂移, 断言结构未动)。
+
+# <37>: 小窗口功耗爆炸 + 纯滚动永久拖影
+
+SOLVED
+
+用户报告(两个, 同一轮): (1) 小窗口 demo(有动画)功耗爆炸, 之前不烧;
+要求缓存/少算 + 后台/最小化/遮挡停渲; (2) 不动鼠标纯滚动直接拖影且
+永不消失; 然后继续优化。
+
+## A. 功耗: presented 快路径 + 不可见停渲
+
+- presented 快路径(render.cpp): 值不变帧跳过 paint + GPU + present。
+  门用 tick 自己的结论(`anim_values_changed==0`: 插值与现样式全同,
+  即 held delay/finished transition) + 外层排除 scroll/layout/DOM/
+  edit/popup/hover_recheck/state_pending/partial。无限动画(脉冲/Bar)
+  每帧都变值, 永不进此路 —— 只停 HELD 动画与静态唤醒帧。
+  证据链: 初版误伤 hover-lift(快照位置放错 + 条件缺 state_pending/
+  partial), 用 stash 二分定位到 render.cpp, 逐个补门修绿。
+- 不可见停渲(app.cpp/window.h): MINIMIZED/HIDDEN/OCCLUDED + 事件缓存
+  `win->occluded`(部分后端 flag 读数滞后) -> 跳 paint+present, 只跑
+  `whaleui_render_tick_only`(anim tick, 无 relayout/paint)。
+  EXPOSED/RESTORED/SHOWN 清 occluded + 掉 presented 缓存 + invalidate。
+  背景节流(失焦多窗口 10fps)做到一半后回退: 单 demo 窗口走不到该分支
+  (size==1), 留着是死代码, 删。
+- 刻意没做的: demo 的无限 pulse/bar 照常每帧全跑(行为正确, 停它会冻
+  画); FSR/swapchain/vsync 不动。
+
+## B. 纯滚动永久拖影: scroll 判定快照
+
+- 根因: 帧头 `scroll_dirty` 清零(供 hover_recheck 用), paint 侧再测
+  `r->scroll_el && r->scroll_dirty` 恒为假 -> scroll_frame 永假 ->
+  全视口重绘永不执行, 内容冻在旧偏移(拖影永不消失)。
+  修: 帧头快照 `want_scroll_frame`, paint 侧用快照判定; fast path 门
+  同步改测快照(旧 `!r->scroll_dirty` 同样恒真, 顺手改)。
+- 回归: scroll-each(五连单 notch 滚, 每帧断言 marker 到位 + 上方
+  25px 外无鬼影; 断言写崩两次: 采样行落在 marker 自身 20px 带内,
+  改 25px 外探针后绿)。scroll-smear 原用例同步绿。
+  注: f2/f3 行曾出现 Failed to close command list(0x80070057, D3D12
+  后端瞬态), 重跑自愈, 与本轮改动无关(同帧前后用例皆绿)。
+
+验证: 全量构建 ok; 11/11 套件 exit=0。
 

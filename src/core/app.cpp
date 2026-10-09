@@ -260,13 +260,31 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         break;
     case SDL_EVENT_WINDOW_EXPOSED:
     case SDL_EVENT_WINDOW_RESTORED:
+    case SDL_EVENT_WINDOW_SHOWN:
         for (whaleui_window_t* win : app->windows) {
             if (win->render && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                /* re-exposure always needs fresh pixels (the swapchain image
+                 * may be gone) - and the parked render state may predate the
+                 * occlusion, so drop the presented-frame cache too */
+                win->occluded = 0;
+                whaleui_render_drop_presented(win->render);
                 whaleui_render_invalidate(win->render);
                 break;
             }
         }
         break;
+    case SDL_EVENT_WINDOW_OCCLUDED: {
+        /* fully covered by other windows: stop presenting (the compositor
+         * shows nothing of us) but keep ticking animations cheaply - the
+         * render worker parks frames via win->occluded and the anim state
+         * keeps advancing without paint/present cost. The next EXPOSED
+         * restores full rendering (see above). */
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            w->occluded = 1;
+        }
+        break;
+    }
     case SDL_EVENT_WINDOW_RESIZED: {
         for (whaleui_window_t* win : app->windows) {
             if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
@@ -488,13 +506,30 @@ static int apply_resizes(whaleui_app_t* app, Uint64 now)
 }
 
 /* render every visible window once; returns 1 while any window still needs
- * continuous frames (running animation / blinking caret), 0 = static */
+ * continuous frames (running animation / blinking caret), 0 = static.
+ * Fully unseeable windows (minimized / hidden / occluded) skip paint +
+ * present but still advance cheap animation clocks, so an uncover/expose
+ * resumes mid-motion instead of jumping. The tick mutates no geometry -
+ * the next real frame repaints from current values. */
 static int render_all_windows(whaleui_app_t* app)
 {
     int alive = 0;
     for (whaleui_window_t* win : app->windows) {
         if (win->visible && win->sdl && win->render && win->document) {
-            if (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) {
+            Uint64 flags = SDL_GetWindowFlags(win->sdl);
+            if (win->occluded ||
+                (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN |
+                          SDL_WINDOW_OCCLUDED))) {
+                /* occluded can arrive without a fresh flag read on some
+                 * backends: the cached event state agrees with the flag.
+                 * Cleared only by EXPOSED/RESTORED/SHOWN below - never here,
+                 * or a backend that reports the flag late would unpark the
+                 * window on every frame. */
+                win->occluded = 1;
+                if (win->render) {
+                    whaleui_render_tick_only(win->render);
+                }
+                alive |= win->render ? win->render->alive : 0;
                 continue;
             }
             whaleui_render_frame(win->render, win->document);

@@ -1027,6 +1027,74 @@ int main(void)
         whaleui_window_destroy(sw3);
     }
 
+    /* Regression: the scroll decision must survive flag consumption. The
+     * frame zeroes scroll_dirty early (before layout); the paint path must
+     * still know this frame is a scroll frame via a snapshot - testing the
+     * live flag at paint time is always false, so NO scroll frame ever
+     * repaints: every wheel scroll paints nothing and the content stays
+     * frozen at the old offset ("pure scroll leaves permanent trails").
+     * Five consecutive single-notch scrolls must each move the marker by
+     * exactly one notch with no ghost at any previous row. */
+    {
+        whaleui_window_t* sw4 =
+            whaleui_window_create(app, "scroll-each", 300, 200);
+        assert(sw4 != nullptr);
+        assert(whaleui_window_load_html(
+                   sw4,
+                   "<html><head><style>body{margin:0}"
+                   "#m{position:absolute;left:0;top:300px;width:300px;"
+                   "height:20px;background-color:#ff0000}"
+                   ".sp{height:600px}</style></head>"
+                   "<body><div class=\"sp\"></div><div id=\"m\"></div></body>"
+                   "</html>") == 0);
+        if (whaleui_window_show(sw4) == 0 && sw4->render != nullptr) {
+            for (int i = 0; i < 4; ++i) {
+                assert(whaleui_render_frame(sw4->render, sw4->document) == 0);
+            }
+            /* marker doc y 300..320, viewport 0..200: each -1 notch
+             * scrolls 40px down, so after (f+1) notches the scroll is
+             * 40*(f+1) and the marker's viewport mid-row is at
+             * 310 - 40*(f+1). The first notch moves it from off-screen
+             * (310) to y 270 - still off-viewport (200 tall), so frames
+             * 0-2 assert the VISIBLE rows stay clean background, and
+             * frames 3-4 assert the marker itself. */
+            for (int f = 0; f < 5; ++f) {
+                whaleui_render_handle_wheel(sw4->render, 150, 100, -1.0f);
+                assert(whaleui_render_frame(sw4->render, sw4->document) == 0);
+                int my = 310 - 40 * (f + 1); /* marker mid-row, viewport */
+                unsigned int bg = gpixel(sw4->render, 10, 10);
+                if (my < 0 || my >= 200) {
+                    /* still off-viewport: the whole viewport must be
+                     * background (no ghost painted early) */
+                    unsigned int probe =
+                        gpixel(sw4->render, 150, 150);
+                    std::printf("[scroll-each] f%d offscreen probe=%08X "
+                                "bg=%08X\n",
+                                f, probe, bg);
+                    std::fflush(stdout);
+                    assert(probe == bg);
+                    continue;
+                }
+                unsigned int at = gpixel(sw4->render, 150, my);
+                /* the marker is 20px tall (my-10..my+10 are all marker
+                 * rows). The row above is background only when a full
+                 * 10px of background separates it from the marker: with
+                 * 40px/notch steps the marker advances 40px/frame, so
+                 * rows my-10 always overlap the marker's own top half -
+                 * instead sample 25px above the mid-row (outside the
+                 * 20px band) for the ghost check. */
+                unsigned int above =
+                    gpixel(sw4->render, 150, my - 25 < 0 ? 0 : my - 25);
+                std::printf("[scroll-each] f%d y%d=%08X above=%08X bg=%08X\n",
+                            f, my, at, above, bg);
+                std::fflush(stdout);
+                assert(at == 0xFFFF0000);
+                assert(above == bg);
+            }
+        }
+        whaleui_window_destroy(sw4);
+    }
+
     /* Regression: a checkbox and its label text must share ONE line, and
      * clicking the checkbox must flip `checked` WITHOUT rebuilding the
      * tree or blanking the window. The layout gave the 16px control a

@@ -2850,13 +2850,48 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
         whaleui_anim_reset(r->anim);
     }
     r->has_dirty = 1;
+    r->presented_valid = 0;
 }
 
 extern "C" void whaleui_render_invalidate(whaleui_render_t* r)
 {
     if (r) {
         r->has_dirty = 1;
+        r->presented_valid = 0;
     }
+}
+
+/* cheap state tick for parked windows (minimized / hidden / occluded):
+ * advance running animations' clocks + smooth-scroll easing WITHOUT
+ * relayout, paint or present, so an uncover/expose resumes mid-motion
+ * instead of jumping. Mutates no geometry: the next real frame repaints
+ * from the current values. Keeps r->alive warm so the worker's self-drive
+ * does not stall the loop while parked. */
+extern "C" void whaleui_render_tick_only(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    const uint64_t now = SDL_GetTicks();
+    bool keep = false;
+    if (r->anim && whaleui_anim_tick(r->anim, now) != 0) {
+        keep = true;
+    }
+    if (keep) {
+        r->alive = 1;
+    }
+}
+
+/* drop the presented-frame fast-path cache (exposure / document reset):
+ * the next present repaints unconditionally. */
+extern "C" void whaleui_render_drop_presented(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    r->presented_valid = 0;
 }
 
 extern "C" void whaleui_render_invalidate_rect(whaleui_render_t* r, int x, int y, int w, int h)
@@ -2864,6 +2899,7 @@ extern "C" void whaleui_render_invalidate_rect(whaleui_render_t* r, int x, int y
     (void)x; (void)y; (void)w; (void)h;
     if (r) {
         r->has_dirty = 1;
+        r->presented_valid = 0;
     }
 }
 
@@ -2893,6 +2929,7 @@ extern "C" int whaleui_render_resize(whaleui_render_t* r, int width, int height)
     render_fsr_destroy(r);
     r->fsr_active = 0;
     r->has_dirty = 1;
+    r->presented_valid = 0;
     /* stale scroll deltas from the old size would make the first scroll
      * after a resize shift by the accumulated difference */
     r->last_scrolls.clear();
@@ -4704,7 +4741,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         return 0;
     }
     /* a scroll moved the content under a (possibly stationary) pointer:
-     * the frame re-hit-tests before painting */
+     * the frame re-hit-tests before painting. Snapshot the scroll decision
+     * FIRST: scroll_dirty is consumed (zeroed) below, but the paint path
+     * needs to know this frame is a scroll frame even when the position
+     * update itself produced no delta (same-position wheel already handled
+     * by coalescing). */
+    const bool want_scroll_frame = r->scroll_dirty != 0;
     if (r->scroll_dirty) {
         r->hover_recheck = 1;
     }
@@ -4773,8 +4815,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * this frame (set by the paint-only apply path)? 0 = every animated
      * value is unchanged (held delay, finished transition): the animation
      * carries no visual damage and the frame can skip its strip - the
-     * below-fold skip below then parks the paint entirely. */
-    int anim_values_changed = 1;
+     * below-fold skip below then parks the paint entirely. Initialized
+     * from the tick itself: when the tick reports NO running animation at
+     * all, values trivially did not change (0); a running tick sets 1 and
+     * the paint-only apply path may clear it back when every value lands
+     * identical. */
+    int anim_values_changed = animating ? 1 : 0;
     bool geom_ok = false;
     if (need_layout) {
         /* plain resize (no DOM/rule change - geometry_only set by
@@ -5289,12 +5335,15 @@ d here leaves its ancestors'
      * the state repaint never happened ("clicking flashes / hover
      * sticks"). */
     bool scrolled = false;
-    if (r->scroll_el && r->scroll_dirty) {
+    if (r->scroll_el && want_scroll_frame) {
         /* the scroll position actually moved this frame (wheel/drag set
          * scroll_dirty alongside scroll_el): a REAL scroll takes the
          * scroll_frame path. A bare scroll_el without scroll_dirty is a
          * repaint-only signal (select open/close/pick) - it falls through
-         * so hover/focus/pressed damage accumulates normally. */
+         * so hover/focus/pressed damage accumulates normally. scroll_dirty
+         * was snapshotted into want_scroll_frame at the frame top (it is
+         * already consumed/zeroed): testing r->scroll_dirty here would
+         * NEVER be true and no scroll frame would ever repaint. */
         scrolled = true;
     }
     const bool scroll_frame = scrolled || r->drag_scroll_el;
@@ -5379,6 +5428,40 @@ d here leaves its ancestors'
      * A scroll frame clears nothing explicitly - the whole viewport
      * repaints, so any strip from a previous partial frame is simply not
      * consulted (strip is frame-local). */
+    /* presented-frame fast path: when NOTHING that feeds the image moved
+     * since the last presented frame, skip the whole paint + GPU + present
+     * below and return early. The gate is the tick's own verdict, not a new
+     * fingerprint: anim_values_changed==0 means every interpolated value is
+     * identical to the current styles (held delay, finished transition).
+     * The outer conditions exclude scroll / layout / DOM / edit / popup and
+     * REQUIRE no pending interaction state (state_pending is set by
+     * set_hover OUTSIDE the frame, so a hover change between frames must
+     * not be mistaken for a no-op - the state relayout above has not run
+     * yet when this check executes). Interaction state is ALSO checked via
+     * partial: the state relayout above CONSUMES state_pending (and the
+     * partial branch consumes the hover/focus/pressed markers into the
+     * partial flag) before this check executes, so testing only
+     * state_pending here would miss a hover change already handled this
+     * frame and skip its repaint. An infinite animation (demo pulse/bar)
+     * changes values every frame, so it never takes this path - only HELD
+     * animations and static wakeups park here. Runs BEFORE the anim-strip
+     * branch (an unchanged-values frame must not grow a strip). Scroll
+     * frames never reach here: scroll_dirty is set above. */
+    if (r->presented_valid && r->tree && !scroll_frame && !need_layout &&
+        !r->has_dirty && !want_scroll_frame && !r->edit_el &&
+        !r->open_select && dom_dirty.empty() && !r->hover_recheck &&
+        !anim_values_changed && !animating && !r->state_pending &&
+        !partial) {
+        /* identical inputs: the GPU target still holds this exact image.
+         * Advance the loop state (the tick already ran) and skip the
+         * repaint - the swapchain keeps presenting the last image. */
+        r->alive = animating ? 1 : 0;
+        return 0;
+    }
+    if (!r->presented_valid || need_layout || r->has_dirty ||
+        !dom_dirty.empty()) {
+        r->presented_valid = 0;
+    }
     if (!scroll_frame && animating && !need_layout && !r->has_dirty &&
         !r->edit_el && !r->open_select) {
         /* animation: repaint only the animating elements' bounding boxes
@@ -5730,6 +5813,10 @@ d here leaves its ancestors'
     blit.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cmd, &blit);
     SDL_SubmitGPUCommandBuffer(cmd);
+    /* the image on screen now matches the current inputs: arm the
+     * presented-frame fast path (a later frame whose tick reports no value
+     * change and no other dirty state skips paint + GPU work). */
+    r->presented_valid = 1;
     /* keep the frame loop alive while an animation runs or an editable
      * caret blinks; a static page goes idle (the app loop parks). An open
      * select popup keeps frames coming for its open transition (up to a

@@ -442,6 +442,17 @@ struct whaleui_render
     /* CPU text layer: text is rasterized here (geometries go to the GPU
      * draw list), uploaded and composited into the GPU target each frame */
     std::vector<unsigned int> text_layer;
+
+    /* presented-frame fast path: when a painted frame's content inputs are
+     * all unchanged since the last PRESENTED frame (same scroll offsets,
+     * same animated style values, same interaction state, no DOM/layout
+     * change), the GPU target still holds the exact image - skip CPU paint
+     * + all GPU passes + blit, and just re-present the swapchain image.
+     * The render worker still advances clocks (animations tick) but the
+     * per-frame cost drops to a fingerprint compare + present. Invalidated
+     * by any real change (see presented_touch below) and by exposure. */
+    uint64_t presented_fp;
+    int presented_valid;
 };
 
 typedef struct whaleui_render whaleui_render_t;
@@ -541,6 +552,15 @@ void whaleui_render_set_css(whaleui_render_t* render,
 /* Mark the whole viewport dirty -> next frame repaints + re-lays-out. */
 void whaleui_render_invalidate(whaleui_render_t* render);
 void whaleui_render_invalidate_rect(whaleui_render_t* render, int x, int y, int w, int h);
+
+/* Advance animation clocks without paint/present (parked windows:
+ * minimized / hidden / occluded). Geometry untouched; the next real frame
+ * repaints from current values. */
+void whaleui_render_tick_only(whaleui_render_t* render);
+
+/* Drop the presented-frame fast-path cache (exposure / document reset):
+ * the next frame repaints unconditionally. */
+void whaleui_render_drop_presented(whaleui_render_t* render);
 
 /* Drop every cache keyed on DOM elements (text rasters, decoded images,
  * select/scroll/edit state, hover/focus). Call when the document is
