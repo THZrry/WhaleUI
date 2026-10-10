@@ -274,11 +274,11 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     case SDL_EVENT_WINDOW_OCCLUDED: {
-        /* fully covered by other windows: stop presenting (the compositor
-         * shows nothing of us) but keep ticking animations cheaply - the
-         * render worker parks frames via win->occluded and the anim state
-         * keeps advancing without paint/present cost. The next EXPOSED
-         * restores full rendering (see above). */
+        /* fully covered by other windows: FULL park (Chromium parity) -
+         * no tick, no paint, no present. Animation clocks freeze with the
+         * park, so an uncover resumes without jumping; the next EXPOSED
+         * drops the presented cache and invalidates, forcing one full
+         * repaint from current wall-clock values (see above). */
         whaleui_window_t* w = window_for(app, e.window.windowID);
         if (w) {
             w->occluded = 1;
@@ -505,12 +505,27 @@ static int apply_resizes(whaleui_app_t* app, Uint64 now)
     return applied;
 }
 
+/* any window mid scrollbar-drag: the drag repaints track the pointer, so
+ * the wake paces like a scroll (display rate), not like a one-shot input.
+ * Worker-thread only (same thread that owns the render state). */
+static bool any_drag_scroll(whaleui_app_t* app)
+{
+    for (whaleui_window_t* win : app->windows) {
+        if (win->render && win->render->drag_scroll_el) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* render every visible window once; returns 1 while any window still needs
  * continuous frames (running animation / blinking caret), 0 = static.
- * Fully unseeable windows (minimized / hidden / occluded) skip paint +
- * present but still advance cheap animation clocks, so an uncover/expose
- * resumes mid-motion instead of jumping. The tick mutates no geometry -
- * the next real frame repaints from current values.
+ * Fully unseeable windows (minimized / hidden / occluded) are fully
+ * PARKED: no tick, no paint, no present - the compositor shows nothing of
+ * them (Chromium parity: a covered page stops its rendering entirely).
+ * Animation clocks freeze with the park, so an uncover/expose resumes
+ * without jumping; EXPOSED/RESTORED/SHOWN drops the presented cache and
+ * invalidates, forcing one full repaint from current wall-clock values.
  * Multi-window background: an unfocused window with siblings paints at most
  * every ~100ms (state still ticks cheaply between paints) - a background
  * demo stops burning a full core while the focused window is unaffected. */
@@ -528,12 +543,10 @@ static int render_all_windows(whaleui_app_t* app)
                  * backends: the cached event state agrees with the flag.
                  * Cleared only by EXPOSED/RESTORED/SHOWN below - never here,
                  * or a backend that reports the flag late would unpark the
-                 * window on every frame. */
+                 * window on every frame. Contributes nothing to alive: with
+                 * every window parked the worker sleeps until an event
+                 * (exposure wakes it via invalidate, see below). */
                 win->occluded = 1;
-                if (win->render) {
-                    whaleui_render_tick_only(win->render);
-                }
-                alive |= win->render ? win->render->alive : 0;
                 continue;
             }
             /* background throttle (multi-window only): without input focus
@@ -673,20 +686,41 @@ void render_worker_fn(whaleui_app_t* app)
                 app->frame_request.store(1);
             }
             /* frame pacing (single budget): an explicit max_fps wins.
-             * Otherwise event-driven frames (input/resize/wheel/motion)
-             * cap at 60fps - input stays snappy without burning a core -
-             * while SELF-DRIVEN animation frames (no input, the loop kept
-             * itself alive) pace to the display refresh (144Hz -> 144fps)
-             * so motion stays smooth on high-refresh panels. Battery saver
-             * keeps 60 in both paths (the documented power policy; FSR has
-             * its own battery trigger in fsr_want_active). Sleep OUTSIDE
-             * the queue lock so event pushes stay cheap. */
-            const bool self_driven =
-                alive && evs.empty() && !hover_dirty && !wheel_dirty;
+             * Otherwise the wake SOURCE decides the rate (dual-track):
+             *  - input/scroll/resize wakes (wheel, drag, motion, resize)
+             *    pace to the display refresh (144Hz -> 144fps): the human
+             *    eye tracks pointer-following motion frame by frame, and a
+             *    60fps cap on scroll is visibly steppy on high-refresh
+             *    panels. A scrollbar drag holds the high track too.
+             *  - pure animation self-drive (no input, the loop kept itself
+             *    alive) paces to 30fps: decorative keyframe motion
+             *    (pulse/bar/fade) is time-based interpolation, so halving
+             *    the paint rate only coarsens the sampling, never the
+             *    motion itself - while the per-frame CPU/GPU cost (relayout
+             *    subtrees, paint, text-layer upload, compute passes, blit)
+             *    roughly halves with it. Transitions still complete on
+             *    time (they read the wall clock, not a frame count), and
+             *    any input wake instantly re-takes the high track.
+             * Battery saver keeps 60 in both tracks (the documented
+             * power policy; FSR has its own battery trigger in
+             * fsr_want_active). Sleep OUTSIDE the queue lock so event
+             * pushes stay cheap. */
+            const bool input_wake = !evs.empty() || hover_dirty ||
+                                    wheel_dirty || any_drag_scroll(app);
+            const bool self_anim =
+                alive && !input_wake;
             int fps = app->max_fps;
             if (fps <= 0) {
-                if (self_driven &&
+                if (self_anim &&
                     !(app->battery_saver && app->on_battery)) {
+                    /* animation track: 30fps, never above half the display
+                     * rate (a 60Hz panel paces 30, a 144Hz panel paces 30,
+                     * not 72: the point is fewer paints, not smoothness). */
+                    fps = 30;
+                } else if (input_wake &&
+                           !(app->battery_saver && app->on_battery)) {
+                    /* input/scroll track: display refresh for smooth
+                     * pointer-following motion. */
                     fps = app->display_refresh > 0 ? app->display_refresh
                                                    : 60;
                 } else {
