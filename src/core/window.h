@@ -80,13 +80,13 @@ struct whaleui_window
     float mouse_x;
     float mouse_y;
     /* occlusion state (SDL_EVENT_WINDOW_OCCLUDED / EXPOSED): a fully covered
-     * window presents nothing - the render worker parks its frames (state
-     * still ticks cheaply) until the next exposure. Set/cleared by the event
-     * path in app.cpp; read by the worker's per-window render gate. */
+     * window is fully parked (no tick/paint/present) until the next exposure.
+     * Set/cleared by the event path in app.cpp; read by the worker's
+     * per-window render gate. */
     int occluded;
     /* last background-throttle paint timestamp, ms (worker-thread only):
-     * unfocused multi-window siblings paint at most every ~100ms so a
-     * background demo stops burning a full core. */
+     * unfocused multi-window siblings paint at most every ~33ms (30fps) so
+     * a background demo stays smooth while costing ~half the paint rate. */
     unsigned long long bg_last;
     /* coalesced wheel: same pattern as motion (a flick delivers several
      * WHEEL events per frame; each one scrolled + repainted separately, so

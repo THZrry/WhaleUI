@@ -4309,12 +4309,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * paint-only fast path below applies them without relaying out) */
     const uint64_t now = SDL_GetTicks();
     const bool animating = r->anim && whaleui_anim_tick(r->anim, now) != 0;
-    /* smooth scroll easing: move each live position toward its wheel
-     * target in small per-frame steps. This is what decouples wheel
-     * events from frame rendering - the event only accumulates the target
-     * (whaleui_scroll_smooth_fn), the position here glides toward it, so
-     * discrete mouse-wheel notches render like touchpad deltas. */
-    if (!r->scroll_tgt.empty() && r->tree) {
+    /* smooth scroll easing (opt-in only): move each live position toward
+     * its wheel target in small per-frame steps. This is what decouples
+     * wheel events from frame rendering - the event only accumulates the
+     * target (whaleui_scroll_smooth_fn), the position here glides toward
+     * it, so discrete mouse-wheel notches render like touchpad deltas.
+     * Gated on the hook being installed (scroll_fn == smooth fn): the
+     * default path never populates scroll_tgt, so without this gate every
+     * frame paid a map-emptiness check plus branch cost for a feature that
+     * is off. Zero behavior change - the loop body is untouched. */
+    if (r->scroll_fn == whaleui_scroll_smooth_fn && !r->scroll_tgt.empty() &&
+        r->tree) {
         for (auto it = r->scroll_tgt.begin(); it != r->scroll_tgt.end();) {
             lxb_dom_element* el = it->first;
             whaleui_layout_node_t* scn = find_node_by_el(r->tree, el);

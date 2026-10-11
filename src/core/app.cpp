@@ -528,14 +528,16 @@ static bool any_drag_scroll(whaleui_app_t* app)
  *    current wall-clock values.
  *  - partially visible (a translucent window overlaps us, or we lost input
  *    focus to a sibling): the compositor still shows our pixels, so we
- *    must keep painting - but at 10Hz with cheap ticks between paints.
+ *    must keep painting - but at 30fps with cheap ticks between paints
+ *    (10Hz sampled visibly on motion; 30 keeps background animation
+ *    smooth while still cutting ~half the paint cost vs full rate).
  *    SDL has no "partially occluded" signal; the usable proxies are
  *    focus loss (multi-window: an unfocused sibling is behind another app
  *    window) and the absence of fresh EXPOSED events. A lone window always
  *    paints (single-window apps/tests never hit this path).
  * NOTE: a translucent overlap does NOT raise SDL_WINDOW_OCCLUDED (that flag
  * means fully opaque-covered), so a window behind a semi-transparent
- * overlay correctly stays on the 10Hz tier instead of parking. */
+ * overlay correctly stays on the 30fps tier instead of parking. */
 static int render_all_windows(whaleui_app_t* app)
 {
     int alive = 0;
@@ -558,13 +560,13 @@ static int render_all_windows(whaleui_app_t* app)
             }
             /* background throttle (multi-window, unfocused): the window may
              * be partially covered (translucent overlap) or simply behind -
-             * either way it is still composited, so paint at 10Hz and tick
+             * either way it is still composited, so paint at 30fps and tick
              * cheaply between paints to resume mid-motion. A lone window
              * always paints (single-window apps/tests never hit this path,
              * so no behavior change there). */
             if (multi && !(flags & SDL_WINDOW_INPUT_FOCUS)) {
                 Uint64 now = SDL_GetTicks();
-                if (now - win->bg_last < 100) {
+                if (now - win->bg_last < 33) {
                     if (win->render) {
                         whaleui_render_tick_only(win->render);
                     }
