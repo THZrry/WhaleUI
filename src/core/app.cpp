@@ -520,15 +520,22 @@ static bool any_drag_scroll(whaleui_app_t* app)
 
 /* render every visible window once; returns 1 while any window still needs
  * continuous frames (running animation / blinking caret), 0 = static.
- * Fully unseeable windows (minimized / hidden / occluded) are fully
- * PARKED: no tick, no paint, no present - the compositor shows nothing of
- * them (Chromium parity: a covered page stops its rendering entirely).
- * Animation clocks freeze with the park, so an uncover/expose resumes
- * without jumping; EXPOSED/RESTORED/SHOWN drops the presented cache and
- * invalidates, forcing one full repaint from current wall-clock values.
- * Multi-window background: an unfocused window with siblings paints at most
- * every ~100ms (state still ticks cheaply between paints) - a background
- * demo stops burning a full core while the focused window is unaffected. */
+ * Visibility tiers (Chromium-style, cheapest first):
+ *  - fully unseeable (minimized / hidden / SDL OCCLUDED = fully opaque
+ *    cover): FULL park - no tick, no paint, no present, contributes nothing
+ *    to alive. Animation clocks freeze; EXPOSED/RESTORED/SHOWN drops the
+ *    presented cache and invalidates, forcing one full repaint from
+ *    current wall-clock values.
+ *  - partially visible (a translucent window overlaps us, or we lost input
+ *    focus to a sibling): the compositor still shows our pixels, so we
+ *    must keep painting - but at 10Hz with cheap ticks between paints.
+ *    SDL has no "partially occluded" signal; the usable proxies are
+ *    focus loss (multi-window: an unfocused sibling is behind another app
+ *    window) and the absence of fresh EXPOSED events. A lone window always
+ *    paints (single-window apps/tests never hit this path).
+ * NOTE: a translucent overlap does NOT raise SDL_WINDOW_OCCLUDED (that flag
+ * means fully opaque-covered), so a window behind a semi-transparent
+ * overlay correctly stays on the 10Hz tier instead of parking. */
 static int render_all_windows(whaleui_app_t* app)
 {
     int alive = 0;
@@ -549,11 +556,12 @@ static int render_all_windows(whaleui_app_t* app)
                 win->occluded = 1;
                 continue;
             }
-            /* background throttle (multi-window only): without input focus
-             * the window is behind another app window - paint at 10Hz, tick
-             * cheaply between paints so animations resume mid-motion. A
-             * lone window always paints (single-window apps/tests never hit
-             * this path, so no behavior change there). */
+            /* background throttle (multi-window, unfocused): the window may
+             * be partially covered (translucent overlap) or simply behind -
+             * either way it is still composited, so paint at 10Hz and tick
+             * cheaply between paints to resume mid-motion. A lone window
+             * always paints (single-window apps/tests never hit this path,
+             * so no behavior change there). */
             if (multi && !(flags & SDL_WINDOW_INPUT_FOCUS)) {
                 Uint64 now = SDL_GetTicks();
                 if (now - win->bg_last < 100) {
@@ -693,18 +701,20 @@ void render_worker_fn(whaleui_app_t* app)
              *    60fps cap on scroll is visibly steppy on high-refresh
              *    panels. A scrollbar drag holds the high track too.
              *  - pure animation self-drive (no input, the loop kept itself
-             *    alive) paces to 30fps: decorative keyframe motion
-             *    (pulse/bar/fade) is time-based interpolation, so halving
-             *    the paint rate only coarsens the sampling, never the
-             *    motion itself - while the per-frame CPU/GPU cost (relayout
-             *    subtrees, paint, text-layer upload, compute passes, blit)
-             *    roughly halves with it. Transitions still complete on
-             *    time (they read the wall clock, not a frame count), and
-             *    any input wake instantly re-takes the high track.
+             *    alive) paces to 60fps: decorative keyframe motion stays
+             *    smooth (30fps sampled visibly, so the animation track
+             *    keeps full rate) while input-idle scroll glides keep the
+             *    display track. Transitions complete on time (they read the
+             *    wall clock, not a frame count), and any input wake
+             *    instantly re-takes the high track.
              * Battery saver keeps 60 in both tracks (the documented
              * power policy; FSR has its own battery trigger in
              * fsr_want_active). Sleep OUTSIDE the queue lock so event
-             * pushes stay cheap. */
+             * pushes stay cheap. NOTE for the future WebGPU backend: keep
+             * this pacing in the worker (CPU wake policy), never in the
+             * GPU submit path - the present path (WaitAndAcquire +
+             * blit + submit in render.cpp) must stay clock-free so a new
+             * backend inherits the policy unchanged. */
             const bool input_wake = !evs.empty() || hover_dirty ||
                                     wheel_dirty || any_drag_scroll(app);
             const bool self_anim =
@@ -713,10 +723,11 @@ void render_worker_fn(whaleui_app_t* app)
             if (fps <= 0) {
                 if (self_anim &&
                     !(app->battery_saver && app->on_battery)) {
-                    /* animation track: 30fps, never above half the display
-                     * rate (a 60Hz panel paces 30, a 144Hz panel paces 30,
-                     * not 72: the point is fewer paints, not smoothness). */
-                    fps = 30;
+                    /* animation track: full 60fps (decorative motion must
+                     * not visibly step; the saving comes from occlusion
+                     * parking + background throttle, not from halving the
+                     * animation rate). */
+                    fps = 60;
                 } else if (input_wake &&
                            !(app->battery_saver && app->on_battery)) {
                     /* input/scroll track: display refresh for smooth

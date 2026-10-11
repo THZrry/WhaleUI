@@ -5753,7 +5753,13 @@ d here leaves its ancestors'
     }
 
     /* present: one batched render pass into the offscreen target, then a
-     * single blit to the swapchain - no per-element GPU round-trips */
+     * single blit to the swapchain - no per-element GPU round-trips.
+     * BACKEND CONTRACT (a future WebGPU backend must keep this shape): all
+     * frame-RATE policy lives in the worker (app.cpp pacing sleep) - this
+     * path never sleeps, drops, or reorders frames. It acquires, blits,
+     * and submits exactly once per call; given identical inputs it produces
+     * an identical image. A backend swap therefore inherits the FPS policy
+     * (dual-track pacing, occlusion park, caret skip) unchanged. */
 
     SDL_GPUCommandBuffer* cmd =
         whaleui_gpu_flush(r->gpu, r->fb_w, r->fb_h, r->bg_color, scroll_dy,

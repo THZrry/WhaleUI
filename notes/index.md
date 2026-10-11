@@ -176,5 +176,6 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 (事件帧 60fps 保输入, 无输入自驱跟 display_refresh, 高刷屏省 CPU);
 (3) 多窗口后台节流(失焦兄弟窗口 10Hz paint + tick 保活, 单窗口零行为
 变更) + caret-blink 回归 —— 见 notes/current.md
-<39>(SOLVED): 双轨 pacing(动画 30fps / 滚动显示刷新率, 输入唤醒即切高速)
-+ 遮挡全暂停(无 tick, 暴露失效重绘, 时钟冻结不断跳) —— 见 notes/current.md
+<39>(SOLVED): 双轨 pacing(动画 60fps / 滚动显示刷新率, 输入唤醒即切高速)
++ 遮挡按可见性分级(全遮挡全暂停, 半透明盖住走后台 10Hz)+present 路径
+时钟无关(WebGPU 继承策略不变) —— 见 notes/current.md
