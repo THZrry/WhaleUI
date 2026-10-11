@@ -1078,3 +1078,22 @@ SOLVED
 
 验证: 全量构建 ok; 11/11 套件 exit=0。
 
+# <40>: 布局动画帧 20ms→5ms + 失焦 30fps + smooth 门控
+
+SOLVED
+
+bench 实测链(工具 temp/bench_anim.cpp, gitignored, xmake 条件 target 已合入): static 0.006ms(空闲零成本) / tick 微基准 0.01ms(动画 tick 无辜) / 小树 full(pulse+bar) ~1ms / 大树(2000 行静态+bar)62ms。临时 SEG 分段计时(测完即删, 树已干净): relayout_multi 19-22ms 主导, fix_runs 2.1, present 7.6, paint 0.1, tick 0.07, bounds 0.09。
+
+## A. relayout_multi 收缩(大树 56→3.5ms, 小树无退化)
+
+- 尾部全树 deep walk 删除(layout.cpp): root scroll_max 重算。帧内已跳 fix_scroll_max(既有 ponytail 策略: 动画不改滚动范围, 下次全量 relayout 纠正), 该 walk 是纯冗余。
+- bounds 改 marked-path(render.cpp): mark_all+全树 compute 改为 compute 直走(early-return 跳干净子树)。rechunk_parent 已标脏路径。
+- block 链原地 fast path(layout.cpp): 全 block 祖先 + 常规流 + 高度不变 -> 只 layout 动画子树(旧 flow 偏移播种 cursor, font_px=16 与祖先 pass 逐层透传一致), 跳过祖先 box pass。高度变化/flex 回退旧路(双 layout 幂等, 仅高度变化帧多一次子树 layout)。
+- present 7.6ms 归因: 不是 GPU 慢, 是 layout 动画帧误判走全帧(脏区=全视口 -> text composite 全量 dispatch + 全量上传)。bigpulse 同树 present 仅 0.68ms 作证。未动 GPU(present 时钟无关契约保持)。
+
+## B. 失焦 30fps + smooth 门控(上一轮 pending, 本轮合入)
+
+- 多窗口失焦兄弟 100ms->33ms(10Hz 可见抽帧, 30 保顺滑省一半)。单窗口零行为变更。半透明盖住走此档(不 park), 全遮挡 park。
+- smooth easing 循环加 scroll_fn==smooth 门: 默认路径 scroll_tgt 永空, 零行为变化, 省每帧 map 检查。
+
+验证: 全量构建 ok; 10/10 套件 exit=0(api/dom/font/fs/layout/style/window/render/scroll/anim); bench big p50 3.5ms(峰值环境抖动除外), full 800x600/1440p/4K 均 ~1ms(无像素缩放问题)。

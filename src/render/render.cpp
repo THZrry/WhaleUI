@@ -5027,8 +5027,15 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         }
         if (ok) {
             g_last_tree = r->tree;
-            r->bounds_valid = 0; /* subtree paint bounds are stale */
-            mark_bounds_dirty_all(r->tree->root);
+            /* the animated subtrees were rebuilt (rechunk_parent already
+             * marked their ancestor paths - see rechunk_parent): only those
+             * paths need a bounds recompute. compute_paint_bounds early-
+             * returns on clean nodes, so a root-anchored walk visits just
+             * the marked paths instead of the whole tree (mark_all +
+             * full compute visited every node per animation frame). */
+            r->bounds_valid = 0; /* recomputed from the marked paths below */
+            compute_paint_bounds(r->tree->root);
+            r->bounds_valid = 1;
             r->drag_scroll_node = nullptr; /* nodes were recreated */
             r->scroll_max_el = nullptr;    /* scroll_max may have changed */
             r->wheel_node = nullptr;       /* hit cache is stale */

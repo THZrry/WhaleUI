@@ -179,3 +179,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 <39>(SOLVED): 双轨 pacing(动画 60fps / 滚动显示刷新率, 输入唤醒即切高速)
 + 遮挡按可见性分级(全遮挡全暂停, 半透明盖住走后台 10Hz)+present 路径
 时钟无关(WebGPU 继承策略不变) —— 见 notes/current.md
+<40>(SOLVED): 布局动画帧收缩(relayout_multi: deep walk 删 + bounds marked-path + block 链原地 fast path, 大树 56→3.5ms) + 失焦 30fps + smooth 门控 —— 见 notes/current.md

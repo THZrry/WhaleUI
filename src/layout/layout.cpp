@@ -5331,6 +5331,14 @@ int whaleui_layout_relayout_multi(
         b.vars[kv.first] = kv.second;
     }
     std::vector<whaleui_layout_node_t*> freshNodes;
+    /* old border box, captured before the rebuild: the fast path below
+     * compares them against the re-laid-out box to decide whether
+     * anything outside the animated subtree moved. The old nodes stay alive
+     * in the arena (unmap only drops by_el entries), so the pointers stay
+     * readable - but capture the scalars now, not after the splice. */
+    std::vector<int> oldHeights;
+    std::vector<int> oldTops; /* border.y */
+    std::vector<int> oldMargT; /* margin-top */
     for (size_t e = 0; e < nel; ++e) {
         lxb_dom_element* el = els[e];
         auto found = tree->by_el.find(el);
@@ -5339,6 +5347,9 @@ int whaleui_layout_relayout_multi(
         }
         whaleui_layout_node_t* old = found->second;
         whaleui_layout_node_t* parent = old->parent;
+        oldHeights.push_back(old->border.h);
+        oldTops.push_back(old->border.y);
+        oldMargT.push_back(old->margin[0]);
         std::function<void(whaleui_layout_node_t*)> unmap =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el) {
@@ -5381,13 +5392,22 @@ int whaleui_layout_relayout_multi(
     }
     /* localize the box pass: a layout animation (bar width) reflows the
      * animated subtree but the sibling flex rows do not move, so re-running
-     * the whole-tree box pass every frame is the cost. Re-layout only the
-     * topmost flex/grid ancestor (deduped) of each animated element,
-     * positioned inside its parent's content box (NOT its own border - the
-     * ancestor chain sets that, and using the element's own border double-
-     * applies margins and collapses it to the top). */
+     * the whole-tree box pass every frame is the cost. Two tiers:
+     *  - block-chain fast path (below): the animated element sits inside
+     *    pure block parents up to the nearest flex/grid ancestor (or the
+     *    root). Block siblings are independent (full-width stacked rows),
+     *    so a width-only change re-lays just the animated subtree in place:
+     *    seed the flow cursor at its old in-flow offset, run the box pass
+     *    on the subtree alone, and - when its height is unchanged - skip
+     *    the ancestor pass entirely (nothing outside moved: siblings keep
+     *    their y, ancestors keep their heights).
+     *  - flex/grid fallback: the element's size feeds a shared axis, so
+     *    re-layout the topmost flex/grid ancestor as before.
+     * A height change (or a flex/grid ancestor) takes the fallback: the
+     * shift below only handles the height-stable block case. */
     std::vector<whaleui_layout_node_t*> rroots;
-    for (whaleui_layout_node_t* fn : freshNodes) {
+    for (size_t fi = 0; fi < freshNodes.size(); ++fi) {
+        whaleui_layout_node_t* fn = freshNodes[fi];
         whaleui_layout_node_t* a = fn->parent;
         while (a && a != tree->root) {
             int adk = display_kind(get(a->style, "display"));
@@ -5399,7 +5419,36 @@ int whaleui_layout_relayout_multi(
         if (!a) {
             a = tree->root;
         }
-        if (std::find(rroots.begin(), rroots.end(), a) == rroots.end()) {
+        /* fast path: the whole ancestor chain is block (a == root) and the
+         * animated element itself is in normal flow inside a block parent.
+         * Block siblings are independent rows, so lay the fresh subtree out
+         * in place (parent's content box + old flow offset seed) and - when
+         * its height is unchanged - skip the ancestor pass for this element
+         * entirely: no sibling moved, no ancestor grew. font_px passes
+         * through unchanged at every level (top-level calls use 16), so 16
+         * here computes exactly what the ancestor pass would have. */
+        bool done = false;
+        if (a == tree->root && fn->parent && fn->parent != tree->root) {
+            whaleui_layout_node_t* par = fn->parent;
+            int pdk = display_kind(get(par->style, "display"));
+            int pk = position_kind(get(fn->style, "position"));
+            if (pdk != 1 && pdk != 4 && (pk == 0 || pk == 3 || pk == 4)) {
+                int cursor = oldTops[fi] - oldMargT[fi];
+                b.layout(fn, par->content.x, par->content.y,
+                         par->content.w, par->content.h, 16, &cursor);
+                if (fn->border.h == oldHeights[fi] &&
+                    fn->border.y == oldTops[fi]) {
+                    done = true;
+                }
+                /* height (or y) moved: fall through to the ancestor pass
+                 * below, which re-lays this subtree again as part of the
+                 * ancestor. One redundant subtree layout on height-change
+                 * frames only (width-only frames - the common case - skip
+                 * it); the double layout is idempotent. */
+            }
+        }
+        if (!done &&
+            std::find(rroots.begin(), rroots.end(), a) == rroots.end()) {
             rroots.push_back(a);
         }
     }
@@ -5422,23 +5471,6 @@ int whaleui_layout_relayout_multi(
     }
     tree->root->border.h = tree->viewport_h;
     tree->root->content.h = tree->viewport_h;
-    {
-        int cmax = 0;
-        std::function<void(whaleui_layout_node_t*)> deep =
-            [&](whaleui_layout_node_t* nd) {
-                int bot = nd->border.y + nd->border.h;
-                if (bot > cmax) {
-                    cmax = bot;
-                }
-                for (whaleui_layout_node_t* c = nd->first_child; c;
-                     c = c->next) {
-                    deep(c);
-                }
-            };
-        deep(tree->root);
-        tree->root->scroll_max =
-            cmax > tree->viewport_h ? cmax - tree->viewport_h : 0;
-    }
     return 0;
 }
 

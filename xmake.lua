@@ -237,6 +237,34 @@ if os.isfile("temp/probe_hover.cpp") then
     target_end()
 end
 
+-- ======================= anim frame-CPU benchmark (temporary) ==========
+-- gitignored tool: measures per-frame whaleui_render_frame CPU cost with
+-- demo-like animations. Only defined when temp/bench_anim.cpp exists.
+--   Build:  xmake b -y bench_anim
+--   Run:    bench_anim [full|pulse|bar|static] [frames]
+if os.isfile("temp/bench_anim.cpp") then
+    target("bench_anim")
+        set_kind("binary")
+        if is_mode("release") then
+            set_strip("all")
+        end
+        add_files("temp/bench_anim.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
 -- ======================= temp verification target (optional) ==============
 -- Offscreen renderer + colour probes used to verify the theme stylesheets
 -- against the reference screenshots: it renders a page to a PPM without a GPU
