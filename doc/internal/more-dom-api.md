@@ -282,7 +282,7 @@ int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_even
 | P1 | Canvas 2D 核心 + WebGPU stub | ✅ 614740a |
 | P2 | §9 事件系统剩余(mousemove/enter/leave/wheel/focus/blur/input/change/scroll 全接入) | ⬜ 待做 |
 | P2 | §8 getBoundingClientRect | ✅ 基线已实现(依赖最近布局) |
-| P2 | 选择器全量透传(`> + ~ [attr] :pseudo`) | ⬜ 下一轮 |
+| P2 | 选择器全量透传(`> + ~ [attr] :pseudo`) | ✅ DOM 查询已切 `whaleui_style_match` 语义(含逗号分支);元素级修正为后代语义 |
 
 ## 提交建议
 

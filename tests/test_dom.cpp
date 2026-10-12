@@ -191,7 +191,9 @@ int main(void)
 
         /* descendant selector: div .note */
         assert(whaleui_dom_query_selector(doc, "div .note") == note);
-        assert(whaleui_dom_query_selector(doc, "div #card") == card);
+        /* card IS the div, not its descendant: body #card matches, div #card does not */
+        assert(whaleui_dom_query_selector(doc, "body #card") == card);
+        assert(whaleui_dom_query_selector(doc, "div #card") == nullptr);
         assert(whaleui_dom_query_selector(doc, "span") == nullptr);
 
         /* text: element text content */
@@ -260,6 +262,21 @@ int main(void)
         assert(whaleui_dom_closest(whaleui_dom_query_selector(doc, ".y"), "div") == a);
         assert(whaleui_dom_matches(a, "div.x"));
         assert(!whaleui_dom_matches(a, "p"));
+        /* full selector language: child/adjacent/attr/comma */
+        assert(whaleui_dom_query_selector(doc, "div > p") != nullptr);
+        assert(whaleui_dom_query_selector(doc, "p + p") != nullptr);
+        assert(whaleui_dom_query_selector(doc, "div[id=\"a\"]") == a);
+        assert(whaleui_dom_query_selector(doc, "span, div > p") != nullptr);
+        assert(whaleui_dom_query_selector(doc, "div:first-child") == a);
+        assert(whaleui_dom_matches(a, "div[id]"));
+        assert(whaleui_dom_query_selector(doc, "") == nullptr);
+        assert(whaleui_dom_query_selector_all(doc, "") == nullptr);
+        /* element-scoped excludes the root itself */
+        assert(whaleui_dom_element_query_selector(a, "div") == nullptr);
+        assert(whaleui_dom_element_query_selector(a, "div > p") != nullptr);
+        whaleui_dom_list_t* all_p = whaleui_dom_query_selector_all(doc, "div p, input");
+        assert(all_p != nullptr && whaleui_dom_list_length(all_p) == 3);
+        whaleui_dom_list_destroy(all_p);
 
         /* lists */
         whaleui_dom_list_t* ps = whaleui_dom_element_query_selector_all(a, "p");

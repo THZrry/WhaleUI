@@ -7,6 +7,7 @@
 #include "dom/dom.h"
 #include "core/utf.h"
 #include "dom/events.h"
+#include "style/style.h"
 
 /* whaleui_render_last_tree (get_bounding_client_rect) */
 #include "render/render.h"
@@ -167,11 +168,51 @@ bool simple_match(lxb_dom_element* el, const char* sel, size_t len)
     return true;
 }
 
+/* query matching via the style engine (same selector language as the
+ * cascade: tag/#id/.class/attr/combinators/pseudo-classes). The style
+ * matcher needs NUL-terminated selectors; simple_match stays as the fast
+ * path for single-compound selectors. */
+bool query_match(lxb_dom_element* el, const char* sel, size_t len)
+{
+    if (!el || !sel) return false;
+    /* fast path: single compound without combinators/attrs/pseudos */
+    bool complex = false;
+    for (size_t i = 0; i < len; ++i) {
+        char c = sel[i];
+        if (c == ' ' || c == '\t' || c == '>' || c == '+' || c == '~' ||
+            c == '[' || c == ':' || c == ',') { complex = true; break; }
+    }
+    if (!complex) return simple_match(el, sel, len);
+    std::string s(sel, len);
+    /* comma lists: match if any branch matches */
+    size_t start = 0;
+    int depth = 0;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        char c = i < s.size() ? s[i] : ',';
+        if (c == '(') ++depth;
+        else if (c == ')') --depth;
+        if (c == ',' && depth == 0) {
+            std::string branch = s.substr(start, i - start);
+            size_t a = 0;
+            while (a < branch.size() && (branch[a] == ' ' || branch[a] == '\t')) ++a;
+            size_t b = branch.size();
+            while (b > a && (branch[b-1] == ' ' || branch[b-1] == '\t')) --b;
+            if (a < b) {
+                std::string t = branch.substr(a, b - a);
+                whaleui_style_state st;
+                if (whaleui_style_match(t.c_str(), el, &st)) return true;
+            }
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
 /* depth-first search for the first element matching `sel` under root.
  * Returns 0 when found (out = element), 1 when not found. */
 int find_sel(lxb_dom_element* root, const char* sel, size_t len, lxb_dom_element** out)
 {
-    if (simple_match(root, sel, len)) {
+    if (query_match(root, sel, len)) {
         *out = root;
         return 0;
     }
@@ -185,6 +226,34 @@ int find_sel(lxb_dom_element* root, const char* sel, size_t len, lxb_dom_element
         child = child->next;
     }
     return 1;
+}
+
+/* depth-first search excluding the root itself (element.querySelector(All)
+ * semantics: descendants only). */
+int find_sel_desc(lxb_dom_element* root, const char* sel, size_t len, lxb_dom_element** out)
+{
+    lxb_dom_node* child = root->node.first_child;
+    while (child) {
+        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* ce = lxb_dom_interface_element(child);
+            if (query_match(ce, sel, len)) { *out = ce; return 0; }
+            if (find_sel_desc(ce, sel, len, out) == 0) return 0;
+        }
+        child = child->next;
+    }
+    return 1;
+}
+
+void collect_sel_desc(lxb_dom_element* root, const char* sel, size_t len,
+                      std::vector<lxb_dom_element*>& out)
+{
+    for (lxb_dom_node* c = root->node.first_child; c; c = c->next) {
+        if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element* ce = lxb_dom_interface_element(c);
+            if (query_match(ce, sel, len)) out.push_back(ce);
+            collect_sel_desc(ce, sel, len, out);
+        }
+    }
 }
 
 /* --- inline style (style attribute) helpers: flat "prop: value;" list --- */
@@ -397,35 +466,18 @@ extern "C" whaleui_dom_element_t* whaleui_dom_get_element_by_id(whaleui_dom_docu
 extern "C" whaleui_dom_element_t* whaleui_dom_query_selector(whaleui_dom_document_t* doc,
                                                              const char* selector)
 {
-    if (!doc || !selector) {
+    if (!doc || !selector || !*selector) {
         return nullptr;
     }
     lxb_dom_element* root = root_element(doc);
     if (!root) {
         return nullptr;
     }
-    /* split on whitespace: descendant chain, first match wins */
-    const char* s = selector;
-    lxb_dom_element* scope = root;
-    while (*s) {
-        while (*s == ' ' || *s == '\t') {
-            ++s;
-        }
-        if (!*s) {
-            break;
-        }
-        const char* part = s;
-        while (*s && *s != ' ' && *s != '\t') {
-            ++s;
-        }
-        size_t plen = static_cast<size_t>(s - part);
-        lxb_dom_element* found = nullptr;
-        if (find_sel(scope, part, plen, &found) != 0) {
-            return nullptr;
-        }
-        scope = found;
+    lxb_dom_element* found = nullptr;
+    if (find_sel(root, selector, std::strlen(selector), &found) != 0) {
+        return nullptr;
     }
-    return out(scope);
+    return out(found);
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_parent(whaleui_dom_element_t* el)
@@ -970,7 +1022,7 @@ void collect_all(lxb_dom_element* root, std::vector<lxb_dom_element*>& out)
 void collect_sel(lxb_dom_element* root, const char* sel, size_t len,
                  std::vector<lxb_dom_element*>& out)
 {
-    if (simple_match(root, sel, len)) {
+    if (query_match(root, sel, len)) {
         out.push_back(root);
     }
     for (lxb_dom_node* c = root->node.first_child; c; c = c->next) {
@@ -1154,7 +1206,7 @@ extern "C" const char* whaleui_dom_get_title(whaleui_dom_document_t* doc)
 extern "C" whaleui_dom_list_t* whaleui_dom_query_selector_all(whaleui_dom_document_t* doc,
                                                                const char* selector)
 {
-    if (!doc || !selector) {
+    if (!doc || !selector || !*selector) {
         return nullptr;
     }
     lxb_dom_element* root = root_element(doc);
@@ -1162,8 +1214,6 @@ extern "C" whaleui_dom_list_t* whaleui_dom_query_selector_all(whaleui_dom_docume
     if (!root) {
         return make_list(v);
     }
-    /* single simple selector only (tag/#id/.class); complex selectors
-     * (descendant chains) are matched by whaleui_dom_query_selector */
     collect_sel(root, selector, std::strlen(selector), v);
     return make_list(v);
 }
@@ -1202,13 +1252,12 @@ extern "C" whaleui_dom_element_t* whaleui_dom_element_query_selector(whaleui_dom
                                                                      const char* selector)
 {
     lxb_dom_element* e = as_el(el);
-    if (!e || !selector) {
+    if (!e || !selector || !*selector) {
         return nullptr;
     }
     lxb_dom_element* found = nullptr;
-    /* the root itself counts (matches the browser: element.querySelector
-     * excludes the root, but including it is a harmless superset) */
-    if (find_sel(e, selector, std::strlen(selector), &found) != 0) {
+    /* browser semantics: descendants only, root itself excluded */
+    if (find_sel_desc(e, selector, std::strlen(selector), &found) != 0) {
         return nullptr;
     }
     return out(found);
@@ -1218,11 +1267,11 @@ extern "C" whaleui_dom_list_t* whaleui_dom_element_query_selector_all(whaleui_do
                                                                       const char* selector)
 {
     lxb_dom_element* e = as_el(el);
-    if (!e || !selector) {
+    if (!e || !selector || !*selector) {
         return nullptr;
     }
     std::vector<lxb_dom_element*> v;
-    collect_sel(e, selector, std::strlen(selector), v);
+    collect_sel_desc(e, selector, std::strlen(selector), v);
     return make_list(v);
 }
 
@@ -1252,13 +1301,13 @@ extern "C" whaleui_dom_element_t* whaleui_dom_closest(whaleui_dom_element_t* el,
                                                       const char* selector)
 {
     lxb_dom_element* e = as_el(el);
-    if (!e || !selector) {
+    if (!e || !selector || !*selector) {
         return nullptr;
     }
     size_t len = std::strlen(selector);
     for (lxb_dom_node* n = &e->node; n; n = n->parent) {
         if (n->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-            simple_match(lxb_dom_interface_element(n), selector, len)) {
+            query_match(lxb_dom_interface_element(n), selector, len)) {
             return out(lxb_dom_interface_element(n));
         }
     }
@@ -1268,10 +1317,10 @@ extern "C" whaleui_dom_element_t* whaleui_dom_closest(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_matches(whaleui_dom_element_t* el, const char* selector)
 {
     lxb_dom_element* e = as_el(el);
-    if (!e || !selector) {
+    if (!e || !selector || !*selector) {
         return 0;
     }
-    return simple_match(e, selector, std::strlen(selector)) ? 1 : 0;
+    return query_match(e, selector, std::strlen(selector)) ? 1 : 0;
 }
 
 /* --- navigation --- */

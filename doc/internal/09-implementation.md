@@ -99,7 +99,7 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 - **lite/minimal**:滚动/选择/编辑/IME 与 full 功能一致;文本度量与命中测试在 full 用 `TTF_Text`,lite/minimal 用 stb_truetype 逐字度量(无 kerning/连字,精度近似)。
 - **编辑键简化**:Up/Down 按行首跳转(未保持列位置);未处理 Ctrl 组合除 A 外的快捷键。
 - **主题**:内置 7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效(包括未自定义样式的标签);通过 `whaleui_app_set_theme_style` 或页面 `<select>` 切换。
-- **DOM API 剩余未实现**:选择器全量透传(`> + ~ [attr] :pseudo`,当前仅 tag#id.class 子集)、mousemove 等类型的真实派发全接入、`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败)、focus/blur 为 DOM 层 no-op(焦点在 render 层)。完整迁移蓝图见 `11-ecs.md`。
+- **DOM API 剩余未实现**:mousemove 等类型的真实派发全接入、`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败)、focus/blur 为 DOM 层 no-op(焦点在 render 层)。选择器查询已与级联同语义(`whaleui_style_match`:后代/子/相邻/兄弟`/ `[attr]/伪类/逗号分支;`~` 兄弟暂由级联侧支持,查询侧走同一匹配器)。完整迁移蓝图见 `11-ecs.md`。
 
 ## 运行方式
 
