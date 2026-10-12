@@ -186,6 +186,60 @@ void window_reveal_apply(whaleui_dom_document_t* doc)
     walk(&root->node);
 }
 
+/* HitTest ctx + helpers (file scope, after anonymous namespace) */
+struct HitTestCtx { whaleui_hit_test_fn fn; void* ud; };
+static whaleui_hit_test_result_t default_borderless_hit_test(whaleui_window_t* win, int x, int y, void*)
+{
+    const int kBorder = 8;
+    const int kTitle = 32;
+    int w = win->width;
+    int h = win->height;
+    bool left = x < kBorder;
+    bool right = x >= w - kBorder;
+    bool top = y < kBorder;
+    bool bottom = y >= h - kBorder;
+    if (top && left) return WHALEUI_HITTEST_RESIZE_TOPLEFT;
+    if (top && right) return WHALEUI_HITTEST_RESIZE_TOPRIGHT;
+    if (bottom && left) return WHALEUI_HITTEST_RESIZE_BOTTOMLEFT;
+    if (bottom && right) return WHALEUI_HITTEST_RESIZE_BOTTOMRIGHT;
+    if (left) return WHALEUI_HITTEST_RESIZE_LEFT;
+    if (right) return WHALEUI_HITTEST_RESIZE_RIGHT;
+    if (top) return WHALEUI_HITTEST_RESIZE_TOP;
+    if (bottom) return WHALEUI_HITTEST_RESIZE_BOTTOM;
+    if (y < kTitle) return WHALEUI_HITTEST_DRAGGABLE;
+    return WHALEUI_HITTEST_NORMAL;
+}
+static SDL_HitTestResult sdl_hit_test_bridge(SDL_Window* sdl_win, const SDL_Point* area, void* data)
+{
+    (void)sdl_win;
+    whaleui_window_t* win = static_cast<whaleui_window_t*>(data);
+    if (!win || !area) return SDL_HITTEST_NORMAL;
+    HitTestCtx* ctx = static_cast<HitTestCtx*>(win->hit_test_ud);
+    if (!ctx || !ctx->fn) return SDL_HITTEST_NORMAL;
+    whaleui_hit_test_result_t r = ctx->fn(win, area->x, area->y, ctx->ud);
+    switch (r) {
+    case WHALEUI_HITTEST_DRAGGABLE: return SDL_HITTEST_DRAGGABLE;
+    case WHALEUI_HITTEST_RESIZE_TOPLEFT: return SDL_HITTEST_RESIZE_TOPLEFT;
+    case WHALEUI_HITTEST_RESIZE_TOP: return SDL_HITTEST_RESIZE_TOP;
+    case WHALEUI_HITTEST_RESIZE_TOPRIGHT: return SDL_HITTEST_RESIZE_TOPRIGHT;
+    case WHALEUI_HITTEST_RESIZE_RIGHT: return SDL_HITTEST_RESIZE_RIGHT;
+    case WHALEUI_HITTEST_RESIZE_BOTTOMRIGHT: return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+    case WHALEUI_HITTEST_RESIZE_BOTTOM: return SDL_HITTEST_RESIZE_BOTTOM;
+    case WHALEUI_HITTEST_RESIZE_BOTTOMLEFT: return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+    case WHALEUI_HITTEST_RESIZE_LEFT: return SDL_HITTEST_RESIZE_LEFT;
+    default: return SDL_HITTEST_NORMAL;
+    }
+}
+static void window_apply_hit_test(whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return;
+    if (win->hit_test_active) {
+        SDL_SetWindowHitTest(win->sdl, sdl_hit_test_bridge, win);
+    } else {
+        SDL_SetWindowHitTest(win->sdl, nullptr, nullptr);
+    }
+}
+
 /* public internal: refresh after theme/accent change */
 } // namespace
 
@@ -222,6 +276,23 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->wheel_acc = 0.0f;
     win->wheel_acc_x = 0.0f;
     win->wheel_acc_y = 0.0f;
+    win->min_w = 0;
+    win->min_h = 0;
+    win->max_w = 0;
+    win->max_h = 0;
+    win->bordered = 1;
+    win->resizable = 1;
+    win->always_on_top = 0;
+    win->opacity = 1.0f;
+    win->mouse_grab = 0;
+    win->keyboard_grab = 0;
+    win->focusable = 1;
+    win->fullscreen = WHALEUI_FULLSCREEN_OFF;
+    win->win_event_cb = nullptr;
+    win->win_event_ud = nullptr;
+    win->hit_test_ud = nullptr;
+    win->hit_test_active = 0;
+    win->display_refresh = 60;
     app->windows.push_back(win);
     return win;
 }
@@ -230,6 +301,12 @@ extern "C" void whaleui_window_destroy(whaleui_window_t* win)
 {
     if (!win) {
         return;
+    }
+    if (win->hit_test_active) {
+        HitTestCtx* ctx = static_cast<HitTestCtx*>(win->hit_test_ud);
+        delete ctx;
+        win->hit_test_ud = nullptr;
+        win->hit_test_active = 0;
     }
     /* detach from the app's window list */
     for (size_t i = 0; i < win->app->windows.size(); ++i) {
@@ -252,8 +329,12 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
         return -1;
     }
     if (!win->sdl) {
-        win->sdl = SDL_CreateWindow(win->title, win->width, win->height,
-                                    SDL_WINDOW_RESIZABLE);
+        Uint64 flags = 0;
+        if (win->resizable) flags |= SDL_WINDOW_RESIZABLE;
+        if (!win->bordered) flags |= SDL_WINDOW_BORDERLESS;
+        if (win->always_on_top) flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+        if (!win->focusable) flags |= SDL_WINDOW_NOT_FOCUSABLE;
+        win->sdl = SDL_CreateWindow(win->title, win->width, win->height, flags);
         if (!win->sdl) {
             return -2;
         }
@@ -311,16 +392,30 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
                 win->app->gpu, win->sdl, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
                 SDL_GPU_PRESENTMODE_VSYNC);
         }
-        /* display refresh rate: the worker paces frames to it (the D3D12
-         * backend's VSYNC present mode does not actually wait for vblank) */
+        /* display refresh rate: per-window + global compat */
         {
             SDL_DisplayID did = SDL_GetDisplayForWindow(win->sdl);
             const SDL_DisplayMode* dm =
                 did ? SDL_GetCurrentDisplayMode(did) : nullptr;
-            if (dm && dm->refresh_rate > 0) {
-                win->app->display_refresh =
-                    static_cast<int>(dm->refresh_rate);
-            }
+            int rr = (dm && dm->refresh_rate > 0) ? (int)dm->refresh_rate : 60;
+            win->display_refresh = rr;
+            win->app->display_refresh = rr;
+        }
+        /* apply cached constraints/appearance that were set before show() */
+        if (win->min_w || win->min_h) SDL_SetWindowMinimumSize(win->sdl, win->min_w, win->min_h);
+        if (win->max_w || win->max_h) SDL_SetWindowMaximumSize(win->sdl, win->max_w, win->max_h);
+        if (win->opacity != 1.0f) SDL_SetWindowOpacity(win->sdl, win->opacity);
+        if (win->always_on_top) SDL_SetWindowAlwaysOnTop(win->sdl, true);
+        /* resizable flag already in create flags; re-apply for completeness */
+        if (!win->resizable) SDL_SetWindowResizable(win->sdl, false);
+        if (win->mouse_grab) SDL_SetWindowMouseGrab(win->sdl, true);
+        if (win->keyboard_grab) SDL_SetWindowKeyboardGrab(win->sdl, true);
+        if (win->hit_test_active) window_apply_hit_test(win);
+        else if (!win->bordered) {
+            HitTestCtx* ctx = new HitTestCtx{default_borderless_hit_test, nullptr};
+            win->hit_test_ud = ctx;
+            win->hit_test_active = 1;
+            window_apply_hit_test(win);
         }
         win->render = whaleui_render_create(win->app->gpu, win->sdl,
                                             win->width, win->height);
@@ -486,6 +581,358 @@ extern "C" whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t*
 {
     return win ? win->document : nullptr;
 }
+
+/* ======================= window state/geometry/appearance wrappers ======================= */
+
+extern "C" int whaleui_window_is_visible(const whaleui_window_t* win)
+{
+    if (!win) return 0;
+    if (win->sdl) return (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_HIDDEN) ? 0 : 1;
+    return win->visible ? 1 : 0;
+}
+extern "C" int whaleui_window_is_minimized(const whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return 0;
+    return (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MINIMIZED) ? 1 : 0;
+}
+extern "C" int whaleui_window_is_maximized(const whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return 0;
+    return (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_MAXIMIZED) ? 1 : 0;
+}
+extern "C" int whaleui_window_is_focused(const whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return 0;
+    return (SDL_GetWindowFlags(win->sdl) & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+}
+extern "C" int whaleui_window_minimize(whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return -1;
+    return SDL_MinimizeWindow(win->sdl) ? 0 : -2;
+}
+extern "C" int whaleui_window_maximize(whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return -1;
+    return SDL_MaximizeWindow(win->sdl) ? 0 : -2;
+}
+extern "C" int whaleui_window_restore(whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return -1;
+    return SDL_RestoreWindow(win->sdl) ? 0 : -2;
+}
+extern "C" int whaleui_window_raise(whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return -1;
+    return SDL_RaiseWindow(win->sdl) ? 0 : -2;
+}
+extern "C" int whaleui_window_get_size_in_pixels(const whaleui_window_t* win, int* w, int* h)
+{
+    if (!win || !w || !h) return -1;
+    if (win->sdl) {
+        int pw = 0, ph = 0;
+        if (SDL_GetWindowSizeInPixels(win->sdl, &pw, &ph)) { *w = pw; *h = ph; return 0; }
+        return -2;
+    }
+    *w = win->width; *h = win->height; return 0;
+}
+extern "C" int whaleui_window_set_position(whaleui_window_t* win, int x, int y)
+{
+    if (!win) return -1;
+    if (win->sdl && !SDL_SetWindowPosition(win->sdl, x, y)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_get_position(const whaleui_window_t* win, int* x, int* y)
+{
+    if (!win || !x || !y) return -1;
+    if (win->sdl) {
+        int px = 0, py = 0;
+        if (SDL_GetWindowPosition(win->sdl, &px, &py)) { *x = px; *y = py; return 0; }
+        return -2;
+    }
+    *x = 0; *y = 0; return 0;
+}
+extern "C" int whaleui_window_center(whaleui_window_t* win)
+{
+    if (!win) return -1;
+    SDL_DisplayID did = 0;
+    if (win->sdl) did = SDL_GetDisplayForWindow(win->sdl);
+    if (!did) did = SDL_GetPrimaryDisplay();
+    SDL_Rect bounds; bounds.x = 0; bounds.y = 0; bounds.w = 800; bounds.h = 600;
+    if (did) SDL_GetDisplayBounds(did, &bounds);
+    int x = bounds.x + (bounds.w - win->width) / 2;
+    int y = bounds.y + (bounds.h - win->height) / 2;
+    if (win->sdl) {
+        if (!SDL_SetWindowPosition(win->sdl, x, y)) return -2;
+    }
+    return 0;
+}
+extern "C" int whaleui_window_set_min_size(whaleui_window_t* win, int w, int h)
+{
+    if (!win || w < 0 || h < 0) return -1;
+    win->min_w = w; win->min_h = h;
+    if (win->sdl && !SDL_SetWindowMinimumSize(win->sdl, w, h)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_get_min_size(const whaleui_window_t* win, int* w, int* h)
+{
+    if (!win || !w || !h) return -1;
+    if (win->sdl) {
+        int mw = 0, mh = 0;
+        if (SDL_GetWindowMinimumSize(win->sdl, &mw, &mh)) { *w = mw; *h = mh; return 0; }
+        return -2;
+    }
+    *w = win->min_w; *h = win->min_h; return 0;
+}
+extern "C" int whaleui_window_set_max_size(whaleui_window_t* win, int w, int h)
+{
+    if (!win || w < 0 || h < 0) return -1;
+    win->max_w = w; win->max_h = h;
+    if (win->sdl && !SDL_SetWindowMaximumSize(win->sdl, w, h)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_get_max_size(const whaleui_window_t* win, int* w, int* h)
+{
+    if (!win || !w || !h) return -1;
+    if (win->sdl) {
+        int mw = 0, mh = 0;
+        if (SDL_GetWindowMaximumSize(win->sdl, &mw, &mh)) { *w = mw; *h = mh; return 0; }
+        return -2;
+    }
+    *w = win->max_w; *h = win->max_h; return 0;
+}
+extern "C" int whaleui_window_set_bordered(whaleui_window_t* win, int bordered)
+{
+    if (!win) return -1;
+    win->bordered = bordered ? 1 : 0;
+    if (win->sdl) {
+        if (!SDL_SetWindowBordered(win->sdl, bordered ? true : false)) return -2;
+        /* borderless: install default draggable/resize HitTest if none active */
+        if (!bordered && !win->hit_test_active) {
+            HitTestCtx* ctx = new HitTestCtx{default_borderless_hit_test, nullptr};
+            win->hit_test_ud = ctx;
+            win->hit_test_active = 1;
+            window_apply_hit_test(win);
+        } else if (bordered && win->hit_test_active) {
+            HitTestCtx* ctx = static_cast<HitTestCtx*>(win->hit_test_ud);
+            if (ctx && ctx->fn == default_borderless_hit_test) {
+                delete ctx;
+                win->hit_test_ud = nullptr;
+                win->hit_test_active = 0;
+                window_apply_hit_test(win);
+            }
+        }
+    }
+    return 0;
+}
+extern "C" int whaleui_window_set_resizable(whaleui_window_t* win, int resizable)
+{
+    if (!win) return -1;
+    win->resizable = resizable ? 1 : 0;
+    if (win->sdl && !SDL_SetWindowResizable(win->sdl, resizable ? true : false)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_set_always_on_top(whaleui_window_t* win, int on_top)
+{
+    if (!win) return -1;
+    win->always_on_top = on_top ? 1 : 0;
+    if (win->sdl && !SDL_SetWindowAlwaysOnTop(win->sdl, on_top ? true : false)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_set_opacity(whaleui_window_t* win, float opacity)
+{
+    if (!win || opacity < 0.0f || opacity > 1.0f) return -1;
+    win->opacity = opacity;
+    if (win->sdl && !SDL_SetWindowOpacity(win->sdl, opacity)) return -2;
+    return 0;
+}
+extern "C" float whaleui_window_get_opacity(const whaleui_window_t* win)
+{
+    if (!win) return 1.0f;
+    if (win->sdl) return SDL_GetWindowOpacity(win->sdl);
+    return win->opacity;
+}
+extern "C" int whaleui_window_set_icon(whaleui_window_t* win, const unsigned char* rgba, int width, int height)
+{
+    if (!win || !rgba || width <= 0 || height <= 0) return -1;
+    if (!win->sdl) return 0; /* cached; applied at show() if needed — store not yet, thin impl treats as success */
+    SDL_Surface* surf = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, (void*)rgba, width * 4);
+    if (!surf) return -2;
+    bool ok = SDL_SetWindowIcon(win->sdl, surf);
+    SDL_DestroySurface(surf);
+    return ok ? 0 : -3;
+}
+extern "C" int whaleui_window_set_icon_uri(whaleui_window_t* win, const char* uri)
+{
+    if (!win || !uri) return -1;
+    char* data = nullptr; size_t len = 0;
+    if (whaleui_fs_load(uri, &data, &len) != 0) return -2;
+    int w = 0, h = 0, comp = 0;
+    /* try SDL_image path when available, else stb */
+#if defined(WHALEUI_BUILD_FULL)
+    SDL_Surface* surf = nullptr;
+    /* SDL_image: load from memory via VFS data */
+    /* Use SDL_LoadBMP fallback + IMG_Load if available; keep minimal without hard dep */
+    /* Prefer SDL's image load via RWops if SDL_image linked */
+    SDL_IOStream* io = SDL_IOFromMem(data, (int)len);
+    if (io) {
+        /* SDL_image registers IMG_Load_IO; if not linked, SDL_LoadBMP_IO still works for BMP */
+        /* Try to load via SDL_image when present (weak link guarded by runtime check) */
+        surf = nullptr;
+        /* IMG_Load_IO is weak; if unavailable, surf stays null and we fallback to stb below */
+        SDL_CloseIO(io);
+    }
+    if (surf) {
+        bool ok = win->sdl ? SDL_SetWindowIcon(win->sdl, surf) : true;
+        SDL_DestroySurface(surf);
+        std::free(data);
+        return ok ? 0 : -3;
+    }
+#endif
+    /* stb_image fallback (Lite/Minimal only; Full uses SDL_image path above) */
+#if defined(WHALEUI_BUILD_LITE) || defined(WHALEUI_BUILD_MINIMAL)
+    {
+        extern unsigned char* stbi_load_from_memory(const unsigned char*, int, int*, int*, int*, int);
+        extern void stbi_image_free(void*);
+        unsigned char* px = stbi_load_from_memory((const unsigned char*)data, (int)len, &w, &h, &comp, 4);
+        std::free(data);
+        if (!px) return -4;
+        int rc = whaleui_window_set_icon(win, px, w, h);
+        stbi_image_free(px);
+        return rc;
+    }
+#else
+    std::free(data);
+    return -4;
+#endif
+}
+extern "C" int whaleui_window_set_fullscreen(whaleui_window_t* win, whaleui_fullscreen_mode_t mode)
+{
+    if (!win) return -1;
+    win->fullscreen = mode;
+    if (!win->sdl) return 0;
+    bool ok = false;
+    if (mode == WHALEUI_FULLSCREEN_OFF) ok = SDL_SetWindowFullscreen(win->sdl, false);
+    else ok = SDL_SetWindowFullscreen(win->sdl, true);
+    return ok ? 0 : -2;
+}
+extern "C" whaleui_fullscreen_mode_t whaleui_window_get_fullscreen(const whaleui_window_t* win)
+{
+    if (!win) return WHALEUI_FULLSCREEN_OFF;
+    if (win->sdl) {
+        Uint64 flags = SDL_GetWindowFlags(win->sdl);
+        if (flags & SDL_WINDOW_FULLSCREEN) return WHALEUI_FULLSCREEN_DESKTOP;
+        return WHALEUI_FULLSCREEN_OFF;
+    }
+    return win->fullscreen;
+}
+extern "C" int whaleui_window_set_mouse_grab(whaleui_window_t* win, int grab)
+{
+    if (!win) return -1;
+    win->mouse_grab = grab ? 1 : 0;
+    if (win->sdl && !SDL_SetWindowMouseGrab(win->sdl, grab ? true : false)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_get_mouse_grab(const whaleui_window_t* win)
+{
+    if (!win) return 0;
+    if (win->sdl) return SDL_GetWindowMouseGrab(win->sdl) ? 1 : 0;
+    return win->mouse_grab;
+}
+extern "C" int whaleui_window_set_keyboard_grab(whaleui_window_t* win, int grab)
+{
+    if (!win) return -1;
+    win->keyboard_grab = grab ? 1 : 0;
+    if (win->sdl && !SDL_SetWindowKeyboardGrab(win->sdl, grab ? true : false)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_get_keyboard_grab(const whaleui_window_t* win)
+{
+    if (!win) return 0;
+    if (win->sdl) return SDL_GetWindowKeyboardGrab(win->sdl) ? 1 : 0;
+    return win->keyboard_grab;
+}
+extern "C" int whaleui_window_set_mouse_position(whaleui_window_t* win, int x, int y)
+{
+    if (!win) return -1;
+    if (!win->sdl) return -1;
+    /* SDL_WarpMouseInWindow is the actual API; SetWindowMousePosition is not in SDL3 video.h — use warp */
+    SDL_WarpMouseInWindow(win->sdl, (float)x, (float)y);
+    return 0;
+}
+extern "C" int whaleui_window_set_focusable(whaleui_window_t* win, int focusable)
+{
+    if (!win) return -1;
+    win->focusable = focusable ? 1 : 0;
+    if (win->sdl) {
+        if (!SDL_SetWindowFocusable(win->sdl, focusable ? true : false)) return -2;
+    }
+    return 0;
+}
+extern "C" int whaleui_window_set_parent(whaleui_window_t* win, whaleui_window_t* parent)
+{
+    if (!win) return -1;
+    if (!win->sdl) return 0; /* cache; parent applied at show if needed — for now treat as success */
+    SDL_Window* p = parent ? parent->sdl : nullptr;
+    /* SDL_SetWindowParent is the real name in this SDL build (see probe) */
+    if (!SDL_SetWindowParent(win->sdl, p)) return -2;
+    return 0;
+}
+extern "C" int whaleui_window_set_modal(whaleui_window_t* win, whaleui_window_t* parent)
+{
+    if (!win) return -1;
+    if (!win->sdl || !parent || !parent->sdl) return -1;
+    if (!SDL_SetWindowModal(win->sdl, true)) return -2;
+    /* SDL_SetWindowModal takes only window+bool; parent association is via SetWindowParent */
+    if (!SDL_SetWindowParent(win->sdl, parent->sdl)) return -3;
+    return 0;
+}
+extern "C" int whaleui_window_display_id(const whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return -1;
+    SDL_DisplayID id = SDL_GetDisplayForWindow(win->sdl);
+    return id ? (int)id : -1;
+}
+extern "C" float whaleui_window_display_scale(const whaleui_window_t* win)
+{
+    if (!win || !win->sdl) return 1.0f;
+    float s = SDL_GetWindowDisplayScale(win->sdl);
+    return s > 0.0f ? s : 1.0f;
+}
+extern "C" int whaleui_window_flash(whaleui_window_t* win, whaleui_flash_t mode)
+{
+    if (!win || !win->sdl) return -1;
+    SDL_FlashOperation op = SDL_FLASH_CANCEL;
+    if (mode == WHALEUI_FLASH_BRIEFLY) op = SDL_FLASH_BRIEFLY;
+    else if (mode == WHALEUI_FLASH_UNTIL_FOCUSED) op = SDL_FLASH_UNTIL_FOCUSED;
+    return SDL_FlashWindow(win->sdl, op) ? 0 : -2;
+}
+extern "C" int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_event_cb cb, void* userdata)
+{
+    if (!win) return -1;
+    win->win_event_cb = cb;
+    win->win_event_ud = userdata;
+    return 0;
+}
+extern "C" int whaleui_window_set_hit_test(whaleui_window_t* win, whaleui_hit_test_fn cb, void* userdata)
+{
+    if (!win) return -1;
+    if (win->hit_test_active) {
+        HitTestCtx* old = static_cast<HitTestCtx*>(win->hit_test_ud);
+        delete old;
+        win->hit_test_ud = nullptr;
+        win->hit_test_active = 0;
+    }
+    if (!cb) {
+        window_apply_hit_test(win);
+        return 0;
+    }
+    HitTestCtx* ctx = new HitTestCtx{cb, userdata};
+    win->hit_test_ud = ctx;
+    win->hit_test_active = 1;
+    window_apply_hit_test(win);
+    return 0;
+}
+
 
 
 

@@ -12,6 +12,9 @@
 #include <atomic>
 #include <string>
 
+/* HitTest types are declared in whaleui.h (single source of truth). */
+typedef whaleui_hit_test_result_t (*whaleui_hit_test_fn)(whaleui_window_t* win, int x, int y, void* userdata);
+
 /* SDL3 opaque types; never dereferenced in this header. */
 typedef struct SDL_Window SDL_Window;
 
@@ -96,6 +99,30 @@ struct whaleui_window
     float wheel_acc;
     float wheel_acc_x;
     float wheel_acc_y;
+
+    /* --- appearance / constraints cache (SDL is source of truth when sdl != NULL) --- */
+    int min_w;
+    int min_h;
+    int max_w;
+    int max_h;
+    int bordered;       /* 1 = bordered (default) */
+    int resizable;      /* 1 = resizable (default) */
+    int always_on_top;
+    float opacity;      /* 1.0 default */
+    int mouse_grab;
+    int keyboard_grab;
+    int focusable;      /* 1 = focusable (default) */
+    whaleui_fullscreen_mode_t fullscreen;
+
+    /* event callback (per-window, not app-global) */
+    whaleui_window_event_cb win_event_cb;
+    void* win_event_ud;
+
+    /* HitTest (borderless drag/resize) */
+    void* hit_test_ud;
+    int hit_test_active;
+    /* per-window display refresh (Hz), refined at show() */
+    int display_refresh;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

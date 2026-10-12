@@ -71,12 +71,15 @@ struct whaleui_app
 
     std::vector<whaleui_window_t*> windows;
 
+    /* per-window event watch state indexed by SDL_WindowID */
+    std::atomic<int> watch_generation{0};
+
     /* render worker thread (see model comment above) */
     std::thread render_thread;
     std::atomic<int> frame_request{0}; /* wake worker: render now */
     std::atomic<int> frame_done{0};    /* worker -> main: frame finished */
     std::atomic<int> frames_alive{0};  /* an animation needs frames */
-    int display_refresh;               /* Hz of the first shown window */
+    int display_refresh;               /* Hz of the first shown window (legacy global, kept for compat) */
     unsigned long long last_frame_tick;
     std::mutex render_lock;            /* guards input_queue ONLY */
     std::condition_variable frame_cv;  /* worker waits on queue/request */

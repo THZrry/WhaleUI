@@ -115,10 +115,8 @@ static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
         return false;
     }
     if (e->type == SDL_EVENT_WINDOW_RESIZED) {
-        /* single-window assumption (see window/render comments): no SDL
-         * calls allowed inside the watch, so match by iteration */
         for (whaleui_window_t* win : app->windows) {
-            if (win->sdl) {
+            if (win->sdl && SDL_GetWindowID(win->sdl) == e->window.windowID) {
                 win->watch_w.store(e->window.data1);
                 win->watch_h.store(e->window.data2);
                 win->watch_seq.fetch_add(1);
@@ -128,9 +126,6 @@ static bool SDLCALL app_resize_watch(void* userdata, SDL_Event* e)
     }
     if (e->type == SDL_EVENT_WINDOW_RESIZED ||
         e->type == SDL_EVENT_WINDOW_MOVED) {
-        /* wake the render worker: during a drag the main thread cannot
-         * poll/notify (it is inside the OS modal loop), so the worker
-         * keeps rendering + applying the folded resize sizes live */
         app->frame_request.store(1);
         app->frame_cv.notify_one();
     }
@@ -143,33 +138,31 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         app->running = 0;
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED: {
-        /* OS 焦点回到窗口时,若控件仍处于编辑态,重新开启文本输入。
-         * 必须在主线程执行(IMM 绑定窗口线程),post 到主线程队列。 */
         whaleui_window_t* w = window_for(app, e.window.windowID);
-        if (w && w->render && w->render->edit_el && w->sdl) {
-            SDL_Window* sdlw = w->sdl;
-            whaleui_sdl_on_main(
-                [](void* p) { SDL_StartTextInput(static_cast<SDL_Window*>(p)); },
-                sdlw);
+        if (w) {
+            if (w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_FOCUS_GAINED, 0, 0, w->win_event_ud);
+            if (w->render && w->render->edit_el && w->sdl) {
+                SDL_Window* sdlw = w->sdl;
+                whaleui_sdl_on_main(
+                    [](void* p) { SDL_StartTextInput(static_cast<SDL_Window*>(p)); },
+                    sdlw);
+            }
         }
         break;
     }
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: {
-        /* the pointer left the window: SDL sends no further motion events, so
-         * the hovered element would stay stuck in :hover - "moving away
-         * sometimes does not react, especially when the mouse leaves quickly"
-         * (a slow move still produces motion inside the window, so it looks
-         * like it reacts). */
         whaleui_window_t* w = window_for(app, e.window.windowID);
-        if (w && w->render) {
-            whaleui_render_clear_hover(w->render);
+        if (w) {
+            if (w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_MOUSE_LEAVE, 0, 0, w->win_event_ud);
+            if (w->render) whaleui_render_clear_hover(w->render);
         }
         break;
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST: {
-        /* 窗口失去焦点:编辑控件同步失焦 —— 清 edit 态、退出文本输入,
-         * caret/选区消失(浏览器切窗即 blur)。SDL 调用回主线程执行。 */
         whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            if (w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_FOCUS_LOST, 0, 0, w->win_event_ud);
+        }
         if (w && w->render && w->render->edit_el) {
             w->render->focus_el = nullptr; /* :focus 样式随失焦移除 */
             w->render->edit_el = nullptr;
@@ -249,52 +242,76 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     }
-    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        for (whaleui_window_t* win : app->windows) {
-            if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
-                win->visible = 0;
-                app->running = 0;
-                break;
-            }
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            int cancel = 0;
+            if (w->win_event_cb) cancel = w->win_event_cb(w, WHALEUI_WINDOW_EVENT_CLOSE, 0, 0, w->win_event_ud);
+            if (!cancel) { w->visible = 0; app->running = 0; }
         }
         break;
-    case SDL_EVENT_WINDOW_EXPOSED:
-    case SDL_EVENT_WINDOW_RESTORED:
-    case SDL_EVENT_WINDOW_SHOWN:
-        for (whaleui_window_t* win : app->windows) {
-            if (win->render && SDL_GetWindowID(win->sdl) == e.window.windowID) {
-                /* re-exposure always needs fresh pixels (the swapchain image
-                 * may be gone) - and the parked render state may predate the
-                 * occlusion, so drop the presented-frame cache too */
-                win->occluded = 0;
-                whaleui_render_drop_presented(win->render);
-                whaleui_render_invalidate(win->render);
-                break;
-            }
+    }
+    case SDL_EVENT_WINDOW_SHOWN: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            if (w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_SHOWN, 0, 0, w->win_event_ud);
+            if (w->render) { w->occluded = 0; whaleui_render_drop_presented(w->render); whaleui_render_invalidate(w->render); }
         }
         break;
+    }
+    case SDL_EVENT_WINDOW_HIDDEN: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_HIDDEN, 0, 0, w->win_event_ud);
+        break;
+    }
+    case SDL_EVENT_WINDOW_EXPOSED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            if (w->render) { w->occluded = 0; whaleui_render_drop_presented(w->render); whaleui_render_invalidate(w->render); }
+        }
+        break;
+    }
+    case SDL_EVENT_WINDOW_RESTORED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            if (w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_RESTORED, 0, 0, w->win_event_ud);
+            if (w->render) { w->occluded = 0; whaleui_render_drop_presented(w->render); whaleui_render_invalidate(w->render); }
+        }
+        break;
+    }
+    case SDL_EVENT_WINDOW_MINIMIZED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_MINIMIZED, 0, 0, w->win_event_ud);
+        break;
+    }
+    case SDL_EVENT_WINDOW_MAXIMIZED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_MAXIMIZED, 0, 0, w->win_event_ud);
+        break;
+    }
+    case SDL_EVENT_WINDOW_MOUSE_ENTER: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_MOUSE_ENTER, 0, 0, w->win_event_ud);
+        break;
+    }
     case SDL_EVENT_WINDOW_OCCLUDED: {
-        /* fully covered by other windows: FULL park (Chromium parity) -
-         * no tick, no paint, no present. Animation clocks freeze with the
-         * park, so an uncover resumes without jumping; the next EXPOSED
-         * drops the presented cache and invalidates, forcing one full
-         * repaint from current wall-clock values (see above). */
         whaleui_window_t* w = window_for(app, e.window.windowID);
         if (w) {
             w->occluded = 1;
         }
         break;
     }
+    case SDL_EVENT_WINDOW_MOVED: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w && w->win_event_cb) w->win_event_cb(w, WHALEUI_WINDOW_EVENT_MOVED, e.window.data1, e.window.data2, w->win_event_ud);
+        break;
+    }
     case SDL_EVENT_WINDOW_RESIZED: {
         for (whaleui_window_t* win : app->windows) {
             if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
+                if (win->win_event_cb) win->win_event_cb(win, WHALEUI_WINDOW_EVENT_RESIZED, e.window.data1, e.window.data2, win->win_event_ud);
                 win->width = e.window.data1;
                 win->height = e.window.data2;
-                /* coalesced resize: only record the target size here; the
-                 * worker applies it at most once per 80ms so a window drag
-                 * (one resize event per drag frame) does not rebuild the
-                 * GPU targets + relayout on every event - that is what
-                 * froze the window mid-resize. */
                 win->resize_w = win->width;
                 win->resize_h = win->height;
                 win->resize_pending = 1;
@@ -725,17 +742,13 @@ void render_worker_fn(whaleui_app_t* app)
             if (fps <= 0) {
                 if (self_anim &&
                     !(app->battery_saver && app->on_battery)) {
-                    /* animation track: full 60fps (decorative motion must
-                     * not visibly step; the saving comes from occlusion
-                     * parking + background throttle, not from halving the
-                     * animation rate). */
                     fps = 60;
                 } else if (input_wake &&
                            !(app->battery_saver && app->on_battery)) {
-                    /* input/scroll track: display refresh for smooth
-                     * pointer-following motion. */
-                    fps = app->display_refresh > 0 ? app->display_refresh
-                                                   : 60;
+                    /* per-window refresh when available, fallback to global */
+                    int rr = 0;
+                    for (auto* w : app->windows) if (w->sdl && w->display_refresh > 0) { rr = w->display_refresh; break; }
+                    fps = rr > 0 ? rr : (app->display_refresh > 0 ? app->display_refresh : 60);
                 } else {
                     fps = 60;
                 }

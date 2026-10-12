@@ -341,6 +341,24 @@ typedef int (*whaleui_window_event_cb)(whaleui_window_t* win,
 int whaleui_window_set_event_callback(whaleui_window_t* win,
                                       whaleui_window_event_cb cb, void* userdata);
 
+/* --- hit test (borderless drag/resize; mirrors SDL_HitTestResult) --- */
+typedef enum whaleui_hit_test_result {
+    WHALEUI_HITTEST_NORMAL = 0,
+    WHALEUI_HITTEST_DRAGGABLE = 1,
+    WHALEUI_HITTEST_RESIZE_TOPLEFT = 2,
+    WHALEUI_HITTEST_RESIZE_TOP = 3,
+    WHALEUI_HITTEST_RESIZE_TOPRIGHT = 4,
+    WHALEUI_HITTEST_RESIZE_RIGHT = 5,
+    WHALEUI_HITTEST_RESIZE_BOTTOMRIGHT = 6,
+    WHALEUI_HITTEST_RESIZE_BOTTOM = 7,
+    WHALEUI_HITTEST_RESIZE_BOTTOMLEFT = 8,
+    WHALEUI_HITTEST_RESIZE_LEFT = 9
+} whaleui_hit_test_result_t;
+typedef whaleui_hit_test_result_t (*whaleui_hit_test_fn)(whaleui_window_t* win,
+                                                          int x, int y, void* userdata);
+int whaleui_window_set_hit_test(whaleui_window_t* win, whaleui_hit_test_fn cb,
+                                void* userdata);
+
 /* --- content --- */
 
 /* forward declaration; full type + API in the DOM section below */
