@@ -169,6 +169,8 @@ void paint_shadow(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
 SDL_Surface* img_surface(whaleui_render_t* r, const std::string& src);
 void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                int off_y, const Clip* clip);
+void paint_canvas(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                  int off_y, const Clip* clip);
 void compute_paint_bounds(whaleui_layout_node_t* n);
 void mark_bounds_dirty(whaleui_layout_node_t* n);
 void mark_bounds_dirty_all(whaleui_layout_node_t* n);

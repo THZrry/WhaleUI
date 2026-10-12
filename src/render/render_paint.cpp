@@ -3,6 +3,7 @@
 // Shared helpers: render_internal.h.
 
 #include "render/render_internal.h"
+#include "canvas/canvas.h"
 #include "animate/animate.h"
 #include <SDL3/SDL.h>
 #ifdef WHALEUI_BUILD_FULL
@@ -1359,6 +1360,43 @@ void paint_img(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     fill_rect(r->pixels, r->fb_w, r->fb_h, x + w - 1, y, 1, h, edge, clip);
 }
 
+void paint_canvas(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
+                  int off_y, const Clip* clip)
+{
+    if (!r || !n || !n->el) return;
+    whaleui_canvas_context_t* c = whaleui_canvas_context_for(n->el);
+    if (!c || c->w <= 0 || c->h <= 0) return;
+    int x = n->border.x + off_x;
+    int y = n->border.y + off_y;
+    int w = n->border.w;
+    int h = n->border.h;
+    if (w <= 0 || h <= 0) return;
+    std::vector<unsigned int>& fb = g_gpu ? r->text_layer : r->pixels;
+    for (int j = 0; j < h; ++j) {
+        int ty = y + j;
+        if (ty < 0 || ty >= r->fb_h) continue;
+        if (clip && (ty < clip->y || ty >= clip->y + clip->h)) continue;
+        int sy = j * c->h / h;
+        for (int i = 0; i < w; ++i) {
+            int tx = x + i;
+            if (tx < 0 || tx >= r->fb_w) continue;
+            if (clip && (tx < clip->x || tx >= clip->x + clip->w)) continue;
+            int sx = i * c->w / w;
+            unsigned int s = c->px[(size_t)sy * c->w + sx];
+            unsigned int a = (s >> 24) & 255;
+            if (!a) continue;
+            unsigned int d = fb[(size_t)ty * r->fb_w + tx];
+            if (a == 255) { fb[(size_t)ty * r->fb_w + tx] = s; continue; }
+            unsigned int sr = (s >> 16) & 255, sg = (s >> 8) & 255, sb = s & 255;
+            unsigned int dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
+            unsigned int nr = (sr * a + dr * (255 - a)) / 255;
+            unsigned int ng = (sg * a + dg * (255 - a)) / 255;
+            unsigned int nb = (sb * a + db * (255 - a)) / 255;
+            fb[(size_t)ty * r->fb_w + tx] = 0xFF000000u | (nr << 16) | (ng << 8) | nb;
+        }
+    }
+}
+
 /* Mark a node's subtree bounds stale and BUBBLE the mark to the root. Only the
  * path to the root is touched, so a local relayout no longer invalidates every
  * node's bounds in a 30k-node tree. */
@@ -1848,6 +1886,10 @@ void paint_node(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     /* <img>: bitmap (object-fit) or placeholder replaces the background */
     if (n->el && n->tag_id == WUI_TAG_IMG) {
         paint_img(r, n, nox, noy, eff);
+    }
+    /* <canvas>: CPU backing store blit (stretched to the layout box) */
+    if (n->el && n->tag_id == WUI_TAG_CANVAS) {
+        paint_canvas(r, n, nox, noy, eff);
     }
     /* native controls (checkbox/radio/progress) own their box appearance
      * (painted at a fixed native size by paint_checkbox/progress below),

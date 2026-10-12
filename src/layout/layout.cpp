@@ -1410,6 +1410,7 @@ int tag_id_of(lxb_dom_element* el)
         if (std::memcmp(name, "strong", 6) == 0) return WUI_TAG_STRONG;
         if (std::memcmp(name, "header", 6) == 0) return WUI_TAG_HEADER;
         if (std::memcmp(name, "footer", 6) == 0) return WUI_TAG_FOOTER;
+        if (std::memcmp(name, "canvas", 6) == 0) return WUI_TAG_CANVAS;
         return WUI_TAG_UNKNOWN;
     case 7:
         if (std::memcmp(name, "details", 7) == 0) return WUI_TAG_DETAILS;
@@ -1888,6 +1889,36 @@ struct Builder
             }
             if (n->style.find("height") == n->style.end()) {
                 n->style["height"] = "150px";
+            }
+            if (n->style.find("display") == n->style.end()) {
+                n->style["display"] = "inline-block";
+            }
+        }
+        /* <canvas>: intrinsic size from width/height attributes (default
+         * 300x150 per HTML spec), explicit CSS wins */
+        bool is_canvas = tname0 && tlen0 == 6 &&
+                         std::memcmp(tname0, "canvas", 6) == 0;
+        if (is_canvas) {
+            int cw = 300, ch = 150;
+            size_t cwlen = 0;
+            const lxb_char_t* cwa = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"width", 5, &cwlen);
+            size_t chlen = 0;
+            const lxb_char_t* cha = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"height", 6, &chlen);
+            if (cwa && cwlen) cw = std::atoi(std::string(reinterpret_cast<const char*>(cwa), cwlen).c_str());
+            if (cha && chlen) ch = std::atoi(std::string(reinterpret_cast<const char*>(cha), chlen).c_str());
+            if (cw <= 0) cw = 300;
+            if (ch <= 0) ch = 150;
+            if (n->style.find("width") == n->style.end()) {
+                char tmp[32];
+                std::snprintf(tmp, sizeof(tmp), "%dpx", cw);
+                n->style["width"] = tmp;
+            }
+            if (n->style.find("height") == n->style.end()) {
+                char tmp[32];
+                std::snprintf(tmp, sizeof(tmp), "%dpx", ch);
+                n->style["height"] = tmp;
             }
             if (n->style.find("display") == n->style.end()) {
                 n->style["display"] = "inline-block";

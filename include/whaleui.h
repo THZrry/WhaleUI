@@ -737,6 +737,105 @@ const char* whaleui_font_list(void);
  * the number of fonts newly registered. */
 int whaleui_font_register_system_defaults(void);
 
+/* ======================= Canvas 2D (HTMLCanvasElement C-port) ======================= */
+
+typedef struct whaleui_canvas_context whaleui_canvas_context_t;
+typedef struct whaleui_image_data whaleui_image_data_t;
+
+/* getContext("2d"): NULL unless el is a <canvas> and type == "2d". */
+whaleui_canvas_context_t* whaleui_canvas_get_context(whaleui_dom_element_t* el,
+                                                     const char* type);
+/* width/height attributes (backing store reset, transparent black). */
+int whaleui_canvas_set_size(whaleui_dom_element_t* el, int w, int h);
+int whaleui_canvas_get_size(whaleui_dom_element_t* el, int* w, int* h);
+
+/* state */
+int whaleui_canvas_set_fill_style(whaleui_canvas_context_t* ctx, const char* style);
+int whaleui_canvas_set_stroke_style(whaleui_canvas_context_t* ctx, const char* style);
+int whaleui_canvas_set_line_width(whaleui_canvas_context_t* ctx, float w);
+int whaleui_canvas_set_global_alpha(whaleui_canvas_context_t* ctx, float a);
+
+/* rects */
+int whaleui_canvas_fill_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h);
+int whaleui_canvas_stroke_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h);
+int whaleui_canvas_clear_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h);
+
+/* path */
+int whaleui_canvas_begin_path(whaleui_canvas_context_t* ctx);
+int whaleui_canvas_move_to(whaleui_canvas_context_t* ctx, float x, float y);
+int whaleui_canvas_line_to(whaleui_canvas_context_t* ctx, float x, float y);
+int whaleui_canvas_close_path(whaleui_canvas_context_t* ctx);
+int whaleui_canvas_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h);
+int whaleui_canvas_arc(whaleui_canvas_context_t* ctx, float x, float y, float r, float a0, float a1);
+int whaleui_canvas_fill(whaleui_canvas_context_t* ctx);
+int whaleui_canvas_stroke(whaleui_canvas_context_t* ctx);
+
+/* state stack + transform */
+int whaleui_canvas_save(whaleui_canvas_context_t* ctx);
+int whaleui_canvas_restore(whaleui_canvas_context_t* ctx);
+int whaleui_canvas_set_transform(whaleui_canvas_context_t* ctx, float a, float b, float c, float d, float e, float f);
+int whaleui_canvas_transform(whaleui_canvas_context_t* ctx, float a, float b, float c, float d, float e, float f);
+int whaleui_canvas_translate(whaleui_canvas_context_t* ctx, float x, float y);
+int whaleui_canvas_scale(whaleui_canvas_context_t* ctx, float x, float y);
+int whaleui_canvas_rotate(whaleui_canvas_context_t* ctx, float angle);
+
+/* ImageData (0xAARRGGBB pixels) */
+whaleui_image_data_t* whaleui_canvas_create_image_data(whaleui_canvas_context_t* ctx, int w, int h);
+void whaleui_image_data_destroy(whaleui_image_data_t* d);
+int whaleui_image_data_size(const whaleui_image_data_t* d, int* w, int* h);
+unsigned int whaleui_image_data_get(const whaleui_image_data_t* d, int x, int y);
+int whaleui_image_data_set(whaleui_image_data_t* d, int x, int y, unsigned int argb);
+whaleui_image_data_t* whaleui_canvas_get_image_data(whaleui_canvas_context_t* ctx, int x, int y, int w, int h);
+int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whaleui_image_data_t* d, int x, int y);
+
+/* ======================= WebGPU (navigator.gpu C-port, stub backend) ======================= */
+
+typedef struct whaleui_gpu_adapter whaleui_gpu_adapter_t;
+typedef struct whaleui_gpu_device whaleui_gpu_device_t;
+typedef struct whaleui_gpu_queue whaleui_gpu_queue_t;
+typedef struct whaleui_gpu_buffer whaleui_gpu_buffer_t;
+typedef struct whaleui_gpu_texture whaleui_gpu_texture_t;
+typedef struct whaleui_gpu_canvas_context whaleui_gpu_canvas_context_t;
+
+typedef enum whaleui_gpu_backend {
+    WHALEUI_GPU_BACKEND_NONE = 0,
+    WHALEUI_GPU_BACKEND_SDL_GPU,
+    WHALEUI_GPU_BACKEND_WGPU_NATIVE
+} whaleui_gpu_backend_t;
+
+typedef struct whaleui_gpu_limits {
+    unsigned int max_texture_dimension_2d;
+    unsigned int max_buffer_size;
+} whaleui_gpu_limits_t;
+
+/* environment: which backend the engine was built with / can provide */
+whaleui_gpu_backend_t whaleui_gpu_backend(void);
+int whaleui_gpu_is_supported(void); /* 1 when an adapter can be provided */
+
+/* adapter/device/queue (synchronous C-port of the async WebGPU calls) */
+int whaleui_gpu_request_adapter(whaleui_gpu_adapter_t** out);
+void whaleui_gpu_adapter_destroy(whaleui_gpu_adapter_t* a);
+int whaleui_gpu_adapter_limits(const whaleui_gpu_adapter_t* a, whaleui_gpu_limits_t* out);
+int whaleui_gpu_adapter_request_device(whaleui_gpu_adapter_t* a, whaleui_gpu_device_t** out);
+void whaleui_gpu_device_destroy(whaleui_gpu_device_t* d);
+whaleui_gpu_queue_t* whaleui_gpu_device_queue(whaleui_gpu_device_t* d);
+
+/* buffers/textures (opaque handles; data upload is explicit) */
+whaleui_gpu_buffer_t* whaleui_gpu_device_create_buffer(whaleui_gpu_device_t* d,
+                                                       unsigned long long size, unsigned int usage);
+void whaleui_gpu_buffer_destroy(whaleui_gpu_buffer_t* b);
+int whaleui_gpu_queue_write_buffer(whaleui_gpu_queue_t* q, whaleui_gpu_buffer_t* b,
+                                   unsigned long long offset, const void* data, size_t size);
+whaleui_gpu_texture_t* whaleui_gpu_device_create_texture_2d(whaleui_gpu_device_t* d,
+                                                            unsigned int w, unsigned int h, unsigned int format);
+void whaleui_gpu_texture_destroy(whaleui_gpu_texture_t* t);
+
+/* canvas interop: configure a <canvas> for GPU presentation */
+whaleui_gpu_canvas_context_t* whaleui_gpu_canvas_get_context(whaleui_dom_element_t* el);
+int whaleui_gpu_canvas_configure(whaleui_gpu_canvas_context_t* c, whaleui_gpu_device_t* d,
+                                 unsigned int format, unsigned int alpha_mode);
+void whaleui_gpu_canvas_context_destroy(whaleui_gpu_canvas_context_t* c);
+
 #ifdef __cplusplus
 }
 #endif
