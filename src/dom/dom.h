@@ -12,6 +12,7 @@
 
 #include "whaleui.h"
 
+#include <string>
 #include <vector>
 
 #ifdef __cplusplus
@@ -20,6 +21,10 @@ extern "C" {
 
 struct whaleui_dom_element { char _opaque; };
 struct whaleui_dom_document { char _opaque; };
+struct whaleui_style_declaration {
+    std::vector<std::string> names;
+    std::vector<std::string> values;
+};
 struct lxb_dom_element; /* lexbor element (opaque here) */
 
 /* Record a DOM mutation for the next frame's incremental relayout: the

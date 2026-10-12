@@ -118,6 +118,12 @@ struct whaleui_window
     whaleui_window_event_cb win_event_cb;
     void* win_event_ud;
 
+    /* per-window input callbacks (override app-global when set) */
+    whaleui_key_cb key_cb;
+    void* key_ud;
+    whaleui_select_cb select_cb;
+    void* select_ud;
+
     /* HitTest (borderless drag/resize) */
     void* hit_test_ud;
     int hit_test_active;

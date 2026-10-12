@@ -290,6 +290,10 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->fullscreen = WHALEUI_FULLSCREEN_OFF;
     win->win_event_cb = nullptr;
     win->win_event_ud = nullptr;
+    win->key_cb = nullptr;
+    win->key_ud = nullptr;
+    win->select_cb = nullptr;
+    win->select_ud = nullptr;
     win->hit_test_ud = nullptr;
     win->hit_test_active = 0;
     win->display_refresh = 60;
@@ -911,6 +915,20 @@ extern "C" int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_
     if (!win) return -1;
     win->win_event_cb = cb;
     win->win_event_ud = userdata;
+    return 0;
+}
+extern "C" int whaleui_window_set_key_callback(whaleui_window_t* win, whaleui_key_cb cb, void* userdata)
+{
+    if (!win) return -1;
+    win->key_cb = cb;
+    win->key_ud = userdata;
+    return 0;
+}
+extern "C" int whaleui_window_set_select_callback(whaleui_window_t* win, whaleui_select_cb cb, void* userdata)
+{
+    if (!win) return -1;
+    win->select_cb = cb;
+    win->select_ud = userdata;
     return 0;
 }
 extern "C" int whaleui_window_set_hit_test(whaleui_window_t* win, whaleui_hit_test_fn cb, void* userdata)

@@ -340,6 +340,12 @@ typedef int (*whaleui_window_event_cb)(whaleui_window_t* win,
                                        int a, int b, void* userdata);
 int whaleui_window_set_event_callback(whaleui_window_t* win,
                                       whaleui_window_event_cb cb, void* userdata);
+/* Per-window input overrides (preferred over the app-global callbacks).
+ * When set on a window, that window's callback fires instead of the app one. */
+int whaleui_window_set_key_callback(whaleui_window_t* win, whaleui_key_cb cb,
+                                    void* userdata);
+int whaleui_window_set_select_callback(whaleui_window_t* win, whaleui_select_cb cb,
+                                       void* userdata);
 
 /* --- hit test (borderless drag/resize; mirrors SDL_HitTestResult) --- */
 typedef enum whaleui_hit_test_result {
@@ -538,10 +544,28 @@ const char* whaleui_dom_get_outer_html(whaleui_dom_element_t* el);
 int whaleui_dom_set_value(whaleui_dom_element_t* el, const char* value);
 const char* whaleui_dom_get_value(whaleui_dom_element_t* el);
 
-/* --- inline style (el.style.xxx) --- */
+/* --- inline style (el.style.xxx; CSSStyleDeclaration C-port) --- */
 
 int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* property, const char* value);
 const char* whaleui_dom_get_style(whaleui_dom_element_t* el, const char* property);
+/* setProperty/getPropertyValue/removeProperty mirror CSSStyleDeclaration */
+int whaleui_dom_style_set_property(whaleui_dom_element_t* el, const char* property, const char* value);
+int whaleui_dom_style_get_property(whaleui_dom_element_t* el, const char* property, char* out, size_t cap);
+int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, const char* property);
+/* cssText: whole inline style text ("a: b; c: d") */
+int whaleui_dom_style_get_css_text(whaleui_dom_element_t* el, char* out, size_t cap);
+int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const char* css_text);
+/* length/item: declaration count + property name at index */
+size_t whaleui_dom_style_length(whaleui_dom_element_t* el);
+int whaleui_dom_style_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap);
+
+/* --- computed style (getComputedStyle C-port; snapshot, destroy it) --- */
+typedef struct whaleui_style_declaration whaleui_style_declaration_t;
+whaleui_style_declaration_t* whaleui_dom_get_computed_style(whaleui_dom_element_t* el, const char* pseudo);
+void whaleui_style_declaration_destroy(whaleui_style_declaration_t* decl);
+size_t whaleui_style_declaration_length(const whaleui_style_declaration_t* decl);
+int whaleui_style_declaration_item(const whaleui_style_declaration_t* decl, size_t index, char* out, size_t cap);
+int whaleui_style_declaration_get(const whaleui_style_declaration_t* decl, const char* property, char* out, size_t cap);
 
 /* Tag name (lowercase; "input", "div", ...). */
 const char* whaleui_dom_tag_name(whaleui_dom_element_t* el);

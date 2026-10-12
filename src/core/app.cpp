@@ -190,7 +190,9 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                          "keydown", static_cast<int>(e.key.key),
                          0, 0, 0, 0, 0);
         }
-        if (app->key_cb) {
+        if (w && w->key_cb) {
+            w->key_cb(app, static_cast<int>(e.key.key), 1, w->key_ud);
+        } else if (app->key_cb) {
             app->key_cb(app, static_cast<int>(e.key.key), 1, app->key_ud);
         }
         break;
@@ -204,7 +206,9 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                          "keyup", static_cast<int>(e.key.key),
                          0, 0, 0, 0, 0);
         }
-        if (app->key_cb) {
+        if (w && w->key_cb) {
+            w->key_cb(app, static_cast<int>(e.key.key), 0, w->key_ud);
+        } else if (app->key_cb) {
             app->key_cb(app, static_cast<int>(e.key.key), 0, app->key_ud);
         }
         break;
@@ -419,9 +423,9 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                             const char* val = nullptr;
                             if (whaleui_render_handle_click(
                                     win->render, e.button.x, e.button.y,
-                                    &val) &&
-                                val && app->select_cb) {
-                                app->select_cb(app, val, app->select_ud);
+                                    &val) && val) {
+                                if (win->select_cb) win->select_cb(app, val, win->select_ud);
+                                else if (app->select_cb) app->select_cb(app, val, app->select_ud);
                             }
                             int click_prevented = dom_dispatch(
                                 hit, "click", 0,

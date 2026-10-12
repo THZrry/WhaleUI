@@ -99,6 +99,17 @@ int main(void)
         whaleui_window_destroy(win);
     }
 
+    /* per-window input callbacks override app-global */
+    {
+        whaleui_window_t* win = whaleui_window_create(app, "cb", 100, 100);
+        assert(win != nullptr);
+        assert(whaleui_window_set_key_callback(win, nullptr, nullptr) == 0);
+        assert(whaleui_window_set_select_callback(win, nullptr, nullptr) == 0);
+        assert(whaleui_window_set_key_callback(nullptr, nullptr, nullptr) != 0);
+        assert(whaleui_window_set_select_callback(nullptr, nullptr, nullptr) != 0);
+        whaleui_window_destroy(win);
+    }
+
     /* invalid args */
     {
         assert(whaleui_window_create(nullptr, "t", 10, 10) == nullptr);

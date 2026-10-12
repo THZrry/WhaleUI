@@ -118,6 +118,32 @@ int main(void)
         assert(whaleui_dom_set_style(el, "width", "100px") == 0);
         assert(std::strcmp(whaleui_dom_get_style(el, "width"), "100px") == 0);
 
+        /* CSSStyleDeclaration C-port: set/get/remove/cssText/length/item */
+        assert(whaleui_dom_style_set_property(el, "height", "50px") == 0);
+        char buf[64];
+        assert(whaleui_dom_style_get_property(el, "height", buf, sizeof(buf)) == 0);
+        assert(std::strcmp(buf, "50px") == 0);
+        assert(whaleui_dom_style_length(el) == 2);
+        char name[64];
+        assert(whaleui_dom_style_item(el, 0, name, sizeof(name)) == 0);
+        assert(whaleui_dom_style_remove_property(el, "height") == 0);
+        assert(whaleui_dom_style_get_property(el, "height", buf, sizeof(buf)) != 0);
+        assert(whaleui_dom_style_length(el) == 1);
+        char css[128];
+        assert(whaleui_dom_style_get_css_text(el, css, sizeof(css)) == 0);
+        assert(whaleui_dom_style_set_css_text(el, "color: red; margin: 0") == 0);
+        assert(whaleui_dom_style_length(el) == 2);
+        assert(whaleui_dom_style_set_css_text(nullptr, "x") != 0);
+        assert(whaleui_dom_style_item(el, 99, name, sizeof(name)) != 0);
+        /* computed style snapshot (falls back to inline before layout) */
+        whaleui_style_declaration_t* cs = whaleui_dom_get_computed_style(el, nullptr);
+        assert(cs != nullptr);
+        assert(whaleui_style_declaration_length(cs) >= 1);
+        assert(whaleui_style_declaration_get(cs, "color", buf, sizeof(buf)) == 0);
+        assert(std::strcmp(buf, "red") == 0);
+        whaleui_style_declaration_destroy(cs);
+        whaleui_style_declaration_destroy(nullptr);
+
         /* unknown key -> null */
         assert(whaleui_dom_get_attribute(el, "nope") == nullptr);
         assert(whaleui_dom_get_style(el, "nope") == nullptr);

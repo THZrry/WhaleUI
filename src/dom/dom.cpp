@@ -718,6 +718,203 @@ extern "C" const char* whaleui_dom_get_style(whaleui_dom_element_t* el, const ch
     return cache;
 }
 
+/* parse the inline style attribute into ordered (name, value) pairs */
+static void style_parse_pairs(const char* style, size_t len,
+                              std::vector<std::pair<std::string,std::string>>& out)
+{
+    out.clear();
+    if (!style) return;
+    std::string s(style, len);
+    size_t pos = 0;
+    while (pos < s.size()) {
+        while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == ';' || s[pos] == '\r' || s[pos] == '\n')) ++pos;
+        if (pos >= s.size()) break;
+        size_t colon = s.find(':', pos);
+        if (colon == std::string::npos) break;
+        std::string name = s.substr(pos, colon - pos);
+        size_t ns = 0;
+        while (ns < name.size() && (name[ns] == ' ' || name[ns] == '\t')) ++ns;
+        size_t ne = name.size();
+        while (ne > ns && (name[ne-1] == ' ' || name[ne-1] == '\t')) --ne;
+        name = name.substr(ns, ne - ns);
+        size_t semi = s.find(';', colon + 1);
+        std::string val = s.substr(colon + 1, semi == std::string::npos ? std::string::npos : semi - colon - 1);
+        size_t vs = 0;
+        while (vs < val.size() && (val[vs] == ' ' || val[vs] == '\t' || val[vs] == '\r' || val[vs] == '\n')) ++vs;
+        size_t ve = val.size();
+        while (ve > vs && (val[ve-1] == ' ' || val[ve-1] == '\t' || val[ve-1] == '\r' || val[ve-1] == '\n')) --ve;
+        val = val.substr(vs, ve - vs);
+        if (!name.empty()) out.push_back(std::make_pair(name, val));
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+}
+
+static int style_remove(lxb_dom_element* e, const char* prop)
+{
+    if (!e) return -1;
+    size_t alen = 0;
+    const lxb_char_t* cur = lxb_dom_element_get_attribute(e, (const lxb_char_t*)"style", 5, &alen);
+    if (!cur) return -2;
+    std::vector<std::pair<std::string,std::string>> pairs;
+    style_parse_pairs(reinterpret_cast<const char*>(cur), alen, pairs);
+    std::string out;
+    bool found = false;
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        if (pairs[i].first == prop) { found = true; continue; }
+        if (!out.empty()) out += "; ";
+        out += pairs[i].first + ": " + pairs[i].second;
+    }
+    if (!found) return -2;
+    return lxb_dom_element_set_attribute(e, (const lxb_char_t*)"style", 5,
+        reinterpret_cast<const lxb_char_t*>(out.c_str()), out.size()) ? 0 : -3;
+}
+
+extern "C" int whaleui_dom_style_set_property(whaleui_dom_element_t* el, const char* property, const char* value)
+{
+    return whaleui_dom_set_style(el, property, value);
+}
+
+extern "C" int whaleui_dom_style_get_property(whaleui_dom_element_t* el, const char* property, char* out, size_t cap)
+{
+    if (!el || !property || !out || cap == 0) return -1;
+    const char* v = whaleui_dom_get_style(el, property);
+    if (!v) return -2;
+    size_t n = std::strlen(v);
+    if (n + 1 > cap) return -3;
+    std::memcpy(out, v, n + 1);
+    return 0;
+}
+
+extern "C" int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, const char* property)
+{
+    if (!el || !property) return -1;
+    int rc = style_remove(as_el(el), property);
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(as_el(el));
+        whaleui_dom_mark_vars_dirty();
+    }
+    return rc;
+}
+
+extern "C" int whaleui_dom_style_get_css_text(whaleui_dom_element_t* el, char* out, size_t cap)
+{
+    if (!el || !out || cap == 0) return -1;
+    size_t alen = 0;
+    const lxb_char_t* s = lxb_dom_element_get_attribute(as_el(el), (const lxb_char_t*)"style", 5, &alen);
+    std::string t;
+    if (s && alen) t.assign(reinterpret_cast<const char*>(s), alen);
+    if (t.size() + 1 > cap) return -2;
+    std::memcpy(out, t.c_str(), t.size() + 1);
+    return 0;
+}
+
+extern "C" int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const char* css_text)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !css_text) return -1;
+    int rc = lxb_dom_element_set_attribute(e, (const lxb_char_t*)"style", 5,
+        reinterpret_cast<const lxb_char_t*>(css_text), std::strlen(css_text)) ? 0 : -2;
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+        whaleui_dom_mark_vars_dirty();
+    }
+    return rc;
+}
+
+extern "C" size_t whaleui_dom_style_length(whaleui_dom_element_t* el)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e) return 0;
+    size_t alen = 0;
+    const lxb_char_t* s = lxb_dom_element_get_attribute(e, (const lxb_char_t*)"style", 5, &alen);
+    std::vector<std::pair<std::string,std::string>> pairs;
+    style_parse_pairs(s ? reinterpret_cast<const char*>(s) : nullptr, alen, pairs);
+    return pairs.size();
+}
+
+extern "C" int whaleui_dom_style_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap)
+{
+    if (!el || !out || cap == 0) return -1;
+    lxb_dom_element* e = as_el(el);
+    size_t alen = 0;
+    const lxb_char_t* s = lxb_dom_element_get_attribute(e, (const lxb_char_t*)"style", 5, &alen);
+    std::vector<std::pair<std::string,std::string>> pairs;
+    style_parse_pairs(s ? reinterpret_cast<const char*>(s) : nullptr, alen, pairs);
+    if (index >= pairs.size()) return -2;
+    const std::string& n = pairs[index].first;
+    if (n.size() + 1 > cap) return -3;
+    std::memcpy(out, n.c_str(), n.size() + 1);
+    return 0;
+}
+
+extern "C" whaleui_style_declaration_t* whaleui_dom_get_computed_style(whaleui_dom_element_t* el, const char* pseudo)
+{
+    (void)pseudo;
+    lxb_dom_element* e = as_el(el);
+    if (!e) return nullptr;
+    /* computed style = most recent layout node's style when available,
+     * else inline style pairs. Layout nodes own the cascade result. */
+    whaleui_layout_tree_t* tree = whaleui_render_last_tree();
+    const WhaleUIComputedStyle* src = nullptr;
+    if (tree) {
+        for (size_t i = 0; i < tree->arena.size(); ++i) {
+            if (tree->arena[i].el == e && !tree->arena[i].is_text) { src = &tree->arena[i].style; break; }
+        }
+    }
+    whaleui_style_declaration_t* d = new whaleui_style_declaration_t;
+    if (src) {
+        for (std::map<std::string,std::string>::const_iterator it = src->begin(); it != src->end(); ++it) {
+            d->names.push_back(it->first);
+            d->values.push_back(it->second);
+        }
+    } else {
+        size_t alen = 0;
+        const lxb_char_t* s = lxb_dom_element_get_attribute(e, (const lxb_char_t*)"style", 5, &alen);
+        std::vector<std::pair<std::string,std::string>> pairs;
+        style_parse_pairs(s ? reinterpret_cast<const char*>(s) : nullptr, alen, pairs);
+        for (size_t i = 0; i < pairs.size(); ++i) {
+            d->names.push_back(pairs[i].first);
+            d->values.push_back(pairs[i].second);
+        }
+    }
+    return d;
+}
+
+extern "C" void whaleui_style_declaration_destroy(whaleui_style_declaration_t* decl)
+{
+    delete decl;
+}
+
+extern "C" size_t whaleui_style_declaration_length(const whaleui_style_declaration_t* decl)
+{
+    return decl ? decl->names.size() : 0;
+}
+
+extern "C" int whaleui_style_declaration_item(const whaleui_style_declaration_t* decl, size_t index, char* out, size_t cap)
+{
+    if (!decl || !out || cap == 0) return -1;
+    if (index >= decl->names.size()) return -2;
+    const std::string& n = decl->names[index];
+    if (n.size() + 1 > cap) return -3;
+    std::memcpy(out, n.c_str(), n.size() + 1);
+    return 0;
+}
+
+extern "C" int whaleui_style_declaration_get(const whaleui_style_declaration_t* decl, const char* property, char* out, size_t cap)
+{
+    if (!decl || !property || !out || cap == 0) return -1;
+    for (size_t i = 0; i < decl->names.size(); ++i) {
+        if (decl->names[i] == property) {
+            const std::string& v = decl->values[i];
+            if (v.size() + 1 > cap) return -3;
+            std::memcpy(out, v.c_str(), v.size() + 1);
+            return 0;
+        }
+    }
+    return -2;
+}
+
 extern "C" const char* whaleui_dom_tag_name(whaleui_dom_element_t* el)
 {
     lxb_dom_element* e = as_el(el);
