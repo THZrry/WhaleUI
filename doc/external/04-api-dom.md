@@ -141,12 +141,42 @@ int whaleui_dom_set_value(whaleui_dom_element_t* el, const char* value); /* inpu
 const char* whaleui_dom_get_value(whaleui_dom_element_t* el);            /* 其他元素返回 NULL */
 ```
 
-## 内联样式(对应 el.style.xxx)
+## 内联样式(对应 el.style.xxx / CSSStyleDeclaration)
 
 ```c
 int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* property, const char* value);
 const char* whaleui_dom_get_style(whaleui_dom_element_t* el, const char* property);
+
+/* setProperty / getPropertyValue / removeProperty */
+int whaleui_dom_style_set_property(whaleui_dom_element_t* el, const char* property, const char* value);
+int whaleui_dom_style_get_property(whaleui_dom_element_t* el, const char* property, char* out, size_t cap);
+int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, const char* property);
+
+/* cssText:整段内联样式读写("color: red; margin: 0") */
+int whaleui_dom_style_get_css_text(whaleui_dom_element_t* el, char* out, size_t cap);
+int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const char* css_text);
+
+/* length / item(index):声明个数 + 第 index 个属性名 */
+size_t whaleui_dom_style_length(whaleui_dom_element_t* el);
+int whaleui_dom_style_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap);
 ```
+
+改动内联样式会标记脏并在下一帧重排/重绘;含 `--var` 定义时还会重收变量。
+
+## 计算样式(对应 getComputedStyle,快照语义)
+
+```c
+typedef struct whaleui_style_declaration whaleui_style_declaration_t;
+whaleui_style_declaration_t* whaleui_dom_get_computed_style(whaleui_dom_element_t* el, const char* pseudo);
+void whaleui_style_declaration_destroy(whaleui_style_declaration_t* decl);
+size_t whaleui_style_declaration_length(const whaleui_style_declaration_t* decl);
+int whaleui_style_declaration_item(const whaleui_style_declaration_t* decl, size_t index, char* out, size_t cap);
+int whaleui_style_declaration_get(const whaleui_style_declaration_t* decl, const char* property, char* out, size_t cap);
+```
+
+有布局结果时返回级联后的快照(含 stylesheet + 内联样式),否则回退为内联样式。
+快照与后续 DOM 变更无关,用完必须 `destroy`。`pseudo` 保留(`::before/::after`
+后续支持),当前忽略。
 
 ## 标签名
 

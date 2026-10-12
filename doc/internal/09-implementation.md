@@ -13,7 +13,8 @@
 | 5 | 流程处理 | ✅ 事件循环 + 帧率上限 |
 | 6 | 外围功能(应用/窗口 API) | ✅ |
 | 7 | 样式(系统风格转换) | 🟡 默认样式 + 深浅色;7 套系统风格未逐一转换 |
-| 8 | 测试 | ✅ 10 个测试全部通过 |
+| 8 | 测试 | ✅ 11 个测试全部通过(含新增 test_canvas) |
+| 9 | JS API C-port(窗口/Style/Canvas/WebGPU) | ✅ 窗口 SDL 全量 + HitTest + per-window 回调 + Style 声明式 + Canvas 2D 核心 + WebGPU stub(2026-10-13,de48f1c/2cea474/614740a;外部手册 02/03/04/08,交接清单 more-dom-api.md 已勾选) |
 
 ## 架构修正(相对第二步文档)
 
@@ -85,7 +86,10 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 - **checkbox/radio**:无 label 关联(点击 label 不切换);radio 互斥按 name 属性全文档扫描。
 - **progress/meter**:meter 的颜色区间(optimum/low/high)不区分,统一 accent 填充。
 - **表格**:`table`/`tr`/`td` 默认 block 垂直堆叠,无表格布局(display:table 未实现)。
-- **DOM 事件**:仅目标元素派发(无冒泡/捕获);真实派发覆盖 click/mousedown/mouseup/keydown/keyup;其余类型(mousemove/focus/change/input/submit/load/scroll/resize/wheel/contextmenu 等)可经 `whaleui_dom_dispatch_event` 手动触发,未接入事件循环。
+- **DOM 事件**:三阶段派发(捕获/目标/冒泡);`app.cpp` 真实派发覆盖 click/mousedown/mouseup/keydown/keyup,窗口事件(SHOWN/HIDDEN/RESIZED/MOVED/MINIMIZED/RESTORED/MAXIMIZED/FOCUS/ENTER/LEAVE/CLOSE 可取消)走 per-window 回调;其余类型(mousemove/focus/change/input/submit/load/scroll/resize/wheel/contextmenu 等)可经 `whaleui_dom_dispatch_event` 手动触发,未全接入事件循环。key/select 回调按窗口优先、应用兜底。
+- **窗口**:SDL 全量薄包装已实现(is/min/max/focused,最小/大/还原/置顶,像素尺寸,位置/居中,min/max 约束,边框/可调/置顶/透明度/图标/全屏/grab/焦点/parent-modal/显示器/flash) + `set_hit_test`(无边框默认拖拽/缩放) + per-window `display_refresh`。
+- **Style**:声明式 API 已实现(set/get/removeProperty,cssText,length/item,getComputedStyle 快照)。
+- **Canvas/WebGPU**:`<canvas>` 内在尺寸 300x150 + CPU backing + 2D 核心(fill/stroke/path/transform/ImageData) + paint 合成;WebGPU 最小闭环 stub(Minimal 不可用)。`fillText/drawImage/arc 弧段/贝塞尔` 未实现。
 - **线程模型**:单线程渲染,`whaleui_app_run` 阻塞;多线程/异步流程留待后续。
 - **脏矩形**:动画与滚动走部分重绘(动画只重画动画元素包围盒,滚动只重画露出的 strip);布局树带**子树包围盒**(`bounds`,布局后惰性计算),部分重绘时跳过与脏区不相交的整棵子树(`paint_node` 与选择序号遍历 `sel_seq` 用同一剔除规则,前序序号保持一致;transform/fixed 子树不剔除)。
 - **交互**:已支持 `<select>` 下拉(点击展开、选择、回调)、鼠标点击、`:hover/:active/:focus`、**滚轮滚动**(`overflow:auto/scroll` 的固定高度容器与整页——内容超出视口时 html 根自动可滚动;滚轮滚最近的可滚祖先(跳过继承 overflow 的文本 run),否则滚页面;滚轮刻度按 40px、触控板像素增量原样传递;方向经真实滚轮模拟实测:滚轮向下 → 滚动位置增大(看下方);**限位**:滚动位置夹在 `[0, scroll_max]`——顶部无内容时向上滚不动、底部无内容时向下滚不动;**滚动行为可替换**(`whaleui_render_set_scroll_behavior`:默认按像素增量直接累加并夹取,自定义 hook 可实现基于速度/加速度的平滑滚动——平滑滚动曾以内置 target+逐帧缓动实现但因滚轮输入不可靠而回退,留待后期按正确速度模型重做);滚动不重建布局树,绘制与命中测试在渲染期应用滚动偏移;滚动与拖选仅触发重绘(不重布局);box-shadow 随滚动偏移移动,不会残留在原地;**拖动滚动条**时跳过 hover 更新(避免内容滚动使 hover 变化触发每帧重布局,这是拖动卡顿的主因),布局节点在拖动态缓存(树稳定)免去每次 motion 的全树查找)、**文本选择**(抬起时未拖动(阈值 6px)即清空选择,单击与按下时的手部微动都不会产生选择;跨元素选择基于与绘制完全一致的布局树前序序号(同一可见性/裁剪/滚动规则) O(1) 判定;高亮矩形扩展到行盒外再裹 2px 边距)、**文本编辑**(`input[type=text]`/`textarea`/`contenteditable`:光标闪烁、方向键/Home/End/Backspace/Delete/Enter、Ctrl+A 全选;textarea/contenteditable 的光标与高亮跟随布局文本 run 几何,与字形完全对齐)、**输入法**(焦点进入可编辑元素时 `SDL_StartTextInput`,`SDL_EVENT_TEXT_INPUT` 上屏、`SDL_EVENT_TEXT_EDITING` 组合文本显示在光标处)。剪贴板(Ctrl+C/V)未实现。
@@ -95,7 +99,7 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 - **lite/minimal**:滚动/选择/编辑/IME 与 full 功能一致;文本度量与命中测试在 full 用 `TTF_Text`,lite/minimal 用 stb_truetype 逐字度量(无 kerning/连字,精度近似)。
 - **编辑键简化**:Up/Down 按行首跳转(未保持列位置);未处理 Ctrl 组合除 A 外的快捷键。
 - **主题**:内置 7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效(包括未自定义样式的标签);通过 `whaleui_app_set_theme_style` 或页面 `<select>` 切换。
-- **DOM API 剩余未实现**(声明但尚未实现):事件冒泡/捕获与 mousemove 等类型的真实派发、`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败)、focus/blur 为 DOM 层 no-op(焦点在 render 层)。完整迁移蓝图见 `11-ecs.md`。
+- **DOM API 剩余未实现**:选择器全量透传(`> + ~ [attr] :pseudo`,当前仅 tag#id.class 子集)、mousemove 等类型的真实派发全接入、`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败)、focus/blur 为 DOM 层 no-op(焦点在 render 层)。完整迁移蓝图见 `11-ecs.md`。
 
 ## 运行方式
 

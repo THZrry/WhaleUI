@@ -3,6 +3,11 @@
 > 读者:下一个实现 Agent(第三步续作)。本文档列出 `include/whaleui.h` 中**已文档化但尚未实现**的公开 API。
 > **签名已在 whaleui.h 冻结,不要改签名**——实现前先通读 `09-implementation.md`(架构修正、事件循环、已知限制)与对应模块源码。
 > 已完成部分直接照旧;每实现一个 API,把下方清单的 `[ ]` 勾掉并跑对应测试。
+>
+> 2026-10-13 更新:§10 窗口扩展已全部实现并合入(de48f1c:SDL 全量薄包装 +
+> HitTest + per-window 事件回调 + 多窗口路由修复;2cea474:per-window key/select
+> 回调 + 窗口事件分发);Style 声明式 API 已实现(2cea474);Canvas 2D 核心 +
+> WebGPU stub 已实现(614740a)。下方 §10 全部勾选,§6/§9 部分更新,剩余见各节标注。
 
 ## 通用约定(与 whaleui.h 顶部一致)
 
@@ -206,34 +211,40 @@ float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 - `prevent_default` 的实际效果:先实现 `click`(阻止 select 展开)与 `keydown`(阻止编辑框处理)即可,其余类型 prevent 无默认行为可略。
 - **测试**:注册/移除(重复注册 no-op 成功;移除后不触发);`dispatch_event` 手动派发 click 收到回调且 target/type 正确;mouse 字段填充正确;prevent_default 后 `default_prevented` 为 1。事件触发的集成测试放 `test_render`(需要窗口+事件循环,参照现有交互测试)。
 
-## 10. 窗口扩展
+## 10. 窗口扩展 ✅ 已全部实现(de48f1c + 2cea474)
 
 JS 无对应(平台能力),全部是 SDL3 薄包装,实现于 `src/core/window.cpp`。现有缓存字段 `title/width/height/visible` 与 SDL 查询**以 SDL 为准**:原生窗口已创建(`win->sdl != NULL`)时 getter 优先查 SDL,未创建时用缓存。
 
-| whaleui API | SDL 函数(3.x) | 备注 |
+| whaleui API | SDL 函数(3.x) | 状态 |
 |---|---|---|
-| `is_visible` | `SDL_IsWindowVisible` | 未创建时返回缓存 |
-| `is_minimized / is_maximized / is_focused` | `SDL_IsWindowMinimized / Maximized / Focused` | |
-| `minimize / maximize / restore / raise` | `SDL_MinimizeWindow / MaximizeWindow / RestoreWindow / RaiseWindow` | |
-| `get_size_in_pixels` | `SDL_GetWindowSizeInPixels` | 未创建时=缓存尺寸 |
-| `set/get_position` | `SDL_SetWindowPosition / SDL_GetWindowPosition` | 屏幕坐标 |
-| `center` | `SDL_GetDisplayBounds(SDL_GetWindowDisplayIndex)` | 未创建时先按主显示器/0 号显示器算 |
-| `set/get_min_size`、`set/get_max_size` | `SDL_SetWindowMinimumSize / GetWindowMinimumSize` 等 | 0 = 不限制 |
-| `set_bordered` | `SDL_SetWindowBordered` | |
-| `set_resizable` | `SDL_SetWindowResizable` | |
-| `set_always_on_top` | `SDL_SetWindowAlwaysOnTop` | |
-| `set/get_opacity` | `SDL_SetWindowOpacity / SDL_GetWindowOpacity` | 默认 1.0 |
-| `set_icon` | `SDL_CreateSurfaceFrom(rgba, w, h, 4, w*4)` → `SDL_SetWindowIcon` → `SDL_DestroySurface` | 数据由库拷贝(surface 创建即拷贝) |
-| `set_icon_uri` | full: `IMG_Load`(读 VFS 数据);lite: stb_image;minimal: 返回失败 | 复用 `fs` 读整文件再解码 |
-| `set/get_fullscreen` | `SDL_SetWindowFullscreen(DESKTOP→SDL_WINDOW_FULLSCREEN_DESKTOP, REAL→SDL_WINDOW_FULLSCREEN, OFF→0)` | getter:`SDL_GetWindowFlags` 判 `SDL_WINDOW_FULLSCREEN*` |
-| `set/get_mouse_grab`、`set/get_keyboard_grab` | `SDL_SetWindowMouseGrab / GetWindowMouseGrab` 等 | |
-| `set_mouse_position` | `SDL_SetWindowMousePosition` | |
-| `set_focusable` | `SDL_SetWindowFocusable` | |
-| `set_parent` | `SDL_SetWindowParent` | 平台不支持时返回失败 |
-| `set_modal` | `SDL_SetWindowModalFor` | 平台不支持时返回失败 |
-| `display_id` | `SDL_GetWindowDisplayIndex` | -1 失败 |
-| `display_scale` | `SDL_GetWindowDisplayScale` | 失败返回 1.0 |
-| `flash` | `SDL_FlashWindow`(`BRIEFLY→SDL_FLASH_BRIEFLY`, `UNTIL_FOCUSED→SDL_FLASH_UNTIL_FOCUSED`, `CANCEL→SDL_FLASH_CANCEL`) | |
+| `is_visible` | `SDL_GetWindowFlags & HIDDEN` | ✅ |
+| `is_minimized / is_maximized / is_focused` | `SDL_GetWindowFlags` | ✅ |
+| `minimize / maximize / restore / raise` | `SDL_Minimize/Maximize/Restore/RaiseWindow` | ✅ |
+| `get_size_in_pixels` | `SDL_GetWindowSizeInPixels` | ✅ |
+| `set/get_position` | `SDL_Set/GetWindowPosition` | ✅ |
+| `center` | `SDL_GetDisplayBounds + primary fallback` | ✅ |
+| `set/get_min_size`、`set/get_max_size` | `SDL_Set/GetWindowMinimum/MaximumSize` | ✅ |
+| `set_bordered` | `SDL_SetWindowBordered`(+无边框默认 HitTest) | ✅ |
+| `set_resizable` | `SDL_SetWindowResizable`(+创建标志) | ✅ |
+| `set_always_on_top` | `SDL_SetWindowAlwaysOnTop`(+创建标志) | ✅ |
+| `set/get_opacity` | `SDL_Set/GetWindowOpacity` | ✅ |
+| `set_icon` | `SDL_CreateSurfaceFrom + SetWindowIcon` | ✅ |
+| `set_icon_uri` | VFS 读文件;Full 走 SDL_image 路径,lite/minimal 走 stb,minimal 图标 uri 失败干净 | ✅ |
+| `set/get_fullscreen` | `SDL_SetWindowFullscreen(bool)` + flags 判 | ✅(DESKTOP/REAL 均走 fullscreen=true,SDL3 无 exclusive 区分) |
+| `set/get_mouse_grab`、`set/get_keyboard_grab` | `SDL_Set/GetWindowMouse/KeyboardGrab` | ✅ |
+| `set_mouse_position` | `SDL_WarpMouseInWindow`(SDL3 无 SetWindowMousePosition) | ✅ |
+| `set_focusable` | `SDL_SetWindowFocusable`(+创建标志 NOT_FOCUSABLE) | ✅ |
+| `set_parent` | `SDL_SetWindowParent` | ✅ |
+| `set_modal` | `SDL_SetWindowModal + SetWindowParent` | ✅ |
+| `display_id` | `SDL_GetDisplayForWindow` | ✅ |
+| `display_scale` | `SDL_GetWindowDisplayScale` | ✅ |
+| `flash` | `SDL_FlashWindow` | ✅ |
+| `set_hit_test`(新增) | `SDL_SetWindowHitTest` | ✅(默认无边框实现见下) |
+
+差异记录:SDL3 的 `SDL_SetWindowFullscreen` 只有 bool(无 DESKTOP/REAL 区分),
+`set_mouse_position` 对应 `SDL_WarpMouseInWindow`;`set_modal` 需配合
+`SetWindowParent`。`set_icon_uri` 的 Full 路径当前经 VFS + stb 回退,SDL_image
+直解为后续优化项,不影响契约。
 
 ### 窗口事件回调
 
@@ -243,26 +254,35 @@ typedef int (*whaleui_window_event_cb)(whaleui_window_t* win, whaleui_window_eve
 int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_event_cb cb, void* userdata);
 ```
 
-- 窗口结构加 `win_event_cb / win_event_ud` 字段;`app.cpp` 事件循环加 `SDL_EVENT_WINDOW_*` 分发分支,映射:
-  - `SDL_EVENT_WINDOW_CLOSE_REQUESTED → CLOSE`(**行为变更**:现在该分支直接 `running=0` 并隐藏窗口;改为先调回调,回调返回 0 才执行原默认关闭逻辑,非 0 取消)
-  - `RESIZED → RESIZED(a=w,b=h)`(在现有 `SDL_EVENT_WINDOW_RESIZED` 分支内加)
-  - `MOVED → MOVED(a=x,b=y)`、`SHOWN/HIDDEN → SHOWN/HIDDEN`、`MINIMIZED → MINIMIZED`、`RESTORED → RESTORED`、`MAXIMIZED → MAXIMIZED`、`FOCUS_GAINED/FOCUS_LOST → FOCUS_GAINED/FOCUS_LOST`、`MOUSE_ENTER/MOUSE_LEAVE → MOUSE_ENTER/MOUSE_LEAVE`
-  - SDL 事件名以 SDL3 头文件为准(3.x 已统一为 `SDL_EVENT_WINDOW_*`)。
+- ✅ 窗口结构已加 `win_event_cb / win_event_ud` + `key_cb/ud` + `select_cb/ud` 字段;`app.cpp` 事件循环已加分发:
+  - `CLOSE_REQUESTED → CLOSE`(先调回调,非 0 取消默认关闭)✅
+  - `RESIZED/MOVED/SHOWN/HIDDEN/MINIMIZED/RESTORED/MAXIMIZED/FOCUS_GAINED/FOCUS_LOST/MOUSE_ENTER/MOUSE_LEAVE` ✅
+  - key/select 按窗口优先、应用兜底 ✅
+  - `app_resize_watch` 按 WindowID 路由 ✅,per-window `display_refresh` ✅
 - 回调返回非 0 仅对 `CLOSE` 有意义(取消默认关闭),其余事件忽略返回值。
-- 测试:`set_event_callback` 后模拟(直接调内部分发函数,或真实 resize)断言收到事件与参数;CLOSE 返回非 0 时窗口不关。
+- 测试:`tests/test_window.cpp` 已覆盖 setter 契约 + headless 缓存路径;CLOSE 取消的集成路径已在 `process_event` 实现。
+
+### HitTest(新增,无边框窗口)
+
+- `whaleui_window_set_hit_test` + 默认实现(8px 边缘缩放 + 顶部 32px 拖拽);
+  `set_bordered(0)` 自动安装默认、`set_bordered(1)` 自动拆除默认(自定义不动)。
+- 测试:`test_window` 覆盖 setter;手动验收待补(无边框拖拽需真窗口)。
 
 ---
 
 ## 优先级
 
-| 优先级 | 内容 | 理由 |
+| 优先级 | 内容 | 状态 |
 |---|---|---|
-| P0 | §2 查询、§3 遍历、§4 节点操作、§6 属性/classList、§5 title/body/head | 纯 lexbor 包装,工作量小、覆盖 JS 高频用法,先行落地 |
-| P0 | §10 窗口扩展(不含事件回调) | SDL 薄包装,立即补齐窗口能力 |
-| P1 | §7 innerHTML/value、§8 focus | 需要处理重布局/重绘联动,中等 |
-| P1 | §10 窗口事件回调 | 触及现有 CLOSE 行为,改动事件循环 |
-| P2 | §9 事件系统 | 最大块,依赖 P0 的查询(hit-test 复用)与 focus;建议独立提交 |
-| P2 | §8 getBoundingClientRect | 依赖布局树查询接口,需与 render/layout 协商 |
+| P0 | §2 查询、§3 遍历、§4 节点操作、§6 属性/classList、§5 title/body/head | ✅ 基线已实现;选择器全量透传待做 |
+| P0 | §10 窗口扩展(不含事件回调) | ✅ de48f1c |
+| P0 | Style 声明式(cssText/getComputedStyle) | ✅ 2cea474 |
+| P1 | §7 innerHTML/value、§8 focus | ✅ 基线已实现 |
+| P1 | §10 窗口事件回调 + HitTest | ✅ de48f1c + 2cea474 |
+| P1 | Canvas 2D 核心 + WebGPU stub | ✅ 614740a |
+| P2 | §9 事件系统剩余(mousemove/enter/leave/wheel/focus/blur/input/change/scroll 全接入) | ⬜ 待做 |
+| P2 | §8 getBoundingClientRect | ✅ 基线已实现(依赖最近布局) |
+| P2 | 选择器全量透传(`> + ~ [attr] :pseudo`) | ⬜ 下一轮 |
 
 ## 提交建议
 

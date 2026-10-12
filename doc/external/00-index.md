@@ -46,12 +46,13 @@ int main(void) {
 
 | 文档 | 内容 |
 |------|------|
-| [02-api-app.md](02-api-app.md) | 应用 API:`whaleui_app_*`(生命周期 / 主题 / 渲染选项 / 构建变体) |
-| [03-api-window.md](03-api-window.md) | 窗口 API:`whaleui_window_*`(创建 / 几何 / 外观 / 全屏 / 事件回调 / 内容加载) |
-| [04-api-dom.md](04-api-dom.md) | DOM API:`whaleui_dom_*`(解析 / 查询 / 遍历 / 修改 / 属性 / 事件 / 几何) |
+| [02-api-app.md](02-api-app.md) | 应用 API:`whaleui_app_*`(生命周期 / 主题 / 渲染选项 / 输入回调归属 / 构建变体) |
+| [03-api-window.md](03-api-window.md) | 窗口 API:`whaleui_window_*`(创建 / 几何 / 外观 / 全屏 / 事件回调 / HitTest / 按窗口回调 / 内容加载) |
+| [04-api-dom.md](04-api-dom.md) | DOM API:`whaleui_dom_*`(解析 / 查询 / 遍历 / 修改 / 属性 / 样式声明式 / 计算样式 / 事件 / 几何) |
 | [05-api-css.md](05-api-css.md) | CSS API:`whaleui_css_*`(解析 / 加载 / 应用) |
 | [06-api-fs.md](06-api-fs.md) | 虚拟文件系统:`whaleui_fs_*`(loader 替换 / URI 约定) |
 | [07-api-font.md](07-api-font.md) | 字体 API:`whaleui_font_*`(注册 / 默认字体 / 系统兜底) |
+| [08-api-canvas-webgpu.md](08-api-canvas-webgpu.md) | Canvas/WebGPU:`whaleui_canvas_*` / `whaleui_gpu_*`(2D 上下文 / ImageData / adapter-device-queue 最小闭环) |
 
 ## 标准支持情况
 

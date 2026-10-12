@@ -2,7 +2,7 @@
 
 窗口是应用内的显示单元,承载一个文档。原生窗口在首次 `show()` 时惰性创建;在此之前 title/size 等由库缓存,创建时应用。
 
-> 本文档与 `include/whaleui.h` 一致。未实现部分见 `../internal/more-dom-api.md` 交接清单。
+> 本文档与 `include/whaleui.h` 一致。窗口扩展已全部实现,无剩余未实现项。
 
 ## 创建与销毁
 
@@ -147,6 +147,47 @@ typedef int (*whaleui_window_event_cb)(whaleui_window_t* win,
 int whaleui_window_set_event_callback(whaleui_window_t* win,
                                       whaleui_window_event_cb cb, void* userdata);
 ```
+
+事件在工作线程派发,回调内不要阻塞。`CLOSE` 返回非 0 即取消默认关闭(窗口保持可见);
+其余事件的返回值被忽略。`RESIZED` 在合并节流(80ms)之前派发,拖拽中会收到多次。
+
+## 按窗口输入回调(优先于应用全局回调)
+
+```c
+int whaleui_window_set_key_callback(whaleui_window_t* win, whaleui_key_cb cb,
+                                    void* userdata);
+int whaleui_window_set_select_callback(whaleui_window_t* win, whaleui_select_cb cb,
+                                       void* userdata);
+```
+
+窗口上设置后,该窗口的按键/下拉选择走窗口回调,不再走 `whaleui_app_set_key_callback` /
+`whaleui_app_set_select_callback` 的应用全局回调;未设置的窗口继续走全局回调。
+这是多窗口不串扰的关键:全局回调只做兜底。
+
+## 无边框 HitTest(拖拽与缩放)
+
+```c
+typedef enum whaleui_hit_test_result {
+    WHALEUI_HITTEST_NORMAL = 0,
+    WHALEUI_HITTEST_DRAGGABLE = 1,
+    WHALEUI_HITTEST_RESIZE_TOPLEFT = 2,
+    WHALEUI_HITTEST_RESIZE_TOP = 3,
+    WHALEUI_HITTEST_RESIZE_TOPRIGHT = 4,
+    WHALEUI_HITTEST_RESIZE_RIGHT = 5,
+    WHALEUI_HITTEST_RESIZE_BOTTOMRIGHT = 6,
+    WHALEUI_HITTEST_RESIZE_BOTTOM = 7,
+    WHALEUI_HITTEST_RESIZE_BOTTOMLEFT = 8,
+    WHALEUI_HITTEST_RESIZE_LEFT = 9
+} whaleui_hit_test_result_t;
+typedef whaleui_hit_test_result_t (*whaleui_hit_test_fn)(whaleui_window_t* win,
+                                                          int x, int y, void* userdata);
+int whaleui_window_set_hit_test(whaleui_window_t* win, whaleui_hit_test_fn cb,
+                                void* userdata);
+```
+
+`SDL_SetWindowHitTest` 的薄包装。`set_bordered(win, 0)` 且未设置自定义 HitTest 时,
+库自动安装默认实现(8px 边缘八向缩放 + 顶部 32px 标题拖拽);恢复边框时自动拆除
+默认实现(自定义的不动)。`cb` 传 NULL 即拆除。坐标为窗口客户区逻辑像素。
 
 ## 内容加载
 

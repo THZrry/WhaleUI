@@ -40,6 +40,25 @@ int whaleui_app_set_render_option(whaleui_app_t* app,
                                   whaleui_render_option_t opt, int value);
 ```
 
+## 输入回调(应用全局,窗口可覆盖)
+
+```c
+typedef void (*whaleui_select_cb)(whaleui_app_t* app, const char* value,
+                                  void* userdata);
+int whaleui_app_set_select_callback(whaleui_app_t* app, whaleui_select_cb cb,
+                                    void* userdata);
+
+typedef void (*whaleui_key_cb)(whaleui_app_t* app, int keycode, int pressed,
+                               void* userdata);
+int whaleui_app_set_key_callback(whaleui_app_t* app, whaleui_key_cb cb,
+                                 void* userdata);
+```
+
+归属规则:事件先按 `SDL_WindowID` 路由到所属窗口;该窗口若设置了
+`whaleui_window_set_key_callback` / `whaleui_window_set_select_callback`,
+走窗口回调,否则回退到这里的应用全局回调。多窗口下全局回调只是兜底,
+不要在全局回调里假设事件来自哪个窗口。
+
 ## 构建变体
 
 ```c
