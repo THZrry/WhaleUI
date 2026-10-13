@@ -6,6 +6,7 @@
 #include "core/window.h"
 #include "core/app.h"
 #include "dom/dom.h"
+#include "dom/events.h"
 #include "fs/fs.h"
 #include "render/render.h"
 #include "style/style.h"
@@ -555,6 +556,12 @@ static int window_load_html_len(whaleui_window_t* win, const char* html,
     /* no JS engine: add .in to reveal elements so their content shows */
     window_reveal_apply(win->document);
     window_reload_css(win);
+    /* DOM load event on the document root (document-level listeners sit
+     * here; the browser fires it after the document parses). */
+    WUI_DOM_FIRE(
+        reinterpret_cast<whaleui_dom_element_t*>(
+            whaleui_dom_document_element(win->document)),
+        "load", 0, 0, 0, 0, 0, 0);
     return 0;
 }
 

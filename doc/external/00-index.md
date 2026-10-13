@@ -2,6 +2,8 @@
 
 > 本目录是 **面向 WhaleUI 使用者的调用文档**:API 手册、标准支持情况与用例。
 > 内部实现细节(架构、实现状态、ECS、交接清单)见 [`doc/internal/`](../internal/)。
+> **C++ 使用者直接 `#include "whaleui.hpp"`**(namespace `whaleui`,类接口 App/Window/Document/Element/Event/ComputedStyle);
+> 本文档手册按 C API(`whaleui_*`)书写,C++ 为其 1:1 薄封装,语义与所有权规则一致。
 
 ## 快速上手(综合用例)
 
@@ -25,7 +27,7 @@ int main(void) {
         "</body></html>");
     whaleui_window_show(win);
 
-    /* 事件监听(目标元素派发);doc 经 userdata 传入 */
+    /* 事件监听(DOM 三阶段:捕获/目标/冒泡);doc 经 userdata 传入 */
     whaleui_dom_document_t* doc = whaleui_window_get_document(win);
     whaleui_dom_element_t* btn = whaleui_dom_get_element_by_id(doc, "btn");
     whaleui_dom_add_event_listener(btn, "click", [](whaleui_dom_event_t* ev, void* ud) {

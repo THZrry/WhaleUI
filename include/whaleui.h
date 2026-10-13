@@ -27,11 +27,13 @@
  *   document invalidates every handle under it.
  *
  * Implementation status:
- *   The core (app/window/theme/render/fs/font + basic DOM/CSS) is
- *   implemented. The DOM extensions (query/traversal/mutation/event/geometry)
- *   and window extensions declared below are DOCUMENTED but not yet
- *   implemented unless marked otherwise - see doc/more-dom-api.md for the
- *   hand-off checklist. Their signatures are final; do not change them
+ *   The core (app/window/theme/render/fs/font + DOM/CSS) is implemented,
+ *   including the DOM extensions (query/traversal/mutation/event/geometry,
+ *   CSSStyleDeclaration + getComputedStyle), the full window extension set
+ *   with HitTest, Canvas 2D and the WebGPU stub backend. C++ users take
+ *   whaleui.hpp (namespace whaleui), the C++ API this C surface is the
+ *   export layer of; see doc/internal/more-dom-api.md for the hand-off
+ *   checklist of remaining gaps. Signatures are final; do not change them
  *   without updating that document.
  *
  * Virtual file system note:
@@ -601,11 +603,21 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
  *
  * Dispatch model: the DOM three-phase model - capture down the ancestor
  * chain (capture listeners), target (capture, then bubble listeners),
- * bubble back up (bubble listeners). stopPropagation() halts the walk;
- * preventDefault() cancels the engine's default behavior for the event
- * (select toggle, checkbox flip, details expand, focus move). The callback
+ * bubble back up (bubble listeners). mouseenter/mouseleave/focus/blur are
+ * non-bubbling (capture + target only), as in the browser.
+ * stopPropagation() halts the walk; preventDefault() cancels the engine's
+ * default behavior for the event (mousedown cancels the press chain,
+ * keydown cancels editing keys, wheel cancels the scroll). The callback
  * receives a transient event object valid for the duration of the call
- * only. */
+ * only.
+ *
+ * Engine wiring: all types above except submit are dispatched by the event
+ * loop (mousemove/enter/leave from hover changes, wheel with preventDefault
+ * gating the scroll, focus/blur on element focus moves, input/change on
+ * edit commits and control toggles, scroll on actual scrolls, load after
+ * document loads, resize on window resizes, dblclick/contextmenu from the
+ * mouse buttons). submit has no form-submit behavior yet (dispatchable
+ * manually). */
 
 typedef struct whaleui_dom_event whaleui_dom_event_t;
 

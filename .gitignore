@@ -7,6 +7,7 @@ build/
 # agent tooling metadata
 .reasonix/
 reasonix.toml
+.zcode/
 
 # IDE / OS
 .vscode/

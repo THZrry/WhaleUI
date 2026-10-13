@@ -11,6 +11,7 @@
 #include "render/gpu.h"
 #include "animate/animate.h"
 #include "dom/dom.h"
+#include "dom/events.h"
 #include "font/font.h"
 #include "style/style.h"
 
@@ -1671,7 +1672,27 @@ void edit_replace(whaleui_render_t* r, lxb_dom_element* el, size_t a, size_t b,
     r->nav_col = -1; /* the text changed: the remembered column is stale */
     r->has_dirty = 1;
     r->edit_scroll_need = 1;
+    /* DOM input event on every actual value change (bubbles, like the
+     * browser); arms the `change` dirty flag (commit on focus-out / Enter). */
+    if (nv != val) {
+        r->edit_changed_el = el;
+        WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(el),
+                     "input", 0, 0, 0, 0, 0, 0);
+    }
     edit_ensure_visible(r);
+}
+
+/* DOM change-event commit: the browser fires `change` when an edited value
+ * leaves the control (focus-out, Enter on single-line inputs). Dispatch on
+ * the element that armed the flag, if any. */
+static void commit_change(whaleui_render_t* r)
+{
+    if (r->edit_changed_el) {
+        lxb_dom_element* e = r->edit_changed_el;
+        r->edit_changed_el = nullptr;
+        WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(e),
+                     "change", 0, 0, 0, 0, 0, 0);
+    }
 }
 
 /* Ctrl-Z: apply the last edit in reverse and move the caret to the start
@@ -2275,6 +2296,15 @@ static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
             el, (const lxb_char_t*)"disabled", 8)) {
         return; /* disabled controls never take the edit focus */
     }
+    /* moving the edit focus commits any pending change on the previous
+     * control (the browser fires `change` when the edited field loses
+     * focus). */
+    if (r->edit_el && r->edit_el != el && r->edit_changed_el == r->edit_el) {
+        commit_change(r);
+    }
+    if (r->edit_el != el) {
+        r->edit_changed_el = nullptr; /* fresh control: no change armed yet */
+    }
     r->edit_el = el;
     r->sel_anchor_el = r->sel_focus_el = el;
     std::string vv = edit_value(el);
@@ -2481,7 +2511,11 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
         break;
     case WHALEUI_KEY_ENTER:
         /* multi-line editable inserts a newline; single-line inputs ignore
-         * Enter (no form to submit in this engine) */
+         * Enter (no form to submit in this engine) but commit the edit:
+         * the browser fires `change` on Enter for text inputs */
+        if (is_single_line_input_el(el) && r->edit_changed_el == el) {
+            commit_change(r);
+        }
         if (!is_single_line_input_el(el) && is_editable(el)) {
             edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "\n");
         }
@@ -3002,6 +3036,10 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             y >= list_y && y < list_y + kSelectItemH * static_cast<int>(values.size())) {
             int idx = (y - list_y) / kSelectItemH;
             if (idx >= 0 && idx < static_cast<int>(values.size())) {
+                /* capture the index BEFORE the pick overwrites it: the
+                 * input/change dispatch below compares old vs new (the
+                 * browser fires nothing when re-picking the same option) */
+                const int old_idx = select_current_index(r, s->el, texts);
                 r->select_index[r->open_select] = idx;
                 /* write the pick back into the DOM (`selected` on the
                  * option): the DOM is the source of truth for the value -
@@ -3040,6 +3078,19 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
                  * serving the old option's glyphs ("select shows the
                  * previous value"). */
                 r->el_ver[r->open_select] = ++r->el_ver_seq;
+                /* DOM contract: picking a DIFFERENT option fires input then
+                 * change on the select (re-picking the same option fires
+                 * nothing). */
+                if (old_idx != idx) {
+                    WUI_DOM_FIRE(
+                        reinterpret_cast<whaleui_dom_element_t*>(
+                            s->el),
+                        "input", 0, 0, 0, 0, 0, 0);
+                    WUI_DOM_FIRE(
+                        reinterpret_cast<whaleui_dom_element_t*>(
+                            s->el),
+                        "change", 0, 0, 0, 0, 0, 0);
+                }
                 r->open_select = nullptr;
                 r->open_select_t = 0;
                 /* no relayout: opening/closing/picking changes NO style or
@@ -3228,6 +3279,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             hit2, (const lxb_char_t*)"checked", 7);
         bool r0 = whaleui_input_kind(hit2) == 2 &&
                   is_radio_type(hit2);
+        bool flipped = false;
         if (was_checked) {
             /* a checked radio does NOT un-toggle on a second click (browser
              * behavior: it only switches to another radio in the group). A
@@ -3235,6 +3287,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             if (!r0) {
                 lxb_dom_element_remove_attribute(
                     hit2, (const lxb_char_t*)"checked", 7);
+                flipped = true;
             }
         } else {
             lxb_dom_element_set_attribute(hit2, (const lxb_char_t*)"checked", 7,
@@ -3242,6 +3295,7 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
             if (r0) {
                 radio_uncheck_peers(hit2);
             }
+            flipped = true;
         }
         /* NO whole-tree rebuild: flipping `checked` is a style-only DOM
          * edit in the common case (the UA :checked rules only recolor;
@@ -3253,6 +3307,16 @@ extern "C" int whaleui_render_handle_click(whaleui_render_t* r, int x, int y,
          * through whaleui_dom_mark_dirty - they bypass the public API). */
         whaleui_dom_mark_dirty(hit2);
         r->hover_recheck = 1;
+        /* DOM input/change on an actual checkedness flip (the browser fires
+         * input then change as the activation behavior; the ordering
+         * compromise here matches handle_click's existing click-after-
+         * default-behavior choice - listeners observe the toggled state). */
+        if (flipped) {
+            WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(hit2),
+                         "input", 0, 0, 0, 0, 0, 0);
+            WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(hit2),
+                         "change", 0, 0, 0, 0, 0, 0);
+        }
     }
     return 0;
 }
@@ -3272,6 +3336,15 @@ extern "C" void whaleui_render_clear_hover(whaleui_render_t* r)
     r->mouse_has = 0;
     if (!r->hover_el) {
         return;
+    }
+    /* DOM mouseleave on the element losing the pointer (browser: leaving the
+     * window fires mouseleave/mouseout on the hovered chain; the position is
+     * the last one seen). Non-bubbling, like the browser's enter/leave. */
+    {
+        int lx = static_cast<int>(r->mouse_wx);
+        int ly = static_cast<int>(r->mouse_wy);
+        WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(r->hover_el),
+                        "mouseleave", 0, lx, ly, 0, 0, 0);
     }
     if (r->has_interact_rules && r->rule_count > 0) {
         if (r->hover_old_el) {
@@ -3420,6 +3493,7 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
     lxb_dom_element* el = hit ? hit->el : nullptr;
     if (el != r->hover_el) {
+        lxb_dom_element* was = r->hover_el;
         if (r->has_interact_rules && r->rule_count > 0) {
             /* the mouse crossed more than one element since the last
              * frame: every previous target must lose its :hover styles,
@@ -3443,6 +3517,25 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         if (r->has_interact_rules && r->rule_count > 0) {
             r->state_pending = 1;
         }
+        /* DOM mouse events on a target change: mouseleave fires on the old
+         * element, mouseenter on the new (both non-bubbling, like the
+         * browser). */
+        if (was) {
+            WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(was),
+                            "mouseleave", 0, x, y, 0, 0, 0);
+        }
+        if (el) {
+            WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
+                            "mouseenter", 0, x, y, 0, 0, 0);
+        }
+    }
+    /* mousemove fires on the element under the pointer every frame the
+     * worker applies a coalesced motion position (target may be NULL: no
+     * element, no dispatch - the browser sends pointer moves to the window
+     * instead, which is the WHALEUI_WINDOW_EVENT path). */
+    if (el) {
+        WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(el),
+                     "mousemove", 0, x, y, 0, 0, 0);
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a
@@ -3612,7 +3705,20 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             r->drag_scroll_node = sc; /* valid until the next rebuild */
             update_drag_scroll(r, y);
             r->pressed_el = el;
-            r->focus_el = el;
+            if (el && el != old_focus) {
+                /* focus moved: blur the old element, focus the new one
+                 * (both non-bubbling, like the browser) */
+                if (old_focus) {
+                    WUI_DOM_FIRE_NB(
+                        reinterpret_cast<whaleui_dom_element_t*>(old_focus),
+                        "blur", 0, x, y, 0, 0, 0);
+                }
+                r->focus_el = el;
+                WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
+                                "focus", 0, x, y, 0, 0, 0);
+            } else {
+                r->focus_el = el;
+            }
             r->has_dirty = 1;
             return;
         }
@@ -3641,6 +3747,11 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
                 el, (const lxb_char_t*)"disabled", 8)) {
             /* focus the editable control and place the caret / word / line */
             if (r->edit_el != el) {
+                /* moving edit focus: commit a pending change on the old one */
+                if (r->edit_el && r->edit_changed_el == r->edit_el) {
+                    commit_change(r);
+                }
+                r->edit_changed_el = nullptr;
                 r->caret_phase_painted = -1; /* new focus: repaint */
             }
             r->edit_el = el;
@@ -3678,6 +3789,9 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         } else if (hit && hit->is_text) {
             /* anchor a potential selection (only drags extend it) */
             if (r->edit_el) {
+                if (r->edit_changed_el == r->edit_el) {
+                    commit_change(r);
+                }
                 if (r->window) {
                     SDL_Window* ww = r->window;
                     whaleui_sdl_on_main(
@@ -3710,6 +3824,10 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         } else {
             /* click elsewhere: drop the selection + editing focus */
             if (r->edit_el) {
+                /* the edited control loses focus: commit its pending change */
+                if (r->edit_changed_el == r->edit_el) {
+                    commit_change(r);
+                }
                 if (r->window) {
                     SDL_Window* ww = r->window;
                     whaleui_sdl_on_main(
@@ -3725,6 +3843,19 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         }
         r->pressed_el = el;
         r->focus_el = el;
+        /* DOM focus/blur on a focus change (both non-bubbling): blur the
+         * element losing the engine focus, focus the new one. */
+        if (el != old_focus) {
+            if (old_focus) {
+                WUI_DOM_FIRE_NB(
+                    reinterpret_cast<whaleui_dom_element_t*>(old_focus),
+                    "blur", 0, x, y, 0, 0, 0);
+            }
+            if (el) {
+                WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
+                                "focus", 0, x, y, 0, 0, 0);
+            }
+        }
     } else {
         /* mouse up: a selection survives only when it was actually dragged
          * (or started as a double/triple click). A plain click (press+
@@ -3861,6 +3992,10 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
         if (r->scroll_fn(r, sc->el, delta, r->scroll_ud)) {
             r->scroll_dirty = 1;
             r->scroll_el = sc->el; /* embedded scroll: partial repaint */
+            /* scroll event on the element that actually moved (bubbles,
+             * like the browser) */
+            WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(sc->el),
+                         "scroll", 0, 0, 0, 0, 0, 0);
         }
     };
 
@@ -3875,6 +4010,18 @@ extern "C" void whaleui_render_handle_wheel(whaleui_render_t* r, int x, int y,
         r->wheel_node = hit;
         r->wheel_x = x;
         r->wheel_y = y;
+    }
+    /* DOM wheel on the element under the pointer (bubbles): preventDefault
+     * cancels the engine's scroll (the DOM contract). Deltas carry the
+     * pixel amounts (CSS wheel semantics). */
+    if (hit && hit->el) {
+        int prevented = 0;
+        whaleui_dom_dispatch_phased(
+            reinterpret_cast<whaleui_dom_element_t*>(hit->el), "wheel", 0,
+            x, y, 0, 0.0f, static_cast<float>(-delta), &prevented);
+        if (prevented) {
+            return;
+        }
     }
     /* nearest scrollable ancestor (the hit element itself included).
      * Text runs inherit their parent's overflow but are not scroll

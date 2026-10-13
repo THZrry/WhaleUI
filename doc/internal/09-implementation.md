@@ -86,7 +86,7 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 - **checkbox/radio**:无 label 关联(点击 label 不切换);radio 互斥按 name 属性全文档扫描。
 - **progress/meter**:meter 的颜色区间(optimum/low/high)不区分,统一 accent 填充。
 - **表格**:`table`/`tr`/`td` 默认 block 垂直堆叠,无表格布局(display:table 未实现)。
-- **DOM 事件**:三阶段派发(捕获/目标/冒泡);`app.cpp` 真实派发覆盖 click/mousedown/mouseup/keydown/keyup,窗口事件(SHOWN/HIDDEN/RESIZED/MOVED/MINIMIZED/RESTORED/MAXIMIZED/FOCUS/ENTER/LEAVE/CLOSE 可取消)走 per-window 回调;其余类型(mousemove/focus/change/input/submit/load/scroll/resize/wheel/contextmenu 等)可经 `whaleui_dom_dispatch_event` 手动触发,未全接入事件循环。key/select 回调按窗口优先、应用兜底。
+- **DOM 事件**:三阶段派发(捕获/目标/冒泡;mouseenter/mouseleave/focus/blur 非冒泡);`app.cpp` + `render.cpp` 已接全部类型(click/mousedown/mouseup/dblclick/contextmenu/mousemove/mouseenter/mouseleave/wheel/keydown/keyup/focus/blur/input/change/scroll/resize/load),仅 submit 无表单提交逻辑暂不派发;preventDefault 真实取消默认行为(mousedown 按压链、keydown 编辑键、wheel 滚动)。窗口事件(SHOWN/HIDDEN/RESIZED/MOVED/MINIMIZED/RESTORED/MAXIMIZED/FOCUS/ENTER/LEAVE/CLOSE 可取消)走 per-window 回调;key/select 回调按窗口优先、应用兜底。
 - **窗口**:SDL 全量薄包装已实现(is/min/max/focused,最小/大/还原/置顶,像素尺寸,位置/居中,min/max 约束,边框/可调/置顶/透明度/图标/全屏/grab/焦点/parent-modal/显示器/flash) + `set_hit_test`(无边框默认拖拽/缩放) + per-window `display_refresh`。
 - **Style**:声明式 API 已实现(set/get/removeProperty,cssText,length/item,getComputedStyle 快照)。
 - **Canvas/WebGPU**:`<canvas>` 内在尺寸 300x150 + CPU backing + 2D 核心(fill/stroke/path/transform/ImageData) + paint 合成;WebGPU 最小闭环 stub(Minimal 不可用)。`fillText/drawImage/arc 弧段/贝塞尔` 未实现。

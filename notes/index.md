@@ -180,3 +180,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 + 遮挡按可见性分级(全遮挡全暂停, 半透明盖住走后台 10Hz)+present 路径
 时钟无关(WebGPU 继承策略不变) —— 见 notes/current.md
 <40>(SOLVED): 布局动画帧收缩(relayout_multi: deep walk 删 + bounds marked-path + block 链原地 fast path, 大树 56→3.5ms) + 失焦 30fps + smooth 门控 —— 见 notes/current.md
+<41>(SOLVED): JS API C-port 续 —— 事件全接入(非冒泡 dispatch + wheel/keydown preventDefault 真取消默认, input/change dirty flag, 按钮映射 0/1/2 修正) + C++ 层 include/whaleui.hpp(whaleui:: 命名空间, C 为导出层) + simple_match 复合类(.a.b)语义漂移修复 —— 见 notes/current.md

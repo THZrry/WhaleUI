@@ -45,6 +45,24 @@ int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
                                 int mouse_button, float wheel_x,
                                 float wheel_y, int* out_prevented);
 
+/* Non-bubbling dispatch (capture -> target only): the browser's
+ * mouseenter/mouseleave/focus/blur never bubble, so ancestor listeners must
+ * not fire on them. */
+int whaleui_dom_dispatch_nonbubble(whaleui_dom_element_t* el,
+                                   const char* type,
+                                   int key_code, int mouse_x, int mouse_y,
+                                   int mouse_button, float wheel_x,
+                                   float wheel_y, int* out_prevented);
+
+/* Convenience for engine-internal dispatch sites (app.cpp / render.cpp):
+ * bubble variant, result unused. */
+#define WUI_DOM_FIRE(el, type, key, mx, my, btn, wx, wy) \
+    do { if (el) whaleui_dom_dispatch_phased((el), (type), (key), (mx), (my), \
+                                             (btn), (wx), (wy), nullptr); } while (0)
+#define WUI_DOM_FIRE_NB(el, type, key, mx, my, btn, wx, wy) \
+    do { if (el) whaleui_dom_dispatch_nonbubble((el), (type), (key), (mx), (my), \
+                                                (btn), (wx), (wy), nullptr); } while (0)
+
 #ifdef __cplusplus
 }
 #endif

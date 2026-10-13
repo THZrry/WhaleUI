@@ -211,12 +211,16 @@ typedef void (*whaleui_event_cb)(whaleui_dom_event_t* ev, void* userdata);
 
 int whaleui_dom_add_event_listener(whaleui_dom_element_t* el, const char* type,
                                    whaleui_event_cb cb, void* userdata);
+int whaleui_dom_add_event_listener_ex(whaleui_dom_element_t* el, const char* type,
+                                      whaleui_event_cb cb, void* userdata, int capture);
 int whaleui_dom_remove_event_listener(whaleui_dom_element_t* el, const char* type,
                                       whaleui_event_cb cb, void* userdata);
 int whaleui_dom_dispatch_event(whaleui_dom_element_t* el, const char* type); /* 同步派发 */
 
 /* 事件对象访问器(回调内有效) */
 whaleui_dom_element_t* whaleui_dom_event_target(const whaleui_dom_event_t* ev);
+whaleui_dom_element_t* whaleui_dom_event_current_target(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_phase(const whaleui_dom_event_t* ev); /* 1捕获 2目标 3冒泡 */
 const char* whaleui_dom_event_type(const whaleui_dom_event_t* ev);
 int whaleui_dom_event_prevent_default(whaleui_dom_event_t* ev);
 int whaleui_dom_event_stop_propagation(whaleui_dom_event_t* ev);
@@ -232,7 +236,7 @@ float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 
 支持的事件类型:`click, dblclick, mousedown, mouseup, mousemove, mouseenter, mouseleave, contextmenu, wheel, keydown, keyup, focus, blur, change, input, submit, load, scroll, resize`。
 
-派发模型:仅在目标元素触发(暂无冒泡/捕获);`stop_propagation` 为预留接口。
+派发模型:DOM 三阶段(捕获自根向下 → 目标 → 冒泡向上);`mouseenter/mouseleave/focus/blur` 为非冒泡事件(仅捕获+目标)。`stopPropagation()` 中断派发,`preventDefault()` 取消引擎默认行为(mousedown 取消按压链、keydown 取消编辑键、wheel 取消滚动)。事件循环已接入除 `submit` 外的全部类型(见 `whaleui.h` 事件段说明)。
 
 ## 用例
 
@@ -262,6 +266,6 @@ if (whaleui_dom_get_bounding_client_rect(box, &r) == 0) {
 
 ## 实现说明
 
-- 元素句柄直接包装 lexbor 节点;所有 tag 统一视为 div 的内部表示在第三步实现。
+- 元素句柄直接包装 lexbor 节点;tag→div 的适配由 UA 默认样式 + `tag_id` 组件完成(见 `../internal/09-implementation.md`)。
 - 文档销毁时释放其下所有元素;元素句柄在文档销毁后失效。
-- 选择器能力与渲染层一致的部分见 `../internal/09-implementation.md` 的 CSS 支持矩阵。
+- 选择器能力与样式级联同一语义(`whaleui_style_match`),与渲染层一致的部分见 `../internal/09-implementation.md` 的 CSS 支持矩阵。

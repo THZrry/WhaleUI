@@ -314,6 +314,10 @@ struct whaleui_render
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
     struct lxb_dom_element* edit_el;
+    /* element whose value changed since the last `change` dispatch (the
+     * browser's dirty flag: `change` fires when the edit commits - focus
+     * leaves, Enter on a single-line input, or select/checkbox toggle). */
+    struct lxb_dom_element* edit_changed_el = nullptr;
     /* caret-blink phase of the last PAINTED frame (0/1, 500ms halves): when
      * the focused edit state is otherwise unchanged, a frame whose phase
      * equals this skips the repaint (same 1px pixels) - the loop still

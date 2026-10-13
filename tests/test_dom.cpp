@@ -1,5 +1,6 @@
 // test_dom: DOM API contract tests.
 #include "whaleui.h"
+#include "dom/events.h" /* internal three-phase + non-bubbling dispatch */
 
 #include <cassert>
 #include <cstring>
@@ -269,6 +270,15 @@ int main(void)
         assert(whaleui_dom_query_selector(doc, "span, div > p") != nullptr);
         assert(whaleui_dom_query_selector(doc, "div:first-child") == a);
         assert(whaleui_dom_matches(a, "div[id]"));
+        /* compound fast-path: two classes must split at the '.' (#id +
+         * .class too): ".x.y" is x AND y, not a token "x.y" */
+        assert(whaleui_dom_matches(a, "div.x.y"));
+        assert(!whaleui_dom_matches(a, "div.x.z"));
+        {
+            whaleui_dom_list_t* lst = whaleui_dom_query_selector_all(doc, ".x.y");
+            assert(whaleui_dom_list_length(lst) == 1);
+            whaleui_dom_list_destroy(lst);
+        }
         assert(whaleui_dom_query_selector(doc, "") == nullptr);
         assert(whaleui_dom_query_selector_all(doc, "") == nullptr);
         /* element-scoped excludes the root itself */
@@ -434,6 +444,76 @@ int main(void)
             assert(whaleui_dom_dispatch_event(s, "click") == 0);
             assert(order == "bodyC1;divC1;spanC2;spanB2;divB3;");
             whaleui_dom_document_destroy(doc2);
+        }
+
+        /* non-bubbling dispatch (mouseenter/mouseleave/focus/blur):
+         * capture listeners on ancestors still fire, bubble listeners do
+         * not. Same chain as above, separate doc (listeners map is global). */
+        {
+            static std::string order;
+            struct Nb {
+                static void rec(whaleui_dom_event_t* ev, void* ud) {
+                    const char* tag = static_cast<const char*>(ud);
+                    order += tag;
+                    order += ('0' + whaleui_dom_event_phase(ev));
+                    order += ";";
+                }
+            };
+            whaleui_dom_document_t* doc3 = whaleui_dom_parse_html(
+                "<html><body><div id=\"d\"><span id=\"s\">x</span></div>"
+                "</body></html>",
+                0);
+            assert(doc3 != nullptr);
+            whaleui_dom_element_t* body3 = whaleui_dom_body(doc3);
+            whaleui_dom_element_t* d3 = whaleui_dom_get_element_by_id(doc3, "d");
+            whaleui_dom_element_t* s3 = whaleui_dom_get_element_by_id(doc3, "s");
+            assert(body3 && d3 && s3);
+            assert(whaleui_dom_add_event_listener(body3, "mouseenter", Nb::rec,
+                                                   (void*)"bub") == 0);
+            assert(whaleui_dom_add_event_listener_ex(d3, "mouseenter", Nb::rec,
+                                                     (void*)"divC", 1) == 0);
+            assert(whaleui_dom_add_event_listener(s3, "mouseenter", Nb::rec,
+                                                  (void*)"tgt") == 0);
+            order.clear();
+            int prevented = 0;
+            assert(whaleui_dom_dispatch_nonbubble(
+                       s3, "mouseenter", 0, 3, 4, 0, 0.0f, 0.0f,
+                       &prevented) == 0);
+            assert(prevented == 0);
+            /* capture on the ancestor + target only; the parent's bubble
+             * listener never runs (non-bubbling contract) */
+            assert(order == "divC1;tgt2;");
+            /* bubbling variants of the same types still reach ancestors */
+            order.clear();
+            assert(whaleui_dom_add_event_listener(d3, "load", Nb::rec,
+                                                  (void*)"divL") == 0);
+            assert(whaleui_dom_add_event_listener(s3, "load", Nb::rec,
+                                                  (void*)"tgtL") == 0);
+            assert(whaleui_dom_dispatch_event(s3, "load") == 0);
+            assert(order == "tgtL2;divL3;");
+            whaleui_dom_document_destroy(doc3);
+        }
+
+        /* newly wired engine event types dispatch through the same
+         * pipeline (app.cpp routes real input to these names) */
+        {
+            static int fired = 0;
+            struct T {
+                static void on(whaleui_dom_event_t* ev, void* ud) {
+                    (void)ev; (void)ud; ++fired;
+                }
+            };
+            for (const char* t : {"dblclick", "contextmenu", "mousemove",
+                                  "wheel", "input", "change", "scroll",
+                                  "resize"}) {
+                assert(whaleui_dom_add_event_listener(a, t, T::on, nullptr) == 0);
+            }
+            for (const char* t : {"dblclick", "contextmenu", "mousemove",
+                                  "wheel", "input", "change", "scroll",
+                                  "resize"}) {
+                assert(whaleui_dom_dispatch_event(a, t) == 0);
+            }
+            assert(fired == 8);
         }
 
         /* clone: deep copy is independent */

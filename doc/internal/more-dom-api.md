@@ -160,7 +160,7 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el, whaleui_dom_
 - getBoundingClientRect:数据源是**最近一次布局树**(`src/layout/layout.h` 的 `whaleui_layout_node_t`,含 `border/content` 盒与 `el` 指针)。需要在 render 或 layout 层提供内部查询:按 el 找布局节点,返回 viewport 坐标盒子(考虑滚动偏移、`position:fixed`),再转 float。**布局树每次重算,查询结果只在最近一次布局后有效**;未渲染过(无布局树)返回失败。坐标语义:JS 的 getBoundingClientRect 是相对 viewport 的 border-box。
 - 测试:布局后 div 的 rect 与预期尺寸一致(简单固定尺寸页面);滚动容器内元素 rect 随滚动偏移。
 
-## 9. 事件系统(最大块)
+## 9. 事件系统 ✅ 已全接入(2026-10-13)
 
 JS 对应:`addEventListener / removeEventListener / dispatchEvent` 与 Event 对象访问器。
 
@@ -185,31 +185,31 @@ float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 
 支持的事件类型:`click, dblclick, mousedown, mouseup, mousemove, mouseenter, mouseleave, contextmenu, wheel, keydown, keyup, focus, blur, change, input, submit, load, scroll, resize`。
 
-### 设计(按此实现,已在 whaleui.h 文档承诺)
+### 设计(已按此实现;2026-10-13 更新)
 
-- **派发模型:仅目标元素,无冒泡/捕获**。`stop_propagation` 保留接口,当前为 no-op(未来加冒泡时再生效)。
-- **事件对象是派发期间的瞬态对象**:回调内有效,回调返回后失效。实现为一个栈上 struct,字段在派发时填充;访问器读字段;`prevent_default` 置标志位。
-- listener 表:per-document 的 `(type, cb, ud)` 链表/哈希,key = element 指针。**文档销毁时清理**(document 结构里挂表,或静态表 + 注册时记 document)。
-- `dispatch_event`:`el` 上构造事件、按 type 查表逐个调用;`click` 默认行为(select 展开/链接)若被 prevent_default 应跳过。
+- **派发模型:DOM 三阶段**(捕获自根向下 → 目标 → 冒泡向上),`whaleui_dom_dispatch_phased`;
+  `mouseenter/mouseleave/focus/blur` 走 `whaleui_dom_dispatch_nonbubble`(捕获+目标,无冒泡,浏览器语义)。
+  `stopPropagation` 中断派发,`preventDefault` 上报 out_prevented 供引擎跳过默认行为。
+- **事件对象是派发期间的瞬态对象**:堆分配、回调结束 delete;访问器读字段;`prevent_default` 置标志位。
+- listener 表:`src/dom/events.cpp` 的 side map(`map<element*, vector<Listener>>`);`whaleui_events_clear_element`(元素销毁)与 `whaleui_events_clear_all`(文档销毁)清理。
+- `dispatch_event`:三阶段派发;`mousedown` 的 prevent_default 取消按压链(focus/:active/选择),`keydown` 的取消编辑键,`wheel` 的取消滚动。
 
-### 接入点(`src/core/app.cpp` 的 `SDL_PollEvent` 分支,参照现有 `render_handle_*` 调用)
+### 接入点(全部已接,`src/core/app.cpp` 的 `process_event` / `src/render/render.cpp` 内派发宏 `WUI_DOM_FIRE[_NB]`)
 
-| 事件类型 | 接入 | 数据来源 |
+| 事件类型 | 接入 | 状态 |
 |---|---|---|
-| mousedown/mouseup/click/dblclick/contextmenu | `SDL_EVENT_MOUSE_BUTTON_DOWN/UP` | 现有 hit-test(`render_set_pressed` / `render_handle_click` 已有命中逻辑;button 0/1/2 映射) |
-| mousemove/mouseenter/mouseleave | `SDL_EVENT_MOUSE_MOTION` | 现有 `render_set_hover` 的 hover 元素;enter/leave = hover 变化时新旧元素 |
-| wheel | `SDL_EVENT_MOUSE_WHEEL` | 现有 `render_handle_wheel` 的命中元素;delta = `e.wheel.y`(方向与内部滚动一致) |
-| keydown/keyup | `SDL_EVENT_KEY_DOWN/UP` | 聚焦元素(`focus_el`);keycode = `WHALEUI_KEY_*` |
-| focus/blur | 焦点变化点 | `render_set_pressed` / 现有 focus 设置处 |
-| change/input | 文本编辑路径 | `render_handle_text` / 编辑提交处(先做 input 即可,change 在失焦/回车时) |
-| load | `whaleui_window_load_html` 成功后 | window.cpp |
-| scroll | 滚动后 | `render_handle_wheel` / 滚动条拖动处 |
-| resize | `SDL_EVENT_WINDOW_RESIZED` | 现有分支 |
-| submit | form 提交(暂无提交逻辑,可留空,不派发) | — |
+| mousedown/mouseup/click/dblclick(左)/contextmenu(右) | `SDL_EVENT_MOUSE_BUTTON_DOWN/UP` | ✅ dblclick 在第二次 click 后触发;button 映射 0=左 1=中 2=右 |
+| mousemove/mouseenter/mouseleave | `render_set_hover` 帧末命中测试 | ✅ enter/leave 在非冒泡派发,hover 变化与出窗(clear_hover)时触发 |
+| wheel | `render_handle_wheel` 头部派发,preventDefault 跳过滚动 | ✅ |
+| keydown/keyup | 聚焦元素;keydown 先行派发,preventDefault 取消 `render_handle_key` | ✅ |
+| focus/blur | `set_pressed_ex` 焦点变化点 + 滚动条拖拽焦点 | ✅ 非冒泡 |
+| input/change | `edit_replace`(input + change 脏标记)、失焦/Enter 提交 change、select 换选项、checkbox/radio 翻转 | ✅ |
+| load | `window_load_html_len` 成功后在 documentElement 上派发 | ✅ |
+| scroll | `do_scroll` 实际位移后在滚动容器上派发(冒泡) | ✅ |
+| resize | `SDL_EVENT_WINDOW_RESIZED` 分支在 documentElement 上派发 | ✅ |
+| submit | 表单提交逻辑未做,不派发(可手动 dispatch) | ⬜ |
 
-- **dispatch 函数**:`src/dom/` 提供 `whaleui_dom_dispatch_typed(el, type, ...fields)`,app.cpp 各处调用。不要在每个 SDL 分支手写回调逻辑。
-- `prevent_default` 的实际效果:先实现 `click`(阻止 select 展开)与 `keydown`(阻止编辑框处理)即可,其余类型 prevent 无默认行为可略。
-- **测试**:注册/移除(重复注册 no-op 成功;移除后不触发);`dispatch_event` 手动派发 click 收到回调且 target/type 正确;mouse 字段填充正确;prevent_default 后 `default_prevented` 为 1。事件触发的集成测试放 `test_render`(需要窗口+事件循环,参照现有交互测试)。
+- **测试**:三阶段顺序/stopPropagation/非冒泡契约/8 个新接入类型在 `tests/test_dom.cpp` 覆盖;C++ 侧在 `tests/test_cpp.cpp`。
 
 ## 10. 窗口扩展 ✅ 已全部实现(de48f1c + 2cea474)
 

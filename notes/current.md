@@ -1097,3 +1097,21 @@ bench 实测链(工具 temp/bench_anim.cpp, gitignored, xmake 条件 target 已�
 - smooth easing 循环加 scroll_fn==smooth 门: 默认路径 scroll_tgt 永空, 零行为变化, 省每帧 map 检查。
 
 验证: 全量构建 ok; 10/10 套件 exit=0(api/dom/font/fs/layout/style/window/render/scroll/anim); bench big p50 3.5ms(峰值环境抖动除外), full 800x600/1440p/4K 均 ~1ms(无像素缩放问题)。
+
+# <41>: JS API C-port 续: 事件全接入 + C++ 层 + 选择器快路径语义漂移
+
+SOLVED
+
+## A. 事件系统接入完成(more-dom-api §9 落地)
+
+- 非冒泡契约: mouseenter/mouseleave/focus/blur 走 `whaleui_dom_dispatch_nonbubble`(捕获+目标, 无冒泡), 与浏览器的 Event.bubbles=false 一致; 其余走三阶段 `_phased`。`events.h` 提供 `WUI_DOM_FIRE[_NB]` 内部分发宏, app.cpp/render.cpp 各接入点统一用宏, 不手写逐分支逻辑。
+- 接入完成: mousemove(每帧命中后, 目标元素)、enter/leave(hover 变化 + 出窗 clear_hover)、wheel(命中元素, preventDefault 真取消滚动)、keydown/keyup(keydown 先派发给编辑键, preventDefault 取消编辑)、focus/blur(set_pressed_ex 焦点移动处, 滚动条拖拽也算)、input(edit_replace 值变化时)+change(失焦/单行 Enter/换选项/checkbox 翻转提交, render.h 的 edit_changed_el 即浏览器 dirty flag)、scroll(do_scroll 实际位移后在容器派发)、load(window_load_html_len 成功后于 documentElement)、resize(RESIZED 分支于 documentElement)、dblclick(第二次 click 后)、contextmenu(右键)。仅 submit 无表单提交逻辑, 不派发。
+- 按钮映射修正: 公开文档承诺 0=左 1=中 2=右, 旧代码直传 SDL 枚举(左=1 右=3)漂移了; app.cpp 三处派发改 `button-1`。
+
+## B. C++ API 层(include/whaleui.hpp)
+
+- 澄清的架构定位: **C++ API 才是门面, C ABI 是其导出层**。`whaleui::App/Window/Document/Element/Event/ComputedStyle` 全部 inline 薄封装 C 函数, 无虚表/无异常/句柄按值拷贝(lexbor 节点指针)。所有权: Window 由 App 的 destroy 回收(`Destroy()` 仅提前拆除), ComputedStyle RAII 释放快照(需移动语义, C++14 手写 move)。
+- test_cpp 覆盖: 查询/遍历/变更/属性/classList/style 声明式/getComputedStyle/事件/canvas 互操/窗口回调。
+- **教训(TIPS)**: 事件接线顺带抓到 `simple_match` 复合类解析 bug —— `.a.b` 的 class 段只停在 `#`, "div.x.y" 把 "x.y" 当单个 class 永不匹配(test_cpp 才发现; test_dom 此前无复合类用例, 已补 `.x.y`/`div.x.y` 回归)。手写选择器子集与 `whaleui_style_match` 的语法必须同步, 改一边先查另一边。
+
+验证: 全量构建 ok(full/lite/minimal); 12/12 套件 exit=0(新增 test_cpp)。

@@ -184,12 +184,14 @@ extern "C" int whaleui_dom_dispatch_event_full(whaleui_dom_element_t* el,
     return rc;
 }
 
-extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
-                                           const char* type,
-                                           int key_code, int mouse_x,
-                                           int mouse_y, int mouse_button,
-                                           float wheel_x, float wheel_y,
-                                           int* out_prevented)
+namespace {
+
+/* shared dispatch body. `bubble` selects whether the bubble phase runs
+ * (false for the browser's non-bubbling events: mouseenter/leave,
+ * focus/blur). */
+int dispatch_impl(whaleui_dom_element_t* el, const char* type, int key_code,
+                  int mouse_x, int mouse_y, int mouse_button, float wheel_x,
+                  float wheel_y, int* out_prevented, bool bubble)
 {
     if (out_prevented) {
         *out_prevented = 0;
@@ -228,8 +230,8 @@ extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
     if (!ev->stopped) {
         run_listeners(ev, e, false);
     }
-    /* 3. bubble: parent back up to the root */
-    if (!ev->stopped) {
+    /* 3. bubble: parent back up to the root (skipped for non-bubbling types) */
+    if (bubble && !ev->stopped) {
         ev->phase = WUI_PHASE_BUBBLE;
         for (size_t i = 0; i < chain.size(); ++i) {
             if (ev->stopped) {
@@ -243,6 +245,30 @@ extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
     }
     delete ev;
     return 0;
+}
+
+} // namespace
+
+extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
+                                           const char* type,
+                                           int key_code, int mouse_x,
+                                           int mouse_y, int mouse_button,
+                                           float wheel_x, float wheel_y,
+                                           int* out_prevented)
+{
+    return dispatch_impl(el, type, key_code, mouse_x, mouse_y, mouse_button,
+                         wheel_x, wheel_y, out_prevented, true);
+}
+
+extern "C" int whaleui_dom_dispatch_nonbubble(whaleui_dom_element_t* el,
+                                              const char* type,
+                                              int key_code, int mouse_x,
+                                              int mouse_y, int mouse_button,
+                                              float wheel_x, float wheel_y,
+                                              int* out_prevented)
+{
+    return dispatch_impl(el, type, key_code, mouse_x, mouse_y, mouse_button,
+                         wheel_x, wheel_y, out_prevented, false);
 }
 
 extern "C" int whaleui_dom_dispatch_event(whaleui_dom_element_t* el,

@@ -122,7 +122,9 @@ bool simple_match(lxb_dom_element* el, const char* sel, size_t len)
         if (*p == '#') {
             ++p;
             const char* s = p;
-            while (p < end && *p != '.') {
+            /* the value ends at the next token start (both . and #), not
+             * just the next '.': "#a.b" is id a + class b */
+            while (p < end && *p != '.' && *p != '#') {
                 ++p;
             }
             size_t vlen = static_cast<size_t>(p - s);
@@ -134,7 +136,10 @@ bool simple_match(lxb_dom_element* el, const char* sel, size_t len)
         } else if (*p == '.') {
             ++p;
             const char* s = p;
-            while (p < end && *p != '#') {
+            /* compound classes ("div.a.b") must split at the next '.' too -
+             * consuming everything up to '#' made ".a.b" a single class
+             * token "a.b" that never matches */
+            while (p < end && *p != '#' && *p != '.') {
                 ++p;
             }
             size_t vlen = static_cast<size_t>(p - s);

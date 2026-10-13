@@ -184,11 +184,17 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     case SDL_EVENT_KEY_DOWN: {
         whaleui_window_t* w = window_for(app, e.key.windowID);
         if (w && w->render) {
-            whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
-                                      1, static_cast<int>(e.key.mod));
-            dom_dispatch(whaleui_render_focus_element(w->render),
-                         "keydown", static_cast<int>(e.key.key),
-                         0, 0, 0, 0, 0);
+            /* DOM contract: keydown is dispatched BEFORE the default
+             * behavior (editing keys), so a listener's preventDefault
+             * cancels the edit (browser order). */
+            int prevented = dom_dispatch(
+                whaleui_render_focus_element(w->render), "keydown",
+                static_cast<int>(e.key.key), 0, 0, 0, 0, 0);
+            if (!prevented) {
+                whaleui_render_handle_key(w->render,
+                                          static_cast<int>(e.key.key), 1,
+                                          static_cast<int>(e.key.mod));
+            }
         }
         if (w && w->key_cb) {
             w->key_cb(app, static_cast<int>(e.key.key), 1, w->key_ud);
@@ -314,6 +320,15 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         for (whaleui_window_t* win : app->windows) {
             if (win->sdl && SDL_GetWindowID(win->sdl) == e.window.windowID) {
                 if (win->win_event_cb) win->win_event_cb(win, WHALEUI_WINDOW_EVENT_RESIZED, e.window.data1, e.window.data2, win->win_event_ud);
+                /* DOM resize on the document root (bubbles): the browser
+                 * fires window.onresize; the document root is our closest
+                 * event target for document-level listeners. */
+                if (win->document) {
+                    WUI_DOM_FIRE(
+                        reinterpret_cast<whaleui_dom_element_t*>(
+                            whaleui_dom_document_element(win->document)),
+                        "resize", 0, 0, 0, 0, 0, 0);
+                }
                 win->width = e.window.data1;
                 win->height = e.window.data2;
                 win->resize_w = win->width;
@@ -338,6 +353,24 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (e.button.button == SDL_BUTTON_RIGHT) {
+            /* contextmenu on the hit element (bubbles; the engine has no
+             * native context menu, preventDefault is the contract hook for
+             * app-side menus). */
+            for (whaleui_window_t* win : app->windows) {
+                if (win->render && win->document &&
+                    SDL_GetWindowID(win->sdl) == e.button.windowID) {
+                    dom_dispatch(
+                        whaleui_render_hit_element(
+                            win->render, static_cast<int>(e.button.x),
+                            static_cast<int>(e.button.y)),
+                        "contextmenu", 0, static_cast<int>(e.button.x),
+                        static_cast<int>(e.button.y),
+                        static_cast<int>(e.button.button) - 1, 0, 0);
+                    break;
+                }
+            }
+        }
         if (e.button.button == SDL_BUTTON_LEFT) {
             for (whaleui_window_t* win : app->windows) {
                 if (win->render && win->document &&
@@ -412,7 +445,8 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                         int down_prevented = dom_dispatch(
                             hit, "mousedown", 0,
                             static_cast<int>(e.button.x),
-                            static_cast<int>(e.button.y), e.button.button,
+                            static_cast<int>(e.button.y),
+                            static_cast<int>(e.button.button) - 1,
                             0, 0);
                         if (!down_prevented) {
                             whaleui_render_set_pressed_ex(
@@ -431,8 +465,18 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                                 hit, "click", 0,
                                 static_cast<int>(e.button.x),
                                 static_cast<int>(e.button.y),
-                                e.button.button, 0, 0);
+                                static_cast<int>(e.button.button) - 1, 0, 0);
                             (void)click_prevented;
+                            /* second click of a double-click: dblclick fires
+                             * after the second click (browser order) */
+                            if (e.button.clicks == 2) {
+                                dom_dispatch(
+                                    hit, "dblclick", 0,
+                                    static_cast<int>(e.button.x),
+                                    static_cast<int>(e.button.y),
+                                    static_cast<int>(e.button.button) - 1,
+                                    0, 0);
+                            }
                             /* the click's default behavior (select toggle /
                              * checkbox flip / details expand) already ran
                              * inside handle_click above - that ordering is
@@ -460,7 +504,7 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                             static_cast<int>(e.button.y)),
                         "mouseup", 0, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y),
-                        e.button.button, 0, 0);
+                        static_cast<int>(e.button.button) - 1, 0, 0);
                     if (!up_prevented) {
                         whaleui_render_set_pressed_ex(
                             win->render, static_cast<int>(e.button.x),
