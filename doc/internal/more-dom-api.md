@@ -7,7 +7,10 @@
 > 2026-10-13 更新:§10 窗口扩展已全部实现并合入(de48f1c:SDL 全量薄包装 +
 > HitTest + per-window 事件回调 + 多窗口路由修复;2cea474:per-window key/select
 > 回调 + 窗口事件分发);Style 声明式 API 已实现(2cea474);Canvas 2D 核心 +
-> WebGPU stub 已实现(614740a)。下方 §10 全部勾选,§6/§9 部分更新,剩余见各节标注。
+> WebGPU stub 已实现(614740a);选择器查询与级联同语义(eff12b8);事件系统
+> 全接入 + C++ 门面层 whaleui.hpp + document 级事件目标 + focus/blur 真实化 +
+> submit(f1f05e9 及其后续)。§10/§9/§8 已全勾选;§2 选择器子集已统一;仅
+> `getBoundingClientRect` 的"依赖最近布局"语义为设计边界,非未实现。
 
 ## 通用约定(与 whaleui.h 顶部一致)
 
@@ -109,8 +112,8 @@ whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_document_t* doc);
 
 - body/head:lexbor 的 `lxb_html_document` 自带 `body`/`head` 成员(见 `src/core/window.cpp` 里 `hd->head` 用法)。body 为空文档时为 NULL 是合理的(现有测试里空文档 `query_selector(doc,"body")` 非 NULL,与实现核对后再定)。
 - title:lexbor 有 `lxb_html_document_title / lxb_html_document_title_set`(以头文件为准;set 时 head 缺 `<title>` 需创建,lexbor 通常自动处理)。
-- activeElement:`focus_el` 状态现在由 render/app 维护(`10-theme-gaps.md` 的 `focus_el`);本 API 需要引擎暴露"当前聚焦元素"查询——在 render 层加内部 getter,或把聚焦元素记录上移到 document 结构。**先读 `src/render/render.h` 的 focus 相关字段再定**。
-- 测试:parse 带 `<title>` 的文档读回;空文档 set_title 后读回;activeElement 在无焦点时 NULL。
+- activeElement:✅ 已实现——DOM 层 `g_active()` map(`src/dom/dom.cpp`,per-document,文档销毁时清理);`whaleui_dom_set_active/clear_active`(dom.h)由 public focus/blur 与 render 的 `render_focus_move`(点击/滚动条拖拽/Tab)共同写入;无焦点时回退 body(浏览器语义)。
+- 测试:`tests/test_dom.cpp`(title 读回、activeElement 跟随 focus/blur、blur 仅在激活元素上触发、focus 非冒泡)。
 
 ## 6. 属性与 classList
 
@@ -147,7 +150,7 @@ const char* whaleui_dom_get_value(whaleui_dom_element_t* el);
 - value:`<input>/<textarea>/<select>` 用 lexbor 表单接口(`lxb_html_input_element_value` 等,以头文件为准);其他元素返回失败/NULL。注意与 `value` **属性**区分(JS 语义:property 优先于 attribute)。实现后需同步控件显示(编辑框文本)——**读 `src/render/render.cpp` 的文本编辑路径,value set 后要触发重绘/重布局**。
 - 测试:innerHTML 往返一致(parse → get → 与原串等价);set 后 querySelector 能查到新元素;value 在 input 上 get/set 往返,在 div 上返回 NULL/失败。
 
-## 8. 焦点与几何
+## 8. 焦点与几何 ✅ focus/blur 已生效(2026-10-13)
 
 ```c
 int whaleui_dom_focus(whaleui_dom_element_t* el);
@@ -156,9 +159,9 @@ typedef struct whaleui_dom_rect { float x, y, width, height; } whaleui_dom_rect_
 int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el, whaleui_dom_rect_t* out);
 ```
 
-- focus/blur:复用引擎现有焦点状态(`focus_el`,见 `10-theme-gaps.md`)。focus 后触发 `:focus` 样式刷新 + 重绘;blur 清除。
+- focus/blur:✅ public API 真实化——`whaleui_dom_focus/blur` 写 `g_active()` 镜像并派发非冒泡 focus/blur(失焦先 blur、聚焦后 focus;blur 仅对当前激活元素生效)。`:focus` 样式仍跟引擎 `render.focus_el`(click/Tab 经 `render_focus_move` 同步两边),未渲染窗口上 API 焦点只动镜像——语义边界已在 whaleui.h 注释。
 - getBoundingClientRect:数据源是**最近一次布局树**(`src/layout/layout.h` 的 `whaleui_layout_node_t`,含 `border/content` 盒与 `el` 指针)。需要在 render 或 layout 层提供内部查询:按 el 找布局节点,返回 viewport 坐标盒子(考虑滚动偏移、`position:fixed`),再转 float。**布局树每次重算,查询结果只在最近一次布局后有效**;未渲染过(无布局树)返回失败。坐标语义:JS 的 getBoundingClientRect 是相对 viewport 的 border-box。
-- 测试:布局后 div 的 rect 与预期尺寸一致(简单固定尺寸页面);滚动容器内元素 rect 随滚动偏移。
+- 测试:布局后 div 的 rect 与预期尺寸一致(简单固定尺寸页面);滚动容器内元素 rect 随滚动偏移;focus/blur 序列与 activeElement 在 `tests/test_dom.cpp`。
 
 ## 9. 事件系统 ✅ 已全接入(2026-10-13)
 
@@ -207,7 +210,7 @@ float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 | load | `window_load_html_len` 成功后在 documentElement 上派发 | ✅ |
 | scroll | `do_scroll` 实际位移后在滚动容器上派发(冒泡) | ✅ |
 | resize | `SDL_EVENT_WINDOW_RESIZED` 分支在 documentElement 上派发 | ✅ |
-| submit | 表单提交逻辑未做,不派发(可手动 dispatch) | ⬜ |
+| submit | 已接入:`render_handle_key` 单行输入 Enter 向最近 `<form>` 祖先派发(冒泡;引擎不做表单导航,preventDefault 为应用挂点) | ✅ |
 
 - **测试**:三阶段顺序/stopPropagation/非冒泡契约/8 个新接入类型在 `tests/test_dom.cpp` 覆盖;C++ 侧在 `tests/test_cpp.cpp`。
 
@@ -293,7 +296,8 @@ int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_even
 ## 边界与已知取舍
 
 - **minimal 变体**:无 HTML 解析,§1-§9 的 DOM API 在 minimal 不提供(返回 NULL/失败或编译期裁掉);窗口扩展 §10 全部变体可用。编译期按 `WHALEUI_BUILD_MINIMAL` 裁。
-- **事件无冒泡/捕获**:whaleui.h 文档已承诺"target only",未来加冒泡时 `stop_propagation` 语义再落地。
+- **事件无冒泡/捕获**:✅ 已实现三阶段(捕获/目标/冒泡);mouseenter/mouseleave/focus/blur 为非冒泡。`stop_propagation` 已生效。
 - **list 快照**:不随 DOM 变更更新(与 JS NodeList 的 live 语义不同),文档已写明。
 - **value 与渲染同步**:set_value 后编辑框显示需重绘(先做 input/textarea;select 显示已走回调路径,核对)。
 - **getBoundingClientRect 的布局依赖**:布局树是重算产物,查询结果以最近一次布局为准;这与 JS 的"强制同步布局"不同,文档已写明边界。
+- **focus/blur 与 :focus 样式**:public focus/blur 动 DOM 镜像 + 派发事件;`:focus` 样式跟引擎焦点(click/Tab),未渲染窗口上两者不自动收敛(whaleui.h 已注明)。

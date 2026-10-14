@@ -69,6 +69,25 @@ whaleui_dom_event_t* make_event(lxb_dom_element* el, const char* type)
     return ev;
 }
 
+/* The public API's handle is opaque, so document-level event targets are
+ * passed as whaleui_dom_document_t* (== lxb_html_document*, see dom.h): the
+ * browser fires document listeners on the document itself, whose closest
+ * element in our model is the documentElement. A *document* handle is a
+ * node whose parent is a document-typed node; a plain element's parent
+ * chain ends at the document too, so distinguish: only nodes whose OWN
+ * type is DOCUMENT resolve to the root element. */
+lxb_dom_element* resolve_target(void* h)
+{
+    lxb_dom_node* n = reinterpret_cast<lxb_dom_node*>(h);
+    if (!n) {
+        return nullptr;
+    }
+    if (n->type == LXB_DOM_NODE_TYPE_DOCUMENT) {
+        return lxb_dom_document_element(reinterpret_cast<lxb_dom_document*>(n));
+    }
+    return lxb_dom_interface_element(n);
+}
+
 /* run the matching listeners of one node for one phase. Capture listeners
  * fire on the way down AND at the target; bubble listeners fire at the
  * target AND on the way up. Copy the vector first: a listener may
@@ -125,7 +144,7 @@ extern "C" int whaleui_dom_add_event_listener_ex(whaleui_dom_element_t* el,
                                                  whaleui_event_cb cb,
                                                  void* userdata, int capture)
 {
-    lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(el);
+    lxb_dom_element* e = resolve_target(el);
     if (!e || !type || !cb) {
         return -1;
     }
@@ -150,7 +169,7 @@ extern "C" int whaleui_dom_remove_event_listener(whaleui_dom_element_t* el,
                                                  whaleui_event_cb cb,
                                                  void* userdata)
 {
-    lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(el);
+    lxb_dom_element* e = resolve_target(el);
     if (!e || !type || !cb) {
         return -1;
     }
@@ -196,7 +215,7 @@ int dispatch_impl(whaleui_dom_element_t* el, const char* type, int key_code,
     if (out_prevented) {
         *out_prevented = 0;
     }
-    lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(el);
+    lxb_dom_element* e = resolve_target(el);
     if (!e || !type) {
         return -1;
     }

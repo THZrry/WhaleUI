@@ -2287,6 +2287,10 @@ static void word_range(const std::string& s, size_t off, size_t* ws, size_t* we)
  * clear stale IME state and START text input (SDL_StartTextInput) so the
  * OS keyboard/IME is active. Called on Tab focus; clicking an editable
  * runs its own caret placement then the same StartTextInput. */
+/* move the engine focus + DOM mirror + focus/blur events (defined next to
+ * set_pressed_ex, the other focus-mover) */
+static void render_focus_move(whaleui_render_t* r, lxb_dom_element* el,
+                              int x, int y);
 static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
 {
     if (!r || !el) {
@@ -2315,6 +2319,9 @@ static void begin_editing(whaleui_render_t* r, lxb_dom_element* el)
     r->has_dirty = 1;
     r->caret_phase_painted = -1; /* new focus: repaint unconditionally */
     r->edit_scroll_need = 1;
+    /* Tab focus is a real focus move: :focus styles, the DOM
+     * activeElement mirror and focus/blur all follow it (single writer) */
+    render_focus_move(r, el, 0, 0);
     if (r->window) {
         SDL_Window* ww = r->window;
         whaleui_sdl_on_main(
@@ -2510,11 +2517,26 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
         }
         break;
     case WHALEUI_KEY_ENTER:
-        /* multi-line editable inserts a newline; single-line inputs ignore
-         * Enter (no form to submit in this engine) but commit the edit:
-         * the browser fires `change` on Enter for text inputs */
+        /* multi-line editable inserts a newline; single-line inputs commit
+         * the edit (the browser fires `change` on Enter for text inputs)
+         * and, when inside a <form>, dispatch `submit` on the form (bubbles;
+         * the engine has no form navigation, preventDefault is the contract
+         * hook) */
         if (is_single_line_input_el(el) && r->edit_changed_el == el) {
             commit_change(r);
+        }
+        if (is_single_line_input_el(el)) {
+            for (lxb_dom_node* p = el->node.parent; p; p = p->parent) {
+                if (p->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                    continue;
+                }
+                lxb_dom_element* pe = lxb_dom_interface_element(p);
+                if (tag_eq(pe, "form")) {
+                    WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(pe),
+                                 "submit", 0, 0, 0, 0, 0, 0);
+                    break;
+                }
+            }
         }
         if (!is_single_line_input_el(el) && is_editable(el)) {
             edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "\n");
@@ -3669,6 +3691,34 @@ extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
     whaleui_render_set_pressed_ex(r, x, y, down, 1, 0);
 }
 
+/* Move the engine focus: set focus_el, mirror it into the DOM layer
+ * (document.activeElement / public focus()/blur() API), and fire the
+ * non-bubbling blur on the element losing focus + focus on the new one.
+ * A null target (click outside the tree) clears the mirror, like the
+ * browser's activeElement falling back to body. */
+static void render_focus_move(whaleui_render_t* r, lxb_dom_element* el,
+                              int x, int y)
+{
+    lxb_dom_element* old = r->focus_el;
+    if (old == el) {
+        return;
+    }
+    r->focus_el = el;
+    if (el) {
+        whaleui_dom_set_active(el);
+    } else if (r->tree && r->tree->root && r->tree->root->el) {
+        whaleui_dom_clear_active(r->tree->root->el->node.owner_document);
+    }
+    if (old) {
+        WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(old),
+                        "blur", 0, x, y, 0, 0, 0);
+    }
+    if (el) {
+        WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
+                        "focus", 0, x, y, 0, 0, 0);
+    }
+}
+
 extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
                                               int y, int down, int clicks,
                                               int mods)
@@ -3705,20 +3755,7 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             r->drag_scroll_node = sc; /* valid until the next rebuild */
             update_drag_scroll(r, y);
             r->pressed_el = el;
-            if (el && el != old_focus) {
-                /* focus moved: blur the old element, focus the new one
-                 * (both non-bubbling, like the browser) */
-                if (old_focus) {
-                    WUI_DOM_FIRE_NB(
-                        reinterpret_cast<whaleui_dom_element_t*>(old_focus),
-                        "blur", 0, x, y, 0, 0, 0);
-                }
-                r->focus_el = el;
-                WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
-                                "focus", 0, x, y, 0, 0, 0);
-            } else {
-                r->focus_el = el;
-            }
+            render_focus_move(r, el, x, y);
             r->has_dirty = 1;
             return;
         }
@@ -3737,7 +3774,7 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
                 r->drag_sel = 1;
                 r->press_caret = static_cast<int>(off);
                 r->pressed_el = el;
-                r->focus_el = el;
+                render_focus_move(r, el, x, y);
                 r->has_dirty = 1;
                 return;
             }
@@ -3842,20 +3879,7 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
             r->sel_mode = 0;
         }
         r->pressed_el = el;
-        r->focus_el = el;
-        /* DOM focus/blur on a focus change (both non-bubbling): blur the
-         * element losing the engine focus, focus the new one. */
-        if (el != old_focus) {
-            if (old_focus) {
-                WUI_DOM_FIRE_NB(
-                    reinterpret_cast<whaleui_dom_element_t*>(old_focus),
-                    "blur", 0, x, y, 0, 0, 0);
-            }
-            if (el) {
-                WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
-                                "focus", 0, x, y, 0, 0, 0);
-            }
-        }
+        render_focus_move(r, el, x, y);
     } else {
         /* mouse up: a selection survives only when it was actually dragged
          * (or started as a double/triple click). A plain click (press+

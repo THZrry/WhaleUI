@@ -191,6 +191,8 @@ int whaleui_dom_focus(whaleui_dom_element_t* el); /* 对应 el.focus() */
 int whaleui_dom_blur(whaleui_dom_element_t* el);  /* 对应 el.blur() */
 ```
 
+focus()/blur() 移动 `document.activeElement` 镜像并派发非冒泡的 focus/blur(失焦元素先 blur,新元素后 focus;blur() 仅在当前激活元素上触发)。`:focus` 样式跟随引擎焦点(点击 / Tab),渲染窗口上两者下一帧收敛。
+
 ## 几何(对应 getBoundingClientRect)
 
 ```c
@@ -236,7 +238,7 @@ float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 
 支持的事件类型:`click, dblclick, mousedown, mouseup, mousemove, mouseenter, mouseleave, contextmenu, wheel, keydown, keyup, focus, blur, change, input, submit, load, scroll, resize`。
 
-派发模型:DOM 三阶段(捕获自根向下 → 目标 → 冒泡向上);`mouseenter/mouseleave/focus/blur` 为非冒泡事件(仅捕获+目标)。`stopPropagation()` 中断派发,`preventDefault()` 取消引擎默认行为(mousedown 取消按压链、keydown 取消编辑键、wheel 取消滚动)。事件循环已接入除 `submit` 外的全部类型(见 `whaleui.h` 事件段说明)。
+派发模型:DOM 三阶段(捕获自根向下 → 目标 → 冒泡向上);`mouseenter/mouseleave/focus/blur` 为非冒泡事件(仅捕获+目标)。`stopPropagation()` 中断派发,`preventDefault()` 取消引擎默认行为(mousedown 取消按压链、keydown 取消编辑键、wheel 取消滚动)。事件循环已接入全部类型,含 submit(单行输入在 `<form>` 内按 Enter,向 form 派发;引擎不做表单导航)。
 
 ## 用例
 

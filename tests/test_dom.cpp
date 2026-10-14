@@ -256,6 +256,66 @@ int main(void)
         assert(whaleui_dom_set_title(doc, "T1") == 0);
         assert(std::strcmp(whaleui_dom_get_title(doc), "T1") == 0);
 
+        /* document-level event target: registering on the document handle
+         * (the browser's document.addEventListener) lands on the
+         * documentElement; events dispatched inside the tree bubble to it */
+        {
+            static int doc_hits = 0;
+            struct DL {
+                static void on(whaleui_dom_event_t* ev, void* ud) {
+                    (void)ud;
+                    ++doc_hits;
+                    assert(whaleui_dom_event_phase(ev) == 3); /* bubble */
+                }
+            };
+            whaleui_dom_element_t* tdiv = whaleui_dom_get_element_by_id(doc, "a");
+            assert(tdiv != nullptr);
+            assert(whaleui_dom_add_event_listener(
+                       reinterpret_cast<whaleui_dom_element_t*>(doc), "click",
+                       DL::on, nullptr) == 0);
+            /* the listener sits on documentElement; an inner click bubbles up */
+            assert(whaleui_dom_dispatch_event(tdiv, "click") == 0);
+            assert(doc_hits == 1);
+            assert(whaleui_dom_remove_event_listener(
+                       reinterpret_cast<whaleui_dom_element_t*>(doc), "click",
+                       DL::on, nullptr) == 0);
+            assert(whaleui_dom_dispatch_event(tdiv, "click") == 0);
+            assert(doc_hits == 1);
+        }
+
+        /* focus()/blur() are real now: they move the activeElement mirror
+         * and fire the non-bubbling focus/blur pair */
+        {
+            static std::string fev;
+            struct F {
+                static void on(whaleui_dom_event_t* ev, void* ud) {
+                    (void)ud;
+                    fev += whaleui_dom_event_type(ev);
+                    fev += ';';
+                }
+            };
+            whaleui_dom_element_t* inp = whaleui_dom_get_element_by_id(doc, "in");
+            whaleui_dom_element_t* tdiv = whaleui_dom_get_element_by_id(doc, "a");
+            assert(inp && tdiv);
+            assert(whaleui_dom_add_event_listener(inp, "focus", F::on, nullptr) == 0);
+            assert(whaleui_dom_add_event_listener(tdiv, "blur", F::on, nullptr) == 0);
+            assert(whaleui_dom_focus(inp) == 0);
+            assert(whaleui_dom_active_element(doc) == inp);
+            /* refocusing the same element is a no-op (no second event) */
+            assert(whaleui_dom_focus(inp) == 0);
+            /* moving focus elsewhere blurs the previous element first
+             * (a's blur listener only sees blur(a): inp has no blur listener) */
+            assert(whaleui_dom_focus(tdiv) == 0);
+            assert(whaleui_dom_active_element(doc) == tdiv);
+            /* blur() only fires on the ACTIVE element */
+            assert(whaleui_dom_blur(inp) == 0); /* not active: no blur event */
+            assert(whaleui_dom_blur(tdiv) == 0);
+            assert(whaleui_dom_active_element(doc) == whaleui_dom_body(doc));
+            assert(fev == "focus;blur;");
+            assert(whaleui_dom_remove_event_listener(inp, "focus", F::on, nullptr) == 0);
+            assert(whaleui_dom_remove_event_listener(tdiv, "blur", F::on, nullptr) == 0);
+        }
+
         /* element-scoped query */
         whaleui_dom_element_t* a = whaleui_dom_get_element_by_id(doc, "a");
         assert(a != nullptr);

@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,15 @@ bool& g_struct_dirty()
 {
     static bool d = false;
     return d;
+}
+
+/* document.activeElement mirror: per-document focused element (written by
+ * whaleui_dom_set_active - the public focus/blur API and the render click/
+ * Tab focus bookkeeping). Cleared with the document on destroy. */
+std::map<lxb_dom_document*, lxb_dom_element*>& g_active()
+{
+    static std::map<lxb_dom_document*, lxb_dom_element*> m;
+    return m;
 }
 
 lxb_dom_element* as_el(whaleui_dom_element_t* el)
@@ -445,6 +455,9 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
         /* element listeners die with their document (all elements become
          * unreachable; dropping the whole map avoids stale pointers) */
         whaleui_events_clear_all();
+        /* the active-element mirror too: its key (the lxb_dom_document) is
+         * about to be freed, and a later allocation could reuse the address */
+        g_active().erase(dom_doc(doc));
         lxb_html_document_destroy(as_doc(doc));
     }
 }
@@ -1125,9 +1138,37 @@ extern "C" whaleui_dom_element_t* whaleui_dom_head(whaleui_dom_document_t* doc)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_document_t* doc)
 {
-    /* the engine keeps no active-element state at the DOM layer; the body
-     * is the document-level default (matching the empty-document case) */
+    /* the DOM-layer active element (public focus()/blur() + the engine's
+     * click/Tab focus both record it via whaleui_dom_set_active); the body
+     * is the default when nothing was focused, like the browser */
+    lxb_dom_document* d = dom_doc(doc);
+    if (d) {
+        std::map<lxb_dom_document*, lxb_dom_element*>::iterator it =
+            g_active().find(d);
+        if (it != g_active().end() && it->second) {
+            return out(it->second);
+        }
+    }
     return whaleui_dom_body(doc);
+}
+
+/* The single writer of the active-element map: the public focus/blur API
+ * and the render click/Tab focus bookkeeping both call this. */
+extern "C" void whaleui_dom_set_active(struct lxb_dom_element* el)
+{
+    if (!el || !el->node.owner_document) {
+        return;
+    }
+    g_active()[el->node.owner_document] = el;
+}
+
+/* Drop the mirror for a document whose engine focus cleared to nothing
+ * (click outside the tree). Safe on an absent key. */
+extern "C" void whaleui_dom_clear_active(struct lxb_dom_document* doc)
+{
+    if (doc) {
+        g_active().erase(doc);
+    }
 }
 
 extern "C" int whaleui_dom_set_title(whaleui_dom_document_t* doc, const char* title)
@@ -1941,17 +1982,51 @@ extern "C" const char* whaleui_dom_get_value(whaleui_dom_element_t* el)
     return nullptr; /* not a form control */
 }
 
-/* --- focus (engine-level no-op: rendering focus lives in the render
- * context; the DOM layer tracks nothing) --- */
+/* --- focus / blur (document.activeElement mirror + non-bubbling events) ---
+ *
+ * The engine's real focus lives in the render context (click / Tab move it
+ * through whaleui_dom_set_active). The public API records the DOM-layer
+ * state + fires focus/blur (non-bubbling, like the browser); :focus STYLES
+ * sync on the next frame when the window is visible (the render focus is
+ * only moved by real input). */
 
 extern "C" int whaleui_dom_focus(whaleui_dom_element_t* el)
 {
-    return as_el(el) ? 0 : -1;
+    lxb_dom_element* e = as_el(el);
+    if (!e) {
+        return -1;
+    }
+    lxb_dom_document* d = e->node.owner_document;
+    lxb_dom_element* old = nullptr;
+    std::map<lxb_dom_document*, lxb_dom_element*>::iterator it = g_active().find(d);
+    if (it != g_active().end()) {
+        old = it->second;
+    }
+    if (old == e) {
+        return 0; /* already the active element */
+    }
+    if (old) {
+        WUI_DOM_FIRE_NB(out(old), "blur", 0, 0, 0, 0, 0, 0);
+    }
+    whaleui_dom_set_active(e);
+    WUI_DOM_FIRE_NB(el, "focus", 0, 0, 0, 0, 0, 0);
+    return 0;
 }
 
 extern "C" int whaleui_dom_blur(whaleui_dom_element_t* el)
 {
-    return as_el(el) ? 0 : -1;
+    lxb_dom_element* e = as_el(el);
+    if (!e) {
+        return -1;
+    }
+    lxb_dom_document* d = e->node.owner_document;
+    std::map<lxb_dom_document*, lxb_dom_element*>::iterator it = g_active().find(d);
+    if (it == g_active().end() || it->second != e) {
+        return 0; /* only the active element blur-fires */
+    }
+    it->second = nullptr;
+    WUI_DOM_FIRE_NB(el, "blur", 0, 0, 0, 0, 0, 0);
+    return 0;
 }
 
 /* --- geometry: from the last layout tree (render module) --- */

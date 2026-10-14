@@ -1115,3 +1115,24 @@ SOLVED
 - **教训(TIPS)**: 事件接线顺带抓到 `simple_match` 复合类解析 bug —— `.a.b` 的 class 段只停在 `#`, "div.x.y" 把 "x.y" 当单个 class 永不匹配(test_cpp 才发现; test_dom 此前无复合类用例, 已补 `.x.y`/`div.x.y` 回归)。手写选择器子集与 `whaleui_style_match` 的语法必须同步, 改一边先查另一边。
 
 验证: 全量构建 ok(full/lite/minimal); 12/12 套件 exit=0(新增 test_cpp)。
+
+# <42>: document 级事件目标 + activeElement/focus/blur 真实化 + submit
+
+SOLVED
+
+## A. document.addEventListener 语义(事件目标解析)
+
+- 公开 API 的句柄不透明, 但 document 句柄 == lxb_html_document*(dom.h 约定), 所以 `whaleui_dom_add_event_listener((whaleui_dom_element_t*)doc, ...)` 可识别: events.cpp 新增 `resolve_target()` —— 仅当节点自身 type == DOCUMENT 时解析为 documentElement(浏览器的 document 事件目标), 其余走元素路径。add/remove/dispatch 三处统一走它, 行为对齐 document.addEventListener 且不破坏元素监听。
+- 意义: 应用挂 document 级 click/load/keydown 不再需要"自己找 body/root"; C++ 侧 `Document.AddEventListener/RemoveEventListener/DispatchEvent` 直接转发同一入口。
+
+## B. activeElement + focus()/blur() 从 no-op 变真实
+
+- DOM 层新增 per-document 活动元素 map(`dom.cpp` 的 `g_active()`, 文档销毁时按 key 清理, 防地址复用脏读);`whaleui_dom_set_active/clear_active`(dom.h)是唯一写点。
+- 写点两处: (1) public `whaleui_dom_focus/blur` —— focus 先 blur 旧的、再 focus 新的、无变化时 no-op;blur 仅在当前激活元素上触发事件; (2) render 新增 `render_focus_move()`(点击 / 滚动条拖拽 / Tab 经 begin_editing 三处共用), 把引擎 focus_el 与 DOM 镜像 + 非冒泡 focus/blur 一次性同步 —— 消除了此前三处重复的"手写 blur/focus 派发"。
+- 边界: `:focus` 样式仍跟引擎 focus_el;未渲染窗口上 API focus 只动镜像与事件, 不动样式(whaleui.h 注释已写明)。
+
+## C. submit
+
+- 单行输入在 `<form>` 祖先内按 Enter: `render_handle_key` 的 ENTER 分支先 commit_change, 再向上找最近的 `<form>` 派发 submit(冒泡); 多行可编辑仍插换行。引擎不做表单导航, preventDefault 是应用挂点。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom 新增 document 目标/焦点序列断言)。

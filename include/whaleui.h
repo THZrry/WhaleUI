@@ -574,7 +574,12 @@ const char* whaleui_dom_tag_name(whaleui_dom_element_t* el);
 
 /* --- focus --- */
 
-/* Focus/blur an element (mirrors el.focus() / el.blur()). */
+/* Focus/blur an element (mirrors el.focus() / el.blur()): moves the
+ * document.activeElement mirror and fires the non-bubbling focus/blur pair
+ * (blur on the element that was active, focus on the new one). blur() only
+ * fires when el is the active element, like the browser. :focus STYLES
+ * follow the engine focus (click / Tab) - on a rendered window the two
+ * converge on the next frame. */
 int whaleui_dom_focus(whaleui_dom_element_t* el);
 int whaleui_dom_blur(whaleui_dom_element_t* el);
 
@@ -611,13 +616,13 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
  * receives a transient event object valid for the duration of the call
  * only.
  *
- * Engine wiring: all types above except submit are dispatched by the event
- * loop (mousemove/enter/leave from hover changes, wheel with preventDefault
+ * Engine wiring: all types above are dispatched by the event loop
+ * (mousemove/enter/leave from hover changes, wheel with preventDefault
  * gating the scroll, focus/blur on element focus moves, input/change on
  * edit commits and control toggles, scroll on actual scrolls, load after
  * document loads, resize on window resizes, dblclick/contextmenu from the
- * mouse buttons). submit has no form-submit behavior yet (dispatchable
- * manually). */
+ * mouse buttons, submit from Enter inside a <form> - the engine performs
+ * no form navigation; preventDefault is the app hook). */
 
 typedef struct whaleui_dom_event whaleui_dom_event_t;
 
@@ -625,7 +630,9 @@ typedef struct whaleui_dom_event whaleui_dom_event_t;
 typedef void (*whaleui_event_cb)(whaleui_dom_event_t* ev, void* userdata);
 
 /* Register a listener. Returns 0 on success (duplicate type+cb+userdata is
- * a no-op success). */
+ * a no-op success). Passing a document handle (cast to whaleui_dom_element_t*)
+ * registers on the document-level target, whose event path is the
+ * documentElement - like document.addEventListener. */
 int whaleui_dom_add_event_listener(whaleui_dom_element_t* el, const char* type,
                                    whaleui_event_cb cb, void* userdata);
 /* Register a capture-phase listener (fires on the way down the ancestor

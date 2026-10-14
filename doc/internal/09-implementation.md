@@ -99,7 +99,8 @@ data:), outline, float/clear, transform-origin(仅默认中心)
 - **lite/minimal**:滚动/选择/编辑/IME 与 full 功能一致;文本度量与命中测试在 full 用 `TTF_Text`,lite/minimal 用 stb_truetype 逐字度量(无 kerning/连字,精度近似)。
 - **编辑键简化**:Up/Down 按行首跳转(未保持列位置);未处理 Ctrl 组合除 A 外的快捷键。
 - **主题**:内置 7 套主题样式(Fluent / Metro / Material / Classic / Aero / GTK / macOS),各含深浅色变量,全局生效(包括未自定义样式的标签);通过 `whaleui_app_set_theme_style` 或页面 `<select>` 切换。
-- **DOM API 剩余未实现**:mousemove 等类型的真实派发全接入、`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败)、focus/blur 为 DOM 层 no-op(焦点在 render 层)。选择器查询已与级联同语义(`whaleui_style_match`:后代/子/相邻/兄弟`/ `[attr]/伪类/逗号分支;`~` 兄弟暂由级联侧支持,查询侧走同一匹配器)。完整迁移蓝图见 `11-ecs.md`。
+- **DOM API 剩余未实现**:`whaleui_dom_get_bounding_client_rect` 依赖最近渲染帧(未渲染返回失败);`submit` 已接入(单行输入 Enter 向 `<form>` 派发,无表单导航)。选择器查询已与级联同语义(`whaleui_style_match`:后代/子/相邻/兄弟/`[attr]`/伪类/逗号分支)。focus/blur 已真实化(DOM 镜像 + 非冒泡事件;`:focus` 样式仍跟引擎焦点)。完整迁移蓝图见 `11-ecs.md`。
+- **C++ API**:`include/whaleui.hpp`(namespace `whaleui`)是 C++ 门面,`whaleui::App/Window/Document/Element/Event/ComputedStyle` 为 C ABI 的 inline 薄封装(C ABI 是其导出层);所有权与语义同 C 契约,`tests/test_cpp.cpp` 覆盖。
 
 ## 运行方式
 

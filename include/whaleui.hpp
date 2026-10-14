@@ -306,6 +306,24 @@ public:
         return ComputedStyle(whaleui_dom_get_computed_style(el.handle(), pseudo));
     }
 
+    /* document-level events (document.addEventListener mirror): the
+     * document's event target is its documentElement */
+    bool AddEventListener(const std::string& type, whaleui_event_cb cb, void* ud,
+                          bool capture = false) const {
+        return whaleui_dom_add_event_listener_ex(
+                   reinterpret_cast<whaleui_dom_element_t*>(h_), type.c_str(),
+                   cb, ud, capture ? 1 : 0) == 0;
+    }
+    bool RemoveEventListener(const std::string& type, whaleui_event_cb cb, void* ud) const {
+        return whaleui_dom_remove_event_listener(
+                   reinterpret_cast<whaleui_dom_element_t*>(h_), type.c_str(),
+                   cb, ud) == 0;
+    }
+    bool DispatchEvent(const std::string& type) const {
+        return whaleui_dom_dispatch_event(
+                   reinterpret_cast<whaleui_dom_element_t*>(h_), type.c_str()) == 0;
+    }
+
 private:
     static std::vector<Element> Drain(whaleui_dom_list_t* list) {
         std::vector<Element> out;

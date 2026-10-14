@@ -66,6 +66,15 @@ void whaleui_dom_mark_dirty_struct(struct lxb_dom_element* el);
 /* Returns and clears the structural flag (once per frame). */
 int whaleui_dom_take_struct_dirty(void);
 
+/* The DOM-layer active element (document.activeElement mirror). Single
+ * writer: whaleui_dom_focus/blur (public API) and the render focus
+ * bookkeeping call this; whaleui_dom_active_element reads it. nullptr
+ * falls back to the document body, like the browser. */
+void whaleui_dom_set_active(struct lxb_dom_element* el);
+/* Clear the mirror on `doc` (focus moved to nothing - a click outside any
+ * focusable element). */
+void whaleui_dom_clear_active(struct lxb_dom_document* doc);
+
 #ifdef __cplusplus
 }
 #endif
