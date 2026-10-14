@@ -1136,3 +1136,20 @@ SOLVED
 - 单行输入在 `<form>` 祖先内按 Enter: `render_handle_key` 的 ENTER 分支先 commit_change, 再向上找最近的 `<form>` 派发 submit(冒泡); 多行可编辑仍插换行。引擎不做表单导航, preventDefault 是应用挂点。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom 新增 document 目标/焦点序列断言)。
+
+# <43>: Canvas 文本(fillText/strokeText/measureText) + 文本状态(font/align/baseline)
+
+SOLVED
+
+## 设计
+
+- 文本光栅放在独立模块 `src/canvas/canvas_text.cpp` 而非 render_text: canvas 可以由应用代码单独填充, 没有页面文字参与, 但必须复用同一字体注册表(`whaleui_font_registry_get`)+ SDL3_ttf, 才与页面文字一致。测量 `TTF_GetStringSize`, 光栅 `TTF_RenderText_Blended` -> RGBA32 -> 直 alpha 0xAARRGGBB; 缓存 key 为 (family, size, style) 的 TTF_Font(与 render_text 的 per-(family) 缓存同理)。
+- `font` 简写解析在本模块: 可选 bold/italic 前缀 + 数字尺寸(px, 无级联无法解析 em/%/pt 单位 -> 回退默认) + 剩余串为 family 列表; generic 关键字(sans-serif 等)/未命中回退到首个可加载注册字体。
+- 定位: 原点(x,y)过当前变换, 再叠 textAlign(start/end/left/right/center)与 textBaseline(alphabetic/top|middle/bottom/hanging|ideographic); alphabetic 用 `-ascent` 偏移(表面顶在基线上方 ascent 处)。strokeText 近似为字形轮廓(edge-only, 4 邻域 alpha 判边)——非真路径描边, 记为已知近似。
+
+## 变体边界(TIPS)
+
+- **canvas 文本只有 Full 变体可用**: lite/minimal 没有 SDL3_ttf, `whaleui_canvas_text_measure/raster` 直接返回 -2; test_canvas 按 `WHALEUI_BUILD_FULL` 条件断言(Full: 测量/宽度单调/ink>0; lite/minimal: ==-2)。canvas 的其他 API(fill/path/ImageData)三变体一致。
+- **lite/minimal 构建的强制重编坑**: 改公共头 canvas.h 后 `xmake b -y` 可能对 lite/minimal 命中缓存假通过——touch 受影响 .cpp(`copy /b file +,,`)确认; 本轮验证 4 个新 API 全绿靠的是显式 touch 后的全量重建。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_canvas 新增文本闭环断言)。

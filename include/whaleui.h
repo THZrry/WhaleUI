@@ -773,6 +773,23 @@ int whaleui_canvas_set_fill_style(whaleui_canvas_context_t* ctx, const char* sty
 int whaleui_canvas_set_stroke_style(whaleui_canvas_context_t* ctx, const char* style);
 int whaleui_canvas_set_line_width(whaleui_canvas_context_t* ctx, float w);
 int whaleui_canvas_set_global_alpha(whaleui_canvas_context_t* ctx, float a);
+/* font shorthand ("bold 16px Arial, sans-serif"); text_align is
+ * start|end|left|right|center; text_baseline is
+ * alphabetic|top|middle|bottom|hanging|ideographic. */
+int whaleui_canvas_set_font(whaleui_canvas_context_t* ctx, const char* font);
+int whaleui_canvas_set_text_align(whaleui_canvas_context_t* ctx, const char* align);
+int whaleui_canvas_set_text_baseline(whaleui_canvas_context_t* ctx, const char* baseline);
+
+/* text (fillText/strokeText/measureText). Text is positioned by the current
+ * transform + textAlign/textBaseline; x/y is the baseline origin for the
+ * default alphabetic baseline. measureText fills out_w/out_h (advance width
+ * and line height). */
+int whaleui_canvas_fill_text(whaleui_canvas_context_t* ctx, const char* text,
+                             float x, float y);
+int whaleui_canvas_stroke_text(whaleui_canvas_context_t* ctx, const char* text,
+                               float x, float y);
+int whaleui_canvas_measure_text(whaleui_canvas_context_t* ctx, const char* text,
+                                int* out_w, int* out_h);
 
 /* rects */
 int whaleui_canvas_fill_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h);

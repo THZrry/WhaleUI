@@ -92,6 +92,97 @@ int main(void)
         whaleui_image_data_destroy(blank);
         assert(whaleui_canvas_create_image_data(ctx, 0, 1) == nullptr);
 
+        /* text state setters (validation) */
+        assert(whaleui_canvas_set_font(ctx, "bold 16px Arial, sans-serif") == 0);
+        assert(whaleui_canvas_set_font(ctx, nullptr) != 0);
+        assert(whaleui_canvas_set_text_align(ctx, "center") == 0);
+        assert(whaleui_canvas_set_text_align(ctx, "sideways") != 0);
+        assert(whaleui_canvas_set_text_baseline(ctx, "middle") == 0);
+        assert(whaleui_canvas_set_text_baseline(ctx, "sideways") != 0);
+
+        /* text measure + fill: needs the SDL3_ttf backend (full) and a
+         * registered font; assert the closed loop where available. TTF
+         * lives behind app_create (platform_init -> TTF_Init), so spin up an
+         * app + the platform fonts just for this section. */
+        whaleui_app_t* tapp = whaleui_app_create();
+        if (tapp) {
+            whaleui_font_register_system_defaults();
+        }
+        {
+            int tw = 0, th = 0;
+            int mrc = whaleui_canvas_measure_text(ctx, "Hello", &tw, &th);
+#ifdef WHALEUI_BUILD_FULL
+            assert(tapp != nullptr); /* TTF_Init + system fonts present */
+            assert(mrc == 0);
+            assert(tw > 0 && th > 0);
+            /* a longer string measures wider */
+            int tw2 = 0, th2 = 0;
+            assert(whaleui_canvas_measure_text(ctx, "Hello world", &tw2,
+                                               &th2) == 0);
+            assert(tw2 > tw);
+            /* a bigger size measures wider */
+            assert(whaleui_canvas_set_font(ctx, "32px Arial") == 0);
+            int tw3 = 0, th3 = 0;
+            assert(whaleui_canvas_measure_text(ctx, "Hello", &tw3, &th3) == 0);
+            assert(tw3 > tw);
+            assert(whaleui_canvas_set_font(ctx, "16px Arial") == 0);
+            /* fillText paints ink somewhere in the box */
+            assert(whaleui_canvas_set_size(c, 200, 60) == 0);
+            assert(whaleui_canvas_set_fill_style(ctx, "#FFFFFF") == 0);
+            assert(whaleui_canvas_fill_text(ctx, "Hello", 2, 40) == 0);
+            whaleui_image_data_t* timg =
+                whaleui_canvas_get_image_data(ctx, 0, 0, 200, 60);
+            assert(timg != nullptr);
+            int ink = 0;
+            for (int y = 0; y < 60; ++y)
+                for (int x = 0; x < 200; ++x)
+                    if ((whaleui_image_data_get(timg, x, y) >> 24) != 0) ++ink;
+            assert(ink > 0);
+            whaleui_image_data_destroy(timg);
+            /* strokeText also paints (outline) */
+            assert(whaleui_canvas_clear_rect(ctx, 0, 0, 200, 60) == 0);
+            assert(whaleui_canvas_set_stroke_style(ctx, "#FF0000") == 0);
+            assert(whaleui_canvas_stroke_text(ctx, "Hi", 2, 40) == 0);
+            whaleui_image_data_t* simg =
+                whaleui_canvas_get_image_data(ctx, 0, 0, 200, 60);
+            assert(simg != nullptr);
+            int sink = 0;
+            for (int y = 0; y < 60; ++y)
+                for (int x = 0; x < 200; ++x)
+                    if ((whaleui_image_data_get(simg, x, y) >> 24) != 0) ++sink;
+            assert(sink > 0);
+            whaleui_image_data_destroy(simg);
+            /* textAlign center shifts the painted run right of a left run */
+            assert(whaleui_canvas_clear_rect(ctx, 0, 0, 200, 60) == 0);
+            assert(whaleui_canvas_set_text_align(ctx, "start") == 0);
+            assert(whaleui_canvas_fill_text(ctx, "M", 2, 40) == 0);
+            int left_ink = 0;
+            whaleui_image_data_t* li = whaleui_canvas_get_image_data(ctx, 0, 0, 100, 60);
+            for (int y = 0; y < 60; ++y)
+                for (int x = 0; x < 100; ++x)
+                    if ((whaleui_image_data_get(li, x, y) >> 24) != 0) ++left_ink;
+            whaleui_image_data_destroy(li);
+            assert(whaleui_canvas_clear_rect(ctx, 0, 0, 200, 60) == 0);
+            assert(whaleui_canvas_set_text_align(ctx, "center") == 0);
+            assert(whaleui_canvas_fill_text(ctx, "M", 100, 40) == 0);
+            int ctr_ink = 0;
+            whaleui_image_data_t* ci = whaleui_canvas_get_image_data(ctx, 100, 0, 100, 60);
+            for (int y = 0; y < 60; ++y)
+                for (int x = 0; x < 100; ++x)
+                    if ((whaleui_image_data_get(ci, x, y) >> 24) != 0) ++ctr_ink;
+            whaleui_image_data_destroy(ci);
+            assert(ctr_ink > 0); /* center lands on the right half of the box */
+            assert(whaleui_canvas_set_text_align(ctx, "start") == 0);
+#else
+            assert(mrc == -2); /* lite/minimal: no TTF canvas backend yet */
+#endif
+            assert(whaleui_canvas_measure_text(nullptr, "x", &tw, &th) != 0);
+            assert(whaleui_canvas_fill_text(ctx, nullptr, 0, 0) != 0);
+        }
+        if (tapp) {
+            whaleui_app_destroy(tapp);
+        }
+
         whaleui_dom_document_destroy(doc);
     }
 

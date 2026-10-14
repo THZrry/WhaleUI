@@ -2,10 +2,11 @@
  *
  * Browser mapping: HTMLCanvasElement (width/height/getContext) +
  * CanvasRenderingContext2D subset (fillRect/strokeRect/clearRect, path
- * fill/stroke, save/restore/transform, ImageData get/put). Backing store is
- * CPU 0xAARRGGBB; the render paint path blits it like an <img> bitmap.
- * Text (fillText/measureText) and drawImage are follow-ups (need the font
- * raster hook); they return failure cleanly for now. */
+ * fill/stroke, save/restore/transform, ImageData get/put, fillText/
+ * strokeText/measureText). Backing store is CPU 0xAARRGGBB; the render
+ * paint path blits it like an <img> bitmap. Text rasterization lives in
+ * canvas_text.cpp (SDL3_ttf on full; lite/minimal report failure).
+ * drawImage is a follow-up (needs the image decode + blit chain). */
 
 #include "canvas/canvas.h"
 #include "dom/dom.h"
@@ -376,6 +377,40 @@ extern "C" int whaleui_canvas_set_global_alpha(whaleui_canvas_context_t* ctx, fl
     return 0;
 }
 
+extern "C" int whaleui_canvas_set_font(whaleui_canvas_context_t* ctx, const char* font)
+{
+    if (!ctx || !font) return -1;
+    ctx->font = font;
+    return 0;
+}
+
+extern "C" int whaleui_canvas_set_text_align(whaleui_canvas_context_t* ctx, const char* align)
+{
+    if (!ctx || !align) return -1;
+    static const char* kOk[] = {"start", "end", "left", "right", "center"};
+    bool valid = false;
+    for (size_t i = 0; i < sizeof(kOk) / sizeof(kOk[0]); ++i) {
+        if (std::strcmp(align, kOk[i]) == 0) { valid = true; break; }
+    }
+    if (!valid) return -2;
+    ctx->text_align = align;
+    return 0;
+}
+
+extern "C" int whaleui_canvas_set_text_baseline(whaleui_canvas_context_t* ctx, const char* baseline)
+{
+    if (!ctx || !baseline) return -1;
+    static const char* kOk[] = {"alphabetic", "top", "middle", "bottom",
+                                "hanging", "ideographic"};
+    bool valid = false;
+    for (size_t i = 0; i < sizeof(kOk) / sizeof(kOk[0]); ++i) {
+        if (std::strcmp(baseline, kOk[i]) == 0) { valid = true; break; }
+    }
+    if (!valid) return -2;
+    ctx->text_baseline = baseline;
+    return 0;
+}
+
 extern "C" int whaleui_canvas_fill_rect(whaleui_canvas_context_t* ctx, float x, float y, float w, float h)
 {
     if (!ctx) return -1;
@@ -604,6 +639,117 @@ extern "C" int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whal
             if (dx >= 0 && dy >= 0 && dx < ctx->w && dy < ctx->h)
                 ctx->px[(size_t)dy * ctx->w + dx] = d->px[(size_t)j * d->w + i];
         }
+    ctx->seq++;
+    whaleui_dom_mark_dirty(ctx->el);
+    return 0;
+}
+
+/* --- text (fillText/strokeText/measureText) --- */
+
+/* blit a straight-alpha glyph raster into the backing store with the
+ * context's global alpha; `stroke` draws the raster's outline instead
+ * (approximated by stamping the alpha mask's edge - canvas strokeText on
+ * glyphs is rare and the exact outline needs the font's path data) */
+static void canvas_blit_text(whaleui_canvas_context_t* ctx,
+                             std::vector<unsigned int>& px, int w, int h,
+                             int ox, int oy, unsigned int color, bool stroke)
+{
+    for (int j = 0; j < h; ++j) {
+        int dy = oy + j;
+        if (dy < 0 || dy >= ctx->h) continue;
+        for (int i = 0; i < w; ++i) {
+            int dx = ox + i;
+            if (dx < 0 || dx >= ctx->w) continue;
+            unsigned int s = px[(size_t)j * w + i];
+            unsigned int a = (s >> 24) & 0xFF;
+            if (!a) continue;
+            unsigned int col;
+            if (stroke) {
+                /* edge-only: keep the pixel when a 4-neighbour is empty */
+                bool edge = i == 0 || i == w - 1 || j == 0 || j == h - 1;
+                if (!edge) {
+                    unsigned int up = px[(size_t)(j - 1) * w + i] >> 24;
+                    unsigned int dn = px[(size_t)(j + 1) * w + i] >> 24;
+                    unsigned int lf = px[(size_t)j * w + i - 1] >> 24;
+                    unsigned int rt = px[(size_t)j * w + i + 1] >> 24;
+                    edge = !up || !dn || !lf || !rt;
+                }
+                if (!edge) continue;
+                col = ctx->stroke_style;
+            } else {
+                col = color;
+            }
+            blend_px(&ctx->px[(size_t)dy * ctx->w + dx], col,
+                     (a / 255.0f) * ctx->global_alpha);
+        }
+    }
+}
+
+/* text origin: apply the transform, then textAlign/textBaseline */
+static void canvas_text_origin(whaleui_canvas_context_t* ctx, float x, float y,
+                               int w, int h, int asc, float* out_x,
+                               float* out_y)
+{
+    float tx, ty;
+    canvas_apply_transform(ctx, x, y, &tx, &ty);
+    if (ctx->text_align == "center") tx -= w * 0.5f;
+    else if (ctx->text_align == "right" || ctx->text_align == "end") tx -= w;
+    /* alphabetic (default): the surface top sits `asc` above the baseline */
+    if (ctx->text_baseline == "top" || ctx->text_baseline == "hanging") {
+        ty -= 0;
+    } else if (ctx->text_baseline == "middle") {
+        ty -= h * 0.5f;
+    } else if (ctx->text_baseline == "bottom" || ctx->text_baseline == "ideographic") {
+        ty -= h;
+    } else {
+        ty -= asc;
+    }
+    *out_x = tx;
+    *out_y = ty;
+}
+
+extern "C" int whaleui_canvas_measure_text(whaleui_canvas_context_t* ctx,
+                                           const char* text, int* out_w,
+                                           int* out_h)
+{
+    if (!ctx || !text || !out_w || !out_h) return -1;
+    return whaleui_canvas_text_measure(text, ctx->font.c_str(), out_w, out_h);
+}
+
+extern "C" int whaleui_canvas_fill_text(whaleui_canvas_context_t* ctx,
+                                        const char* text, float x, float y)
+{
+    if (!ctx || !text) return -1;
+    std::vector<unsigned int> px;
+    int w = 0, h = 0, xo = 0, yo = 0;
+    int rc = whaleui_canvas_text_raster(text, ctx->font.c_str(),
+                                        ctx->fill_style, px, &w, &h, &xo, &yo);
+    if (rc != 0) return rc;
+    if (w <= 0 || h <= 0) return 0; /* empty text: nothing to draw */
+    float ox = 0, oy = 0;
+    canvas_text_origin(ctx, x, y, w, h, -yo, &ox, &oy);
+    canvas_blit_text(ctx, px, w, h, static_cast<int>(ox + xo),
+                     static_cast<int>(oy), ctx->fill_style, false);
+    ctx->seq++;
+    whaleui_dom_mark_dirty(ctx->el);
+    return 0;
+}
+
+extern "C" int whaleui_canvas_stroke_text(whaleui_canvas_context_t* ctx,
+                                          const char* text, float x, float y)
+{
+    if (!ctx || !text) return -1;
+    std::vector<unsigned int> px;
+    int w = 0, h = 0, xo = 0, yo = 0;
+    int rc = whaleui_canvas_text_raster(text, ctx->font.c_str(),
+                                        ctx->stroke_style, px, &w, &h, &xo,
+                                        &yo);
+    if (rc != 0) return rc;
+    if (w <= 0 || h <= 0) return 0;
+    float ox = 0, oy = 0;
+    canvas_text_origin(ctx, x, y, w, h, -yo, &ox, &oy);
+    canvas_blit_text(ctx, px, w, h, static_cast<int>(ox + xo),
+                     static_cast<int>(oy), ctx->stroke_style, true);
     ctx->seq++;
     whaleui_dom_mark_dirty(ctx->el);
     return 0;

@@ -30,11 +30,19 @@ int whaleui_canvas_set_fill_style(whaleui_canvas_context_t* ctx, const char* sty
 int whaleui_canvas_set_stroke_style(whaleui_canvas_context_t* ctx, const char* style);
 int whaleui_canvas_set_line_width(whaleui_canvas_context_t* ctx, float w);
 int whaleui_canvas_set_global_alpha(whaleui_canvas_context_t* ctx, float a);
+/* font 简写("bold 16px Arial, sans-serif");text_align =
+ * start|end|left|right|center;text_baseline =
+ * alphabetic|top|middle|bottom|hanging|ideographic */
+int whaleui_canvas_set_font(whaleui_canvas_context_t* ctx, const char* font);
+int whaleui_canvas_set_text_align(whaleui_canvas_context_t* ctx, const char* align);
+int whaleui_canvas_set_text_baseline(whaleui_canvas_context_t* ctx, const char* baseline);
 ```
 
 颜色支持 `#RRGGBB` / `#RGB` / `#AARRGGBB` / `rgb(r,g,b)` / 有限命名色
 (black/white/red/green/lime/blue/yellow/cyan/magenta/gray/transparent)。
 渐变/图案暂不支持,`set_*` 遇到不支持的写法时保留旧值。
+`set_text_align/set_text_baseline` 传非法值返回非 0(浏览器会忽略非法值,
+此处以失败码区分)。
 
 ## 矩形
 
@@ -76,6 +84,20 @@ int whaleui_canvas_rotate(whaleui_canvas_context_t* ctx, float angle);
 
 矩阵语义与浏览器一致(`x' = a*x + c*y + e`)。空栈 `restore` 返回失败。
 
+## 文本(fillText/strokeText/measureText)
+
+```c
+int whaleui_canvas_fill_text(whaleui_canvas_context_t* ctx, const char* text, float x, float y);
+int whaleui_canvas_stroke_text(whaleui_canvas_context_t* ctx, const char* text, float x, float y);
+/* measureText 返回 advance 宽与行高 */
+int whaleui_canvas_measure_text(whaleui_canvas_context_t* ctx, const char* text, int* out_w, int* out_h);
+```
+
+`x/y` 是文本原点(默认 alphabetic 基线);`text_align`/`text_baseline` 与当前变换
+一并生效。文本光栅走 SDL3_ttf + 字体注册表(与页面文字同一字体链),`fill`
+用 `fillStyle` 颜色、`stroke` 画字形轮廓(edge-only,近似)。**lite/minimal 变体
+暂无 TTF 后端,三个 API 返回 -2**(Full 构建可用;`test_canvas` 按变体断言)。
+
 ## ImageData(像素 0xAARRGGBB)
 
 ```c
@@ -88,8 +110,8 @@ whaleui_image_data_t* whaleui_canvas_get_image_data(whaleui_canvas_context_t* ct
 int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whaleui_image_data_t* d, int x, int y);
 ```
 
-`get/put` 越界像素按透明黑/裁剪处理。`fillText/measureText/drawImage`
-暂未实现(需要字体光栅钩子与图片解码链),后续补齐。
+`get/put` 越界像素按透明黑/裁剪处理。`drawImage` 暂未实现(需要图片解码
+链),后续补齐。
 
 ## 用例
 

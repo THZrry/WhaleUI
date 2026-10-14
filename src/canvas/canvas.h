@@ -57,6 +57,32 @@ struct whaleui_image_data
     std::vector<unsigned int> px;
 };
 
+/* --- text backend (canvas_text.cpp) ---
+ *
+ * Canvas 2D text needs a rasterizer outside the render context (a canvas
+ * may be filled from application code with no page text involved). Full
+ * builds use SDL3_ttf through the same font registry the page text uses;
+ * lite/minimal have no TTF backend yet, so the text APIs report failure
+ * there instead of drawing wrong glyphs.
+ *
+ * font_css is the CanvasRenderingContext2D `font` string ("bold 16px
+ * Arial"): the parser reads an optional weight/style prefix, the size in
+ * px and the family list. These are internal C++ helpers (std::vector
+ * out-param), not part of the C ABI. */
+
+/* Measure UTF-8 text. Returns 0 on success (w/h set). */
+int whaleui_canvas_text_measure(const char* utf8, const char* font_css,
+                                int* out_w, int* out_h);
+
+/* Rasterize UTF-8 text into straight-alpha 0xAARRGGBB pixels. On success
+ * out_px is (out_w x out_h) and (xoff, yoff) is the top-left offset from
+ * the text origin (baseline start). Returns 0 on success. */
+int whaleui_canvas_text_raster(const char* utf8, const char* font_css,
+                               unsigned int color,
+                               std::vector<unsigned int>& out_px,
+                               int* out_w, int* out_h,
+                               int* out_xoff, int* out_yoff);
+
 /* element -> context registry (owned here; element destroy drops it) */
 whaleui_canvas_context_t* whaleui_canvas_context_for(struct lxb_dom_element* el);
 void whaleui_canvas_drop(struct lxb_dom_element* el);
