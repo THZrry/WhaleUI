@@ -824,6 +824,22 @@ int whaleui_image_data_set(whaleui_image_data_t* d, int x, int y, unsigned int a
 whaleui_image_data_t* whaleui_canvas_get_image_data(whaleui_canvas_context_t* ctx, int x, int y, int w, int h);
 int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whaleui_image_data_t* d, int x, int y);
 
+/* drawImage (browser 9-arg signature): source is another canvas context
+ * (whaleui_canvas_draw_image) or an ImageData (whaleui_canvas_draw_image_data).
+ * sw/sh <= 0 selects the whole remainder of the source; dw/dh <= 0 keeps the
+ * source size. Sampling respects the current transform (affine inverse,
+ * nearest-neighbour) and globalAlpha. Unlike put_image_data (raw copy at
+ * device pixels), drawImage composites like the browser. Decoding <img>/
+ * data-URI sources is a follow-up; use get_image_data + draw_image_data. */
+int whaleui_canvas_draw_image(whaleui_canvas_context_t* ctx,
+                              const whaleui_canvas_context_t* src,
+                              float sx, float sy, float sw, float sh,
+                              float dx, float dy, float dw, float dh);
+int whaleui_canvas_draw_image_data(whaleui_canvas_context_t* ctx,
+                                   const whaleui_image_data_t* img,
+                                   float sx, float sy, float sw, float sh,
+                                   float dx, float dy, float dw, float dh);
+
 /* ======================= WebGPU (navigator.gpu C-port, stub backend) ======================= */
 
 typedef struct whaleui_gpu_adapter whaleui_gpu_adapter_t;

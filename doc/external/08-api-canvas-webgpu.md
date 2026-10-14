@@ -110,8 +110,26 @@ whaleui_image_data_t* whaleui_canvas_get_image_data(whaleui_canvas_context_t* ct
 int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whaleui_image_data_t* d, int x, int y);
 ```
 
-`get/put` 越界像素按透明黑/裁剪处理。`drawImage` 暂未实现(需要图片解码
-链),后续补齐。
+`get/put` 越界像素按透明黑/裁剪处理。
+
+## drawImage(源:另一 canvas 或 ImageData)
+
+```c
+/* 9 参签名(浏览器):源矩形 sw/sh <= 0 取源剩余尺寸,
+ * 目标 dw/dh <= 0 取源尺寸;受当前变换影响,最近邻采样,globalAlpha 合成 */
+int whaleui_canvas_draw_image(whaleui_canvas_context_t* ctx,
+                              const whaleui_canvas_context_t* src,
+                              float sx, float sy, float sw, float sh,
+                              float dx, float dy, float dw, float dh);
+int whaleui_canvas_draw_image_data(whaleui_canvas_context_t* ctx,
+                                   const whaleui_image_data_t* img,
+                                   float sx, float sy, float sw, float sh,
+                                   float dx, float dy, float dw, float dh);
+```
+
+目标矩形按当前变换映射(逆变换逐像素采样,奇异矩阵不绘制)。自拷贝返回
+非 0(浏览器抛异常)。`<img>` / data-URI 解码源为后续项;当前源类型只支持
+canvas 上下文与 ImageData(像素可从 `get_image_data` 取得后自行搬运)。
 
 ## 用例
 

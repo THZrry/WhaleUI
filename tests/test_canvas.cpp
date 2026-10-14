@@ -179,6 +179,59 @@ int main(void)
             assert(whaleui_canvas_measure_text(nullptr, "x", &tw, &th) != 0);
             assert(whaleui_canvas_fill_text(ctx, nullptr, 0, 0) != 0);
         }
+
+        /* drawImage: source is another canvas + an ImageData */
+        {
+            /* a 4x4 source canvas filled red */
+            whaleui_dom_element_t* c2 = whaleui_dom_create_element(doc, "canvas");
+            assert(whaleui_canvas_set_size(c2, 4, 4) == 0);
+            whaleui_canvas_context_t* src = whaleui_canvas_get_context(c2, "2d");
+            assert(src != nullptr);
+            assert(whaleui_canvas_set_fill_style(src, "#FF0000") == 0);
+            assert(whaleui_canvas_fill_rect(src, 0, 0, 4, 4) == 0);
+
+            /* ctx is still 8x8 transparent black from the text block's
+             * set_size(2,2) earlier - resize back and clear */
+            assert(whaleui_canvas_set_global_alpha(ctx, 1.0f) == 0);
+            assert(whaleui_canvas_set_size(c, 10, 10) == 0);
+            /* drawImage(src, dx=2, dy=2): identity transform, source size */
+            assert(whaleui_canvas_draw_image(ctx, src, 0, 0, 0, 0, 2, 2, 0, 0) == 0);
+            whaleui_image_data_t* chk = whaleui_canvas_get_image_data(ctx, 0, 0, 10, 10);
+            assert(chk != nullptr);
+            assert(whaleui_image_data_get(chk, 2, 2) == 0xFFFF0000u);
+            assert(whaleui_image_data_get(chk, 5, 5) == 0xFFFF0000u);
+            assert(whaleui_image_data_get(chk, 1, 1) == 0x00000000u);
+            assert(whaleui_image_data_get(chk, 6, 6) == 0x00000000u);
+            whaleui_image_data_destroy(chk);
+            /* self-copy rejected */
+            assert(whaleui_canvas_draw_image(ctx, ctx, 0, 0, 0, 0, 0, 0, 0, 0) != 0);
+            /* null source rejected */
+            assert(whaleui_canvas_draw_image(ctx, nullptr, 0, 0, 0, 0, 0, 0, 0, 0) != 0);
+
+            /* drawImage scaled up 2x via dw/dh */
+            assert(whaleui_canvas_clear_rect(ctx, 0, 0, 10, 10) == 0);
+            assert(whaleui_canvas_draw_image(ctx, src, 0, 0, 4, 4, 0, 0, 8, 8) == 0);
+            chk = whaleui_canvas_get_image_data(ctx, 0, 0, 8, 8);
+            assert(whaleui_image_data_get(chk, 7, 7) == 0xFFFF0000u);
+            whaleui_image_data_destroy(chk);
+
+            /* drawImage from an ImageData, with globalAlpha half */
+            whaleui_image_data_t* img = whaleui_canvas_create_image_data(ctx, 2, 2);
+            assert(whaleui_image_data_set(img, 0, 0, 0xFF00FF00u) == 0);
+            assert(whaleui_image_data_set(img, 1, 1, 0xFF00FF00u) == 0);
+            assert(whaleui_canvas_clear_rect(ctx, 0, 0, 10, 10) == 0);
+            assert(whaleui_canvas_set_global_alpha(ctx, 0.5f) == 0);
+            assert(whaleui_canvas_draw_image_data(ctx, img, 0, 0, 0, 0, 0, 0, 0, 0) == 0);
+            assert(whaleui_canvas_set_global_alpha(ctx, 1.0f) == 0);
+            chk = whaleui_canvas_get_image_data(ctx, 0, 0, 2, 2);
+            /* alpha ~128 blended onto transparent black */
+            unsigned int p = whaleui_image_data_get(chk, 0, 0);
+            unsigned int a = (p >> 24) & 0xFF;
+            assert(a > 100 && a < 160);
+            whaleui_image_data_destroy(chk);
+            whaleui_image_data_destroy(img);
+            whaleui_dom_element_destroy(c2);
+        }
         if (tapp) {
             whaleui_app_destroy(tapp);
         }

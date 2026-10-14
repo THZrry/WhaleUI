@@ -1153,3 +1153,13 @@ SOLVED
 - **lite/minimal 构建的强制重编坑**: 改公共头 canvas.h 后 `xmake b -y` 可能对 lite/minimal 命中缓存假通过——touch 受影响 .cpp(`copy /b file +,,`)确认; 本轮验证 4 个新 API 全绿靠的是显式 touch 后的全量重建。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_canvas 新增文本闭环断言)。
+
+# <44>: Canvas drawImage + 文档销毁未清理 canvas 上下文(悬垂修复)
+
+SOLVED
+
+- `whaleui_canvas_draw_image[_data]`: 9 参浏览器签名, 源支持另一 canvas 上下文与 ImageData。目标矩形过当前变换(device bbox -> 逐像素仿射逆变换回 user 空间 -> 命中 dest 矩形则按 u/v 比例取源像素, 最近邻), `blend_px` 叠 globalAlpha; sw/sh<=0 取源剩余、dw/dh<=0 取源尺寸(与头文件契约一致); 奇异矩阵返回 0 不绘制; 自拷贝返回非 0(浏览器抛异常的语义映射)。`put_image_data`(设备像素直贴, 不过变换)保持原样——两者差异已写进头注释与 08 手册。
+- **修复(实现顺带发现)**: `whaleui_canvas_drop_all()` 自 614740a 起就没人调用——document 销毁后 canvas 上下文 map 留着悬垂的 `lxb_dom_element*`(下次 malloc 复用地址会给新元素端出旧 backing)。现在 `whaleui_dom_document_destroy` 里与 listeners/active 镜像一起清(dom.cpp include canvas/canvas.h)。教训: 注册表型资源(drop/drop_all 对)在创建时就该接上销毁点, 别只留 API。
+- test_canvas 新增: 源 canvas 画红 -> drawImage 到 10x10 目标(恒等变换位置/边界/透明区)、dw/dh 2x 放大、ImageData 源 + globalAlpha=0.5 半合成、自拷贝/null 拒绝。坑记一笔: 前面文本用例把 global_alpha 留在 0.5, 新块要先复位——断言失败先查测试状态残留再查实现。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0。

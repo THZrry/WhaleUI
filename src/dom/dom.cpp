@@ -8,6 +8,7 @@
 #include "core/utf.h"
 #include "dom/events.h"
 #include "style/style.h"
+#include "canvas/canvas.h"
 
 /* whaleui_render_last_tree (get_bounding_client_rect) */
 #include "render/render.h"
@@ -455,6 +456,10 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
         /* element listeners die with their document (all elements become
          * unreachable; dropping the whole map avoids stale pointers) */
         whaleui_events_clear_all();
+        /* canvas contexts too: keyed on element pointers that dangle with
+         * the document (a later allocation reusing an address would hit a
+         * stale context with a freed backing) */
+        whaleui_canvas_drop_all();
         /* the active-element mirror too: its key (the lxb_dom_document) is
          * about to be freed, and a later allocation could reuse the address */
         g_active().erase(dom_doc(doc));

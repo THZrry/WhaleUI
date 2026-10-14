@@ -644,6 +644,104 @@ extern "C" int whaleui_canvas_put_image_data(whaleui_canvas_context_t* ctx, whal
     return 0;
 }
 
+/* --- drawImage: affine-mapped resampling of a source bitmap ---
+ *
+ * The destination rect (dx,dy,dw,dh) lives in user space like every other
+ * canvas op, so it is mapped by the current transform. Each device pixel in
+ * the destination's bounding box is inverse-mapped back to user space; a hit
+ * inside the dest rect picks the source pixel (nearest-neighbour) and blends
+ * it with globalAlpha. sw/sh <= 0 take the remainder of the source (clamped
+ * to its extent), dw/dh <= 0 take the source size, and a singular matrix
+ * draws nothing. Unlike put_image_data (raw copy at device pixels), drawImage
+ * composites like the browser. */
+static int draw_image_sample(whaleui_canvas_context_t* ctx,
+                             const std::vector<unsigned int>& spx, int src_w,
+                             int src_h, float sx, float sy, float sw,
+                             float sh, float dx, float dy, float dw, float dh)
+{
+    if (!ctx || src_w <= 0 || src_h <= 0) return -1;
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+    if (sx >= src_w || sy >= src_h) return 0; /* empty source rect: no-op */
+    if (!(sw > 0)) sw = (float)src_w - sx;
+    if (!(sh > 0)) sh = (float)src_h - sy;
+    if (sw > (float)src_w - sx) sw = (float)src_w - sx;
+    if (sh > (float)src_h - sy) sh = (float)src_h - sy;
+    if (sw <= 0 || sh <= 0) return 0;
+    /* dw/dh <= 0: draw at the source size (documented contract; the
+     * browser's 0-means-nothing is replaced by the more useful default) */
+    if (!(dw > 0)) dw = sw;
+    if (!(dh > 0)) dh = sh;
+    float det = ctx->m_a * ctx->m_d - ctx->m_b * ctx->m_c;
+    if (det == 0.0f) return 0; /* singular transform: nothing is visible */
+    /* device-space bbox of the transformed dest rect */
+    float cx[4], cy[4];
+    float rx0 = dx, ry0 = dy, rx1 = dx + dw, ry1 = dy + dh;
+    float corner_x[4] = {rx0, rx1, rx1, rx0};
+    float corner_y[4] = {ry0, ry0, ry1, ry1};
+    float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+    for (int i = 0; i < 4; ++i) {
+        canvas_apply_transform(ctx, corner_x[i], corner_y[i], &cx[i], &cy[i]);
+        if (cx[i] < bx0) bx0 = cx[i];
+        if (cx[i] > bx1) bx1 = cx[i];
+        if (cy[i] < by0) by0 = cy[i];
+        if (cy[i] > by1) by1 = cy[i];
+    }
+    int ix0 = (int)bx0 < 0 ? 0 : (int)bx0;
+    int iy0 = (int)by0 < 0 ? 0 : (int)by0;
+    int ix1 = (int)(bx1 + 1.0f) > ctx->w ? ctx->w : (int)(bx1 + 1.0f);
+    int iy1 = (int)(by1 + 1.0f) > ctx->h ? ctx->h : (int)(by1 + 1.0f);
+    float inv_a = ctx->m_d / det, inv_b = -ctx->m_b / det;
+    float inv_c = -ctx->m_c / det, inv_d = ctx->m_a / det;
+    for (int j = iy0; j < iy1; ++j) {
+        for (int i = ix0; i < ix1; ++i) {
+            /* device -> user (affine inverse) */
+            float px = i + 0.5f, py = j + 0.5f;
+            float ux = px - ctx->m_e, uy = py - ctx->m_f;
+            float ux_user = inv_a * ux + inv_c * uy;
+            float uy_user = inv_b * ux + inv_d * uy;
+            /* inside the dest rect? (handles the negative-extent mirror) */
+            float tx = (ux_user - dx) / dw;
+            float ty = (uy_user - dy) / dh;
+            if (tx < 0.0f || tx >= 1.0f || ty < 0.0f || ty >= 1.0f) continue;
+            int u = (int)(sx + tx * sw);
+            int v = (int)(sy + ty * sh);
+            if (u < 0) u = 0;
+            if (v < 0) v = 0;
+            if (u >= src_w) u = src_w - 1;
+            if (v >= src_h) v = src_h - 1;
+            unsigned int s = spx[(size_t)v * src_w + u];
+            if (((s >> 24) & 0xFF) == 0) continue;
+            blend_px(&ctx->px[(size_t)j * ctx->w + i], s, ctx->global_alpha);
+        }
+    }
+    ctx->seq++;
+    whaleui_dom_mark_dirty(ctx->el);
+    return 0;
+}
+
+extern "C" int whaleui_canvas_draw_image(whaleui_canvas_context_t* ctx,
+                                         const whaleui_canvas_context_t* src,
+                                         float sx, float sy, float sw, float sh,
+                                         float dx, float dy, float dw, float dh)
+{
+    if (!ctx || !src) return -1;
+    if (src == ctx) return -2; /* the browser throws for self-copy; report it */
+    return draw_image_sample(ctx, src->px, src->w, src->h, sx, sy, sw, sh,
+                             dx, dy, dw, dh);
+}
+
+extern "C" int whaleui_canvas_draw_image_data(whaleui_canvas_context_t* ctx,
+                                             const whaleui_image_data_t* img,
+                                             float sx, float sy, float sw,
+                                             float sh, float dx, float dy,
+                                             float dw, float dh)
+{
+    if (!ctx || !img) return -1;
+    return draw_image_sample(ctx, img->px, img->w, img->h, sx, sy, sw, sh,
+                             dx, dy, dw, dh);
+}
+
 /* --- text (fillText/strokeText/measureText) --- */
 
 /* blit a straight-alpha glyph raster into the backing store with the
