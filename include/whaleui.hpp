@@ -214,6 +214,9 @@ public:
     bool InsertAdjacentHTML(const std::string& position, const std::string& html) const {
         return whaleui_dom_insert_adjacent_html(h_, position.c_str(), html.c_str()) == 0;
     }
+    bool InsertAdjacentText(const std::string& position, const std::string& text) const {
+        return whaleui_dom_insert_adjacent_text(h_, position.c_str(), text.c_str()) == 0;
+    }
 
     /* focus + geometry */
     bool Focus() const { return whaleui_dom_focus(h_) == 0; }
@@ -337,6 +340,10 @@ public:
     }
     Element CreateTextNode(const std::string& text) const {
         return Element(whaleui_dom_create_text_node(h_, text.c_str()));
+    }
+    /* createDocumentFragment: append it to move its children into the tree */
+    Element CreateDocumentFragment() const {
+        return Element(whaleui_dom_create_document_fragment(h_));
     }
 
     ComputedStyle GetComputedStyle(Element el, const char* pseudo = nullptr) const {

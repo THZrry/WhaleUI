@@ -510,6 +510,16 @@ int whaleui_dom_after(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
 int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* el,
                                      const char* position, const char* html);
 
+/* element.insertAdjacentText(position, text): same positions as above, but
+ * the text is inserted as a single text node (no HTML parsing). 0 on success. */
+int whaleui_dom_insert_adjacent_text(whaleui_dom_element_t* el,
+                                     const char* position, const char* text);
+
+/* document.createDocumentFragment(): an out-of-tree node that owns appended
+ * children; appending it moves its children (not the fragment) into the tree.
+ * Destroy with whaleui_dom_element_destroy when done. */
+whaleui_dom_element_t* whaleui_dom_create_document_fragment(whaleui_dom_document_t* doc);
+
 /* parent.contains(child): 1 if child is el or a descendant. */
 int whaleui_dom_contains(whaleui_dom_element_t* parent, whaleui_dom_element_t* child);
 

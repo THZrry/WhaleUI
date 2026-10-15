@@ -471,6 +471,33 @@ int main(void)
             whaleui_dom_document_destroy(d3);
         }
 
+        /* DocumentFragment: append moves its children, not the fragment */
+        {
+            whaleui_dom_document_t* d4 = whaleui_dom_parse_html(
+                "<html><body><div id=\"f\"></div></body></html>", 0);
+            assert(d4 != nullptr);
+            whaleui_dom_element_t* f = whaleui_dom_get_element_by_id(d4, "f");
+            whaleui_dom_element_t* frag = whaleui_dom_create_document_fragment(d4);
+            assert(frag != nullptr);
+            whaleui_dom_element_t* c1 = whaleui_dom_create_element(d4, "b");
+            whaleui_dom_element_t* c2 = whaleui_dom_create_element(d4, "i");
+            assert(whaleui_dom_append_child(frag, c1) == 0);
+            assert(whaleui_dom_append_child(frag, c2) == 0);
+            /* appending the fragment moves b,i into f; the fragment empties */
+            assert(whaleui_dom_append_child(f, frag) == 0);
+            assert(whaleui_dom_child_element_count(f) == 2);
+            assert(whaleui_dom_first_element_child(f) == c1);
+            assert(whaleui_dom_last_element_child(f) == c2);
+            assert(whaleui_dom_child_element_count(frag) == 0);
+            /* insertAdjacentText: text nodes at each position */
+            assert(whaleui_dom_insert_adjacent_text(c1, "beforeend", "hi") == 0);
+            assert(std::strcmp(whaleui_dom_get_text(c1), "hi") == 0);
+            assert(whaleui_dom_insert_adjacent_text(f, "afterbegin", "lead") == 0);
+            assert(std::strcmp(whaleui_dom_get_text(f), "leadhi") == 0);
+            assert(whaleui_dom_insert_adjacent_text(c1, "nowhere", "x") != 0);
+            whaleui_dom_document_destroy(d4);
+        }
+
         /* innerHTML round-trip */
         const char* ih = whaleui_dom_get_inner_html(a);
         assert(ih != nullptr && std::strstr(ih, "<p>one</p>") != nullptr);

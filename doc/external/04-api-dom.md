@@ -104,6 +104,15 @@ int whaleui_dom_after(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
 int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* el,
                                      const char* position, const char* html);
 
+/* element.insertAdjacentText(position, text):同 insertAdjacentHTML 的四个位置,
+ * 但把文本作为单个文本节点插入(不解析 HTML) */
+int whaleui_dom_insert_adjacent_text(whaleui_dom_element_t* el,
+                                     const char* position, const char* text);
+
+/* document.createDocumentFragment():脱离文档的容器节点;把它 append/insert 进
+ * 树时移入的是它的子节点(浏览器语义),fragment 自身变空。用完 destroy。 */
+whaleui_dom_element_t* whaleui_dom_create_document_fragment(whaleui_dom_document_t* doc);
+
 whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, int deep); /* deep=1 深克隆 */
 int whaleui_dom_contains(whaleui_dom_element_t* parent, whaleui_dom_element_t* child); /* 含自身 */
 int whaleui_dom_has_child_nodes(whaleui_dom_element_t* el);

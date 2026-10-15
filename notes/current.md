@@ -1181,3 +1181,17 @@ SOLVED
 - 选择器 `div > p` 在 element-query 语义下应命中(后代), 但把根自身也当匹配会污染 `element.querySelector(div)` —— 已在前一轮修成 descendants-only, 这轮 insertAdjacent/append 测试同样建在独立子文档, 不依赖主文档结构。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom/test_cpp 新增 classList/dataset/insertAdjacentHTML/append-prepend 断言)。
+
+# <46>: DocumentFragment + insertAdjacentText
+
+SOLVED
+
+- `whaleui_dom_create_document_fragment` -> lexbor `lxb_dom_document_create_document_fragment`(注意 3.0 里的真名带 `_document_` 段, 猜的 `create_fragment` 不存在), 返回 `&frag->node` 作 element 句柄(所有 interface 首成员都是 node, 复用 node_handle 直转)。
+- 浏览器语义: appendChild/insertBefore/append/prepend/before/after 遇到 DOCUMENT_FRAGMENT 类型节点时**移入其全部子节点**、fragment 自身变空且不被插入。抽了 `splice_insert(parent, node, ref)` 收敛单节点形式; append_child/insert_before 各自内联同样的分片搬运(它们定义在 splice_insert 之前, 不便前向)。子节点搬运用「先全 remove 收集, 再按序插到同一 ref 前」保序——ref 是 parent 的兄弟不是 fragment 的孩子, 搬运期间保持有效。
+- `whaleui_dom_insert_adjacent_text`: 复用 `resolve_adjacent`(四位置 -> parent/anchor/append_mode, 之前只给 insertAdjacentHTML 用, 抽成共享), 造文本节点插入。
+- 坑: 句柄统一按 node 首成员 reinterpret 的前提是所有 lexbor dom interface 都把 `lxb_dom_node_t node` 放第一位(document_fragment 已核实)。element_destroy 对游离 fragment 走通用 `lxb_dom_node_destroy`, lexbor 按类型分派正确释放。
+- C++ 侧 `Document::CreateDocumentFragment` / `Element::InsertAdjacentText` 镜像; 测试: fragment 装 b/i 再 append 进 div -> 子节点归位、fragment 空、insertAdjacentText 前后文本拼接断言。
+
+Selection/Range 仍不做(引擎文本选择是 render 内部 sel_* 状态, 需专门设计再开一轮)。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0。

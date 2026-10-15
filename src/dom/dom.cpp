@@ -376,6 +376,48 @@ std::vector<lxb_dom_node*> parse_detach(lxb_dom_element* el, const char* html,
 
 } // namespace
 
+/* Resolve the four insertAdjacent positions to a fixed (parent, anchor,
+ * append-mode) triple, validating the position string and that a sibling
+ * position has a parent. Returns 0 on success; -2 invalid position,
+ * -3 no parent for beforebegin/afterend. The anchor is captured BEFORE any
+ * insertion so a multi-node fragment keeps its order (insert each node before
+ * the same anchor). */
+struct AdjacentTarget
+{
+    bool beforebegin;
+    bool afterbegin;
+    lxb_dom_node* parent_node;
+    lxb_dom_node* anchor;
+    bool append_mode;
+};
+static int resolve_adjacent(lxb_dom_element* e, const char* position,
+                            AdjacentTarget& t)
+{
+    t.beforebegin = std::strcmp(position, "beforebegin") == 0;
+    t.afterbegin = std::strcmp(position, "afterbegin") == 0;
+    bool beforeend = std::strcmp(position, "beforeend") == 0;
+    bool afterend = std::strcmp(position, "afterend") == 0;
+    if (!t.beforebegin && !t.afterbegin && !beforeend && !afterend) {
+        return -2;
+    }
+    if ((t.beforebegin || afterend) && !e->node.parent) {
+        return -3;
+    }
+    t.parent_node = nullptr;
+    t.anchor = nullptr;
+    t.append_mode = false;
+    if (t.beforebegin) {
+        t.parent_node = e->node.parent; t.anchor = &e->node;
+    } else if (t.afterbegin) {
+        t.parent_node = &e->node; t.anchor = e->node.first_child; t.append_mode = !t.anchor;
+    } else if (beforeend) {
+        t.parent_node = &e->node; t.append_mode = true;
+    } else { /* afterend */
+        t.parent_node = e->node.parent; t.anchor = e->node.next; t.append_mode = !t.anchor;
+    }
+    return 0;
+}
+
 extern "C" int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* elt,
                                                 const char* position,
                                                 const char* html)
@@ -384,17 +426,10 @@ extern "C" int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* elt,
     if (!e || !position || !html) {
         return -1;
     }
-    bool beforebegin = std::strcmp(position, "beforebegin") == 0;
-    bool afterbegin = std::strcmp(position, "afterbegin") == 0;
-    bool beforeend = std::strcmp(position, "beforeend") == 0;
-    bool afterend = std::strcmp(position, "afterend") == 0;
-    if (!beforebegin && !afterbegin && !beforeend && !afterend) {
-        return -2;
-    }
-    if (beforebegin || afterend) {
-        if (!e->node.parent) {
-            return -3; /* no parent to insert beside */
-        }
+    AdjacentTarget t;
+    int rc = resolve_adjacent(e, position, t);
+    if (rc != 0) {
+        return rc;
     }
     std::vector<lxb_dom_node*> nodes = parse_detach(e, html, std::strlen(html));
     if (nodes.empty()) {
@@ -402,37 +437,59 @@ extern "C" int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* elt,
     }
     lxb_dom_element* owner = e->node.parent
         ? lxb_dom_interface_element(e->node.parent) : nullptr;
-    /* Each position uses a fixed anchor so the fragment keeps its order:
-     *  beforebegin -> before e;  afterbegin -> before e's original first child;
-     *  beforeend -> appended to e;  afterend -> before e's original next sibling.
-     * lxb_dom_node_insert(parent, node, ref, false) puts node before ref, so
-     * inserting in sequence before the same ref preserves fragment order. */
-    lxb_dom_node* anchor = nullptr;
-    bool append_mode = false; /* insert_child (at end) instead of before-ref */
-    lxb_dom_node* parent_node = nullptr;
-    if (beforebegin) {
-        parent_node = e->node.parent; anchor = &e->node;
-    } else if (afterbegin) {
-        parent_node = &e->node; anchor = e->node.first_child; append_mode = !anchor;
-    } else if (beforeend) {
-        parent_node = &e->node; append_mode = true;
-    } else { /* afterend */
-        parent_node = e->node.parent; anchor = e->node.next; append_mode = !anchor;
-    }
     for (size_t i = 0; i < nodes.size(); ++i) {
-        lxb_dom_node* n = nodes[i];
-        if (append_mode) {
-            lxb_dom_node_insert_child(parent_node, n);
+        if (t.append_mode) {
+            lxb_dom_node_insert_child(t.parent_node, nodes[i]);
         } else {
-            lxb_dom_node_insert(parent_node, n, anchor, false);
+            lxb_dom_node_insert(t.parent_node, nodes[i], t.anchor, false);
         }
     }
     whaleui_dom_mark_dirty_struct(e);
-    if (beforebegin || afterend) {
+    if (t.beforebegin || (owner && t.parent_node == e->node.parent && t.anchor != &e->node)) {
+        /* afterend touched the parent; owner dirty */
         whaleui_dom_mark_dirty_struct(owner);
     }
     whaleui_dom_mark_vars_dirty();
     return 0;
+}
+
+extern "C" int whaleui_dom_insert_adjacent_text(whaleui_dom_element_t* elt,
+                                                const char* position,
+                                                const char* text)
+{
+    lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(elt);
+    if (!e || !position || !text) {
+        return -1;
+    }
+    AdjacentTarget t;
+    int rc = resolve_adjacent(e, position, t);
+    if (rc != 0) {
+        return rc;
+    }
+    lxb_dom_text* tn = lxb_dom_document_create_text_node(
+        e->node.owner_document, reinterpret_cast<const lxb_char_t*>(text),
+        std::strlen(text));
+    if (!tn) {
+        return -4;
+    }
+    lxb_dom_node* n = lxb_dom_interface_node(tn);
+    if (t.append_mode) {
+        lxb_dom_node_insert_child(t.parent_node, n);
+    } else {
+        lxb_dom_node_insert(t.parent_node, n, t.anchor, false);
+    }
+    whaleui_dom_mark_dirty_struct(e);
+    return 0;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_dom_create_document_fragment(whaleui_dom_document_t* doc)
+{
+    lxb_dom_document* d = dom_doc(doc);
+    if (!d) {
+        return nullptr;
+    }
+    lxb_dom_document_fragment_t* frag = lxb_dom_document_create_document_fragment(d);
+    return frag ? reinterpret_cast<whaleui_dom_element_t*>(&frag->node) : nullptr;
 }
 
 /* --- DOM mutation tracking (incremental relayout) --- */
@@ -640,17 +697,33 @@ extern "C" whaleui_dom_element_t* whaleui_dom_create_element(whaleui_dom_documen
 extern "C" int whaleui_dom_append_child(whaleui_dom_element_t* parent, whaleui_dom_element_t* child)
 {
     lxb_dom_element* p = as_el(parent);
-    lxb_dom_element* c = as_el(child);
-    if (!p || !c) {
+    if (!p || !child) {
         return -1;
     }
-    if (c->node.parent) {
-        /* moving: the old parent loses this subtree too */
-        whaleui_dom_mark_dirty_struct(
-            lxb_dom_interface_element(c->node.parent));
-        lxb_dom_node_remove(&c->node);
+    /* child may be an element, text node or document fragment (all share
+     * lxb_dom_node as first member); a fragment moves its children in. */
+    lxb_dom_node* pc = &p->node;
+    lxb_dom_node* cc = reinterpret_cast<lxb_dom_node*>(child);
+    if (cc->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
+        std::vector<lxb_dom_node*> kids;
+        for (lxb_dom_node* c = cc->first_child; c;) {
+            lxb_dom_node* nx = c->next;
+            lxb_dom_node_remove(c);
+            kids.push_back(c);
+            c = nx;
+        }
+        for (size_t i = 0; i < kids.size(); ++i) {
+            lxb_dom_node_insert_child(pc, kids[i]);
+        }
+    } else {
+        if (cc->parent) {
+            /* moving: the old parent loses this subtree too */
+            whaleui_dom_mark_dirty_struct(
+                lxb_dom_interface_element(cc->parent));
+            lxb_dom_node_remove(cc);
+        }
+        lxb_dom_node_insert_child(pc, cc);
     }
-    lxb_dom_node_insert_child(&p->node, &c->node);
     whaleui_dom_mark_dirty_struct(p);
     return 0;
 }
@@ -1557,10 +1630,28 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
                                          whaleui_dom_element_t* ref_child)
 {
     lxb_dom_element* p = as_el(parent);
-    lxb_dom_node* nc = new_child ? &as_el(new_child)->node : nullptr;
+    lxb_dom_node* nc = new_child ? reinterpret_cast<lxb_dom_node*>(new_child) : nullptr;
     lxb_dom_node* rc = ref_child ? &as_el(ref_child)->node : nullptr;
     if (!p || !nc) {
         return -1;
+    }
+    if (nc->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
+        std::vector<lxb_dom_node*> kids;
+        for (lxb_dom_node* c = nc->first_child; c;) {
+            lxb_dom_node* nx = c->next;
+            lxb_dom_node_remove(c);
+            kids.push_back(c);
+            c = nx;
+        }
+        for (size_t i = 0; i < kids.size(); ++i) {
+            if (rc) {
+                lxb_dom_node_insert(&p->node, kids[i], rc, false);
+            } else {
+                lxb_dom_node_insert_child(&p->node, kids[i]);
+            }
+        }
+        whaleui_dom_mark_dirty_struct(p);
+        return 0;
     }
     if (nc->parent) {
         /* moving: the old parent loses this subtree too */
@@ -1615,9 +1706,9 @@ extern "C" whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, i
 
 /* --- append/prepend/before/after (single-node forms) ---
  *
- * The node handle may be an element or a text node: both share lxb_dom_node
- * as their first member (see dom.h / create_text_node), so a plain
- * reinterpret to the node pointer covers both. */
+ * The node handle may be an element, a text node, or a document fragment:
+ * all share lxb_dom_node as their first member (see dom.h / create_text_node),
+ * so a plain reinterpret to the node pointer covers all three. */
 static int node_handle(whaleui_dom_element_t* n, lxb_dom_node** out)
 {
     if (!n) {
@@ -1628,6 +1719,44 @@ static int node_handle(whaleui_dom_element_t* n, lxb_dom_node** out)
     return 0;
 }
 
+/* Insert `nc` under parent->node before ref (ref null = append). A document
+ * fragment is not itself inserted: its children are moved before ref in
+ * fragment order (browser appendChild(fragment) semantics), leaving the
+ * fragment empty. The fragment itself is unlinked first if it was attached. */
+static void splice_insert(lxb_dom_node* parent, lxb_dom_node* nc,
+                          lxb_dom_node* ref)
+{
+    if (nc->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
+        /* detach the fragment from any parent, then relocate its children */
+        std::vector<lxb_dom_node*> kids;
+        for (lxb_dom_node* c = nc->first_child; c;) {
+            lxb_dom_node* nx = c->next;
+            lxb_dom_node_remove(c);
+            kids.push_back(c);
+            c = nx;
+        }
+        /* insert before the same ref each time keeps fragment order (ref is
+         * a sibling of parent, not a kid of the fragment, so it stays valid) */
+        for (size_t i = 0; i < kids.size(); ++i) {
+            if (ref) {
+                lxb_dom_node_insert(parent, kids[i], ref, false);
+            } else {
+                lxb_dom_node_insert_child(parent, kids[i]);
+            }
+        }
+        return;
+    }
+    if (nc->parent) {
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
+        lxb_dom_node_remove(nc);
+    }
+    if (ref) {
+        lxb_dom_node_insert(parent, nc, ref, false);
+    } else {
+        lxb_dom_node_insert_child(parent, nc);
+    }
+}
+
 extern "C" int whaleui_dom_append(whaleui_dom_element_t* el,
                                   whaleui_dom_element_t* node)
 {
@@ -1636,11 +1765,7 @@ extern "C" int whaleui_dom_append(whaleui_dom_element_t* el,
     if (node_handle(node, &nc) != 0 || !e) {
         return -1;
     }
-    if (nc->parent) {
-        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
-        lxb_dom_node_remove(nc);
-    }
-    lxb_dom_node_insert_child(&e->node, nc);
+    splice_insert(&e->node, nc, nullptr);
     whaleui_dom_mark_dirty_struct(e);
     return 0;
 }
@@ -1653,15 +1778,7 @@ extern "C" int whaleui_dom_prepend(whaleui_dom_element_t* el,
     if (node_handle(node, &nc) != 0 || !e) {
         return -1;
     }
-    if (nc->parent) {
-        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
-        lxb_dom_node_remove(nc);
-    }
-    if (e->node.first_child) {
-        lxb_dom_node_insert(&e->node, nc, e->node.first_child, false);
-    } else {
-        lxb_dom_node_insert_child(&e->node, nc);
-    }
+    splice_insert(&e->node, nc, e->node.first_child);
     whaleui_dom_mark_dirty_struct(e);
     return 0;
 }
@@ -1674,11 +1791,7 @@ extern "C" int whaleui_dom_before(whaleui_dom_element_t* el,
     if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
         return -1;
     }
-    if (nc->parent) {
-        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
-        lxb_dom_node_remove(nc);
-    }
-    lxb_dom_node_insert(e->node.parent, nc, &e->node, false);
+    splice_insert(e->node.parent, nc, &e->node);
     whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(e->node.parent));
     return 0;
 }
@@ -1691,16 +1804,7 @@ extern "C" int whaleui_dom_after(whaleui_dom_element_t* el,
     if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
         return -1;
     }
-    if (nc->parent) {
-        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
-        lxb_dom_node_remove(nc);
-    }
-    lxb_dom_node* ref = e->node.next ? e->node.next : nullptr;
-    if (ref) {
-        lxb_dom_node_insert(e->node.parent, nc, ref, false);
-    } else {
-        lxb_dom_node_insert_child(e->node.parent, nc);
-    }
+    splice_insert(e->node.parent, nc, e->node.next);
     whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(e->node.parent));
     return 0;
 }

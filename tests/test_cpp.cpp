@@ -192,6 +192,23 @@ int main(void)
         assert(box.Remove());
     }
 
+    /* DocumentFragment + insertAdjacentText through the wrapper */
+    {
+        whaleui::Document d2 = doc; /* reuse the app document */
+        whaleui::Element host = d2.CreateElement("div");
+        whaleui::Element frag = d2.CreateDocumentFragment();
+        assert(static_cast<bool>(frag));
+        whaleui::Element one = d2.CreateElement("i");
+        frag.AppendChild(one);
+        assert(frag.ChildElementCount() == 1);
+        assert(host.AppendChild(frag));      /* moves children in, empties frag */
+        assert(host.ChildElementCount() == 1);
+        assert(frag.ChildElementCount() == 0);
+        assert(host.FirstElementChild() == one);
+        assert(one.InsertAdjacentText("beforeend", "txt"));
+        assert(one.Text() == "txt");
+    }
+
     /* canvas interop through the wrapper handle */
     {
         whaleui::Element cv = doc.GetElementById("cv");

@@ -12,7 +12,9 @@
 > submit(f1f05e9 及其后续)。§10/§9/§8 已全勾选;§2 选择器子集已统一;
 > §3/§4 再补:classList 扩展(length/item/replace/toggle-force)、dataset
 > (camelCase<->data-kebab)、append/prepend/before/after(单节点)、
-> insertAdjacentHTML(四位置固定锚点保序),C++ 侧同名镜像包装。仅
+> insertAdjacentHTML/insertAdjacentText(四位置固定锚点保序)、
+> DocumentFragment(create_document_fragment + append/insert_before 移入子节点),
+> C++ 侧同名镜像包装。Selection/Range API 仍未做(引擎文本选择是内部状态, 需专门设计)。仅
 > `getBoundingClientRect` 的"依赖最近布局"语义为设计边界,非未实现。
 
 ## 通用约定(与 whaleui.h 顶部一致)
