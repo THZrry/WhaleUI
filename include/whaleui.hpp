@@ -303,6 +303,45 @@ private:
 
 /* ---- Document ---- */
 
+/* Range (document.createRange() subset): owns the C range handle. */
+class Range {
+public:
+    Range() : h_(nullptr) {}
+    explicit Range(whaleui_dom_range_t* h) : h_(h) {}
+    ~Range() { if (h_) whaleui_dom_range_destroy(h_); }
+    Range(const Range&) = delete;
+    Range& operator=(const Range&) = delete;
+    Range(Range&& o) : h_(o.h_) { o.h_ = nullptr; }
+    explicit operator bool() const { return h_ != nullptr; }
+    whaleui_dom_range_t* handle() const { return h_; }
+
+    bool SetStart(Element container, int offset) const {
+        return whaleui_dom_range_set_start(h_, container.handle(), offset) == 0;
+    }
+    bool SetEnd(Element container, int offset) const {
+        return whaleui_dom_range_set_end(h_, container.handle(), offset) == 0;
+    }
+    Element StartContainer() const {
+        return Element(whaleui_dom_range_start_container(h_));
+    }
+    Element EndContainer() const {
+        return Element(whaleui_dom_range_end_container(h_));
+    }
+    int StartOffset() const { return whaleui_dom_range_start_offset(h_); }
+    int EndOffset() const { return whaleui_dom_range_end_offset(h_); }
+    bool Collapsed() const { return whaleui_dom_range_collapsed(h_) != 0; }
+    std::string ToString() const { return ToStr(whaleui_dom_range_to_string(h_)); }
+    bool SelectNodeContents(Element el) const {
+        return whaleui_dom_range_select_node_contents(h_, el.handle()) == 0;
+    }
+    bool DeleteContents() const {
+        return whaleui_dom_range_delete_contents(h_) == 0;
+    }
+
+private:
+    whaleui_dom_range_t* h_;
+};
+
 class Document {
 public:
     Document() : h_(nullptr) {}
@@ -345,6 +384,8 @@ public:
     Element CreateDocumentFragment() const {
         return Element(whaleui_dom_create_document_fragment(h_));
     }
+    /* createRange(): endpoints are element + UTF-8 byte offset (see whaleui.h) */
+    Range CreateRange() const { return Range(whaleui_dom_create_range(h_)); }
 
     ComputedStyle GetComputedStyle(Element el, const char* pseudo = nullptr) const {
         return ComputedStyle(whaleui_dom_get_computed_style(el.handle(), pseudo));

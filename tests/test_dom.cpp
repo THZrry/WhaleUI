@@ -498,6 +498,42 @@ int main(void)
             whaleui_dom_document_destroy(d4);
         }
 
+        /* Range: createRange + endpoints + toString + deleteContents */
+        {
+            whaleui_dom_document_t* d5 = whaleui_dom_parse_html(
+                "<html><body><p id=\"p\">hello world</p>"
+                "<input id=\"i\" value=\"abcdef\"></body></html>", 0);
+            assert(d5 != nullptr);
+            whaleui_dom_element_t* p = whaleui_dom_get_element_by_id(d5, "p");
+            whaleui_dom_element_t* inp = whaleui_dom_get_element_by_id(d5, "i");
+            whaleui_dom_range_t* rg = whaleui_dom_create_range(d5);
+            assert(rg != nullptr);
+            assert(whaleui_dom_range_collapsed(rg) == 1); /* no endpoints */
+            assert(whaleui_dom_range_set_start(rg, p, 6) == 0);
+            assert(whaleui_dom_range_set_end(rg, p, 11) == 0);
+            assert(whaleui_dom_range_start_container(rg) == p);
+            assert(whaleui_dom_range_end_container(rg) == p);
+            assert(whaleui_dom_range_start_offset(rg) == 6);
+            assert(whaleui_dom_range_end_offset(rg) == 11);
+            assert(whaleui_dom_range_collapsed(rg) == 0);
+            assert(std::strcmp(whaleui_dom_range_to_string(rg), "world") == 0);
+            /* selectNodeContents covers the whole element */
+            assert(whaleui_dom_range_select_node_contents(rg, inp) == 0);
+            assert(std::strcmp(whaleui_dom_range_to_string(rg), "abcdef") == 0);
+            /* deleteContents trims the input value */
+            assert(whaleui_dom_range_set_start(rg, inp, 1) == 0);
+            assert(whaleui_dom_range_set_end(rg, inp, 4) == 0);
+            assert(whaleui_dom_range_delete_contents(rg) == 0);
+            assert(std::strcmp(whaleui_dom_get_value(inp), "adef") == 0);
+            assert(whaleui_dom_range_collapsed(rg) == 1);
+            /* null / invalid handling */
+            assert(whaleui_dom_create_range(nullptr) == nullptr);
+            assert(whaleui_dom_range_set_start(rg, nullptr, 0) != 0);
+            whaleui_dom_range_destroy(rg);
+            whaleui_dom_range_destroy(nullptr);
+            whaleui_dom_document_destroy(d5);
+        }
+
         /* innerHTML round-trip */
         const char* ih = whaleui_dom_get_inner_html(a);
         assert(ih != nullptr && std::strstr(ih, "<p>one</p>") != nullptr);

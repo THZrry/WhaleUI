@@ -187,3 +187,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 <45>(SOLVED): classList 扩展(length/item/replace/toggle-force) + dataset(camelCase<->data-kebab) + append/prepend/before/after(单节点) + insertAdjacentHTML(四位置固定锚点保序);记 dom.cpp 匿名 namespace 闭合边界坑 —— 见 notes/current.md
 <46>(SOLVED): DocumentFragment(lexbor create_document_fragment + append/insert_before 移入子节点保序) + insertAdjacentText(四位置);Selection/Range 仍待专轮 —— 见 notes/current.md
 <47>(SOLVED): Selection API 子集(window.getSelection:端点/偏移/选中文本跨元素拼接/clear/selectAllChildren) + C++ 镜像;Range 对象未做 —— 见 notes/current.md
+<48>(SOLVED): Range 子集(document.createRange:端点/折叠/to_string/selectNodeContents/deleteContents;元素+字节偏移模型,与引擎选区一致) + C++ Range 镜像 —— 见 notes/current.md

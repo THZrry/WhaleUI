@@ -2531,3 +2531,318 @@ extern "C" int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
     }
     return -3; /* not in the last layout (display:none or detached) */
 }
+
+/* --- Range (document.createRange() subset) ---
+ *
+ * The endpoint model matches the engine's selection: a container ELEMENT
+ * plus a UTF-8 byte offset into its text. A text-node container resolves to
+ * its parent element (the engine addresses text by element + byte offset),
+ * with the offset left as given - the caller's node/offset pair is the
+ * browser's addressing, so the mapping is intentionally 1:1. */
+
+/* text of a range endpoint element: input -> its value attribute, otherwise
+ * the concatenated text children (textContent), matching the render side's
+ * edit_value. */
+static std::string edit_value_of(lxb_dom_element* el)
+{
+    if (!el) {
+        return std::string();
+    }
+    size_t nlen = 0;
+    const lxb_char_t* nm = lxb_dom_element_local_name(el, &nlen);
+    if (nm && nlen == 5 && std::memcmp(nm, "input", 5) == 0) {
+        size_t alen = 0;
+        const lxb_char_t* v = lxb_dom_element_get_attribute(
+            el, (const lxb_char_t*)"value", 5, &alen);
+        return v ? std::string(reinterpret_cast<const char*>(v), alen)
+                 : std::string();
+    }
+    std::string out;
+    for (lxb_dom_node* n = el->node.first_child; n; n = n->next) {
+        if (n->type == LXB_DOM_NODE_TYPE_TEXT ||
+            n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
+            const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
+            if (s->data) {
+                out.append(reinterpret_cast<const char*>(s->data), s->length);
+            }
+        }
+    }
+    return out;
+}
+
+/* write text back: input -> value attribute, otherwise replace children with
+ * one text node (mirrors the render side's edit_set_value). */
+static void edit_set_value_of(lxb_dom_element* el, const std::string& s)
+{
+    if (!el) {
+        return;
+    }
+    size_t nlen = 0;
+    const lxb_char_t* nm = lxb_dom_element_local_name(el, &nlen);
+    if (nm && nlen == 5 && std::memcmp(nm, "input", 5) == 0) {
+        lxb_dom_element_set_attribute(
+            el, (const lxb_char_t*)"value", 5,
+            reinterpret_cast<const lxb_char_t*>(s.c_str()), s.size());
+        return;
+    }
+    lxb_dom_node* n = el->node.first_child;
+    while (n) {
+        lxb_dom_node* nx = n->next;
+        lxb_dom_node_remove(n);
+        lxb_dom_node_destroy(n);
+        n = nx;
+    }
+    lxb_dom_text* tn = lxb_dom_document_create_text_node(
+        el->node.owner_document, reinterpret_cast<const lxb_char_t*>(s.c_str()),
+        s.size());
+    if (tn) {
+        lxb_dom_node_insert_child(&el->node, lxb_dom_interface_node(tn));
+    }
+}
+
+struct whaleui_dom_range
+{
+    lxb_dom_element* start_el;
+    lxb_dom_element* end_el;
+    int start_off;
+    int end_off;
+    /* cached to_string result (the returned pointer must stay valid) */
+    std::string text_cache;
+};
+
+/* resolve a container handle (element OR text node) to the element that owns
+ * the text the offset indexes */
+static lxb_dom_element* range_owner(whaleui_dom_element_t* container)
+{
+    if (!container) {
+        return nullptr;
+    }
+    lxb_dom_node* n = reinterpret_cast<lxb_dom_node*>(container);
+    if (n->type == LXB_DOM_NODE_TYPE_TEXT ||
+        n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
+        lxb_dom_node* p = n->parent;
+        if (!p || p->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            return nullptr;
+        }
+        return lxb_dom_interface_element(p);
+    }
+    return lxb_dom_interface_element(n);
+}
+
+extern "C" whaleui_dom_range_t* whaleui_dom_create_range(whaleui_dom_document_t* doc)
+{
+    if (!doc) {
+        return nullptr;
+    }
+    whaleui_dom_range_t* r = new whaleui_dom_range_t;
+    r->start_el = r->end_el = nullptr;
+    r->start_off = r->end_off = 0;
+    return r;
+}
+
+extern "C" void whaleui_dom_range_destroy(whaleui_dom_range_t* range)
+{
+    delete range;
+}
+
+extern "C" int whaleui_dom_range_set_start(whaleui_dom_range_t* range,
+                                           whaleui_dom_element_t* container,
+                                           int offset)
+{
+    if (!range) {
+        return -1;
+    }
+    lxb_dom_element* e = range_owner(container);
+    if (!e) {
+        return -2;
+    }
+    range->start_el = e;
+    range->start_off = offset < 0 ? 0 : offset;
+    return 0;
+}
+
+extern "C" int whaleui_dom_range_set_end(whaleui_dom_range_t* range,
+                                         whaleui_dom_element_t* container,
+                                         int offset)
+{
+    if (!range) {
+        return -1;
+    }
+    lxb_dom_element* e = range_owner(container);
+    if (!e) {
+        return -2;
+    }
+    range->end_el = e;
+    range->end_off = offset < 0 ? 0 : offset;
+    return 0;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_dom_range_start_container(const whaleui_dom_range_t* range)
+{
+    return range ? out(range->start_el) : nullptr;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_dom_range_end_container(const whaleui_dom_range_t* range)
+{
+    return range ? out(range->end_el) : nullptr;
+}
+
+extern "C" int whaleui_dom_range_start_offset(const whaleui_dom_range_t* range)
+{
+    return range ? range->start_off : 0;
+}
+
+extern "C" int whaleui_dom_range_end_offset(const whaleui_dom_range_t* range)
+{
+    return range ? range->end_off : 0;
+}
+
+extern "C" int whaleui_dom_range_collapsed(const whaleui_dom_range_t* range)
+{
+    if (!range) {
+        return 1;
+    }
+    return (range->start_el == range->end_el &&
+            range->start_off == range->end_off) ? 1 : 0;
+}
+
+/* collect the text of every element between two endpoints in DOM preorder,
+ * mirroring the selection's coverage rules (partial ends, full middles) */
+static std::string range_text_between(lxb_dom_element* sa, int so,
+                                      lxb_dom_element* se, int eo)
+{
+    std::string out;
+    if (!sa || !se) {
+        return out;
+    }
+    if (sa == se) {
+        std::string v = edit_value_of(sa);
+        size_t a = static_cast<size_t>(so);
+        size_t b = static_cast<size_t>(eo);
+        if (a > b) {
+            std::swap(a, b);
+        }
+        if (a >= v.size()) {
+            return out;
+        }
+        if (b > v.size()) {
+            b = v.size();
+        }
+        return v.substr(a, b - a);
+    }
+    bool saw_start = false;
+    bool saw_end = false;
+    std::function<void(lxb_dom_node*)> walk = [&](lxb_dom_node* n) {
+        while (n && !saw_end) {
+            if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* e = lxb_dom_interface_element(n);
+                if (e == sa && !saw_start) {
+                    saw_start = true;
+                    std::string v = edit_value_of(sa);
+                    size_t a = static_cast<size_t>(so);
+                    if (a < v.size()) {
+                        out += v.substr(a);
+                    }
+                } else if (e == se && saw_start) {
+                    saw_end = true;
+                    std::string v = edit_value_of(se);
+                    size_t b = static_cast<size_t>(eo);
+                    if (b > v.size()) {
+                        b = v.size();
+                    }
+                    out += v.substr(0, b);
+                    return;
+                } else if (saw_start) {
+                    out += edit_value_of(e);
+                }
+                if (n->first_child) {
+                    walk(n->first_child);
+                }
+            }
+            n = n->next;
+        }
+    };
+    lxb_dom_node* root = sa->node.owner_document
+        ? reinterpret_cast<lxb_dom_node*>(
+              lxb_dom_document_element(sa->node.owner_document))
+        : nullptr;
+    if (root) {
+        walk(root);
+    }
+    return out;
+}
+
+extern "C" const char* whaleui_dom_range_to_string(const whaleui_dom_range_t* range)
+{
+    if (!range) {
+        return "";
+    }
+    /* the cache lives on the range (mutable through the const handle: the
+     * returned pointer is the documented contract, not const-correctness) */
+    whaleui_dom_range_t* m = const_cast<whaleui_dom_range_t*>(range);
+    m->text_cache = range_text_between(m->start_el, m->start_off, m->end_el,
+                                       m->end_off);
+    return m->text_cache.c_str();
+}
+
+extern "C" int whaleui_dom_range_select_node_contents(whaleui_dom_range_t* range,
+                                                      whaleui_dom_element_t* el)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!range || !e) {
+        return -1;
+    }
+    range->start_el = e;
+    range->end_el = e;
+    range->start_off = 0;
+    range->end_off = static_cast<int>(edit_value_of(e).size());
+    return 0;
+}
+
+extern "C" int whaleui_dom_range_delete_contents(whaleui_dom_range_t* range)
+{
+    if (!range || !range->start_el || !range->end_el) {
+        return -1;
+    }
+    if (whaleui_dom_range_collapsed(range)) {
+        return 0; /* nothing covered */
+    }
+    if (range->start_el == range->end_el) {
+        std::string v = edit_value_of(range->start_el);
+        size_t a = static_cast<size_t>(range->start_off);
+        size_t b = static_cast<size_t>(range->end_off);
+        if (a > b) {
+            std::swap(a, b);
+        }
+        if (a > v.size()) {
+            a = v.size();
+        }
+        if (b > v.size()) {
+            b = v.size();
+        }
+        std::string nv = v.substr(0, a) + v.substr(b);
+        edit_set_value_of(range->start_el, nv);
+        range->end_off = range->start_off = static_cast<int>(a);
+        whaleui_dom_mark_dirty_struct(range->start_el);
+        return 0;
+    }
+    /* cross-element: clear the covered middles entirely and trim the ends.
+     * A full structural delete needs a text-node model the engine does not
+     * have; trimming each editable endpoint is the documented behavior. */
+    std::string sv = edit_value_of(range->start_el);
+    size_t sa = static_cast<size_t>(range->start_off);
+    if (sa > sv.size()) {
+        sa = sv.size();
+    }
+    edit_set_value_of(range->start_el, sv.substr(0, sa));
+    std::string ev = edit_value_of(range->end_el);
+    size_t eb = static_cast<size_t>(range->end_off);
+    if (eb > ev.size()) {
+        eb = ev.size();
+    }
+    edit_set_value_of(range->end_el, ev.substr(eb));
+    range->start_el = range->end_el;
+    range->start_off = range->end_off = 0;
+    whaleui_dom_mark_dirty_struct(range->start_el);
+    return 0;
+}

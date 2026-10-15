@@ -1211,3 +1211,17 @@ SOLVED
 - 未做: Range 对象(createRange/startContainer/surroundContents 等)与 setBaseAndExtent 式程序化选区; 需要时再开一轮(引擎有足够状态支撑)。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0。
+
+# <48>: Range 对象子集(document.createRange)
+
+SOLVED
+
+- 端点模型与引擎选区**刻意保持一致**: 容器 = 元素(文本节点容器解析为其父元素), 偏移 = 该元素文本的 UTF-8 字节偏移。理由: 引擎用 (element, byte offset) 寻址文本, 若改成浏览器真模型(node, offsetInNode)就得给每条 text run 建独立偏移空间, 与 sel_*/caret 全链冲突。代价已在头注释与 04 手册写明。
+- API: create/destroy、set_start/set_end、start/end_container+offset、collapsed、to_string、select_node_contents、delete_contents。
+- `to_string` 跨元素拼接与 <47> 的 selected_text 同规则(端点尾部/头部 + 中间完整元素), 但这里走 DOM 前序(不依赖布局树): range 是纯 DOM 概念, 不该要求已渲染。因此抽了本地 `edit_value_of/edit_set_value_of`(input 取 value 属性, 否则 textContent), 不去碰 render 侧的静态 helper。
+- `delete_contents`: 同元素切片删除; 跨元素裁两端(完整结构性删除需文本节点模型, 记为取舍)。两者都 mark_dirty_struct。
+- 头文件: `whaleui_dom_range_t` 是不透明 struct(不像 element 那样直通 lexbor), 因为需要 4 个字段 + 文本缓存。
+- C++ 侧 `whaleui::Range`(RAII 销毁 + move)与 `Document::CreateRange()` 镜像。
+- 坑: `range_owner` 参数类型写成 `lxb_dom_element_t*` 编译不过(公开层句柄是 `whaleui_dom_element_t*`), 公开函数参数必须用公开类型再 reinterpret。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom 新增 Range 端点/toString/deleteContents 断言)。

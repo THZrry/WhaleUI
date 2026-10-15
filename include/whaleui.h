@@ -658,6 +658,41 @@ typedef struct whaleui_dom_rect {
 int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
                                          whaleui_dom_rect_t* out);
 
+/* --- Range (document.createRange() subset) ---
+ *
+ * One range object per handle (create/destroy). The endpoint model matches
+ * the engine's selection: a container ELEMENT plus a UTF-8 byte offset into
+ * its text (input value / textContent). Text-node containers are accepted
+ * and resolved to their parent element, since the engine addresses text by
+ * element + byte offset. */
+
+typedef struct whaleui_dom_range whaleui_dom_range_t;
+
+whaleui_dom_range_t* whaleui_dom_create_range(whaleui_dom_document_t* doc);
+void whaleui_dom_range_destroy(whaleui_dom_range_t* range);
+
+/* Endpoints. setStart/setEnd take a container (element or text node) and an
+ * offset; the stored container is the owning element. 0 on success. */
+int whaleui_dom_range_set_start(whaleui_dom_range_t* range,
+                                whaleui_dom_element_t* container, int offset);
+int whaleui_dom_range_set_end(whaleui_dom_range_t* range,
+                              whaleui_dom_element_t* container, int offset);
+whaleui_dom_element_t* whaleui_dom_range_start_container(const whaleui_dom_range_t* range);
+whaleui_dom_element_t* whaleui_dom_range_end_container(const whaleui_dom_range_t* range);
+int whaleui_dom_range_start_offset(const whaleui_dom_range_t* range);
+int whaleui_dom_range_end_offset(const whaleui_dom_range_t* range);
+
+/* collapsed: 1 when both endpoints are the same (element + offset). */
+int whaleui_dom_range_collapsed(const whaleui_dom_range_t* range);
+/* The covered text (same rules as the window selection's selected_text). */
+const char* whaleui_dom_range_to_string(const whaleui_dom_range_t* range);
+/* selectNodeContents(el): whole text of el. 0 on success. */
+int whaleui_dom_range_select_node_contents(whaleui_dom_range_t* range,
+                                           whaleui_dom_element_t* el);
+/* deleteContents(): remove the covered text from the DOM (editable targets:
+ * input value / textContent); returns 0 on success. */
+int whaleui_dom_range_delete_contents(whaleui_dom_range_t* range);
+
 /* ======================= DOM events ======================= */
 
 /* Event listeners mirror addEventListener(type, listener[, useCapture])

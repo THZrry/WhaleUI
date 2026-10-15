@@ -242,6 +242,32 @@ int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el, whaleui_dom_
 /* 数据来自最近一次布局;未渲染过返回失败 */
 ```
 
+## Range(对应 document.createRange() 子集)
+
+```c
+typedef struct whaleui_dom_range whaleui_dom_range_t;
+whaleui_dom_range_t* whaleui_dom_create_range(whaleui_dom_document_t* doc);
+void whaleui_dom_range_destroy(whaleui_dom_range_t* range);
+
+/* 端点:容器(元素或文本节点)+ 该容器文本的 UTF-8 字节偏移 */
+int whaleui_dom_range_set_start(whaleui_dom_range_t* range, whaleui_dom_element_t* container, int offset);
+int whaleui_dom_range_set_end(whaleui_dom_range_t* range, whaleui_dom_element_t* container, int offset);
+whaleui_dom_element_t* whaleui_dom_range_start_container(const whaleui_dom_range_t* range);
+whaleui_dom_element_t* whaleui_dom_range_end_container(const whaleui_dom_range_t* range);
+int whaleui_dom_range_start_offset(const whaleui_dom_range_t* range);
+int whaleui_dom_range_end_offset(const whaleui_dom_range_t* range);
+
+int whaleui_dom_range_collapsed(const whaleui_dom_range_t* range);      /* 1 = 折叠 */
+const char* whaleui_dom_range_to_string(const whaleui_dom_range_t* range);
+int whaleui_dom_range_select_node_contents(whaleui_dom_range_t* range, whaleui_dom_element_t* el);
+int whaleui_dom_range_delete_contents(whaleui_dom_range_t* range);
+```
+
+端点模型与引擎选区一致:**元素 + 文本字节偏移**(文本节点容器解析为其父元素)。
+`to_string` 的拼接规则与 `whaleui_window_selected_text` 相同。`delete_contents`
+对同一元素的端点做切片删除;跨元素时裁剪两端(完整结构性删除需要文本节点模型,
+是文档化的取舍)。指针归 range 所有,下次调用前有效。
+
 ## 事件(对应 addEventListener 等)
 
 ```c
