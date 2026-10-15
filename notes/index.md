@@ -186,3 +186,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 <44>(SOLVED): Canvas drawImage(canvas/ImageData 源,仿射逆变换最近邻采样 + globalAlpha) + 修 whaleui_canvas_drop_all 从未被调用导致 document 销毁后 canvas 上下文悬垂元素指针 —— 见 notes/current.md
 <45>(SOLVED): classList 扩展(length/item/replace/toggle-force) + dataset(camelCase<->data-kebab) + append/prepend/before/after(单节点) + insertAdjacentHTML(四位置固定锚点保序);记 dom.cpp 匿名 namespace 闭合边界坑 —— 见 notes/current.md
 <46>(SOLVED): DocumentFragment(lexbor create_document_fragment + append/insert_before 移入子节点保序) + insertAdjacentText(四位置);Selection/Range 仍待专轮 —— 见 notes/current.md
+<47>(SOLVED): Selection API 子集(window.getSelection:端点/偏移/选中文本跨元素拼接/clear/selectAllChildren) + C++ 镜像;Range 对象未做 —— 见 notes/current.md

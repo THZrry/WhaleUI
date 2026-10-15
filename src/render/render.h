@@ -594,6 +594,29 @@ whaleui_dom_element_t* whaleui_render_hit_element(whaleui_render_t* r, int x, in
  * the app loop to dispatch DOM keyboard events. */
 whaleui_dom_element_t* whaleui_render_focus_element(whaleui_render_t* r);
 
+/* --- selection (window.getSelection() backing) ---
+ *
+ * The engine's text selection is (anchor element, byte offset) + (focus
+ * element, byte offset). These accessors expose it read-only for the DOM
+ * layer plus two mutators the Selection API needs (collapse/clear and
+ * select-all-of-an-element). */
+
+/* Anchor / focus endpoints (NULL when nothing is selected). */
+whaleui_dom_element_t* whaleui_render_sel_anchor_element(whaleui_render_t* r);
+whaleui_dom_element_t* whaleui_render_sel_focus_element(whaleui_render_t* r);
+/* Byte offsets into the endpoint element's text (input value / textContent). */
+int whaleui_render_sel_anchor_offset(whaleui_render_t* r);
+int whaleui_render_sel_focus_offset(whaleui_render_t* r);
+
+/* The selected text (concatenated across elements), "" when none. */
+std::string whaleui_render_selected_text(whaleui_render_t* r);
+
+/* Clear the selection (window.getSelection().removeAllRanges()). */
+void whaleui_render_clear_selection(whaleui_render_t* r);
+
+/* Select the whole text of one element (selection.selectAllChildren(el)). */
+void whaleui_render_select_all_of(whaleui_render_t* r, whaleui_dom_element_t* el);
+
 /* Handle a resize: recreate offscreen target, invalidate. */
 int whaleui_render_resize(whaleui_render_t* render, int width, int height);
 

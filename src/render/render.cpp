@@ -2839,6 +2839,179 @@ extern "C" whaleui_dom_element_t* whaleui_render_focus_element(whaleui_render_t*
     return r ? reinterpret_cast<whaleui_dom_element_t*>(r->focus_el) : nullptr;
 }
 
+/* --- selection accessors (window.getSelection() backing) --- */
+
+extern "C" whaleui_dom_element_t* whaleui_render_sel_anchor_element(whaleui_render_t* r)
+{
+    return r ? reinterpret_cast<whaleui_dom_element_t*>(r->sel_anchor_el) : nullptr;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_render_sel_focus_element(whaleui_render_t* r)
+{
+    return r ? reinterpret_cast<whaleui_dom_element_t*>(r->sel_focus_el) : nullptr;
+}
+
+extern "C" int whaleui_render_sel_anchor_offset(whaleui_render_t* r)
+{
+    return r ? r->sel_anchor : 0;
+}
+
+extern "C" int whaleui_render_sel_focus_offset(whaleui_render_t* r)
+{
+    return r ? r->sel_focus : 0;
+}
+
+/* The selected text. Same-element: the byte slice between the offsets.
+ * Cross-element: the anchor element's tail, every fully-covered element's
+ * text (layout-tree document order between the endpoints), the focus
+ * element's head. Mirrors sel_range_for's coverage rules; the middle uses
+ * the layout tree's preorder when available, falling back to the DOM walk
+ * (an unrendered selection cannot happen in practice: selection only starts
+ * from a rendered document). */
+extern "C" std::string whaleui_render_selected_text(whaleui_render_t* r)
+{
+    std::string out;
+    if (!r) {
+        return out;
+    }
+    lxb_dom_element* sa = r->sel_anchor_el;
+    lxb_dom_element* sf = r->sel_focus_el;
+    if (!sa || !sf) {
+        return out;
+    }
+    if (sa == sf) {
+        if (r->sel_anchor == r->sel_focus) {
+            return out;
+        }
+        size_t a = static_cast<size_t>(r->sel_anchor);
+        size_t b = static_cast<size_t>(r->sel_focus);
+        if (a > b) {
+            std::swap(a, b);
+        }
+        std::string v = edit_value(sa);
+        if (b <= v.size()) {
+            out = v.substr(a, b - a);
+        } else if (a < v.size()) {
+            out = v.substr(a);
+        }
+        return out;
+    }
+    /* cross-element: partial tails/heads + fully-in-between elements. Walk
+     * the layout tree in paint order (the same order the highlight uses). */
+    bool in_middle = false;
+    bool saw_anchor = false;
+    bool saw_focus = false;
+    std::function<void(whaleui_layout_node_t*)> walk =
+        [&](whaleui_layout_node_t* n) {
+            if (!n || saw_focus) return;
+            if (n->el) {
+                if (n->el == sa && !saw_anchor) {
+                    saw_anchor = true;
+                    in_middle = true;
+                    std::string v = edit_value(sa);
+                    size_t a = static_cast<size_t>(r->sel_anchor);
+                    if (a < v.size()) out += v.substr(a);
+                } else if (n->el == sf && saw_anchor) {
+                    saw_focus = true;
+                    std::string v = edit_value(sf);
+                    size_t b = static_cast<size_t>(r->sel_focus);
+                    if (b > v.size()) b = v.size();
+                    out += v.substr(0, b);
+                    return;
+                } else if (in_middle && !n->is_text && !n->pseudo) {
+                    /* fully-covered element between the endpoints */
+                    out += edit_value(n->el);
+                }
+            }
+            for (whaleui_layout_node_t* c = n->first_child; c && !saw_focus;
+                 c = c->next) {
+                walk(c);
+            }
+        };
+    if (r->tree && r->tree->root) {
+        walk(r->tree->root);
+        if (saw_anchor && saw_focus) {
+            return out;
+        }
+        out.clear(); /* layout order disagreed (detached endpoints): DOM walk */
+    }
+    /* DOM-order fallback: preorder over the document element */
+    lxb_dom_node* root = sa->node.owner_document
+        ? reinterpret_cast<lxb_dom_node*>(
+              lxb_dom_document_element(sa->node.owner_document))
+        : nullptr;
+    in_middle = false;
+    saw_anchor = false;
+    saw_focus = false;
+    std::function<void(lxb_dom_node*)> dom_walk = [&](lxb_dom_node* n) {
+        while (n && !saw_focus) {
+            if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element* e = lxb_dom_interface_element(n);
+                if (e == sa && !saw_anchor) {
+                    saw_anchor = true;
+                    in_middle = true;
+                    std::string v = edit_value(sa);
+                    size_t a = static_cast<size_t>(r->sel_anchor);
+                    if (a < v.size()) out += v.substr(a);
+                } else if (e == sf && saw_anchor) {
+                    saw_focus = true;
+                    std::string v = edit_value(sf);
+                    size_t b = static_cast<size_t>(r->sel_focus);
+                    if (b > v.size()) b = v.size();
+                    out += v.substr(0, b);
+                    return;
+                } else if (in_middle) {
+                    out += edit_value(e);
+                }
+                if (n->first_child) {
+                    dom_walk(n->first_child);
+                }
+            }
+            n = n->next;
+        }
+    };
+    if (root) {
+        dom_walk(root);
+    }
+    return out;
+}
+
+extern "C" void whaleui_render_clear_selection(whaleui_render_t* r)
+{
+    if (!r) {
+        return;
+    }
+    r->sel_anchor_el = r->sel_focus_el = nullptr;
+    r->sel_anchor = r->sel_focus = 0;
+    r->sel_mode = 0;
+    r->selecting = 0;
+    r->drag_sel = 0;
+    r->drag_sel_active = 0;
+    /* a repaint is needed: the highlight is gone */
+    r->scroll_dirty = 1;
+    r->scroll_el = nullptr;
+}
+
+extern "C" void whaleui_render_select_all_of(whaleui_render_t* r,
+                                             whaleui_dom_element_t* elt)
+{
+    lxb_dom_element* el = reinterpret_cast<lxb_dom_element*>(elt);
+    if (!r || !el) {
+        return;
+    }
+    std::string v = edit_value(el);
+    r->sel_anchor_el = el;
+    r->sel_focus_el = el;
+    r->sel_anchor = 0;
+    r->sel_focus = static_cast<int>(v.size());
+    r->sel_mode = 0;
+    r->selecting = 0;
+    r->drag_sel = 0;
+    r->drag_sel_active = 0;
+    r->scroll_dirty = 1;
+    r->scroll_el = nullptr;
+}
+
 extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
 {
     if (!r) {

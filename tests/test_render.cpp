@@ -1403,6 +1403,21 @@ int main(void)
         assert(w->render->sel_anchor == 0);
         assert(w->render->sel_focus == 11); /* "hello world" */
         assert(w->render->drag_sel == 0);
+        /* selection API mirrors the engine state (window.getSelection) */
+        assert(whaleui_window_sel_anchor_element(w) ==
+               whaleui_window_sel_focus_element(w));
+        assert(whaleui_window_sel_anchor_offset(w) == 0);
+        assert(whaleui_window_sel_focus_offset(w) == 11);
+        assert(std::strcmp(whaleui_window_selected_text(w), "hello world") == 0);
+        /* select_all_of replaces the range with the element's whole text */
+        whaleui_window_select_all_of(w, inp->el);
+        assert(whaleui_window_sel_anchor_offset(w) == 0);
+        assert(whaleui_window_sel_focus_offset(w) == 11);
+        /* clear_selection empties it (removeAllRanges) */
+        whaleui_window_clear_selection(w);
+        assert(whaleui_window_sel_anchor_element(w) == nullptr);
+        assert(whaleui_window_sel_focus_element(w) == nullptr);
+        assert(std::strcmp(whaleui_window_selected_text(w), "") == 0);
         whaleui_window_destroy(w);
     }
 

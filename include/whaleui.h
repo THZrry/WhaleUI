@@ -383,6 +383,30 @@ int whaleui_window_load_uri(whaleui_window_t* win, const char* uri);
  * owned by the window; destroying the window destroys it. */
 whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t* win);
 
+/* --- selection (window.getSelection() subset) ---
+ *
+ * The engine's text selection lives in the render context (anchor/focus
+ * element + byte offsets; set by mouse drag, double/triple click and the
+ * caret in editable controls). These accessors expose it per window. */
+
+struct whaleui_dom_element;
+typedef struct whaleui_dom_element whaleui_dom_element_t;
+
+/* Anchor / focus endpoints (NULL when nothing is selected). */
+whaleui_dom_element_t* whaleui_window_sel_anchor_element(whaleui_window_t* win);
+whaleui_dom_element_t* whaleui_window_sel_focus_element(whaleui_window_t* win);
+/* Byte offsets into the endpoint element's text. */
+int whaleui_window_sel_anchor_offset(whaleui_window_t* win);
+int whaleui_window_sel_focus_offset(whaleui_window_t* win);
+/* The selected text ("" when none). Returned pointer is owned by the window
+ * and valid until the next selection API call on it. */
+const char* whaleui_window_selected_text(whaleui_window_t* win);
+/* Clear the selection (removeAllRanges). */
+void whaleui_window_clear_selection(whaleui_window_t* win);
+/* Select the whole text of one element (selectAllChildren); the element
+ * must belong to the window's document. */
+void whaleui_window_select_all_of(whaleui_window_t* win, whaleui_dom_element_t* el);
+
 /* ======================= DOM ======================= */
 
 typedef struct whaleui_dom_element whaleui_dom_element_t;

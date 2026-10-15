@@ -453,6 +453,23 @@ public:
     }
     Document GetDocument() const { return Document(whaleui_window_get_document(h_)); }
 
+    /* --- selection (window.getSelection() subset) --- */
+    Element SelectionAnchorElement() const {
+        return Element(whaleui_window_sel_anchor_element(h_));
+    }
+    Element SelectionFocusElement() const {
+        return Element(whaleui_window_sel_focus_element(h_));
+    }
+    int SelectionAnchorOffset() const { return whaleui_window_sel_anchor_offset(h_); }
+    int SelectionFocusOffset() const { return whaleui_window_sel_focus_offset(h_); }
+    std::string SelectedText() const {
+        return ToStr(whaleui_window_selected_text(h_));
+    }
+    void ClearSelection() const { whaleui_window_clear_selection(h_); }
+    void SelectAllOf(Element el) const {
+        whaleui_window_select_all_of(h_, el.handle());
+    }
+
 private:
     whaleui_window_t* h_;
     bool owned_;

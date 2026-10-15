@@ -129,6 +129,10 @@ struct whaleui_window
     int hit_test_active;
     /* per-window display refresh (Hz), refined at show() */
     int display_refresh;
+
+    /* selection-text cache for whaleui_window_selected_text (the returned
+     * pointer must stay valid until the next call on this window) */
+    std::string sel_text_cache;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

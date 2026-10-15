@@ -593,6 +593,54 @@ extern "C" whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t*
     return win ? win->document : nullptr;
 }
 
+/* --- selection (window.getSelection() subset): the render context owns the
+ * selection state; these thin wrappers expose it per window. --- */
+
+extern "C" whaleui_dom_element_t* whaleui_window_sel_anchor_element(whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_sel_anchor_element(win->render) : nullptr;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_window_sel_focus_element(whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_sel_focus_element(win->render) : nullptr;
+}
+
+extern "C" int whaleui_window_sel_anchor_offset(whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_sel_anchor_offset(win->render) : 0;
+}
+
+extern "C" int whaleui_window_sel_focus_offset(whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_sel_focus_offset(win->render) : 0;
+}
+
+extern "C" const char* whaleui_window_selected_text(whaleui_window_t* win)
+{
+    if (!win || !win->render) {
+        return "";
+    }
+    /* per-window cache: the returned pointer stays valid until the next call
+     * on this window (documented contract). */
+    win->sel_text_cache = whaleui_render_selected_text(win->render);
+    return win->sel_text_cache.c_str();
+}
+
+extern "C" void whaleui_window_clear_selection(whaleui_window_t* win)
+{
+    if (win && win->render) {
+        whaleui_render_clear_selection(win->render);
+    }
+}
+
+extern "C" void whaleui_window_select_all_of(whaleui_window_t* win, whaleui_dom_element_t* el)
+{
+    if (win && win->render) {
+        whaleui_render_select_all_of(win->render, el);
+    }
+}
+
 /* ======================= window state/geometry/appearance wrappers ======================= */
 
 extern "C" int whaleui_window_is_visible(const whaleui_window_t* win)

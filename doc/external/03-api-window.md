@@ -202,6 +202,26 @@ int whaleui_window_load_uri(whaleui_window_t* win, const char* uri);
 whaleui_dom_document_t* whaleui_window_get_document(whaleui_window_t* win);
 ```
 
+## 选区(window.getSelection() 子集)
+
+```c
+/* 锚点/焦点端点(无选区时为 NULL);偏移是端点元素文本的字节偏移 */
+whaleui_dom_element_t* whaleui_window_sel_anchor_element(whaleui_window_t* win);
+whaleui_dom_element_t* whaleui_window_sel_focus_element(whaleui_window_t* win);
+int whaleui_window_sel_anchor_offset(whaleui_window_t* win);
+int whaleui_window_sel_focus_offset(whaleui_window_t* win);
+/* 选中文本("" 无选区);指针归窗口所有,下次调用前有效 */
+const char* whaleui_window_selected_text(whaleui_window_t* win);
+/* 清除选区(removeAllRanges) */
+void whaleui_window_clear_selection(whaleui_window_t* win);
+/* 选中元素全部文本(selectAllChildren);元素须属于该窗口的文档 */
+void whaleui_window_select_all_of(whaleui_window_t* win, whaleui_dom_element_t* el);
+```
+
+选区状态由渲染上下文维护(鼠标拖选、双击/三击、可编辑控件的插入符都会写入);
+这些 API 只做读写映射。跨元素选区的 `selected_text` 拼接:锚点元素尾部 +
+中间完整元素文本 + 焦点元素头部,与高亮覆盖规则一致。
+
 ## 用例
 
 ```c

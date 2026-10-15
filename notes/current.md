@@ -1195,3 +1195,19 @@ SOLVED
 Selection/Range 仍不做(引擎文本选择是 render 内部 sel_* 状态, 需专门设计再开一轮)。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0。
+
+# <47>: Selection API 子集(window.getSelection)
+
+SOLVED
+
+- 选区状态本就存在 render 上下文(`sel_anchor_el/sel_focus_el` + 字节偏移, 拖选/双击三击/插入符写入), 缺的是对外读取。新增:
+  - render 侧只读访问器(`whaleui_render_sel_anchor_element/focus_element/anchor_offset/focus_offset`)与 `whaleui_render_selected_text`。
+  - `selected_text` 跨元素拼接严格对齐高亮覆盖规则: 同元素取 [lo,hi) 切片; 跨元素 = 锚点元素尾部 + 中间完整元素(布局树前序, 与绘制同序) + 焦点元素头部。布局序走完没找到两端点时**回退 DOM 前序**(端点可能已脱离渲染树), 两遍都失败返回空。
+  - 变更器: `clear_selection`(removeAllRanges) 与 `select_all_of(el)`(selectAllChildren, 0..text 全长); 二者都置 `scroll_dirty` 触发一次重绘(高亮消失/出现), 否则帧的 idle 判定会跳过绘制。
+- 公开层: `whaleui_window_*` 六个函数(window 持有 render), `selected_text` 用 per-window `sel_text_cache` 保证"指针下次调用前有效"的 C 契约(不能返回 render 的临时 string 的 c_str)。
+- 头文件顺序坑: selection 段插在 window 段末尾, 但 `whaleui_dom_element_t` 要到 DOM 段才 typedef —— 段前补 `struct whaleui_dom_element; typedef ... whaleui_dom_element_t;`(重复 typedef 合法)。
+- C++ 侧 `Window::SelectedText/SelectionAnchorElement/ClearSelection/SelectAllOf` 镜像。
+- 测试: test_render 三击全选后断言端点相等、偏移 0..11、`selected_text == "hello world"`, 再 select_all_of 复选、clear_selection 清空。
+- 未做: Range 对象(createRange/startContainer/surroundContents 等)与 setBaseAndExtent 式程序化选区; 需要时再开一轮(引擎有足够状态支撑)。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0。
