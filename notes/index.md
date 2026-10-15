@@ -184,3 +184,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 <42>(SOLVED): document 级事件目标(句柄识别 -> documentElement) + activeElement/focus/blur 真实化(per-doc 镜像 + render_focus_move 单写点) + submit(单行输入 Enter 向 form 派发) —— 见 notes/current.md
 <43>(SOLVED): Canvas 文本(fillText/strokeText/measureText + font/textAlign/textBaseline;SDL3_ttf 独立后端,Full-only,strokeText 边缘近似) —— 见 notes/current.md
 <44>(SOLVED): Canvas drawImage(canvas/ImageData 源,仿射逆变换最近邻采样 + globalAlpha) + 修 whaleui_canvas_drop_all 从未被调用导致 document 销毁后 canvas 上下文悬垂元素指针 —— 见 notes/current.md
+<45>(SOLVED): classList 扩展(length/item/replace/toggle-force) + dataset(camelCase<->data-kebab) + append/prepend/before/after(单节点) + insertAdjacentHTML(四位置固定锚点保序);记 dom.cpp 匿名 namespace 闭合边界坑 —— 见 notes/current.md

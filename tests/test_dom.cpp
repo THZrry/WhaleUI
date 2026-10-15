@@ -385,6 +385,92 @@ int main(void)
         assert(!whaleui_dom_class_contains(a, "x"));
         assert(whaleui_dom_class_contains(a, "y")); /* other tokens intact */
 
+        /* classList extras: length/item/replace/toggle(force) */
+        assert(whaleui_dom_class_add(a, "x") == 0); /* "x y" restored-ish */
+        assert(whaleui_dom_class_length(a) >= 1);
+        char tok[32];
+        assert(whaleui_dom_class_item(a, 0, tok, sizeof(tok)) == 0);
+        assert(tok[0] != '\0');
+        assert(whaleui_dom_class_item(a, 999, tok, sizeof(tok)) != 0);
+        assert(whaleui_dom_class_replace(a, "y", "z") == 1); /* was present */
+        assert(whaleui_dom_class_contains(a, "z"));
+        assert(!whaleui_dom_class_contains(a, "y"));
+        assert(whaleui_dom_class_replace(a, "nope", "w") == 0); /* absent */
+        assert(whaleui_dom_class_toggle_force(a, "q", 1) == 1); /* force on */
+        assert(whaleui_dom_class_contains(a, "q"));
+        assert(whaleui_dom_class_toggle_force(a, "q", 1) == 1); /* already on, no flip */
+        assert(whaleui_dom_class_toggle_force(a, "q", 0) == 0); /* force off */
+        assert(!whaleui_dom_class_contains(a, "q"));
+        assert(whaleui_dom_class_toggle_force(a, "q", -1) == 1); /* flip on */
+
+        /* dataset: camelCase <-> data-kebab, set/get/has/remove */
+        assert(whaleui_dom_dataset_set(a, "fooBar", "42") == 0);
+        assert(whaleui_dom_dataset_get(a, "fooBar") != nullptr);
+        assert(std::strcmp(whaleui_dom_dataset_get(a, "fooBar"), "42") == 0);
+        assert(std::strcmp(whaleui_dom_get_attribute(a, "data-foo-bar"), "42") == 0);
+        assert(whaleui_dom_dataset_has(a, "fooBar"));
+        assert(!whaleui_dom_dataset_has(a, "missing"));
+        assert(whaleui_dom_dataset_remove(a, "fooBar") == 0);
+        assert(!whaleui_dom_dataset_has(a, "fooBar"));
+        assert(whaleui_dom_dataset_get(a, nullptr) == nullptr);
+
+        /* insertAdjacentHTML: the four positions keep fragment order */
+        {
+            whaleui_dom_document_t* d2 = whaleui_dom_parse_html(
+                "<html><body><div id=\"t\"><b>mid</b></div></body></html>", 0);
+            assert(d2 != nullptr);
+            whaleui_dom_element_t* t = whaleui_dom_get_element_by_id(d2, "t");
+            /* beforeend appends after existing child */
+            assert(whaleui_dom_insert_adjacent_html(t, "beforeend",
+                       "<i>1</i><i>2</i>") == 0);
+            assert(std::strstr(whaleui_dom_get_inner_html(t),
+                               "<b>mid</b><i>1</i><i>2</i>") != nullptr);
+            /* afterbegin prepends before existing first child, in order */
+            assert(whaleui_dom_insert_adjacent_html(t, "afterbegin",
+                       "<u>A</u><u>B</u>") == 0);
+            assert(std::strstr(whaleui_dom_get_inner_html(t),
+                               "<u>A</u><u>B</u><b>mid</b>") != nullptr);
+            /* beforebegin inserts a sibling before t */
+            whaleui_dom_element_t* body = whaleui_dom_body(d2);
+            assert(whaleui_dom_insert_adjacent_html(t, "beforebegin",
+                       "<span>pb</span>") == 0);
+            assert(std::strstr(whaleui_dom_get_inner_html(body),
+                               "<span>pb</span><div") != nullptr);
+            /* afterend inserts a sibling after t */
+            assert(whaleui_dom_insert_adjacent_html(t, "afterend",
+                       "<span>ae</span>") == 0);
+            assert(std::strstr(whaleui_dom_get_inner_html(body),
+                               "</div><span>ae</span>") != nullptr);
+            /* invalid position rejected */
+            assert(whaleui_dom_insert_adjacent_html(t, "nowhere", "x") != 0);
+            whaleui_dom_document_destroy(d2);
+        }
+
+        /* append/prepend/before/after (node forms) */
+        {
+            whaleui_dom_document_t* d3 = whaleui_dom_parse_html(
+                "<html><body><div id=\"p\"><a>1</a><b>2</b></div></body></html>", 0);
+            assert(d3 != nullptr);
+            whaleui_dom_element_t* p = whaleui_dom_get_element_by_id(d3, "p");
+            whaleui_dom_element_t* first = whaleui_dom_first_element_child(p);
+            whaleui_dom_element_t* last = whaleui_dom_last_element_child(p);
+            whaleui_dom_element_t* x = whaleui_dom_create_element(d3, "span");
+            whaleui_dom_set_text(x, "x");
+            assert(whaleui_dom_append(p, x) == 0);
+            assert(whaleui_dom_last_element_child(p) == x);
+            whaleui_dom_element_t* y = whaleui_dom_create_element(d3, "span");
+            assert(whaleui_dom_prepend(p, y) == 0);
+            assert(whaleui_dom_first_element_child(p) == y);
+            /* before/after relative to an existing child */
+            whaleui_dom_element_t* bx = whaleui_dom_create_element(d3, "i");
+            assert(whaleui_dom_before(first, bx) == 0);
+            assert(whaleui_dom_previous_element_sibling(first) == bx);
+            whaleui_dom_element_t* ax = whaleui_dom_create_element(d3, "em");
+            assert(whaleui_dom_after(first, ax) == 0);
+            assert(whaleui_dom_next_element_sibling(first) == ax);
+            whaleui_dom_document_destroy(d3);
+        }
+
         /* innerHTML round-trip */
         const char* ih = whaleui_dom_get_inner_html(a);
         assert(ih != nullptr && std::strstr(ih, "<p>one</p>") != nullptr);

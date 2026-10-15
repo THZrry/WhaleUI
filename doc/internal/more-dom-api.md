@@ -9,7 +9,10 @@
 > 回调 + 窗口事件分发);Style 声明式 API 已实现(2cea474);Canvas 2D 核心 +
 > WebGPU stub 已实现(614740a);选择器查询与级联同语义(eff12b8);事件系统
 > 全接入 + C++ 门面层 whaleui.hpp + document 级事件目标 + focus/blur 真实化 +
-> submit(f1f05e9 及其后续)。§10/§9/§8 已全勾选;§2 选择器子集已统一;仅
+> submit(f1f05e9 及其后续)。§10/§9/§8 已全勾选;§2 选择器子集已统一;
+> §3/§4 再补:classList 扩展(length/item/replace/toggle-force)、dataset
+> (camelCase<->data-kebab)、append/prepend/before/after(单节点)、
+> insertAdjacentHTML(四位置固定锚点保序),C++ 侧同名镜像包装。仅
 > `getBoundingClientRect` 的"依赖最近布局"语义为设计边界,非未实现。
 
 ## 通用约定(与 whaleui.h 顶部一致)
@@ -78,7 +81,7 @@ size_t whaleui_dom_child_element_count(whaleui_dom_element_t* el);
 - 已实现三个是 `lxb_dom_node_*` 直接透传;新 API 注意**元素/节点区分**:parent_element 需向上跳过非元素;element 系列需过滤 `LXB_DOM_NODE_TYPE_ELEMENT`。`children` 可复用 `child_element_count` + 遍历拼 list。
 - 测试:含文本节点的子树,断言 element 系列跳过文本、node 系列不跳。
 
-## 4. 节点操作
+## 4. 节点操作 ✅(append/prepend/before/after/insertAdjacentHTML 已补)
 
 JS 对应:`insertBefore / replaceChild / remove / cloneNode / contains / hasChildNodes / isConnected / createTextNode`。
 
@@ -115,7 +118,7 @@ whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_document_t* doc);
 - activeElement:✅ 已实现——DOM 层 `g_active()` map(`src/dom/dom.cpp`,per-document,文档销毁时清理);`whaleui_dom_set_active/clear_active`(dom.h)由 public focus/blur 与 render 的 `render_focus_move`(点击/滚动条拖拽/Tab)共同写入;无焦点时回退 body(浏览器语义)。
 - 测试:`tests/test_dom.cpp`(title 读回、activeElement 跟随 focus/blur、blur 仅在激活元素上触发、focus 非冒泡)。
 
-## 6. 属性与 classList
+## 6. 属性与 classList ✅(classList 扩展 + dataset 已补)
 
 JS 对应:`hasAttribute / removeAttribute / toggleAttribute / classList.add/remove/toggle/contains`。
 
@@ -277,7 +280,7 @@ int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_even
 
 | 优先级 | 内容 | 状态 |
 |---|---|---|
-| P0 | §2 查询、§3 遍历、§4 节点操作、§6 属性/classList、§5 title/body/head | ✅ 基线已实现;选择器全量透传待做 |
+| P0 | §2 查询、§3 遍历、§4 节点操作、§6 属性/classList、§5 title/body/head | ✅ 基线已实现;选择器已统一;classList 扩展/dataset/append-prepend-before-after/insertAdjacentHTML 已补 |
 | P0 | §10 窗口扩展(不含事件回调) | ✅ de48f1c |
 | P0 | Style 声明式(cssText/getComputedStyle) | ✅ 2cea474 |
 | P1 | §7 innerHTML/value、§8 focus | ✅ 基线已实现 |

@@ -111,6 +111,32 @@ public:
     bool ClassRemove(const std::string& cls) const { return whaleui_dom_class_remove(h_, cls.c_str()) == 0; }
     bool ClassToggle(const std::string& cls) const { return whaleui_dom_class_toggle(h_, cls.c_str()) != 0; }
     bool ClassContains(const std::string& cls) const { return whaleui_dom_class_contains(h_, cls.c_str()) != 0; }
+    size_t ClassLength() const { return whaleui_dom_class_length(h_); }
+    std::string ClassItem(size_t i) const {
+        char buf[128];
+        if (whaleui_dom_class_item(h_, i, buf, sizeof(buf)) != 0) return std::string();
+        return std::string(buf);
+    }
+    bool ClassReplace(const std::string& old_cls, const std::string& new_cls) const {
+        return whaleui_dom_class_replace(h_, old_cls.c_str(), new_cls.c_str()) != 0;
+    }
+    bool ClassToggleForce(const std::string& cls, int force) const {
+        return whaleui_dom_class_toggle_force(h_, cls.c_str(), force) != 0;
+    }
+
+    /* dataset (camelCase <-> data-kebab, mirrors element.dataset.*) */
+    bool DatasetSet(const std::string& key, const std::string& value) const {
+        return whaleui_dom_dataset_set(h_, key.c_str(), value.c_str()) == 0;
+    }
+    std::string DatasetGet(const std::string& key) const {
+        return ToStr(whaleui_dom_dataset_get(h_, key.c_str()));
+    }
+    bool DatasetHas(const std::string& key) const {
+        return whaleui_dom_dataset_has(h_, key.c_str()) != 0;
+    }
+    bool DatasetRemove(const std::string& key) const {
+        return whaleui_dom_dataset_remove(h_, key.c_str()) == 0;
+    }
 
     /* inline style (CSSStyleDeclaration subset) */
     void SetStyle(const std::string& property, const std::string& value) const {
@@ -177,6 +203,17 @@ public:
     bool HasChildNodes() const { return whaleui_dom_has_child_nodes(h_) != 0; }
     bool IsConnected() const { return whaleui_dom_is_connected(h_) != 0; }
     void Destroy() const { whaleui_dom_element_destroy(h_); }
+
+    /* element.append/prepend/before/after (single-node forms) */
+    bool Append(Element node) const { return whaleui_dom_append(h_, node.h_) == 0; }
+    bool Prepend(Element node) const { return whaleui_dom_prepend(h_, node.h_) == 0; }
+    bool Before(Element node) const { return whaleui_dom_before(h_, node.h_) == 0; }
+    bool After(Element node) const { return whaleui_dom_after(h_, node.h_) == 0; }
+
+    /* insertAdjacentHTML: position = beforebegin|afterbegin|beforeend|afterend */
+    bool InsertAdjacentHTML(const std::string& position, const std::string& html) const {
+        return whaleui_dom_insert_adjacent_html(h_, position.c_str(), html.c_str()) == 0;
+    }
 
     /* focus + geometry */
     bool Focus() const { return whaleui_dom_focus(h_) == 0; }

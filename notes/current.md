@@ -1163,3 +1163,21 @@ SOLVED
 - test_canvas 新增: 源 canvas 画红 -> drawImage 到 10x10 目标(恒等变换位置/边界/透明区)、dw/dh 2x 放大、ImageData 源 + globalAlpha=0.5 半合成、自拷贝/null 拒绝。坑记一笔: 前面文本用例把 global_alpha 留在 0.5, 新块要先复位——断言失败先查测试状态残留再查实现。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0。
+
+# <45>: classList 扩展 + dataset + append/prepend/before/after + insertAdjacentHTML
+
+SOLVED
+
+## A. 语义要点(浏览器对齐)
+
+- classList: 新增 length/item(index)/replace(old,new)(返回旧 token 是否存在并全量替换)/toggle(cls, force)(force>=0 强制, <0 翻转, 返回最终存在性)。token 以空格/制表分隔, 与既有 class_has/class_set 共用。
+- dataset: `whaleui_dom_dataset_{set,get,has,remove}`; camelCase <-> data-kebab 映射(`fooBar` -> `data-foo-bar`, 只在 index>0 且大写字母前插入连字符; 数字/已含连字符不二次拆)。set/remove 走 set_attribute/remove_attribute 并 mark_dirty。
+- append/prepend/before/after: 单节点形式, 句柄既可是元素也可是文本节点(`reinterpret_cast<lxb_dom_node*>` —— element/text 首成员均为 node), 移动前先 remove 并 mark 旧父结构脏。before/after 要求 el 已挂载(有 parent)。
+- insertAdjacentHTML: 复用 parse_into 的 fragment 解析, 抽 `parse_detach` 返回游离节点向量; 四位置各用一个固定锚点保证片段顺序: beforebegin 在 e 前、afterbegin 在 e 原 firstChild 前、beforeend 追加 e 尾、afterend 在 e 原 next 前(用 lxb_dom_node_insert(parent,node,ref,false) 逐节点插到同一 ref 前即保持顺序, 空锚点退化为 insert_child)。
+
+## B. 坑记一笔(TIPS)
+
+- **匿名 namespace 闭合**: dom.cpp 的匿名 namespace 从文件头延伸到 style 辅助函数之后, 新加的 parse_detach 必须落在闭合 `} // namespace` 之前(否则 extern "C" 定义进匿名 ns 链接性冲突 + 列表结构体在 ns 内导致 header 前向声明的 whaleui_dom_list 视为 incomplete)。移动/重排函数块时先确认 namespace 边界。
+- 选择器 `div > p` 在 element-query 语义下应命中(后代), 但把根自身也当匹配会污染 `element.querySelector(div)` —— 已在前一轮修成 descendants-only, 这轮 insertAdjacent/append 测试同样建在独立子文档, 不依赖主文档结构。
+
+验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom/test_cpp 新增 classList/dataset/insertAdjacentHTML/append-prepend 断言)。

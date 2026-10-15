@@ -496,6 +496,20 @@ int whaleui_dom_remove(whaleui_dom_element_t* el);
 /* element.cloneNode(deep): 1 = clone subtree, 0 = shallow. Detached clone. */
 whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, int deep);
 
+/* element.append/prepend(node): insert node as first/last child of el.
+ * element.before/after(node): insert node as the sibling before/after el
+ * (el must be attached). Accept an element or a text node. 0 on success. */
+int whaleui_dom_append(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_prepend(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_before(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_after(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+
+/* element.insertAdjacentHTML(position, html): position is
+ * "beforebegin"|"afterbegin"|"beforeend"|"afterend". Parses the fragment and
+ * inserts it at that position relative to el. 0 on success. */
+int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* el,
+                                     const char* position, const char* html);
+
 /* parent.contains(child): 1 if child is el or a descendant. */
 int whaleui_dom_contains(whaleui_dom_element_t* parent, whaleui_dom_element_t* child);
 
@@ -522,6 +536,23 @@ int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls);
 int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* cls);
 int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* cls); /* returns resulting presence */
 int whaleui_dom_class_contains(whaleui_dom_element_t* el, const char* cls);
+/* classList.length / item(index) / replace(old, new) / toggle(cls, force).
+ * class_item copies the token at index into out (0 on success); replace
+ * returns 1 when the old token was present (all occurrences swapped);
+ * toggle_force mirrors toggle(cls, force): force >= 0 forces on/off,
+ * force < 0 flips; returns resulting presence (-1 error). */
+size_t whaleui_dom_class_length(whaleui_dom_element_t* el);
+int whaleui_dom_class_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap);
+int whaleui_dom_class_replace(whaleui_dom_element_t* el, const char* old_cls, const char* new_cls);
+int whaleui_dom_class_toggle_force(whaleui_dom_element_t* el, const char* cls, int force);
+
+/* --- dataset (mirror element.dataset.*) ---
+ * Keys are camelCase and map to data-* attributes ("fooBar" <-> data-foo-bar);
+ * keys already containing '-' map verbatim after the prefix. */
+int whaleui_dom_dataset_set(whaleui_dom_element_t* el, const char* key, const char* value);
+const char* whaleui_dom_dataset_get(whaleui_dom_element_t* el, const char* key);
+int whaleui_dom_dataset_has(whaleui_dom_element_t* el, const char* key);
+int whaleui_dom_dataset_remove(whaleui_dom_element_t* el, const char* key);
 
 /* --- text / html content --- */
 

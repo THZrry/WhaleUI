@@ -340,7 +340,100 @@ int style_set(lxb_dom_element* e, const char* prop, const char* value)
                                          out.size()) ? 0 : -2;
 }
 
+/* parse an HTML fragment and hand back its detached top-level nodes (the
+ * siblings the fragment contributes), without inserting them. Mirrors
+ * parse_into's parsing but leaves placement to the caller (insertAdjacentHTML). */
+std::vector<lxb_dom_node*> parse_detach(lxb_dom_element* el, const char* html,
+                                        size_t len)
+{
+    std::vector<lxb_dom_node*> out;
+    lxb_dom_document* doc = el->node.owner_document;
+    /* an lxb_dom_document is the first member of lxb_html_document */
+    lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+    if (!hd || !html) {
+        return out;
+    }
+    lxb_html_parser_t* parser = lxb_html_parser_create();
+    if (!parser) {
+        return out;
+    }
+    lxb_html_parser_init(parser);
+    lxb_dom_node_t* frag = lxb_html_parse_fragment_by_tag_id(
+        parser, hd, LXB_TAG_DIV, LXB_NS_HTML,
+        reinterpret_cast<const lxb_char_t*>(html), len);
+    if (!frag) {
+        lxb_html_parser_destroy(parser);
+        return out;
+    }
+    while (frag->first_child) {
+        lxb_dom_node* c = frag->first_child;
+        lxb_dom_node_remove(c);
+        out.push_back(c);
+    }
+    lxb_html_parser_destroy(parser);
+    return out;
+}
+
 } // namespace
+
+extern "C" int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* elt,
+                                                const char* position,
+                                                const char* html)
+{
+    lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(elt);
+    if (!e || !position || !html) {
+        return -1;
+    }
+    bool beforebegin = std::strcmp(position, "beforebegin") == 0;
+    bool afterbegin = std::strcmp(position, "afterbegin") == 0;
+    bool beforeend = std::strcmp(position, "beforeend") == 0;
+    bool afterend = std::strcmp(position, "afterend") == 0;
+    if (!beforebegin && !afterbegin && !beforeend && !afterend) {
+        return -2;
+    }
+    if (beforebegin || afterend) {
+        if (!e->node.parent) {
+            return -3; /* no parent to insert beside */
+        }
+    }
+    std::vector<lxb_dom_node*> nodes = parse_detach(e, html, std::strlen(html));
+    if (nodes.empty()) {
+        return 0; /* empty/failed fragment: nothing to insert */
+    }
+    lxb_dom_element* owner = e->node.parent
+        ? lxb_dom_interface_element(e->node.parent) : nullptr;
+    /* Each position uses a fixed anchor so the fragment keeps its order:
+     *  beforebegin -> before e;  afterbegin -> before e's original first child;
+     *  beforeend -> appended to e;  afterend -> before e's original next sibling.
+     * lxb_dom_node_insert(parent, node, ref, false) puts node before ref, so
+     * inserting in sequence before the same ref preserves fragment order. */
+    lxb_dom_node* anchor = nullptr;
+    bool append_mode = false; /* insert_child (at end) instead of before-ref */
+    lxb_dom_node* parent_node = nullptr;
+    if (beforebegin) {
+        parent_node = e->node.parent; anchor = &e->node;
+    } else if (afterbegin) {
+        parent_node = &e->node; anchor = e->node.first_child; append_mode = !anchor;
+    } else if (beforeend) {
+        parent_node = &e->node; append_mode = true;
+    } else { /* afterend */
+        parent_node = e->node.parent; anchor = e->node.next; append_mode = !anchor;
+    }
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        lxb_dom_node* n = nodes[i];
+        if (append_mode) {
+            lxb_dom_node_insert_child(parent_node, n);
+        } else {
+            lxb_dom_node_insert(parent_node, n, anchor, false);
+        }
+    }
+    whaleui_dom_mark_dirty_struct(e);
+    if (beforebegin || afterend) {
+        whaleui_dom_mark_dirty_struct(owner);
+    }
+    whaleui_dom_mark_vars_dirty();
+    return 0;
+}
 
 /* --- DOM mutation tracking (incremental relayout) --- */
 
@@ -1520,6 +1613,98 @@ extern "C" whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, i
     return clone ? out(lxb_dom_interface_element(clone)) : nullptr;
 }
 
+/* --- append/prepend/before/after (single-node forms) ---
+ *
+ * The node handle may be an element or a text node: both share lxb_dom_node
+ * as their first member (see dom.h / create_text_node), so a plain
+ * reinterpret to the node pointer covers both. */
+static int node_handle(whaleui_dom_element_t* n, lxb_dom_node** out)
+{
+    if (!n) {
+        *out = nullptr;
+        return -1;
+    }
+    *out = reinterpret_cast<lxb_dom_node*>(n);
+    return 0;
+}
+
+extern "C" int whaleui_dom_append(whaleui_dom_element_t* el,
+                                  whaleui_dom_element_t* node)
+{
+    lxb_dom_element* e = as_el(el);
+    lxb_dom_node* nc = nullptr;
+    if (node_handle(node, &nc) != 0 || !e) {
+        return -1;
+    }
+    if (nc->parent) {
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
+        lxb_dom_node_remove(nc);
+    }
+    lxb_dom_node_insert_child(&e->node, nc);
+    whaleui_dom_mark_dirty_struct(e);
+    return 0;
+}
+
+extern "C" int whaleui_dom_prepend(whaleui_dom_element_t* el,
+                                   whaleui_dom_element_t* node)
+{
+    lxb_dom_element* e = as_el(el);
+    lxb_dom_node* nc = nullptr;
+    if (node_handle(node, &nc) != 0 || !e) {
+        return -1;
+    }
+    if (nc->parent) {
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
+        lxb_dom_node_remove(nc);
+    }
+    if (e->node.first_child) {
+        lxb_dom_node_insert(&e->node, nc, e->node.first_child, false);
+    } else {
+        lxb_dom_node_insert_child(&e->node, nc);
+    }
+    whaleui_dom_mark_dirty_struct(e);
+    return 0;
+}
+
+extern "C" int whaleui_dom_before(whaleui_dom_element_t* el,
+                                  whaleui_dom_element_t* node)
+{
+    lxb_dom_element* e = as_el(el);
+    lxb_dom_node* nc = nullptr;
+    if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
+        return -1;
+    }
+    if (nc->parent) {
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
+        lxb_dom_node_remove(nc);
+    }
+    lxb_dom_node_insert(e->node.parent, nc, &e->node, false);
+    whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(e->node.parent));
+    return 0;
+}
+
+extern "C" int whaleui_dom_after(whaleui_dom_element_t* el,
+                                 whaleui_dom_element_t* node)
+{
+    lxb_dom_element* e = as_el(el);
+    lxb_dom_node* nc = nullptr;
+    if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
+        return -1;
+    }
+    if (nc->parent) {
+        whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(nc->parent));
+        lxb_dom_node_remove(nc);
+    }
+    lxb_dom_node* ref = e->node.next ? e->node.next : nullptr;
+    if (ref) {
+        lxb_dom_node_insert(e->node.parent, nc, ref, false);
+    } else {
+        lxb_dom_node_insert_child(e->node.parent, nc);
+    }
+    whaleui_dom_mark_dirty_struct(lxb_dom_interface_element(e->node.parent));
+    return 0;
+}
+
 extern "C" int whaleui_dom_contains(whaleui_dom_element_t* parent,
                                     whaleui_dom_element_t* child)
 {
@@ -1678,6 +1863,190 @@ extern "C" int whaleui_dom_class_contains(whaleui_dom_element_t* el, const char*
         return 0;
     }
     return class_has(e, cls);
+}
+
+/* split the class attribute into whitespace-separated tokens */
+std::vector<std::string> class_tokens(lxb_dom_element* e)
+{
+    std::vector<std::string> out;
+    size_t alen = 0;
+    const lxb_char_t* a = lxb_dom_element_get_attribute(
+        e, (const lxb_char_t*)"class", 5, &alen);
+    if (!a) {
+        return out;
+    }
+    std::string s(reinterpret_cast<const char*>(a), alen);
+    size_t pos = 0;
+    while (pos < s.size()) {
+        while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t')) {
+            ++pos;
+        }
+        size_t t = pos;
+        while (t < s.size() && s[t] != ' ' && s[t] != '\t') {
+            ++t;
+        }
+        if (t > pos) {
+            out.push_back(s.substr(pos, t - pos));
+        }
+        pos = t;
+    }
+    return out;
+}
+
+extern "C" size_t whaleui_dom_class_length(whaleui_dom_element_t* el)
+{
+    lxb_dom_element* e = as_el(el);
+    return e ? class_tokens(e).size() : 0;
+}
+
+extern "C" int whaleui_dom_class_item(whaleui_dom_element_t* el, size_t index,
+                                      char* out, size_t cap)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !out || cap == 0) {
+        return -1;
+    }
+    std::vector<std::string> v = class_tokens(e);
+    if (index >= v.size()) {
+        return -2;
+    }
+    if (v[index].size() + 1 > cap) {
+        return -3;
+    }
+    std::memcpy(out, v[index].c_str(), v[index].size() + 1);
+    return 0;
+}
+
+extern "C" int whaleui_dom_class_replace(whaleui_dom_element_t* el,
+                                         const char* old_cls,
+                                         const char* new_cls)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !old_cls || !new_cls || !*old_cls || !*new_cls) {
+        return 0;
+    }
+    if (std::strcmp(old_cls, new_cls) == 0) {
+        return class_has(e, old_cls); /* no-op; report presence */
+    }
+    int found = class_has(e, old_cls);
+    if (!found) {
+        return 0;
+    }
+    class_set(e, old_cls, 0);
+    class_set(e, new_cls, 1);
+    whaleui_dom_mark_dirty(e);
+    return 1;
+}
+
+extern "C" int whaleui_dom_class_toggle_force(whaleui_dom_element_t* el,
+                                              const char* cls, int force)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !cls) {
+        return -1;
+    }
+    int has = class_has(e, cls);
+    int want = force >= 0 ? (force != 0) : !has;
+    if (want == has) {
+        return has;
+    }
+    int rc = class_set(e, cls, want);
+    if (rc != 0) {
+        return -1;
+    }
+    whaleui_dom_mark_dirty(e);
+    return want;
+}
+
+/* --- dataset (element.dataset.*) ---
+ * camelCase key <-> data-kebab-case attribute. A key already holding a '-'
+ * (or non-alphanumeric, e.g. a digit run) is not split further by the
+ * browser's algorithm; only [a-z0-9]+ boundaries between a lowercase/number
+ * and an uppercase letter insert "-lower". We match that: every uppercase at
+ * index>0 that follows a lowercase-or-digit gets a hyphen. */
+void dataset_attr_name(const char* key, std::string& out)
+{
+    out = "data-";
+    if (!key) {
+        return;
+    }
+    for (const char* p = key; *p; ++p) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z' && p != key) {
+            out += '-';
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+        out += c;
+    }
+}
+
+extern "C" int whaleui_dom_dataset_set(whaleui_dom_element_t* el,
+                                       const char* key, const char* value)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !key || !*key || !value) {
+        return -1;
+    }
+    std::string name;
+    dataset_attr_name(key, name);
+    int rc = lxb_dom_element_set_attribute(
+                 e, reinterpret_cast<const lxb_char_t*>(name.c_str()),
+                 name.size(), reinterpret_cast<const lxb_char_t*>(value),
+                 std::strlen(value))
+                 ? 0
+                 : -2;
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
+}
+
+extern "C" const char* whaleui_dom_dataset_get(whaleui_dom_element_t* el,
+                                               const char* key)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !key || !*key) {
+        return nullptr;
+    }
+    std::string name;
+    dataset_attr_name(key, name);
+    size_t len = 0;
+    return reinterpret_cast<const char*>(lxb_dom_element_get_attribute(
+        e, reinterpret_cast<const lxb_char_t*>(name.c_str()), name.size(),
+        &len));
+}
+
+extern "C" int whaleui_dom_dataset_has(whaleui_dom_element_t* el, const char* key)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !key || !*key) {
+        return 0;
+    }
+    std::string name;
+    dataset_attr_name(key, name);
+    return lxb_dom_element_has_attribute(
+               e, reinterpret_cast<const lxb_char_t*>(name.c_str()), name.size())
+               ? 1
+               : 0;
+}
+
+extern "C" int whaleui_dom_dataset_remove(whaleui_dom_element_t* el, const char* key)
+{
+    lxb_dom_element* e = as_el(el);
+    if (!e || !key || !*key) {
+        return -1;
+    }
+    std::string name;
+    dataset_attr_name(key, name);
+    int rc = lxb_dom_element_remove_attribute(
+                 e, reinterpret_cast<const lxb_char_t*>(name.c_str()),
+                 name.size()) == 0
+                 ? 0
+                 : -2;
+    if (rc == 0) {
+        whaleui_dom_mark_dirty(e);
+    }
+    return rc;
 }
 
 /* --- HTML serialization (innerHTML / outerHTML) --- */

@@ -93,6 +93,17 @@ int whaleui_dom_replace_child(whaleui_dom_element_t* parent,
                               whaleui_dom_element_t* old_child);
 int whaleui_dom_remove(whaleui_dom_element_t* el); /* 摘除,元素本身仍存活可再挂 */
 
+/* element.append/prepend/before/after(单节点形式) */
+int whaleui_dom_append(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_prepend(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_before(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+int whaleui_dom_after(whaleui_dom_element_t* el, whaleui_dom_element_t* node);
+
+/* element.insertAdjacentHTML(position, html):
+ * position = beforebegin|afterbegin|beforeend|afterend */
+int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* el,
+                                     const char* position, const char* html);
+
 whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, int deep); /* deep=1 深克隆 */
 int whaleui_dom_contains(whaleui_dom_element_t* parent, whaleui_dom_element_t* child); /* 含自身 */
 int whaleui_dom_has_child_nodes(whaleui_dom_element_t* el);
@@ -116,7 +127,24 @@ int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls);
 int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* cls);
 int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* cls);  /* 返回最终存在性 */
 int whaleui_dom_class_contains(whaleui_dom_element_t* el, const char* cls);
+/* classList.length / item(index) / replace(old, new) / toggle(cls, force) */
+size_t whaleui_dom_class_length(whaleui_dom_element_t* el);
+int whaleui_dom_class_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap);
+int whaleui_dom_class_replace(whaleui_dom_element_t* el, const char* old_cls, const char* new_cls);
+int whaleui_dom_class_toggle_force(whaleui_dom_element_t* el, const char* cls, int force);
+/* force>=0 强制开(1)/关(0),force<0 翻转;返回最终存在性 */
 ```
+
+## dataset(对应 element.dataset.*)
+
+```c
+int whaleui_dom_dataset_set(whaleui_dom_element_t* el, const char* key, const char* value);
+const char* whaleui_dom_dataset_get(whaleui_dom_element_t* el, const char* key);
+int whaleui_dom_dataset_has(whaleui_dom_element_t* el, const char* key);
+int whaleui_dom_dataset_remove(whaleui_dom_element_t* el, const char* key);
+```
+
+camelCase 键 <-> `data-kebab-case` 属性(`fooBar` <-> `data-foo-bar`)。
 
 ## 文本与 HTML 内容
 

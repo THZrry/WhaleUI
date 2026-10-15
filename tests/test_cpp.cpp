@@ -166,6 +166,32 @@ int main(void)
         assert(box.RemoveEventListener("focus", noop, nullptr));
     }
 
+    /* classList extras + dataset + insertAdjacentHTML + append/prepend */
+    {
+        whaleui::Element box = doc.GetElementById("box");
+        assert(box.ClassLength() >= 1);
+        assert(!box.ClassItem(0).empty());
+        assert(box.ClassReplace("card", "card2"));
+        assert(box.ClassContains("card2"));
+        box.ClassAdd("card");
+        assert(box.ClassToggleForce("hl", 1));
+        assert(box.ClassContains("hl"));
+
+        assert(box.DatasetSet("ownerId", "7"));
+        assert(box.DatasetGet("ownerId") == "7");
+        assert(box.DatasetHas("ownerId"));
+        assert(!box.DatasetHas("nope"));
+        assert(box.DatasetRemove("ownerId"));
+        assert(!box.DatasetHas("ownerId"));
+
+        assert(box.InsertAdjacentHTML("beforeend", "<u>hi</u>"));
+        assert(box.InnerHTML().find("<u>hi</u>") != std::string::npos);
+        whaleui::Element child = doc.CreateElement("b");
+        assert(box.Prepend(child));
+        assert(box.FirstElementChild() == child);
+        assert(box.Remove());
+    }
+
     /* canvas interop through the wrapper handle */
     {
         whaleui::Element cv = doc.GetElementById("cv");
