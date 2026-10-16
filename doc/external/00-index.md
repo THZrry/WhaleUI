@@ -55,6 +55,7 @@ int main(void) {
 | [06-api-fs.md](06-api-fs.md) | 虚拟文件系统:`whaleui_fs_*`(loader 替换 / URI 约定) |
 | [07-api-font.md](07-api-font.md) | 字体 API:`whaleui_font_*`(注册 / 默认字体 / 系统兜底) |
 | [08-api-canvas-webgpu.md](08-api-canvas-webgpu.md) | Canvas/WebGPU:`whaleui_canvas_*` / `whaleui_gpu_*`(2D 上下文 / ImageData / adapter-device-queue 最小闭环) |
+| [09-api-web.md](09-api-web.md) | Web 平台:`whaleui_clipboard_*` / 定时器与 rAF / visualViewport / Web Audio 占位 / gamepad / 事件修饰键与富字段 |
 
 ## 标准支持情况
 

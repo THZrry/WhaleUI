@@ -305,6 +305,26 @@ int whaleui_window_display_id(const whaleui_window_t* win);
 /* Logical-to-physical pixel scale of the window's display (1.0 = 100%). */
 float whaleui_window_display_scale(const whaleui_window_t* win);
 
+/* --- visual viewport (window.visualViewport subset) ---
+ *
+ * The engine has no pinch zoom: the visual viewport equals the layout
+ * viewport, so scale is 1.0 and the offsets are 0. The struct exists so
+ * pages can branch on it (and so the values are right if zoom lands later);
+ * width/height follow the window's logical size. `resize` is fired on the
+ * document element whenever the window resizes. */
+typedef struct whaleui_visual_viewport {
+    float width, height;             /* visual viewport size (CSS px) */
+    float scale;                     /* 1.0 = no pinch zoom */
+    float offset_left, offset_top;   /* visual relative to the layout viewport */
+    float page_left, page_top;       /* visual relative to the document */
+} whaleui_visual_viewport_t;
+
+int whaleui_window_visual_viewport(const whaleui_window_t* win,
+                                   whaleui_visual_viewport_t* out);
+
+/* devicePixelRatio: physical pixels per CSS pixel for this window. */
+float whaleui_window_device_pixel_ratio(const whaleui_window_t* win);
+
 /* --- taskbar notification --- */
 
 typedef enum whaleui_flash {
@@ -789,6 +809,76 @@ int whaleui_dom_event_mouse_button(const whaleui_dom_event_t* ev);
 float whaleui_dom_event_wheel_delta_x(const whaleui_dom_event_t* ev);
 float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev);
 
+/* --- modifier keys (mirror KeyboardEvent.getModifierState) --- */
+
+enum {
+    WHALEUI_MOD_NONE  = 0,
+    WHALEUI_MOD_SHIFT = 1,
+    WHALEUI_MOD_CTRL  = 2,
+    WHALEUI_MOD_ALT   = 4,
+    WHALEUI_MOD_META  = 8
+};
+
+/* The modifier bitmask (WHALEUI_MOD_*) active when the event fired. */
+int whaleui_dom_event_mods(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_ctrl_key(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_shift_key(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_alt_key(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_meta_key(const whaleui_dom_event_t* ev);
+
+/* --- richer keyboard / mouse / focus payloads --- */
+
+/* KeyboardEvent.key: the printable name ("a", "A", "Enter", "ArrowLeft",
+ * "F1", " "). Owned by the event, valid inside the callback. */
+const char* whaleui_dom_event_key(const whaleui_dom_event_t* ev);
+/* KeyboardEvent.code: the physical key ("KeyA", "Enter", "ArrowLeft",
+ * "Space"). Layout independent. */
+const char* whaleui_dom_event_code(const whaleui_dom_event_t* ev);
+/* KeyboardEvent.repeat: 1 when this is an auto-repeat of a held key. */
+int whaleui_dom_event_repeat(const whaleui_dom_event_t* ev);
+/* MouseEvent.detail: the click count (2 = dblclick). */
+int whaleui_dom_event_detail(const whaleui_dom_event_t* ev);
+/* MouseEvent.movementX/Y: pointer delta since the previous event. */
+float whaleui_dom_event_movement_x(const whaleui_dom_event_t* ev);
+float whaleui_dom_event_movement_y(const whaleui_dom_event_t* ev);
+/* mouseenter/mouseleave: the element the pointer came from / went to. */
+whaleui_dom_element_t* whaleui_dom_event_related_target(const whaleui_dom_event_t* ev);
+/* copy/cut/paste: the clipboard payload. text is NULL when the event
+ * carries none. set_clipboard_text supplies the data the default behavior
+ * writes on copy/cut, or the text inserted on paste. */
+const char* whaleui_dom_event_clipboard_text(const whaleui_dom_event_t* ev);
+int whaleui_dom_event_set_clipboard_text(whaleui_dom_event_t* ev, const char* text);
+
+/* --- struct-based dispatch (full payload) ---
+ *
+ * The scalar whaleui_dom_dispatch_phased above stays for compatibility; this
+ * is the entry point the engine uses, carrying modifiers, key names, repeat,
+ * click detail, pointer movement, relatedTarget and clipboard text. */
+typedef struct whaleui_event_init {
+    int key_code;              /* WHALEUI_KEY_* (0 when not a key event) */
+    const char* key;           /* KeyboardEvent.key (NULL to omit) */
+    const char* code;          /* KeyboardEvent.code (NULL to omit) */
+    int repeat;                /* 1 = auto-repeat */
+    int mods;                  /* WHALEUI_MOD_* bitmask */
+    int mouse_x, mouse_y;      /* viewport coordinates */
+    int mouse_button;          /* 0 = left, 1 = middle, 2 = right */
+    int detail;                /* click count */
+    float wheel_x, wheel_y;    /* wheel deltas */
+    float movement_x, movement_y; /* pointer delta since the last event */
+    whaleui_dom_element_t* related_target; /* enter/leave counterpart */
+    const char* clipboard_text; /* copy/cut/paste payload */
+} whaleui_event_init_t;
+
+int whaleui_dom_dispatch_input(whaleui_dom_element_t* el, const char* type,
+                               const whaleui_event_init_t* init,
+                               int* out_prevented);
+
+/* Non-bubbling variant (mouseenter/mouseleave/focus/blur). */
+int whaleui_dom_dispatch_input_nonbubble(whaleui_dom_element_t* el,
+                                         const char* type,
+                                         const whaleui_event_init_t* init,
+                                         int* out_prevented);
+
 /* ======================= CSS ======================= */
 
 typedef struct whaleui_css_rule whaleui_css_rule_t;
@@ -855,6 +945,128 @@ const char* whaleui_font_list(void);
  * (Win8 without Segoe UI still gets Arial/SimSun). Idempotent; returns
  * the number of fonts newly registered. */
 int whaleui_font_register_system_defaults(void);
+
+/* ======================= clipboard (navigator.clipboard subset) ======================= */
+
+/* The system clipboard. SDL backs this (SDL_Get/SetClipboardText), so the
+ * content is shared with the rest of the desktop. The browser's async
+ * navigator.clipboard API is mapped to a sync pair plus callback forms that
+ * resolve on the event loop (the engine has no promise objects). */
+
+/* 1 when the clipboard currently holds text. */
+int whaleui_clipboard_has_text(void);
+
+/* The clipboard text ("" when empty). The returned pointer is owned by the
+ * library and valid until the next clipboard call. */
+const char* whaleui_clipboard_get_text(void);
+
+/* Replace the clipboard contents. 0 on success. */
+int whaleui_clipboard_set_text(const char* text);
+
+/* Async (promise-like) forms: the callback runs on the event loop thread
+ * after the operation completes; text is NULL for a failed read, and for a
+ * write it echoes the text that was written. */
+typedef void (*whaleui_clipboard_text_cb)(const char* text, void* userdata);
+int whaleui_clipboard_read_text_async(whaleui_clipboard_text_cb cb, void* userdata);
+int whaleui_clipboard_write_text_async(const char* text,
+                                       whaleui_clipboard_text_cb cb,
+                                       void* userdata);
+
+/* ======================= timers / animation frames ======================= */
+
+/* setTimeout/setInterval/requestAnimationFrame. All callbacks run on the
+ * event loop thread (the same thread that renders and dispatches DOM events),
+ * so they may touch the DOM directly. Timers keep the loop awake: the worker
+ * sleeps only until the next due timer. */
+
+/* Milliseconds since the application started (performance.now()-like). */
+double whaleui_now(void);
+
+/* callback(timestamp_ms, userdata): timestamp is whaleui_now() at fire time. */
+typedef void (*whaleui_timer_cb)(double timestamp_ms, void* userdata);
+
+/* setTimeout/setInterval. Returns a positive id, or 0 on failure. delay_ms
+ * is clamped to >= 0; an interval with 0 runs once per loop iteration. */
+long long whaleui_set_timeout(whaleui_timer_cb cb, void* userdata, double delay_ms);
+long long whaleui_set_interval(whaleui_timer_cb cb, void* userdata, double interval_ms);
+/* clearTimeout/clearInterval accept either kind of id (like the browser). */
+void whaleui_clear_timeout(long long id);
+void whaleui_clear_interval(long long id);
+/* Number of live timers (diagnostics / tests). */
+int whaleui_timer_count(void);
+
+/* requestAnimationFrame: the callback runs once per rendered frame (the
+ * engine's frame clock, not the display's), and keeps the loop alive until it
+ * fires. Returns a positive id, or 0 on failure. */
+typedef void (*whaleui_frame_cb)(double timestamp_ms, void* userdata);
+long long whaleui_request_animation_frame(whaleui_frame_cb cb, void* userdata);
+void whaleui_cancel_animation_frame(long long id);
+int whaleui_animation_frame_count(void);
+
+/* ======================= Web Audio (placeholder) ======================= */
+
+/* Audio output is deferred (see rules/goal.md: audio/video are out of scope
+ * for now). These functions exist so bindings and pages can feature-detect
+ * and so the shapes are frozen; everything except state/clock reports
+ * unsupported and creates no device. */
+
+typedef struct whaleui_audio_context whaleui_audio_context_t;
+
+typedef enum whaleui_audio_state {
+    WHALEUI_AUDIO_SUSPENDED = 0,
+    WHALEUI_AUDIO_RUNNING,
+    WHALEUI_AUDIO_CLOSED
+} whaleui_audio_state_t;
+
+/* 0 while audio is unimplemented (callers should feature-detect). */
+int whaleui_audio_is_supported(void);
+
+/* NULL while unsupported. */
+whaleui_audio_context_t* whaleui_audio_context_create(void);
+void whaleui_audio_context_destroy(whaleui_audio_context_t* ctx);
+whaleui_audio_state_t whaleui_audio_context_state(const whaleui_audio_context_t* ctx);
+int whaleui_audio_context_resume(whaleui_audio_context_t* ctx);
+int whaleui_audio_context_suspend(whaleui_audio_context_t* ctx);
+int whaleui_audio_context_close(whaleui_audio_context_t* ctx);
+/* AudioContext.sampleRate / currentTime. */
+float whaleui_audio_context_sample_rate(const whaleui_audio_context_t* ctx);
+double whaleui_audio_context_current_time(const whaleui_audio_context_t* ctx);
+
+/* ======================= Gamepad (navigator.getGamepads subset) ======================= */
+
+/* SDL3 provides full gamepad support; the engine exposes a browser-shaped
+ * subset. Indices are dense (0..count-1) and stable while a pad stays
+ * connected; the W3C Gamepad API's sparse-index behavior is not mirrored.
+ * Connect/disconnect also fires "gamepadconnected"/"gamepaddisconnected" on
+ * the document element, with the pad index in the event's detail field. */
+
+/* Number of currently connected gamepads. */
+int whaleui_gamepad_count(void);
+/* 1 when the pad at `index` is connected. */
+int whaleui_gamepad_connected(int index);
+/* Gamepad.id: the device name ("" when unknown). Owned by the library. */
+const char* whaleui_gamepad_name(int index);
+
+/* Gamepad axes/buttons snapshot. axes are -1.0..1.0; buttons is a bitmask of
+ * currently-pressed buttons (W3C order: 0 = A/south, 1 = B/east, ...). */
+#define WHALEUI_GAMEPAD_MAX_AXES 8
+#define WHALEUI_GAMEPAD_MAX_BUTTONS 32
+typedef struct whaleui_gamepad_state {
+    int connected;
+    int axis_count;
+    float axes[WHALEUI_GAMEPAD_MAX_AXES];
+    int button_count;
+    unsigned int buttons;   /* bit i set = button i pressed */
+    float trigger_left;     /* 0..1 (L2) */
+    float trigger_right;    /* 0..1 (R2) */
+} whaleui_gamepad_state_t;
+
+/* Poll the pad. 0 on success; non-zero when the index is out of range or the
+ * pad is not connected. */
+int whaleui_gamepad_poll(int index, whaleui_gamepad_state_t* out);
+/* rumble (0..1 each, duration in ms); 0 when the pad has no rumble. */
+int whaleui_gamepad_rumble(int index, float low_freq, float high_freq,
+                           unsigned int duration_ms);
 
 /* ======================= Canvas 2D (HTMLCanvasElement C-port) ======================= */
 

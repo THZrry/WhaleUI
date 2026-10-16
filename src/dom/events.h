@@ -63,6 +63,14 @@ int whaleui_dom_dispatch_nonbubble(whaleui_dom_element_t* el,
     do { if (el) whaleui_dom_dispatch_nonbubble((el), (type), (key), (mx), (my), \
                                                 (btn), (wx), (wy), nullptr); } while (0)
 
+/* Full-payload dispatch with the listener-supplied clipboard text reported
+ * back: the engine's copy/cut/paste default behavior writes/reads it. */
+int whaleui_dom_dispatch_input_clipboard(whaleui_dom_element_t* el,
+                                         const char* type,
+                                         const whaleui_event_init_t* init,
+                                         int* out_prevented,
+                                         const char** out_clipboard);
+
 #ifdef __cplusplus
 }
 #endif

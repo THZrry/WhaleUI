@@ -188,3 +188,4 @@ paint 保 alive, caret 画不出 strip 故永不 partial); (2) 自驱/事件双�
 <46>(SOLVED): DocumentFragment(lexbor create_document_fragment + append/insert_before 移入子节点保序) + insertAdjacentText(四位置);Selection/Range 仍待专轮 —— 见 notes/current.md
 <47>(SOLVED): Selection API 子集(window.getSelection:端点/偏移/选中文本跨元素拼接/clear/selectAllChildren) + C++ 镜像;Range 对象未做 —— 见 notes/current.md
 <48>(SOLVED): Range 子集(document.createRange:端点/折叠/to_string/selectNodeContents/deleteContents;元素+字节偏移模型,与引擎选区一致) + C++ Range 镜像 —— 见 notes/current.md
+<49>(SOLVED): Web 平台 API —— clipboard(SDL+排队回调+copy/cut/paste 事件) / 事件修饰键与富字段(key/code/repeat/detail/movement/relatedTarget,全载荷 dispatch_input) / setTimeout-setInterval-rAF(接入循环:精确睡到到期+保持唤醒) / visualViewport / WebAudio 占位 / gamepad(SDL3 真实现) + test_web —— 见 notes/current.md

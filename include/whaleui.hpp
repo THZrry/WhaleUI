@@ -63,6 +63,29 @@ public:
     float WheelDeltaX() const { return h_ ? whaleui_dom_event_wheel_delta_x(h_) : 0.0f; }
     float WheelDeltaY() const { return h_ ? whaleui_dom_event_wheel_delta_y(h_) : 0.0f; }
 
+    /* modifier keys (KeyboardEvent.getModifierState) */
+    int Mods() const { return h_ ? whaleui_dom_event_mods(h_) : 0; }
+    bool CtrlKey() const { return h_ && whaleui_dom_event_ctrl_key(h_); }
+    bool ShiftKey() const { return h_ && whaleui_dom_event_shift_key(h_); }
+    bool AltKey() const { return h_ && whaleui_dom_event_alt_key(h_); }
+    bool MetaKey() const { return h_ && whaleui_dom_event_meta_key(h_); }
+
+    /* richer payloads */
+    std::string Key() const { return ToStr(whaleui_dom_event_key(h_)); }
+    std::string Code() const { return ToStr(whaleui_dom_event_code(h_)); }
+    bool Repeat() const { return h_ && whaleui_dom_event_repeat(h_); }
+    int Detail() const { return h_ ? whaleui_dom_event_detail(h_) : 0; }
+    float MovementX() const { return h_ ? whaleui_dom_event_movement_x(h_) : 0.0f; }
+    float MovementY() const { return h_ ? whaleui_dom_event_movement_y(h_) : 0.0f; }
+    /* defined after Element (incomplete here) */
+    Element RelatedTarget() const;
+    std::string ClipboardText() const {
+        return ToStr(whaleui_dom_event_clipboard_text(h_));
+    }
+    bool SetClipboardText(const std::string& text) const {
+        return h_ && whaleui_dom_event_set_clipboard_text(h_, text.c_str()) == 0;
+    }
+
     whaleui_dom_event_t* handle() const { return h_; }
 
 private:
@@ -261,6 +284,9 @@ private:
 
 inline Element Event::Target() const { return Element(whaleui_dom_event_target(h_)); }
 inline Element Event::CurrentTarget() const { return Element(whaleui_dom_event_current_target(h_)); }
+inline Element Event::RelatedTarget() const {
+    return Element(h_ ? whaleui_dom_event_related_target(h_) : nullptr);
+}
 
 /* ---- ComputedStyle (owns the snapshot from getComputedStyle) ---- */
 
@@ -551,6 +577,70 @@ public:
 private:
     whaleui_app_t* h_;
 };
+
+/* ---- Clipboard (navigator.clipboard subset) ---- */
+
+class Clipboard {
+public:
+    /* SDL-backed system clipboard (shared with the desktop). */
+    static bool HasText() { return whaleui_clipboard_has_text() != 0; }
+    static std::string GetText() { return ToStr(whaleui_clipboard_get_text()); }
+    static bool SetText(const std::string& text) {
+        return whaleui_clipboard_set_text(text.c_str()) == 0;
+    }
+    /* Callback forms resolve on the event loop (no promise objects). */
+    static bool ReadTextAsync(whaleui_clipboard_text_cb cb, void* ud) {
+        return whaleui_clipboard_read_text_async(cb, ud) == 0;
+    }
+    static bool WriteTextAsync(const std::string& text,
+                               whaleui_clipboard_text_cb cb, void* ud) {
+        return whaleui_clipboard_write_text_async(text.c_str(), cb, ud) == 0;
+    }
+};
+
+/* ---- timers / animation frames (free functions, like the browser) ---- */
+
+/* Milliseconds since the application started (performance.now()). */
+inline double Now() { return whaleui_now(); }
+
+inline long long SetTimeout(whaleui_timer_cb cb, void* ud, double delay_ms) {
+    return whaleui_set_timeout(cb, ud, delay_ms);
+}
+inline long long SetInterval(whaleui_timer_cb cb, void* ud, double interval_ms) {
+    return whaleui_set_interval(cb, ud, interval_ms);
+}
+inline void ClearTimeout(long long id) { whaleui_clear_timeout(id); }
+inline void ClearInterval(long long id) { whaleui_clear_interval(id); }
+inline int TimerCount() { return whaleui_timer_count(); }
+
+inline long long RequestAnimationFrame(whaleui_frame_cb cb, void* ud) {
+    return whaleui_request_animation_frame(cb, ud);
+}
+inline void CancelAnimationFrame(long long id) {
+    whaleui_cancel_animation_frame(id);
+}
+inline int AnimationFrameCount() { return whaleui_animation_frame_count(); }
+
+/* ---- Gamepad (navigator.getGamepads subset) ---- */
+
+inline int GamepadCount() { return whaleui_gamepad_count(); }
+inline bool GamepadConnected(int index) {
+    return whaleui_gamepad_connected(index) != 0;
+}
+inline std::string GamepadName(int index) {
+    return ToStr(whaleui_gamepad_name(index));
+}
+inline bool GamepadPoll(int index, whaleui_gamepad_state_t* out) {
+    return whaleui_gamepad_poll(index, out) == 0;
+}
+inline bool GamepadRumble(int index, float low, float high,
+                          unsigned int duration_ms) {
+    return whaleui_gamepad_rumble(index, low, high, duration_ms) == 0;
+}
+
+/* ---- Web Audio (placeholder; always unsupported for now) ---- */
+
+inline bool AudioSupported() { return whaleui_audio_is_supported() != 0; }
 
 } // namespace whaleui
 

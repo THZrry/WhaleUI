@@ -82,6 +82,10 @@ struct whaleui_window
     int mouse_pending;
     float mouse_x;
     float mouse_y;
+    /* previous pointer position (worker-thread only): MouseEvent.movementX/Y
+     * is the delta since the last motion/button event. */
+    float last_mouse_x;
+    float last_mouse_y;
     /* occlusion state (SDL_EVENT_WINDOW_OCCLUDED / EXPOSED): a fully covered
      * window is fully parked (no tick/paint/present) until the next exposure.
      * Set/cleared by the event path in app.cpp; read by the worker's

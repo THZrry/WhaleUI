@@ -186,6 +186,10 @@ struct whaleui_render
      * cannot resurrect :hover for a pointer that is gone. */
     float mouse_wx, mouse_wy;
     int mouse_has;
+    /* modifier bitmask (WHALEUI_MOD_*) of the last input event: the render
+     * side has no SDL event at dispatch time, so app.cpp stashes it here and
+     * mousemove/wheel/click payloads carry it. */
+    int last_mods;
     /* set by the frame when the tree geometry may have moved under the
      * pointer (state relayout, full/DOM relayout, scroll, resize, font
      * scale): consumed once per frame right before paint. */

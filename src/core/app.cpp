@@ -4,6 +4,9 @@
 
 #include "core/app.h"
 #include "core/window.h"
+#include "core/clipboard.h"
+#include "core/extras.h"
+#include "core/timers.h"
 #include "dom/events.h"
 #include "platform/platform.h"
 #include "render/render.h"
@@ -51,6 +54,23 @@ int dom_dispatch(whaleui_dom_element_t* el, const char* type, int key,
     }
     return 0;
 }
+
+/* full-payload dispatch (modifiers / detail / movement / relatedTarget).
+ * Returns 1 when a listener called preventDefault. */
+int dom_dispatch_in(whaleui_dom_element_t* el, const char* type,
+                    const whaleui_event_init_t* in, bool bubble = true)
+{
+    if (!el) {
+        return 0;
+    }
+    int prevented = 0;
+    if (bubble) {
+        whaleui_dom_dispatch_input(el, type, in, &prevented);
+    } else {
+        whaleui_dom_dispatch_input_nonbubble(el, type, in, &prevented);
+    }
+    return prevented;
+}
 /* theme resolution: SYSTEM -> the OS scheme captured at app_create */
 whaleui_theme_t resolved_theme(const whaleui_app_t* app)
 {
@@ -83,6 +103,100 @@ std::string resolve_href(whaleui_window_t* win, const char* href)
     /* strip a trailing file name (base ends in "/index.html") */
     base = base.substr(0, slash + 1);
     return base + h;
+}
+
+/* SDL_Keymod -> WHALEUI_MOD_* (the engine's public bitmask) */
+int mods_from_sdl(SDL_Keymod m)
+{
+    int out = 0;
+    if (m & SDL_KMOD_SHIFT) out |= WHALEUI_MOD_SHIFT;
+    if (m & SDL_KMOD_CTRL)  out |= WHALEUI_MOD_CTRL;
+    if (m & SDL_KMOD_ALT)   out |= WHALEUI_MOD_ALT;
+    if (m & SDL_KMOD_GUI)   out |= WHALEUI_MOD_META;
+    return out;
+}
+
+/* KeyboardEvent.key / .code names for an SDL keycode. Writes into the
+ * caller's buffers (owned by the caller; the event copies them). */
+void key_name_strings(SDL_Keycode kc, char* key_out, char* code_out)
+{
+    if (kc >= 32 && kc < 127) {
+        if (kc >= 'a' && kc <= 'z') {
+            key_out[0] = static_cast<char>(kc);
+            key_out[1] = '\0';
+            code_out[0] = 'K'; code_out[1] = 'e'; code_out[2] = 'y';
+            code_out[3] = static_cast<char>(kc - 'a' + 'A');
+            code_out[4] = '\0';
+        } else if (kc >= 'A' && kc <= 'Z') {
+            key_out[0] = static_cast<char>(kc);
+            key_out[1] = '\0';
+            code_out[0] = 'K'; code_out[1] = 'e'; code_out[2] = 'y';
+            code_out[3] = static_cast<char>(kc);
+            code_out[4] = '\0';
+        } else if (kc >= '0' && kc <= '9') {
+            key_out[0] = static_cast<char>(kc);
+            key_out[1] = '\0';
+            code_out[0] = 'D'; code_out[1] = 'i'; code_out[2] = 'g';
+            code_out[3] = 'i'; code_out[4] = 't';
+            code_out[5] = static_cast<char>(kc);
+            code_out[6] = '\0';
+        } else {
+            key_out[0] = static_cast<char>(kc);
+            key_out[1] = '\0';
+            code_out[0] = '\0';
+        }
+        return;
+    }
+    const char* nm = nullptr;
+    switch (kc) {
+    case SDLK_RETURN: nm = "Enter"; break;
+    case SDLK_KP_ENTER: nm = "Enter"; break;
+    case SDLK_ESCAPE: nm = "Escape"; break;
+    case SDLK_TAB: nm = "Tab"; break;
+    case SDLK_BACKSPACE: nm = "Backspace"; break;
+    case SDLK_DELETE: nm = "Delete"; break;
+    case SDLK_INSERT: nm = "Insert"; break;
+    case SDLK_HOME: nm = "Home"; break;
+    case SDLK_END: nm = "End"; break;
+    case SDLK_PAGEUP: nm = "PageUp"; break;
+    case SDLK_PAGEDOWN: nm = "PageDown"; break;
+    case SDLK_UP: nm = "ArrowUp"; break;
+    case SDLK_DOWN: nm = "ArrowDown"; break;
+    case SDLK_LEFT: nm = "ArrowLeft"; break;
+    case SDLK_RIGHT: nm = "ArrowRight"; break;
+    case SDLK_SPACE: nm = " "; break;
+    case SDLK_LSHIFT: nm = "Shift"; break;
+    case SDLK_RSHIFT: nm = "Shift"; break;
+    case SDLK_LCTRL: nm = "Control"; break;
+    case SDLK_RCTRL: nm = "Control"; break;
+    case SDLK_LALT: nm = "Alt"; break;
+    case SDLK_RALT: nm = "Alt"; break;
+    case SDLK_LGUI: nm = "Meta"; break;
+    case SDLK_RGUI: nm = "Meta"; break;
+    case SDLK_CAPSLOCK: nm = "CapsLock"; break;
+    default:
+        if (kc >= SDLK_F1 && kc <= SDLK_F24) {
+            static const char* kF[] = {"F1","F2","F3","F4","F5","F6","F7","F8",
+                                       "F9","F10","F11","F12","F13","F14","F15",
+                                       "F16","F17","F18","F19","F20","F21","F22",
+                                       "F23","F24"};
+            nm = kF[kc - SDLK_F1];
+        }
+        break;
+    }
+    if (nm) {
+        std::strncpy(key_out, nm, 31);
+        key_out[31] = '\0';
+        if (kc == SDLK_SPACE) {
+            std::strcpy(code_out, "Space");
+        } else {
+            std::strncpy(code_out, nm, 31);
+            code_out[31] = '\0';
+        }
+    } else {
+        key_out[0] = '\0';
+        code_out[0] = '\0';
+    }
 }
 
 /* window owning an SDL window id (used by key/text/wheel dispatch) */
@@ -183,13 +297,24 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     }
     case SDL_EVENT_KEY_DOWN: {
         whaleui_window_t* w = window_for(app, e.key.windowID);
+        char in_key_buf[32];
+        char in_code_buf[32];
         if (w && w->render) {
             /* DOM contract: keydown is dispatched BEFORE the default
              * behavior (editing keys), so a listener's preventDefault
-             * cancels the edit (browser order). */
-            int prevented = dom_dispatch(
-                whaleui_render_focus_element(w->render), "keydown",
-                static_cast<int>(e.key.key), 0, 0, 0, 0, 0);
+             * cancels the edit (browser order). The payload carries the
+             * modifier bitmask + key names + auto-repeat. */
+            whaleui_event_init_t in;
+            std::memset(&in, 0, sizeof(in));
+            in.key_code = static_cast<int>(e.key.key);
+            in.mods = mods_from_sdl(e.key.mod);
+            in.repeat = e.key.repeat ? 1 : 0;
+            key_name_strings(e.key.key, in_key_buf, in_code_buf);
+            in.key = in_key_buf;
+            in.code = in_code_buf;
+            int prevented = 0;
+            whaleui_dom_dispatch_input(whaleui_render_focus_element(w->render),
+                                       "keydown", &in, &prevented);
             if (!prevented) {
                 whaleui_render_handle_key(w->render,
                                           static_cast<int>(e.key.key), 1,
@@ -205,12 +330,20 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
     }
     case SDL_EVENT_KEY_UP: {
         whaleui_window_t* w = window_for(app, e.key.windowID);
+        char in_key_buf[32];
+        char in_code_buf[32];
         if (w && w->render) {
             whaleui_render_handle_key(w->render, static_cast<int>(e.key.key),
                                       0, static_cast<int>(e.key.mod));
-            dom_dispatch(whaleui_render_focus_element(w->render),
-                         "keyup", static_cast<int>(e.key.key),
-                         0, 0, 0, 0, 0);
+            whaleui_event_init_t in;
+            std::memset(&in, 0, sizeof(in));
+            in.key_code = static_cast<int>(e.key.key);
+            in.mods = mods_from_sdl(e.key.mod);
+            key_name_strings(e.key.key, in_key_buf, in_code_buf);
+            in.key = in_key_buf;
+            in.code = in_code_buf;
+            whaleui_dom_dispatch_input(whaleui_render_focus_element(w->render),
+                                       "keyup", &in, nullptr);
         }
         if (w && w->key_cb) {
             w->key_cb(app, static_cast<int>(e.key.key), 0, w->key_ud);
@@ -360,15 +493,19 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
             for (whaleui_window_t* win : app->windows) {
                 if (win->render && win->document &&
                     SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                    dom_dispatch(
+                    whaleui_event_init_t mi;
+                    std::memset(&mi, 0, sizeof(mi));
+                    mi.mods = mods_from_sdl(SDL_GetModState());
+                    mi.mouse_x = static_cast<int>(e.button.x);
+                    mi.mouse_y = static_cast<int>(e.button.y);
+                    mi.mouse_button = static_cast<int>(e.button.button) - 1;
+                    mi.detail = static_cast<int>(e.button.clicks);
+                    dom_dispatch_in(
                         whaleui_render_hit_element(
                             win->render, static_cast<int>(e.button.x),
                             static_cast<int>(e.button.y)),
-                        "contextmenu", 0, static_cast<int>(e.button.x),
-                        static_cast<int>(e.button.y),
-                        static_cast<int>(e.button.button) - 1, 0, 0);
-                    break;
-                }
+                        "contextmenu", &mi);
+                    break;                }
             }
         }
         if (e.button.button == SDL_BUTTON_LEFT) {
@@ -378,6 +515,11 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                     whaleui_dom_element_t* hit = whaleui_render_hit_element(
                         win->render, static_cast<int>(e.button.x),
                         static_cast<int>(e.button.y));
+                    /* MouseEvent.movementX/Y: delta since the last motion */
+                    float mouse_dx = e.button.x - win->last_mouse_x;
+                    float mouse_dy = e.button.y - win->last_mouse_y;
+                    win->last_mouse_x = e.button.x;
+                    win->last_mouse_y = e.button.y;
                     /* a successful navigation destroys the old document:
                      * `hit` (and the tree it came from) is gone, so the
                      * mousedown/click dispatch below must be skipped or it
@@ -442,12 +584,18 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                          * resolved BEFORE any default behavior so the
                          * listener sees the same target the engine acts
                          * on. */
-                        int down_prevented = dom_dispatch(
-                            hit, "mousedown", 0,
-                            static_cast<int>(e.button.x),
-                            static_cast<int>(e.button.y),
-                            static_cast<int>(e.button.button) - 1,
-                            0, 0);
+                        whaleui_event_init_t mi;
+                        std::memset(&mi, 0, sizeof(mi));
+                        mi.mods = mods_from_sdl(SDL_GetModState());
+                        mi.mouse_x = static_cast<int>(e.button.x);
+                        mi.mouse_y = static_cast<int>(e.button.y);
+                        mi.mouse_button =
+                            static_cast<int>(e.button.button) - 1;
+                        mi.detail = static_cast<int>(e.button.clicks);
+                        mi.movement_x = mouse_dx;
+                        mi.movement_y = mouse_dy;
+                        int down_prevented =
+                            dom_dispatch_in(hit, "mousedown", &mi);
                         if (!down_prevented) {
                             whaleui_render_set_pressed_ex(
                                 win->render, static_cast<int>(e.button.x),
@@ -461,21 +609,13 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
                                 if (win->select_cb) win->select_cb(app, val, win->select_ud);
                                 else if (app->select_cb) app->select_cb(app, val, app->select_ud);
                             }
-                            int click_prevented = dom_dispatch(
-                                hit, "click", 0,
-                                static_cast<int>(e.button.x),
-                                static_cast<int>(e.button.y),
-                                static_cast<int>(e.button.button) - 1, 0, 0);
+                            int click_prevented =
+                                dom_dispatch_in(hit, "click", &mi);
                             (void)click_prevented;
                             /* second click of a double-click: dblclick fires
                              * after the second click (browser order) */
                             if (e.button.clicks == 2) {
-                                dom_dispatch(
-                                    hit, "dblclick", 0,
-                                    static_cast<int>(e.button.x),
-                                    static_cast<int>(e.button.y),
-                                    static_cast<int>(e.button.button) - 1,
-                                    0, 0);
+                                dom_dispatch_in(hit, "dblclick", &mi);
                             }
                             /* the click's default behavior (select toggle /
                              * checkbox flip / details expand) already ran
@@ -495,16 +635,20 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (e.button.button == SDL_BUTTON_LEFT) {
-            for (whaleui_window_t* win : app->windows) {
+        if (e.button.button == SDL_BUTTON_LEFT) {            for (whaleui_window_t* win : app->windows) {
                 if (win->render && SDL_GetWindowID(win->sdl) == e.button.windowID) {
-                    int up_prevented = dom_dispatch(
+                    whaleui_event_init_t mi;
+                    std::memset(&mi, 0, sizeof(mi));
+                    mi.mods = mods_from_sdl(SDL_GetModState());
+                    mi.mouse_x = static_cast<int>(e.button.x);
+                    mi.mouse_y = static_cast<int>(e.button.y);
+                    mi.mouse_button = static_cast<int>(e.button.button) - 1;
+                    mi.detail = static_cast<int>(e.button.clicks);
+                    int up_prevented = dom_dispatch_in(
                         whaleui_render_hit_element(
                             win->render, static_cast<int>(e.button.x),
                             static_cast<int>(e.button.y)),
-                        "mouseup", 0, static_cast<int>(e.button.x),
-                        static_cast<int>(e.button.y),
-                        static_cast<int>(e.button.button) - 1, 0, 0);
+                        "mouseup", &mi);
                     if (!up_prevented) {
                         whaleui_render_set_pressed_ex(
                             win->render, static_cast<int>(e.button.x),
@@ -516,6 +660,30 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
             }
         }
         break;
+    case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_REMOVED: {
+        /* re-sync the browser-shaped gamepad view and fire the connect /
+         * disconnect event on the document element (detail = pad index). */
+        bool added = e.type == SDL_EVENT_GAMEPAD_ADDED;
+        whaleui_gamepad_sync();
+        whaleui_event_init_t gi;
+        std::memset(&gi, 0, sizeof(gi));
+        gi.detail = whaleui_gamepad_count() > 0 ? 0 : -1;
+        for (whaleui_window_t* win : app->windows) {
+            if (!win->document) {
+                continue;
+            }
+            whaleui_dom_element_t* root = whaleui_dom_document_element(win->document);
+            if (!root) {
+                continue;
+            }
+            whaleui_dom_dispatch_input(
+                root, added ? "gamepadconnected" : "gamepaddisconnected", &gi,
+                nullptr);
+        }
+        app->frame_request.store(1);
+        break;
+    }
     default:
         break;
     }
@@ -682,6 +850,15 @@ void render_worker_fn(whaleui_app_t* app)
                     }
                 }
             }
+            /* timers wake the loop exactly when due: a pending setTimeout
+             * must not wait for the 100ms poll, and must not spin either. */
+            double tdue = whaleui_timers_next_due_ms();
+            if (tdue >= 0.0) {
+                Uint64 tms = static_cast<Uint64>(tdue > 0.0 ? tdue : 0.0);
+                if (tms < rem_ms) {
+                    rem_ms = tms;
+                }
+            }
             app->frame_cv.wait_for(
                 lk, std::chrono::milliseconds(rem_ms), [&] {
                     return !app->input_queue.empty() ||
@@ -701,9 +878,31 @@ void render_worker_fn(whaleui_app_t* app)
         for (const SDL_Event& e : evs) {
             process_event(app, e);
         }
+        /* due timers (setTimeout/setInterval) and queued clipboard
+         * callbacks run on the loop thread, before the frame - the same
+         * thread that dispatches DOM events, so a callback may touch the
+         * DOM directly. A fired timer counts as work: it requests a frame so
+         * a DOM mutation from the callback is painted this iteration. */
+        bool timer_dirty = false;
+        if (whaleui_timers_pump() > 0) {
+            timer_dirty = true;
+            app->frame_request.store(1);
+        }
+        whaleui_clipboard_pump();
         /* fold event-watch resize slots (written lock-free from inside the
          * OS modal drag loop) into the coalesced resize state */
         fold_resize_watch(app);
+        /* stash the current modifier state on every render context: the
+         * render side has no SDL event at dispatch time, so hover/mousemove
+         * payloads read it from here (one SDL call per wake-up). */
+        {
+            int mods = mods_from_sdl(SDL_GetModState());
+            for (whaleui_window_t* win : app->windows) {
+                if (win->render) {
+                    win->render->last_mods = mods;
+                }
+            }
+        }
         /* apply the newest mouse position ONCE per wake-up (the motion events
          * above only recorded it): one whole-tree hit-test + one cursor
          * update per frame instead of per event. */
@@ -741,7 +940,8 @@ void render_worker_fn(whaleui_app_t* app)
         }
         Uint64 now = SDL_GetTicks();
         bool want = !evs.empty() || app->frame_request.load() ||
-                    app->frames_alive.load() || hover_dirty || wheel_dirty;
+                    app->frames_alive.load() || hover_dirty || wheel_dirty ||
+                    timer_dirty || whaleui_animation_frame_count() > 0;
         if (apply_resizes(app, now)) {
             want = true;
         }
@@ -753,6 +953,13 @@ void render_worker_fn(whaleui_app_t* app)
             app->frames_alive.store(alive);
             app->frame_done.store(1);
             app->frame_request.store(0);
+            /* requestAnimationFrame callbacks run AFTER the frame's paint
+             * (browser semantics: the callback sees the frame it was
+             * scheduled for). A callback that re-requests keeps the loop
+             * awake - the count check above already gates `want` on it. */
+            if (whaleui_animation_frames_pump() > 0) {
+                app->frame_request.store(1);
+            }
             /* an animated window keeps requesting its own frames (the
              * main thread is inside the OS modal drag loop and cannot
              * poll/set frame_request - without this the animation

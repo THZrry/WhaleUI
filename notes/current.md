@@ -1225,3 +1225,39 @@ SOLVED
 - 坑: `range_owner` 参数类型写成 `lxb_dom_element_t*` 编译不过(公开层句柄是 `whaleui_dom_element_t*`), 公开函数参数必须用公开类型再 reinterpret。
 
 验证: 全量三变体构建 ok; 12/12 套件 exit=0(test_dom 新增 Range 端点/toString/deleteContents 断言)。
+
+# <49>: Web 平台 API 补齐(clipboard / 修饰键 / 定时器 / rAF / 视口 / 音频占位 / 手柄)
+
+SOLVED
+
+自查结论(用户点名 + 顺带): clipboard 完全没做; 事件对象只有 key_code/mouse/wheel 标量, **无修饰键**, 也无 key/code/repeat/detail/movement/relatedTarget; 定时器/rAF/visualViewport/audio/gamepad 全无。
+
+## A. 事件载荷(修饰键 + 富字段)
+
+- 新增 `whaleui_event_init_t`(key_code/key/code/repeat/mods/mouse/detail/wheel/movement/related/clipboard)与 `whaleui_dom_dispatch_input[_nonbubble/_clipboard]` 作为引擎内部统一入口; 旧的标量 `_phased`/`_nonbubble` 保留为兼容 shim(内部构造最小 payload), 老调用点不用改。
+- 事件对象加字段: mods/key/code/repeat/detail/movement/related/clipboard(+clipboard_set)。访问器: mods/ctrl/shift/alt/meta、key、code、repeat、detail、movement_x/y、related_target、clipboard_text/set_clipboard_text。
+- app.cpp: `mods_from_sdl`(SDL_KMOD_* -> WHALEUI_MOD_*)、`key_name_strings`(SDL keycode -> KeyboardEvent.key/.code: 可打印 ASCII -> "a"/"KeyA"、"5"/"Digit5"; 命名键表 + F1-F24; Space 的 code 特例)。keydown/keyup/click/dblclick/contextmenu/mousedown/mouseup 全改走全载荷派发。
+- render 侧(无 SDL 事件上下文): app 每次唤醒把当前 modifier 写进 `render->last_mods`; mousemove/enter/leave 的 movement 用 set_hover 内缓存的上一位置算(pre-fb 缩放坐标, 与 mouse_x/y 同域)。relatedTarget 在 enter/leave 里互为对方。
+
+## B. Clipboard
+
+- `src/core/clipboard.cpp`: SDL_Get/Set/HasClipboardText; 异步回调**排队**到 `whaleui_clipboard_pump`(app 每轮调用)而不是内联 —— 模拟 promise 的"稍后 resolve"时序, 避免监听器被重入。get 的返回指针用静态 cache 保 C 契约。
+- copy/cut/paste DOM 事件接入 render 的 Ctrl+C/X/V: 先派发(带 payload 文本), 监听器 preventDefault 可取消引擎默认行为, `set_clipboard_text` 可替换写入/插入的文本。这是"引擎默认行为可被 DOM 取消"契约的延伸。
+
+## C. 定时器 / rAF
+
+- `src/core/timers.cpp`: 全局注册表(mutex 保护, 可从任意线程创建)+ 循环线程 pump。`whaleui_timers_next_due_ms` 让 worker 的 wait_for 精确睡到到期(不再等 100ms 轮询, 也不空转); `whaleui_timers_pending` 让"有 setTimeout 就保持唤醒"(浏览器语义)。interval 从 due 重排避免回调耗时漂移; 0ms interval 每轮一次。
+- rAF 独立: **帧后** pump(浏览器语义: 回调看到被调度那帧), 一次性, 有未触发 rAF 时 `want` 门为真保持出帧。
+- 坑: 定时器 pump 放在 process_event 之后、帧之前 —— 回调里的 DOM 改动才能被本轮的 frame_request 带出去。
+
+## D. 视口 / 音频 / 手柄
+
+- visualViewport: 无捏合缩放 => scale=1、offset=0, width/height 跟窗口; devicePixelRatio 走 SDL_GetWindowDisplayScale。resize 事件已在 documentElement 上派发(前几轮就有)。
+- Web Audio: 纯占位 —— 有 context 对象与状态机, `is_supported()==0`, resume 恒失败且不建设备; 接口形状冻结, 接真后端不改签名。
+- Gamepad: SDL3 真实现。`SDL_INIT_GAMEPAD` 加入 platform init; `whaleui_gamepad_sync` 在 GAMEPAD_ADDED/REMOVED 事件上重开/关闭设备; poll 返回 W3C 顺序的轴(4)+按钮位掩码(15)+扳机; rumble 透传 SDL_RumbleGamepad。索引**稠密**(与 W3C 稀疏索引不同, 已在头/文档写明)。连接事件派发 gamepadconnected/gamepaddisconnected。
+
+## E. 测试
+
+`tests/test_web.cpp`(新, 13/13 套件): clipboard 同步 + 排队回调时序; 定时器一次性/清除/interval 自重清/clearTimeout 清 interval/未来到期时间; rAF 一次性/取消/与定时器互不干扰; 视口与 DPR; 音频占位状态机; gamepad 越界安全; 事件载荷全字段(修饰键四种组合、key/code/repeat、detail/movement、relatedTarget、clipboard 文本)。坑: 测试里 SDL 未初始化时 clipboard 调用失败 —— app_create 必须先行(它做 SDL_Init)。
+
+验证: 全量三变体构建 ok; 13/13 套件 exit=0。

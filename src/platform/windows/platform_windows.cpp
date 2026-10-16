@@ -52,7 +52,10 @@ extern "C" int whaleui_platform_init(void)
      * -> compose overlay in the input). Candidate list stays with the OS
      * native IME window - the engine does not take over the candidate UI. */
     SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    /* GAMEPAD: initialized so the browser-shaped navigator.getGamepads()
+     * subset (src/core/extras.cpp) has devices to report; it costs nothing
+     * when no pad is attached. */
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
         return -1;
     }
 #ifdef WHALEUI_BUILD_FULL

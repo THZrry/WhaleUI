@@ -2396,30 +2396,75 @@ void edit_key(whaleui_render_t* r, int keycode, int mods)
             return;
         case 'c': /* copy the selection to the system clipboard */
             if (a != b) {
-                SDL_SetClipboardText(val.substr(static_cast<size_t>(a),
-                                                static_cast<size_t>(b - a)).c_str());
+                std::string sel = val.substr(static_cast<size_t>(a),
+                                             static_cast<size_t>(b - a));
+                /* DOM copy event first: a listener may preventDefault (cancel
+                 * the engine's write) or supply its own text via
+                 * set_clipboard_text */
+                whaleui_event_init_t ci;
+                std::memset(&ci, 0, sizeof(ci));
+                ci.mods = r->last_mods;
+                ci.clipboard_text = sel.c_str();
+                const char* supplied = nullptr;
+                int prevented = 0;
+                whaleui_dom_dispatch_input_clipboard(
+                    reinterpret_cast<whaleui_dom_element_t*>(el), "copy", &ci,
+                    &prevented, &supplied);
+                if (!prevented) {
+                    SDL_SetClipboardText(supplied ? supplied : sel.c_str());
+                }
             }
             return;
         case 'x': /* cut: copy + delete */
             if (a != b) {
-                SDL_SetClipboardText(val.substr(static_cast<size_t>(a),
-                                                static_cast<size_t>(b - a)).c_str());
-                edit_replace(r, el, static_cast<size_t>(a), static_cast<size_t>(b), "");
+                std::string sel = val.substr(static_cast<size_t>(a),
+                                             static_cast<size_t>(b - a));
+                whaleui_event_init_t ci;
+                std::memset(&ci, 0, sizeof(ci));
+                ci.mods = r->last_mods;
+                ci.clipboard_text = sel.c_str();
+                const char* supplied = nullptr;
+                int prevented = 0;
+                whaleui_dom_dispatch_input_clipboard(
+                    reinterpret_cast<whaleui_dom_element_t*>(el), "cut", &ci,
+                    &prevented, &supplied);
+                if (!prevented) {
+                    SDL_SetClipboardText(supplied ? supplied : sel.c_str());
+                    edit_replace(r, el, static_cast<size_t>(a),
+                                 static_cast<size_t>(b), "");
+                }
             }
             return;
         case 'v': { /* paste from the system clipboard */
             char* cl = SDL_GetClipboardText();
-            if (cl) {
-                std::string pv = input_insert_filter(
-                    el, std::string(cl), static_cast<size_t>(a),
-                    static_cast<size_t>(b));
-                SDL_free(cl);
-                if (pv.empty()) {
-                    return;
-                }
-                edit_replace(r, el, static_cast<size_t>(a),
-                             static_cast<size_t>(b), pv);
+            std::string clip = cl ? cl : "";
+            SDL_free(cl);
+            /* DOM paste event: a listener may preventDefault (cancel the
+             * insert) or supply its own text */
+            whaleui_event_init_t ci;
+            std::memset(&ci, 0, sizeof(ci));
+            ci.mods = r->last_mods;
+            ci.clipboard_text = clip.c_str();
+            const char* supplied = nullptr;
+            int prevented = 0;
+            whaleui_dom_dispatch_input_clipboard(
+                reinterpret_cast<whaleui_dom_element_t*>(el), "paste", &ci,
+                &prevented, &supplied);
+            if (prevented) {
+                return;
             }
+            const char* src = supplied ? supplied : clip.c_str();
+            if (!src || !*src) {
+                return;
+            }
+            std::string pv = input_insert_filter(
+                el, std::string(src), static_cast<size_t>(a),
+                static_cast<size_t>(b));
+            if (pv.empty()) {
+                return;
+            }
+            edit_replace(r, el, static_cast<size_t>(a),
+                         static_cast<size_t>(b), pv);
             return;
         }
         case 'z':
@@ -3603,9 +3648,15 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
     /* remember the raw window-space position for the frame's hover
      * re-check (see mouse_wx in render.h): relayouts/scrolls can move a
      * different element under a stationary pointer */
+    float prev_x = r->mouse_wx;
+    float prev_y = r->mouse_wy;
+    int had_prev = r->mouse_has;
     r->mouse_wx = static_cast<float>(x);
     r->mouse_wy = static_cast<float>(y);
     r->mouse_has = 1;
+    /* MouseEvent.movementX/Y in window coordinates (before fb scaling) */
+    float move_x = had_prev ? static_cast<float>(x) - prev_x : 0.0f;
+    float move_y = had_prev ? static_cast<float>(y) - prev_y : 0.0f;
     if (!r->tree) {
         return;
     }
@@ -3714,14 +3765,25 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
         }
         /* DOM mouse events on a target change: mouseleave fires on the old
          * element, mouseenter on the new (both non-bubbling, like the
-         * browser). */
+         * browser). relatedTarget names the counterpart element. */
+        whaleui_event_init_t mi;
+        std::memset(&mi, 0, sizeof(mi));
+        mi.mouse_x = x;
+        mi.mouse_y = y;
+        mi.movement_x = move_x;
+        mi.movement_y = move_y;
+        mi.mods = r->last_mods;
         if (was) {
-            WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(was),
-                            "mouseleave", 0, x, y, 0, 0, 0);
+            mi.related_target = reinterpret_cast<whaleui_dom_element_t*>(el);
+            whaleui_dom_dispatch_input_nonbubble(
+                reinterpret_cast<whaleui_dom_element_t*>(was), "mouseleave",
+                &mi, nullptr);
         }
         if (el) {
-            WUI_DOM_FIRE_NB(reinterpret_cast<whaleui_dom_element_t*>(el),
-                            "mouseenter", 0, x, y, 0, 0, 0);
+            mi.related_target = reinterpret_cast<whaleui_dom_element_t*>(was);
+            whaleui_dom_dispatch_input_nonbubble(
+                reinterpret_cast<whaleui_dom_element_t*>(el), "mouseenter",
+                &mi, nullptr);
         }
     }
     /* mousemove fires on the element under the pointer every frame the
@@ -3729,8 +3791,16 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
      * element, no dispatch - the browser sends pointer moves to the window
      * instead, which is the WHALEUI_WINDOW_EVENT path). */
     if (el) {
-        WUI_DOM_FIRE(reinterpret_cast<whaleui_dom_element_t*>(el),
-                     "mousemove", 0, x, y, 0, 0, 0);
+        whaleui_event_init_t mi;
+        std::memset(&mi, 0, sizeof(mi));
+        mi.mouse_x = x;
+        mi.mouse_y = y;
+        mi.movement_x = move_x;
+        mi.movement_y = move_y;
+        mi.mods = r->last_mods;
+        whaleui_dom_dispatch_input(
+            reinterpret_cast<whaleui_dom_element_t*>(el), "mousemove", &mi,
+            nullptr);
     }
     /* drag to extend a selection: gated by a 6px threshold so a plain
      * click - including the incidental hand micro-motion of pressing a

@@ -36,6 +36,18 @@ struct whaleui_dom_event
     int key_code;
     int mouse_x, mouse_y, mouse_button;
     float wheel_x, wheel_y;
+    /* richer payload (see whaleui_event_init_t): modifiers, key names,
+     * auto-repeat, click count, pointer delta, enter/leave counterpart and
+     * the clipboard payload. Strings are owned by the event. */
+    int mods;
+    std::string key;
+    std::string code;
+    int repeat;
+    int detail;
+    float movement_x, movement_y;
+    lxb_dom_element* related;
+    std::string clipboard_text;
+    int clipboard_set;         /* listener supplied text via set_clipboard_text */
 };
 
 namespace {
@@ -66,7 +78,43 @@ whaleui_dom_event_t* make_event(lxb_dom_element* el, const char* type)
     ev->key_code = 0;
     ev->mouse_x = ev->mouse_y = ev->mouse_button = 0;
     ev->wheel_x = ev->wheel_y = 0;
+    ev->mods = 0;
+    ev->repeat = 0;
+    ev->detail = 0;
+    ev->movement_x = ev->movement_y = 0.0f;
+    ev->related = nullptr;
+    ev->clipboard_set = 0;
     return ev;
+}
+
+/* apply a full payload (whaleui_event_init_t) onto a fresh event */
+void apply_init(whaleui_dom_event_t* ev, const whaleui_event_init_t* in)
+{
+    if (!in) {
+        return;
+    }
+    ev->key_code = in->key_code;
+    ev->mods = in->mods;
+    ev->repeat = in->repeat ? 1 : 0;
+    ev->mouse_x = in->mouse_x;
+    ev->mouse_y = in->mouse_y;
+    ev->mouse_button = in->mouse_button;
+    ev->detail = in->detail;
+    ev->wheel_x = in->wheel_x;
+    ev->wheel_y = in->wheel_y;
+    ev->movement_x = in->movement_x;
+    ev->movement_y = in->movement_y;
+    ev->related = in->related_target
+        ? reinterpret_cast<lxb_dom_element*>(in->related_target) : nullptr;
+    if (in->key) {
+        ev->key = in->key;
+    }
+    if (in->code) {
+        ev->code = in->code;
+    }
+    if (in->clipboard_text) {
+        ev->clipboard_text = in->clipboard_text;
+    }
 }
 
 /* The public API's handle is opaque, so document-level event targets are
@@ -207,13 +255,18 @@ namespace {
 
 /* shared dispatch body. `bubble` selects whether the bubble phase runs
  * (false for the browser's non-bubbling events: mouseenter/leave,
- * focus/blur). */
-int dispatch_impl(whaleui_dom_element_t* el, const char* type, int key_code,
-                  int mouse_x, int mouse_y, int mouse_button, float wheel_x,
-                  float wheel_y, int* out_prevented, bool bubble)
+ * focus/blur). `in` (may be NULL) carries the full payload; out_clipboard
+ * (may be NULL) receives the listener-supplied clipboard text for
+ * copy/cut/paste (the engine's default behavior uses it). */
+int dispatch_impl(whaleui_dom_element_t* el, const char* type,
+                  const whaleui_event_init_t* in, int* out_prevented,
+                  const char** out_clipboard, bool bubble)
 {
     if (out_prevented) {
         *out_prevented = 0;
+    }
+    if (out_clipboard) {
+        *out_clipboard = nullptr;
     }
     lxb_dom_element* e = resolve_target(el);
     if (!e || !type) {
@@ -227,12 +280,7 @@ int dispatch_impl(whaleui_dom_element_t* el, const char* type, int key_code,
         }
     }
     whaleui_dom_event_t* ev = make_event(e, type);
-    ev->key_code = key_code;
-    ev->mouse_x = mouse_x;
-    ev->mouse_y = mouse_y;
-    ev->mouse_button = mouse_button;
-    ev->wheel_x = wheel_x;
-    ev->wheel_y = wheel_y;
+    apply_init(ev, in);
     /* 1. capture: root-most ancestor down to the target's parent */
     ev->phase = WUI_PHASE_CAPTURE;
     for (size_t i = chain.size(); i-- > 0;) {
@@ -262,11 +310,41 @@ int dispatch_impl(whaleui_dom_element_t* el, const char* type, int key_code,
     if (out_prevented) {
         *out_prevented = ev->prevented;
     }
+    if (out_clipboard) {
+        *out_clipboard = ev->clipboard_set ? ev->clipboard_text.c_str() : nullptr;
+    }
     delete ev;
     return 0;
 }
 
+/* compat shim: the scalar entry points build a minimal payload */
+whaleui_event_init_t init_from_scalars(int key_code, int mouse_x, int mouse_y,
+                                       int mouse_button, float wheel_x,
+                                       float wheel_y)
+{
+    whaleui_event_init_t in;
+    std::memset(&in, 0, sizeof(in));
+    in.key_code = key_code;
+    in.mouse_x = mouse_x;
+    in.mouse_y = mouse_y;
+    in.mouse_button = mouse_button;
+    in.wheel_x = wheel_x;
+    in.wheel_y = wheel_y;
+    return in;
+}
+
 } // namespace
+
+extern "C" whaleui_event_init_t whaleui_event_init_scalars(int key_code,
+                                                           int mouse_x,
+                                                           int mouse_y,
+                                                           int mouse_button,
+                                                           float wheel_x,
+                                                           float wheel_y)
+{
+    return init_from_scalars(key_code, mouse_x, mouse_y, mouse_button, wheel_x,
+                             wheel_y);
+}
 
 extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
                                            const char* type,
@@ -275,8 +353,9 @@ extern "C" int whaleui_dom_dispatch_phased(whaleui_dom_element_t* el,
                                            float wheel_x, float wheel_y,
                                            int* out_prevented)
 {
-    return dispatch_impl(el, type, key_code, mouse_x, mouse_y, mouse_button,
-                         wheel_x, wheel_y, out_prevented, true);
+    whaleui_event_init_t in = init_from_scalars(key_code, mouse_x, mouse_y,
+                                                mouse_button, wheel_x, wheel_y);
+    return dispatch_impl(el, type, &in, out_prevented, nullptr, true);
 }
 
 extern "C" int whaleui_dom_dispatch_nonbubble(whaleui_dom_element_t* el,
@@ -286,8 +365,34 @@ extern "C" int whaleui_dom_dispatch_nonbubble(whaleui_dom_element_t* el,
                                               float wheel_x, float wheel_y,
                                               int* out_prevented)
 {
-    return dispatch_impl(el, type, key_code, mouse_x, mouse_y, mouse_button,
-                         wheel_x, wheel_y, out_prevented, false);
+    whaleui_event_init_t in = init_from_scalars(key_code, mouse_x, mouse_y,
+                                                mouse_button, wheel_x, wheel_y);
+    return dispatch_impl(el, type, &in, out_prevented, nullptr, false);
+}
+
+extern "C" int whaleui_dom_dispatch_input(whaleui_dom_element_t* el,
+                                          const char* type,
+                                          const whaleui_event_init_t* init,
+                                          int* out_prevented)
+{
+    return dispatch_impl(el, type, init, out_prevented, nullptr, true);
+}
+
+extern "C" int whaleui_dom_dispatch_input_nonbubble(whaleui_dom_element_t* el,
+                                                    const char* type,
+                                                    const whaleui_event_init_t* init,
+                                                    int* out_prevented)
+{
+    return dispatch_impl(el, type, init, out_prevented, nullptr, false);
+}
+
+extern "C" int whaleui_dom_dispatch_input_clipboard(whaleui_dom_element_t* el,
+                                                    const char* type,
+                                                    const whaleui_event_init_t* init,
+                                                    int* out_prevented,
+                                                    const char** out_clipboard)
+{
+    return dispatch_impl(el, type, init, out_prevented, out_clipboard, true);
 }
 
 extern "C" int whaleui_dom_dispatch_event(whaleui_dom_element_t* el,
@@ -370,4 +475,83 @@ extern "C" float whaleui_dom_event_wheel_delta_x(const whaleui_dom_event_t* ev)
 extern "C" float whaleui_dom_event_wheel_delta_y(const whaleui_dom_event_t* ev)
 {
     return ev ? ev->wheel_y : 0;
+}
+
+/* --- modifier keys + richer payloads --- */
+
+extern "C" int whaleui_dom_event_mods(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->mods : 0;
+}
+
+extern "C" int whaleui_dom_event_ctrl_key(const whaleui_dom_event_t* ev)
+{
+    return ev && (ev->mods & WHALEUI_MOD_CTRL) ? 1 : 0;
+}
+
+extern "C" int whaleui_dom_event_shift_key(const whaleui_dom_event_t* ev)
+{
+    return ev && (ev->mods & WHALEUI_MOD_SHIFT) ? 1 : 0;
+}
+
+extern "C" int whaleui_dom_event_alt_key(const whaleui_dom_event_t* ev)
+{
+    return ev && (ev->mods & WHALEUI_MOD_ALT) ? 1 : 0;
+}
+
+extern "C" int whaleui_dom_event_meta_key(const whaleui_dom_event_t* ev)
+{
+    return ev && (ev->mods & WHALEUI_MOD_META) ? 1 : 0;
+}
+
+extern "C" const char* whaleui_dom_event_key(const whaleui_dom_event_t* ev)
+{
+    return (ev && !ev->key.empty()) ? ev->key.c_str() : nullptr;
+}
+
+extern "C" const char* whaleui_dom_event_code(const whaleui_dom_event_t* ev)
+{
+    return (ev && !ev->code.empty()) ? ev->code.c_str() : nullptr;
+}
+
+extern "C" int whaleui_dom_event_repeat(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->repeat : 0;
+}
+
+extern "C" int whaleui_dom_event_detail(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->detail : 0;
+}
+
+extern "C" float whaleui_dom_event_movement_x(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->movement_x : 0.0f;
+}
+
+extern "C" float whaleui_dom_event_movement_y(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->movement_y : 0.0f;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_dom_event_related_target(const whaleui_dom_event_t* ev)
+{
+    return ev ? reinterpret_cast<whaleui_dom_element_t*>(ev->related) : nullptr;
+}
+
+extern "C" const char* whaleui_dom_event_clipboard_text(const whaleui_dom_event_t* ev)
+{
+    return (ev && !ev->clipboard_text.empty()) ? ev->clipboard_text.c_str()
+                                               : nullptr;
+}
+
+extern "C" int whaleui_dom_event_set_clipboard_text(whaleui_dom_event_t* ev,
+                                                    const char* text)
+{
+    if (!ev || !text) {
+        return -1;
+    }
+    ev->clipboard_text = text;
+    ev->clipboard_set = 1;
+    return 0;
 }
