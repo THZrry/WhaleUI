@@ -315,6 +315,19 @@ struct whaleui_render
      * Reset whenever the caret moves horizontally or the text changes. */
     int nav_col;
 
+    /* --- HTML5 drag & drop (draggable="true" source) ---
+     * press_hit is the element the left button went down on (the dragstart
+     * candidate); drag_dnd is the running in-page session, whose transfer is
+     * owned here. Threshold-gated like text selection so a plain click on a
+     * draggable element never starts a drag. */
+    struct lxb_dom_element* press_hit_el;
+    int dnd_active;
+    struct lxb_dom_element* dnd_source;
+    struct lxb_dom_element* dnd_over;   /* current dragover target */
+    struct whaleui_data_transfer* dnd_dt;
+    int dnd_started_x;
+    int dnd_started_y;
+
     /* editable element with keyboard focus (input/textarea/contenteditable);
      * NULL when none. Drives SDL_StartTextInput/StopTextInput. */
     struct lxb_dom_element* edit_el;
@@ -620,6 +633,19 @@ void whaleui_render_clear_selection(whaleui_render_t* r);
 
 /* Select the whole text of one element (selection.selectAllChildren(el)). */
 void whaleui_render_select_all_of(whaleui_render_t* r, whaleui_dom_element_t* el);
+
+/* --- drag & drop state (window-level wrappers live in core/window.cpp) --- */
+
+/* 1 while an in-page HTML5 drag session is running. */
+int whaleui_render_drag_active(whaleui_render_t* r);
+/* The drag source element of the running session (NULL when none). */
+whaleui_dom_element_t* whaleui_render_drag_source(whaleui_render_t* r);
+
+/* Feed an OS drop (SDL_EVENT_DROP_*) into the page: hit-tests (x, y) and
+ * dispatches the given drag event with a DataTransfer the caller owns.
+ * Used by app.cpp for files/text dragged in from other applications. */
+int whaleui_render_dispatch_os_drag(whaleui_render_t* r, const char* type,
+                                    void* data_transfer, int x, int y);
 
 /* Handle a resize: recreate offscreen target, invalidate. */
 int whaleui_render_resize(whaleui_render_t* render, int width, int height);

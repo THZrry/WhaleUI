@@ -71,6 +71,19 @@ int whaleui_dom_dispatch_input_clipboard(whaleui_dom_element_t* el,
                                          int* out_prevented,
                                          const char** out_clipboard);
 
+/* Build a payload from the scalar fields (compat shims use this). */
+whaleui_event_init_t whaleui_event_init_scalars(int key_code, int mouse_x,
+                                                int mouse_y, int mouse_button,
+                                                float wheel_x, float wheel_y);
+
+/* Dispatch a drag/drop event carrying a DataTransfer. The transfer is
+ * borrowed (the caller keeps ownership). Returns 0 on success; out_prevented
+ * (may be NULL) reports preventDefault (a dragover listener calling it is what
+ * makes the element a drop target). */
+int whaleui_dom_dispatch_drag(whaleui_dom_element_t* el, const char* type,
+                              void* data_transfer, int mouse_x, int mouse_y,
+                              int mods, int* out_prevented);
+
 #ifdef __cplusplus
 }
 #endif

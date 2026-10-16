@@ -8,6 +8,7 @@
  * wrap the SDL APIs; the struct only keeps pointers + cached state. */
 
 #include "whaleui.h"
+#include "dom/data_transfer.h"
 
 #include <atomic>
 #include <string>
@@ -137,6 +138,15 @@ struct whaleui_window
     /* selection-text cache for whaleui_window_selected_text (the returned
      * pointer must stay valid until the next call on this window) */
     std::string sel_text_cache;
+
+    /* OS drag & drop session (files/text dragged in from another app):
+     * SDL delivers BEGIN -> POSITION/FILE/TEXT* -> COMPLETE; the transfer is
+     * accumulated here and dispatched to the page on COMPLETE. Owned by the
+     * window (destroyed with it / on the next BEGIN). */
+    whaleui_data_transfer_t* drop_dt = nullptr;
+    int drop_active = 0;
+    int drop_x = 0;
+    int drop_y = 0;
 };
 
 /* Re-parse the stylesheet + rebuild theme variables (used after theme or

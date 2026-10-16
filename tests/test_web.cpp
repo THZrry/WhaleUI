@@ -4,6 +4,7 @@
 #include "dom/events.h" /* internal full-payload dispatch */
 #include "core/clipboard.h"
 #include "core/timers.h"
+#include "test_util.h"
 
 #include <cassert>
 #include <cstring>
@@ -312,6 +313,140 @@ int main(void)
         assert(supplied == nullptr); /* listener did not supply its own */
 
         whaleui_dom_element_destroy(other);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* ---- drag & drop: DataTransfer / File + drag events ---- */
+    {
+        whaleui_data_transfer_t* dt = whaleui_data_transfer_create();
+        assert(dt != nullptr);
+        assert(whaleui_data_transfer_type_count(dt) == 0);
+        assert(whaleui_data_transfer_set_text(dt, "dragged") == 0);
+        assert(std::strcmp(whaleui_data_transfer_get_text(dt), "dragged") == 0);
+        assert(whaleui_data_transfer_has_format(dt, "text/plain") == 1);
+        assert(whaleui_data_transfer_has_format(dt, "text/html") == 0);
+        assert(whaleui_data_transfer_get_data(dt, "text/html") == nullptr);
+        assert(whaleui_data_transfer_set_data(dt, "text/html", "<b>x</b>") == 0);
+        assert(whaleui_data_transfer_type_count(dt) == 2);
+        assert(std::strcmp(whaleui_data_transfer_type_item(dt, 0), "text/plain") == 0);
+        assert(std::strcmp(whaleui_data_transfer_type_item(dt, 1), "text/html") == 0);
+        /* set replaces an existing format in place */
+        assert(whaleui_data_transfer_set_text(dt, "replaced") == 0);
+        assert(whaleui_data_transfer_type_count(dt) == 2);
+        assert(std::strcmp(whaleui_data_transfer_get_text(dt), "replaced") == 0);
+        /* effects */
+        whaleui_data_transfer_set_effect_allowed(dt, 2);
+        assert(whaleui_data_transfer_effect_allowed(dt) == 2);
+        whaleui_data_transfer_set_drop_effect(dt, 1);
+        assert(whaleui_data_transfer_drop_effect(dt) == 1);
+        assert(whaleui_data_transfer_clear_data(dt) == 0);
+        assert(whaleui_data_transfer_type_count(dt) == 0);
+
+        /* files: name/uri + lazy size through the VFS */
+        assert(whaleui_data_transfer_add_file(dt, "page.html",
+                                              TEST_URI_RAW("tests/data/page.html")) == 0);
+        assert(whaleui_data_transfer_file_count(dt) == 1);
+        const whaleui_file_t* f = whaleui_data_transfer_file_item(dt, 0);
+        assert(f != nullptr);
+        assert(std::strcmp(whaleui_file_name(f), "page.html") == 0);
+        assert(whaleui_file_size(f) > 0);
+        char* fdata = nullptr;
+        size_t flen = 0;
+        assert(whaleui_file_read(f, &fdata, &flen) == 0);
+        assert(fdata != nullptr && flen > 0);
+        std::free(fdata);
+        /* out of range */
+        assert(whaleui_data_transfer_file_item(dt, 9) == nullptr);
+        assert(whaleui_file_size(nullptr) == -1);
+        /* bad args */
+        assert(whaleui_data_transfer_set_data(dt, "", "x") != 0);
+        assert(whaleui_data_transfer_add_file(dt, "n", nullptr) != 0);
+        whaleui_data_transfer_destroy(dt);
+        whaleui_data_transfer_destroy(nullptr);
+
+        /* drag events: dragover preventDefault marks the drop target */
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<html><body><div id=\"src\" draggable=\"true\">drag me</div>"
+            "<div id=\"tgt\"></div></body></html>", 0);
+        assert(doc != nullptr);
+        whaleui_dom_element_t* src = whaleui_dom_get_element_by_id(doc, "src");
+        whaleui_dom_element_t* tgt = whaleui_dom_get_element_by_id(doc, "tgt");
+        assert(src && tgt);
+
+        static int dragstart_n = 0, dragenter_n = 0, dragover_n = 0;
+        static int drop_n = 0, dragend_n = 0, dragleave_n = 0;
+        static std::string drop_text;
+        static bool dragstart_ok = false;
+        struct Dnd {
+            static void on_start(whaleui_dom_event_t* ev, void*) {
+                ++dragstart_n;
+                whaleui_data_transfer_t* d = whaleui_dom_event_data_transfer(ev);
+                if (d) { whaleui_data_transfer_set_text(d, "from-src"); dragstart_ok = true; }
+            }
+            static void on_enter(whaleui_dom_event_t* ev, void*) {
+                ++dragenter_n;
+                (void)whaleui_dom_event_data_transfer(ev);
+            }
+            static void on_over(whaleui_dom_event_t* ev, void*) {
+                ++dragover_n;
+                whaleui_dom_event_prevent_default(ev); /* accept the drop */
+            }
+            static void on_drop(whaleui_dom_event_t* ev, void*) {
+                ++drop_n;
+                whaleui_data_transfer_t* d = whaleui_dom_event_data_transfer(ev);
+                const char* t = d ? whaleui_data_transfer_get_text(d) : nullptr;
+                drop_text = t ? t : "";
+            }
+            static void on_end(whaleui_dom_event_t* ev, void*) {
+                ++dragend_n;
+                (void)ev;
+            }
+            static void on_leave(whaleui_dom_event_t* ev, void*) {
+                ++dragleave_n;
+                (void)ev;
+            }
+        };
+        assert(whaleui_dom_add_event_listener(src, "dragstart", Dnd::on_start, nullptr) == 0);
+        assert(whaleui_dom_add_event_listener(tgt, "dragenter", Dnd::on_enter, nullptr) == 0);
+        assert(whaleui_dom_add_event_listener(tgt, "dragover", Dnd::on_over, nullptr) == 0);
+        assert(whaleui_dom_add_event_listener(tgt, "drop", Dnd::on_drop, nullptr) == 0);
+        assert(whaleui_dom_add_event_listener(tgt, "dragleave", Dnd::on_leave, nullptr) == 0);
+        assert(whaleui_dom_add_event_listener(src, "dragend", Dnd::on_end, nullptr) == 0);
+
+        whaleui_data_transfer_t* live = whaleui_data_transfer_create();
+        assert(whaleui_data_transfer_set_text(live, "payload") == 0);
+        int prevented = 0;
+        assert(whaleui_dom_dispatch_drag(src, "dragstart", live, 5, 5, 0, &prevented) == 0);
+        assert(prevented == 0 && dragstart_n == 1 && dragstart_ok);
+        assert(whaleui_dom_dispatch_drag(tgt, "dragenter", live, 50, 50, 0, nullptr) == 0);
+        assert(dragenter_n == 1);
+        assert(whaleui_dom_dispatch_drag(tgt, "dragover", live, 50, 50, 0, &prevented) == 0);
+        assert(dragover_n == 1 && prevented == 1);
+        assert(whaleui_dom_dispatch_drag(tgt, "drop", live, 50, 50, 0, nullptr) == 0);
+        /* the dragstart listener replaced the text, so the drop sees that */
+        assert(drop_n == 1 && drop_text == "from-src");
+        assert(whaleui_dom_dispatch_drag(src, "dragend", live, 50, 50, 0, nullptr) == 0);
+        assert(dragend_n == 1);
+        whaleui_data_transfer_destroy(live);
+
+        /* a drag event bubbles (drop on an ancestor listener) */
+        static int ancestor_drop = 0;
+        struct B {
+            static void on(whaleui_dom_event_t* ev, void*) {
+                (void)ev;
+                ++ancestor_drop;
+            }
+        };
+        whaleui_dom_element_t* body = whaleui_dom_body(doc);
+        assert(whaleui_dom_add_event_listener(body, "dragover", B::on, nullptr) == 0);
+        whaleui_data_transfer_t* bdt = whaleui_data_transfer_create();
+        assert(whaleui_dom_dispatch_drag(tgt, "dragover", bdt, 1, 1, 0, nullptr) == 0);
+        assert(ancestor_drop == 1);
+        whaleui_data_transfer_destroy(bdt);
+
+        /* no transfer attached -> NULL (not a drag event) */
+        assert(whaleui_dom_dispatch_event(tgt, "click") == 0);
+
         whaleui_dom_document_destroy(doc);
     }
 

@@ -867,6 +867,7 @@ typedef struct whaleui_event_init {
     float movement_x, movement_y; /* pointer delta since the last event */
     whaleui_dom_element_t* related_target; /* enter/leave counterpart */
     const char* clipboard_text; /* copy/cut/paste payload */
+    void* data_transfer;        /* whaleui_data_transfer_t* (drag/drop events) */
 } whaleui_event_init_t;
 
 int whaleui_dom_dispatch_input(whaleui_dom_element_t* el, const char* type,
@@ -878,6 +879,93 @@ int whaleui_dom_dispatch_input_nonbubble(whaleui_dom_element_t* el,
                                          const char* type,
                                          const whaleui_event_init_t* init,
                                          int* out_prevented);
+
+/* ======================= drag & drop =======================
+ *
+ * Two sources, one model:
+ *
+ *  1. OS drags INTO the window (files or text dragged from Explorer/Finder/
+ *     another app). SDL delivers SDL_EVENT_DROP_*; the engine hit-tests and
+ *     fires dragenter/dragover/drop/dragleave on the element under the
+ *     pointer, with a DataTransfer carrying the files (DROP_FILE) or the text
+ *     (DROP_TEXT).
+ *  2. In-page HTML5 drags: an element with draggable="true" pressed and
+ *     dragged past a small threshold starts a session - dragstart on the
+ *     source, dragenter/dragover/dragleave on whatever is under the pointer,
+ *     drop on the target that called preventDefault in its dragover, and
+ *     dragend on the source.
+ *
+ * The engine performs NO default action for either (a browser would navigate
+ * to a dropped file): the page handles `drop`. Calling preventDefault in a
+ * `dragover` listener is what makes an element a drop target, exactly as in
+ * the browser.
+ *
+ * DataTransfer mirrors the W3C object's useful subset: typed items
+ * ("text/plain", "text/uri-list", anything), a file list, and the
+ * effectAllowed/dropEffect negotiation pair. During dragstart the source fills
+ * it; during drop the target reads it. The engine pre-fills text/plain with
+ * the source element's textContent for in-page drags (the browser uses the
+ * selection; textContent is the closest thing we have) unless a dragstart
+ * listener replaced it. */
+
+typedef struct whaleui_file whaleui_file_t;
+
+/* File name (basename) / the URI it was dropped as. Owned by the file. */
+const char* whaleui_file_name(const whaleui_file_t* f);
+const char* whaleui_file_uri(const whaleui_file_t* f);
+/* Byte size, or -1 when it could not be read. Reads the file through the VFS
+ * on first call and caches the length. */
+long long whaleui_file_size(const whaleui_file_t* f);
+/* Read the whole file through the VFS (malloc'd; caller frees with free()).
+ * Returns 0 on success. */
+int whaleui_file_read(const whaleui_file_t* f, char** out, size_t* outlen);
+
+typedef struct whaleui_data_transfer whaleui_data_transfer_t;
+
+/* Create/destroy a transfer. The engine owns the ones it passes to listeners
+ * (do not destroy those); create your own to synthesize a drag/drop. */
+whaleui_data_transfer_t* whaleui_data_transfer_create(void);
+void whaleui_data_transfer_destroy(whaleui_data_transfer_t* dt);
+
+/* Typed items. set replaces an existing item with the same format. */
+int whaleui_data_transfer_set_data(whaleui_data_transfer_t* dt, const char* format,
+                                   const char* data);
+const char* whaleui_data_transfer_get_data(const whaleui_data_transfer_t* dt,
+                                           const char* format);
+int whaleui_data_transfer_has_format(const whaleui_data_transfer_t* dt,
+                                     const char* format);
+int whaleui_data_transfer_clear_data(whaleui_data_transfer_t* dt);
+size_t whaleui_data_transfer_type_count(const whaleui_data_transfer_t* dt);
+const char* whaleui_data_transfer_type_item(const whaleui_data_transfer_t* dt, size_t index);
+
+/* text/plain convenience (the common case). */
+int whaleui_data_transfer_set_text(whaleui_data_transfer_t* dt, const char* text);
+const char* whaleui_data_transfer_get_text(const whaleui_data_transfer_t* dt);
+
+/* File list (populated by an OS file drop). */
+size_t whaleui_data_transfer_file_count(const whaleui_data_transfer_t* dt);
+const whaleui_file_t* whaleui_data_transfer_file_item(const whaleui_data_transfer_t* dt,
+                                                      size_t index);
+/* Append a file (uri resolved through the VFS when read). */
+int whaleui_data_transfer_add_file(whaleui_data_transfer_t* dt, const char* name,
+                                   const char* uri);
+
+/* effectAllowed / dropEffect: 0 = none, 1 = copy, 2 = move, 3 = link. */
+int  whaleui_data_transfer_effect_allowed(const whaleui_data_transfer_t* dt);
+void whaleui_data_transfer_set_effect_allowed(whaleui_data_transfer_t* dt, int effect);
+int  whaleui_data_transfer_drop_effect(const whaleui_data_transfer_t* dt);
+void whaleui_data_transfer_set_drop_effect(whaleui_data_transfer_t* dt, int effect);
+
+/* The transfer attached to a drag/drop event (NULL for other event types).
+ * Borrowed: valid for the duration of the dispatch. */
+whaleui_data_transfer_t* whaleui_dom_event_data_transfer(const whaleui_dom_event_t* ev);
+
+/* --- drag state (per window) --- */
+
+/* 1 while an in-page drag session is running on this window. */
+int whaleui_window_drag_active(const whaleui_window_t* win);
+/* The drag source element of the running session (NULL when none). */
+whaleui_dom_element_t* whaleui_window_drag_source(const whaleui_window_t* win);
 
 /* ======================= CSS ======================= */
 

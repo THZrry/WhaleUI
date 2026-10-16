@@ -158,3 +158,77 @@ int whaleui_dom_event_set_clipboard_text(whaleui_dom_event_t* ev, const char* te
 `key`/`code` 由引擎从 SDL keycode 映射(可打印 ASCII、Enter/Escape/Tab/
 方向键/F1-F24/修饰键等)。事件循环派发的 keydown/keyup、mousemove、
 mouseenter/leave、click/dblclick/contextmenu 均携带上述字段。
+
+## 拖放(drag & drop)
+
+两个来源,同一套模型:
+
+1. **从系统拖入窗口**(从资源管理器/访达/其他程序拖文件或文本):SDL 交付
+   `SDL_EVENT_DROP_*`,引擎命中测试后在指针下的元素上派发
+   `dragenter`/`dragover`/`drop`/`dragleave`,DataTransfer 里带文件
+   (`DROP_FILE`)或文本(`DROP_TEXT`)。
+2. **页内 HTML5 拖放**:`draggable="true"` 的元素按下并拖过阈值后开始会话——
+   源上 `dragstart`,指针下元素上 `dragenter`/`dragover`/`dragleave`,
+   在 dragover 里 `preventDefault` 的目标收到 `drop`,源上总是收到 `dragend`。
+
+**引擎对两者都不做默认行为**(浏览器会导航到拖入的文件):页面自己处理 `drop`。
+在 `dragover` 监听器里 `preventDefault` 就是"把该元素变成放置目标"的契约,与
+浏览器一致。
+
+### File
+
+```c
+const char* whaleui_file_name(const whaleui_file_t* f);  /* 文件名 */
+const char* whaleui_file_uri(const whaleui_file_t* f);   /* 拖入时的 URI */
+long long   whaleui_file_size(const whaleui_file_t* f);  /* 字节数,-1 读不到 */
+int whaleui_file_read(const whaleui_file_t* f, char** out, size_t* outlen); /* malloc'd,调用方 free */
+```
+
+文件字节**惰性读取**(拖入一个 2GB 文件不读就零成本);`size` 首次调用时经 VFS
+测量并缓存。
+
+### DataTransfer
+
+```c
+whaleui_data_transfer_t* whaleui_data_transfer_create(void);
+void whaleui_data_transfer_destroy(whaleui_data_transfer_t* dt);
+
+int whaleui_data_transfer_set_data(whaleui_data_transfer_t* dt, const char* format, const char* data);
+const char* whaleui_data_transfer_get_data(const whaleui_data_transfer_t* dt, const char* format);
+int whaleui_data_transfer_has_format(const whaleui_data_transfer_t* dt, const char* format);
+int whaleui_data_transfer_clear_data(whaleui_data_transfer_t* dt);
+size_t whaleui_data_transfer_type_count(const whaleui_data_transfer_t* dt);
+const char* whaleui_data_transfer_type_item(const whaleui_data_transfer_t* dt, size_t index);
+
+int whaleui_data_transfer_set_text(whaleui_data_transfer_t* dt, const char* text);
+const char* whaleui_data_transfer_get_text(const whaleui_data_transfer_t* dt);
+
+size_t whaleui_data_transfer_file_count(const whaleui_data_transfer_t* dt);
+const whaleui_file_t* whaleui_data_transfer_file_item(const whaleui_data_transfer_t* dt, size_t index);
+int whaleui_data_transfer_add_file(whaleui_data_transfer_t* dt, const char* name, const char* uri);
+
+/* effectAllowed / dropEffect: 0 none, 1 copy, 2 move, 3 link */
+int  whaleui_data_transfer_effect_allowed(const whaleui_data_transfer_t* dt);
+void whaleui_data_transfer_set_effect_allowed(whaleui_data_transfer_t* dt, int effect);
+int  whaleui_data_transfer_drop_effect(const whaleui_data_transfer_t* dt);
+void whaleui_data_transfer_set_drop_effect(whaleui_data_transfer_t* dt, int effect);
+```
+
+`set_data` 对同 format 是**就地替换**(保持插入顺序)。`type_item` 按插入顺序
+返回 format。事件携带的 DataTransfer 由引擎持有,**监听器不要 destroy**;要
+合成拖放请自行 create。
+
+### 事件侧
+
+```c
+/* drag/drop 事件上的 transfer(NULL 表示非 drag 事件);派发期间有效 */
+whaleui_data_transfer_t* whaleui_dom_event_data_transfer(const whaleui_dom_event_t* ev);
+
+/* 该窗口是否有进行中的页内拖放会话;以及拖放源 */
+int whaleui_window_drag_active(const whaleui_window_t* win);
+whaleui_dom_element_t* whaleui_window_drag_source(const whaleui_window_t* win);
+```
+
+页内拖放默认把源元素的 `textContent` 预填为 `text/plain`(浏览器用选区;
+textContent 是最接近的等价物),`dragstart` 监听器可替换。`draggable` 只认显式
+属性(浏览器里 img/a 默认可拖,本引擎的 UA 样式不表达这点——已在实现注释写明)。

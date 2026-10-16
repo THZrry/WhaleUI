@@ -26,6 +26,7 @@
 #include "whaleui.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -79,6 +80,10 @@ public:
     float MovementY() const { return h_ ? whaleui_dom_event_movement_y(h_) : 0.0f; }
     /* defined after Element (incomplete here) */
     Element RelatedTarget() const;
+    /* drag & drop payload (NULL for other event types) */
+    whaleui_data_transfer_t* DataTransfer() const {
+        return h_ ? whaleui_dom_event_data_transfer(h_) : nullptr;
+    }
     std::string ClipboardText() const {
         return ToStr(whaleui_dom_event_clipboard_text(h_));
     }
@@ -637,6 +642,76 @@ inline bool GamepadRumble(int index, float low, float high,
                           unsigned int duration_ms) {
     return whaleui_gamepad_rumble(index, low, high, duration_ms) == 0;
 }
+
+/* ---- drag & drop (DataTransfer / File) ---- */
+
+enum {
+    WHALEUI_EFFECT_NONE = 0,
+    WHALEUI_EFFECT_COPY = 1,
+    WHALEUI_EFFECT_MOVE = 2,
+    WHALEUI_EFFECT_LINK = 3
+};
+
+class File {
+public:
+    File() : h_(nullptr) {}
+    explicit File(const whaleui_file_t* h) : h_(h) {}
+    explicit operator bool() const { return h_ != nullptr; }
+    std::string Name() const { return ToStr(whaleui_file_name(h_)); }
+    std::string Uri() const { return ToStr(whaleui_file_uri(h_)); }
+    long long Size() const { return whaleui_file_size(h_); }
+    /* read through the VFS into a std::string (empty on failure) */
+    std::string Read() const {
+        char* data = nullptr;
+        size_t len = 0;
+        if (whaleui_file_read(h_, &data, &len) != 0) return std::string();
+        std::string out(data, len);
+        std::free(data);
+        return out;
+    }
+
+private:
+    const whaleui_file_t* h_;
+};
+
+class DataTransfer {
+public:
+    DataTransfer() : h_(nullptr) {}
+    explicit DataTransfer(whaleui_data_transfer_t* h) : h_(h) {}
+    explicit operator bool() const { return h_ != nullptr; }
+    whaleui_data_transfer_t* handle() const { return h_; }
+
+    bool SetData(const std::string& format, const std::string& data) const {
+        return whaleui_data_transfer_set_data(h_, format.c_str(), data.c_str()) == 0;
+    }
+    std::string GetData(const std::string& format) const {
+        return ToStr(whaleui_data_transfer_get_data(h_, format.c_str()));
+    }
+    bool HasFormat(const std::string& format) const {
+        return whaleui_data_transfer_has_format(h_, format.c_str()) != 0;
+    }
+    bool SetText(const std::string& text) const {
+        return whaleui_data_transfer_set_text(h_, text.c_str()) == 0;
+    }
+    std::string GetText() const {
+        return ToStr(whaleui_data_transfer_get_text(h_));
+    }
+    size_t TypeCount() const { return whaleui_data_transfer_type_count(h_); }
+    std::string TypeItem(size_t i) const {
+        return ToStr(whaleui_data_transfer_type_item(h_, i));
+    }
+    size_t FileCount() const { return whaleui_data_transfer_file_count(h_); }
+    File FileItem(size_t i) const {
+        return File(whaleui_data_transfer_file_item(h_, i));
+    }
+    int EffectAllowed() const { return whaleui_data_transfer_effect_allowed(h_); }
+    void SetEffectAllowed(int e) const { whaleui_data_transfer_set_effect_allowed(h_, e); }
+    int DropEffect() const { return whaleui_data_transfer_drop_effect(h_); }
+    void SetDropEffect(int e) const { whaleui_data_transfer_set_drop_effect(h_, e); }
+
+private:
+    whaleui_data_transfer_t* h_;
+};
 
 /* ---- Web Audio (placeholder; always unsupported for now) ---- */
 

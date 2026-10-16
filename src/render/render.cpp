@@ -57,6 +57,15 @@ whaleui_render_t* g_metric_render = nullptr;
  * box pass / repaint widely); everything else is paint-only. Shared by the
  * interaction-state path (:hover/:focus/:active) and the DOM-dirty path
  * (attribute/style edits) - one layout-key rule for all mutations. */
+/* HTML5 drag & drop (defined further down; set_hover/set_pressed_ex use
+ * these). The session starts once the pointer passes kDndThreshold on a
+ * draggable press candidate. */
+static const int kDndThreshold = 6;
+static void dnd_begin(whaleui_render_t* r, struct lxb_dom_element* src, int x, int y);
+static void dnd_update(whaleui_render_t* r, int x, int y);
+static void dnd_finish(whaleui_render_t* r, int x, int y, int cancelled);
+static bool is_draggable_el(struct lxb_dom_element* el);
+
 static const char* const kLayoutKeys[] = {
     "display", "position", "width", "height", "min-width", "min-height",
     "max-width", "max-height", "margin", "margin-top", "margin-right",
@@ -267,7 +276,7 @@ float render_text_metric(const char* utf8, size_t len, float font_px,
         } else {
             /* CJK/emoji: resolve through the paint path's fallback chain
              * (text_glyph_adv) - measuring the PRIMARY font directly
-             * returns .notdef advances (a label with "å·²é€‰" measured 20px
+             * returns .notdef advances (a label with "å·²é€? measured 20px
              * vs the painted 29px and wrapped its text). */
             adv = text_glyph_adv(r, fs, family ? family : "",
                                  bold ? true : false, cp);
@@ -3807,6 +3816,23 @@ extern "C" void whaleui_render_set_hover(whaleui_render_t* r, int x, int y)
      * mouse button - never selects. A press inside an existing selection
      * instead readies a drag-to-move/copy: the selection stays put and the
      * drop (move/copy) happens on mouse-up. */
+    /* HTML5 drag session: once the pointer passes the threshold on a
+     * draggable press candidate, start the session (dragstart) and keep it
+     * updated (dragenter/dragover/dragleave). This takes priority over text
+     * selection: a draggable element drags, it does not select. */
+    if (r->press_hit_el && r->pressed_el) {
+        if (!r->dnd_active) {
+            int dx = x - r->press_x;
+            int dy2 = y - r->press_y;
+            if (dx * dx + dy2 * dy2 >= kDndThreshold * kDndThreshold) {
+                dnd_begin(r, r->press_hit_el, x, y);
+            }
+        }
+        if (r->dnd_active) {
+            dnd_update(r, x, y);
+            return;
+        }
+    }
     if (r->pressed_el && r->sel_anchor_el && hit) {
         if (r->drag_sel) {
             int dx = x - r->press_x;
@@ -3928,6 +3954,184 @@ void update_drag_scroll(whaleui_render_t* r, int y)
 /* drop the dragged selection at (x, y); defined after set_pressed_ex */
 static void drag_drop_selection(whaleui_render_t* r, int x, int y, int copy);
 
+/* --- HTML5 drag & drop (draggable="true") ---
+ *
+ * A press on a draggable element records the candidate; once the pointer
+ * moves past kDndThreshold the session starts: dragstart on the source (the
+ * listener may fill the DataTransfer), then dragenter/dragover on whatever is
+ * under the pointer. Releasing over a target that called preventDefault in
+ * dragover fires drop; otherwise the session is cancelled (dragend always
+ * fires on the source). Mirrors the browser's "preventDefault in dragover
+ * makes a drop target" contract. */
+
+/* element.draggable: the attribute, plus the UA defaults the theme sets
+ * (img/a are draggable in a browser; our UA CSS does not express that, so
+ * only the explicit attribute is honored - documented). */
+static bool is_draggable_el(lxb_dom_element* el)
+{
+    if (!el) {
+        return false;
+    }
+    size_t len = 0;
+    const lxb_char_t* v = lxb_dom_element_get_attribute(
+        el, (const lxb_char_t*)"draggable", 9, &len);
+    if (!v || len == 0) {
+        return false;
+    }
+    return (len == 4 && std::memcmp(v, "true", 4) == 0) ? true : false;
+}
+
+/* the element's textContent (what a drag carries by default) */
+static std::string el_text_content(lxb_dom_element* el)
+{
+    std::string out;
+    if (!el) {
+        return out;
+    }
+    std::function<void(lxb_dom_node*)> walk = [&](lxb_dom_node* n) {
+        while (n) {
+            if (n->type == LXB_DOM_NODE_TYPE_TEXT ||
+                n->type == LXB_DOM_NODE_TYPE_CDATA_SECTION) {
+                const lexbor_str_t* s = &lxb_dom_interface_text(n)->char_data.data;
+                if (s->data) {
+                    out.append(reinterpret_cast<const char*>(s->data), s->length);
+                }
+            } else if (n->first_child) {
+                walk(n->first_child);
+            }
+            n = n->next;
+        }
+    };
+    walk(el->node.first_child);
+    return out;
+}
+
+static void dnd_begin(whaleui_render_t* r, lxb_dom_element* src, int x, int y)
+{
+    whaleui_data_transfer_t* dt = whaleui_data_transfer_create();
+    /* pre-fill text/plain with the source's text (the browser uses the
+     * selection; textContent is the closest equivalent); a dragstart listener
+     * may replace it */
+    std::string text = el_text_content(src);
+    if (!text.empty()) {
+        whaleui_data_transfer_set_text(dt, text.c_str());
+    }
+    whaleui_data_transfer_set_effect_allowed(dt, 1 /* copy */);
+    r->dnd_active = 1;
+    r->dnd_source = src;
+    r->dnd_over = nullptr;
+    r->dnd_dt = dt;
+    r->dnd_started_x = x;
+    r->dnd_started_y = y;
+    int prevented = 0;
+    whaleui_dom_dispatch_drag(reinterpret_cast<whaleui_dom_element_t*>(src),
+                              "dragstart", dt, x, y, r->last_mods, &prevented);
+    if (prevented) {
+        /* a prevented dragstart cancels the session (browser contract) */
+        whaleui_data_transfer_destroy(dt);
+        r->dnd_dt = nullptr;
+        r->dnd_active = 0;
+        r->dnd_source = nullptr;
+    }
+}
+
+/* per-motion update: hit-test, then dragenter/dragover on the new target and
+ * dragleave on the old one. */
+static void dnd_update(whaleui_render_t* r, int x, int y)
+{
+    if (!r->dnd_active || !r->tree || !r->dnd_dt) {
+        return;
+    }
+    whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
+    lxb_dom_element* el = hit ? hit->el : nullptr;
+    if (el != r->dnd_over) {
+        if (r->dnd_over) {
+            whaleui_dom_dispatch_drag(
+                reinterpret_cast<whaleui_dom_element_t*>(r->dnd_over),
+                "dragleave", r->dnd_dt, x, y, r->last_mods, nullptr);
+        }
+        r->dnd_over = el;
+        if (el) {
+            whaleui_dom_dispatch_drag(
+                reinterpret_cast<whaleui_dom_element_t*>(el), "dragenter",
+                r->dnd_dt, x, y, r->last_mods, nullptr);
+        }
+    }
+    if (el) {
+        int prevented = 0;
+        whaleui_dom_dispatch_drag(reinterpret_cast<whaleui_dom_element_t*>(el),
+                                  "dragover", r->dnd_dt, x, y, r->last_mods,
+                                  &prevented);
+        /* preventDefault marks the element as accepting the drop */
+        if (prevented) {
+            whaleui_data_transfer_set_drop_effect(r->dnd_dt, 1 /* copy */);
+        } else {
+            whaleui_data_transfer_set_drop_effect(r->dnd_dt, 0 /* none */);
+        }
+    }
+}
+
+/* release: drop on the accepting target (if any), then dragend on the source;
+ * the transfer is destroyed either way. */
+static void dnd_finish(whaleui_render_t* r, int x, int y, int cancelled)
+{
+    if (!r->dnd_active) {
+        return;
+    }
+    lxb_dom_element* src = r->dnd_source;
+    whaleui_data_transfer_t* dt = r->dnd_dt;
+    lxb_dom_element* over = r->dnd_over;
+    r->dnd_active = 0;
+    r->dnd_source = nullptr;
+    r->dnd_over = nullptr;
+    r->dnd_dt = nullptr;
+    if (!cancelled && over && dt) {
+        int prevented = 0;
+        whaleui_dom_dispatch_drag(reinterpret_cast<whaleui_dom_element_t*>(over),
+                                  "drop", dt, x, y, r->last_mods, &prevented);
+    }
+    if (src) {
+        whaleui_dom_dispatch_drag(reinterpret_cast<whaleui_dom_element_t*>(src),
+                                  "dragend", dt, x, y, r->last_mods, nullptr);
+    }
+    whaleui_data_transfer_destroy(dt);
+}
+
+extern "C" int whaleui_render_drag_active(whaleui_render_t* r)
+{
+    return r ? r->dnd_active : 0;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_render_drag_source(whaleui_render_t* r)
+{
+    if (!r || !r->dnd_source) {
+        return nullptr;
+    }
+    return reinterpret_cast<whaleui_dom_element_t*>(r->dnd_source);
+}
+
+/* An OS drop (files or text dragged in from another app): hit-test the
+ * pointer and dispatch the drag event on the element under it, with a
+ * DataTransfer the caller built. The engine has no default action. */
+extern "C" int whaleui_render_dispatch_os_drag(whaleui_render_t* r,
+                                               const char* type,
+                                               void* data_transfer, int x,
+                                               int y)
+{
+    if (!r || !r->tree || !type) {
+        return -1;
+    }
+    std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    fb_coords(r, x, y);
+    whaleui_layout_node_t* hit = hit_test(r, r->tree->root, x, y, 0);
+    if (!hit || !hit->el) {
+        return -2; /* nothing under the pointer: no target, no dispatch */
+    }
+    return whaleui_dom_dispatch_drag(
+        reinterpret_cast<whaleui_dom_element_t*>(hit->el), type, data_transfer,
+        x, y, r->last_mods, nullptr);
+}
+
 extern "C" void whaleui_render_set_pressed(whaleui_render_t* r, int x, int y,
                                            int down)
 {
@@ -3991,6 +4195,10 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         r->drag_sel_active = 0;
         r->drag_copy = 0;
         r->press_clicks = clicks < 1 ? 1 : (clicks > 3 ? 3 : clicks);
+        /* a press on a draggable element arms an HTML5 drag session; it only
+         * starts once the pointer passes the threshold (so a plain click on
+         * a draggable row still behaves as a click) */
+        r->press_hit_el = (el && is_draggable_el(el)) ? el : nullptr;
         /* scrollbar drag takes priority over selection/caret */
         whaleui_layout_node_t* sc = scrollbar_under(r, hit, x, y);
         if (sc) {
@@ -4132,6 +4340,15 @@ extern "C" void whaleui_render_set_pressed_ex(whaleui_render_t* r, int x,
         r->pressed_el = nullptr;
         r->drag_scroll_el = nullptr;
         r->drag_scroll_node = nullptr;
+        /* HTML5 drag session: releasing ends it - drop on the accepting
+         * target (dnd_finish dispatches it), then dragend on the source. */
+        if (r->dnd_active) {
+            dnd_finish(r, x, y, 0);
+            r->press_hit_el = nullptr;
+            r->has_dirty = 1;
+            return;
+        }
+        r->press_hit_el = nullptr;
         if (r->drag_sel && !r->drag_sel_active) {
             /* plain click inside the selection: collapse it and move the
              * caret to the press point (drag-to-move needs an actual drag) */
@@ -4650,7 +4867,7 @@ static void anim_apply_opacity(whaleui_layout_node_t* nd, float po)
 
 /* apply the animation tick's interpolated values to every running-animation
  * element NOT in `skip` (elements in `skip` had their values applied by the
- * layout build during a relayout â€” their whole subtree was rebuilt). Phase
+ * layout build during a relayout â€?their whole subtree was rebuilt). Phase
  * 1 writes the styles + refreshes the cached paint flags (xf/fx/sk single
  * writer), phase 2 recomputes the opacity chains from the final styles.
  * Returns 1 when at least one style value actually changed (a frame whose
@@ -4658,7 +4875,7 @@ static void anim_apply_opacity(whaleui_layout_node_t* nd, float po)
  * damage). This is the COMPOSITION glue between the two animation paths:
  * while a layout animation runs (demo: .anim-bar width), the frame takes
  * the relayout_multi branch and previously never applied paint-only
- * transitions (demo: .anim-card:hover lift) â€” the hover transform stayed
+ * transitions (demo: .anim-card:hover lift) â€?the hover transform stayed
  * pinned at its transition's start value until the next state relayout,
  * so the card lifted only after the mouse left ("hover reacts after the
  * mouse moved away"). */

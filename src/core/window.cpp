@@ -324,6 +324,10 @@ extern "C" void whaleui_window_destroy(whaleui_window_t* win)
     if (win->document) {
         whaleui_dom_document_destroy(win->document);
     }
+    if (win->drop_dt) {
+        whaleui_data_transfer_destroy(win->drop_dt);
+        win->drop_dt = nullptr;
+    }
     std::free(win->title);
     delete win;
 }
@@ -639,6 +643,18 @@ extern "C" void whaleui_window_select_all_of(whaleui_window_t* win, whaleui_dom_
     if (win && win->render) {
         whaleui_render_select_all_of(win->render, el);
     }
+}
+
+/* --- drag & drop state (owned by the render context) --- */
+
+extern "C" int whaleui_window_drag_active(const whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_drag_active(win->render) : 0;
+}
+
+extern "C" whaleui_dom_element_t* whaleui_window_drag_source(const whaleui_window_t* win)
+{
+    return (win && win->render) ? whaleui_render_drag_source(win->render) : nullptr;
 }
 
 /* ======================= window state/geometry/appearance wrappers ======================= */

@@ -6,6 +6,7 @@
  * transient whaleui_dom_event_t valid for the call. */
 
 #include "dom/events.h"
+#include "dom/data_transfer.h"
 
 #include <lexbor/dom/dom.h>
 
@@ -48,6 +49,8 @@ struct whaleui_dom_event
     lxb_dom_element* related;
     std::string clipboard_text;
     int clipboard_set;         /* listener supplied text via set_clipboard_text */
+    /* drag/drop payload (borrowed; owned by the drag session or the caller) */
+    whaleui_data_transfer_t* data_transfer;
 };
 
 namespace {
@@ -84,6 +87,7 @@ whaleui_dom_event_t* make_event(lxb_dom_element* el, const char* type)
     ev->movement_x = ev->movement_y = 0.0f;
     ev->related = nullptr;
     ev->clipboard_set = 0;
+    ev->data_transfer = nullptr;
     return ev;
 }
 
@@ -114,6 +118,17 @@ void apply_init(whaleui_dom_event_t* ev, const whaleui_event_init_t* in)
     }
     if (in->clipboard_text) {
         ev->clipboard_text = in->clipboard_text;
+    }
+    if (in->data_transfer) {
+        ev->data_transfer = static_cast<whaleui_data_transfer_t*>(in->data_transfer);
+    }
+}
+
+extern "C" void whaleui_dom_event_set_data_transfer(whaleui_dom_event_t* ev,
+                                                     whaleui_data_transfer_t* dt)
+{
+    if (ev) {
+        ev->data_transfer = dt;
     }
 }
 
@@ -395,6 +410,23 @@ extern "C" int whaleui_dom_dispatch_input_clipboard(whaleui_dom_element_t* el,
     return dispatch_impl(el, type, init, out_prevented, out_clipboard, true);
 }
 
+extern "C" int whaleui_dom_dispatch_drag(whaleui_dom_element_t* el,
+                                         const char* type,
+                                         void* data_transfer, int mouse_x,
+                                         int mouse_y, int mods,
+                                         int* out_prevented)
+{
+    whaleui_event_init_t in;
+    std::memset(&in, 0, sizeof(in));
+    in.mouse_x = mouse_x;
+    in.mouse_y = mouse_y;
+    in.mods = mods;
+    in.data_transfer = data_transfer;
+    /* drag events bubble (dragover/drop must reach ancestors); dragenter and
+     * dragleave also bubble per spec, unlike mouseenter/mouseleave */
+    return dispatch_impl(el, type, &in, out_prevented, nullptr, true);
+}
+
 extern "C" int whaleui_dom_dispatch_event(whaleui_dom_element_t* el,
                                           const char* type)
 {
@@ -554,4 +586,9 @@ extern "C" int whaleui_dom_event_set_clipboard_text(whaleui_dom_event_t* ev,
     ev->clipboard_text = text;
     ev->clipboard_set = 1;
     return 0;
+}
+
+extern "C" whaleui_data_transfer_t* whaleui_dom_event_data_transfer(const whaleui_dom_event_t* ev)
+{
+    return ev ? ev->data_transfer : nullptr;
 }

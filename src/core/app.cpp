@@ -485,6 +485,79 @@ void process_event(whaleui_app_t* app, const SDL_Event& e)
             }
         }
         break;
+    /* --- OS drag & drop (files/text dragged in from other applications) ---
+     * SDL delivers a SET of drops: BEGIN, then POSITION while moving over the
+     * window, then one FILE or TEXT event per item, then COMPLETE. The engine
+     * maps that onto the DOM sequence: dragenter/dragover while hovering, drop
+     * on the element under the last position at COMPLETE, then dragleave. */
+    case SDL_EVENT_DROP_BEGIN: {
+        whaleui_window_t* w = window_for(app, e.window.windowID);
+        if (w) {
+            if (w->drop_dt) {
+                whaleui_data_transfer_destroy(w->drop_dt);
+            }
+            w->drop_dt = whaleui_data_transfer_create();
+            whaleui_data_transfer_set_effect_allowed(w->drop_dt, 1 /* copy */);
+            w->drop_active = 1;
+        }
+        break;
+    }
+    case SDL_EVENT_DROP_POSITION: {
+        whaleui_window_t* w = window_for(app, e.drop.windowID);
+        if (w && w->render && w->drop_dt) {
+            w->drop_x = static_cast<int>(e.drop.x);
+            w->drop_y = static_cast<int>(e.drop.y);
+            whaleui_render_dispatch_os_drag(w->render, "dragover", w->drop_dt,
+                                            w->drop_x, w->drop_y);
+        }
+        break;
+    }
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT: {
+        whaleui_window_t* w = window_for(app, e.drop.windowID);
+        if (!w) {
+            break;
+        }
+        if (!w->drop_dt) {
+            /* a drop without BEGIN (some platforms): start one now */
+            w->drop_dt = whaleui_data_transfer_create();
+            whaleui_data_transfer_set_effect_allowed(w->drop_dt, 1);
+            w->drop_active = 1;
+        }
+        if (e.drop.data) {
+            if (e.type == SDL_EVENT_DROP_FILE) {
+                whaleui_data_transfer_add_file(w->drop_dt, nullptr,
+                                               e.drop.data);
+            } else {
+                whaleui_data_transfer_set_text(w->drop_dt, e.drop.data);
+            }
+        }
+        if (w->render && w->drop_dt) {
+            w->drop_x = static_cast<int>(e.drop.x);
+            w->drop_y = static_cast<int>(e.drop.y);
+            whaleui_render_dispatch_os_drag(w->render, "dragenter", w->drop_dt,
+                                            w->drop_x, w->drop_y);
+        }
+        break;
+    }
+    case SDL_EVENT_DROP_COMPLETE: {
+        whaleui_window_t* w = window_for(app, e.drop.windowID);
+        if (!w) {
+            break;
+        }
+        if (w->render && w->drop_dt) {
+            /* the drop lands on the element under the last known position
+             * (COMPLETE carries no coordinates of its own) */
+            whaleui_render_dispatch_os_drag(w->render, "drop", w->drop_dt,
+                                            w->drop_x, w->drop_y);
+            whaleui_render_dispatch_os_drag(w->render, "dragleave", w->drop_dt,
+                                            w->drop_x, w->drop_y);
+        }
+        whaleui_data_transfer_destroy(w->drop_dt);
+        w->drop_dt = nullptr;
+        w->drop_active = 0;
+        break;
+    }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (e.button.button == SDL_BUTTON_RIGHT) {
             /* contextmenu on the hit element (bubbles; the engine has no

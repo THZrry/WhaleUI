@@ -1261,3 +1261,35 @@ SOLVED
 `tests/test_web.cpp`(新, 13/13 套件): clipboard 同步 + 排队回调时序; 定时器一次性/清除/interval 自重清/clearTimeout 清 interval/未来到期时间; rAF 一次性/取消/与定时器互不干扰; 视口与 DPR; 音频占位状态机; gamepad 越界安全; 事件载荷全字段(修饰键四种组合、key/code/repeat、detail/movement、relatedTarget、clipboard 文本)。坑: 测试里 SDL 未初始化时 clipboard 调用失败 —— app_create 必须先行(它做 SDL_Init)。
 
 验证: 全量三变体构建 ok; 13/13 套件 exit=0。
+
+# <50>: 拖放(DnD) —— DataTransfer/File + OS 拖入 + 页内 draggable
+
+SOLVED
+
+用户点名 DnD 未做, 顺带全量自查了 web api 缺口(见 <51> 待办): matchMedia / MutationObserver / ResizeObserver / IntersectionObserver / localStorage / sessionStorage / location / history / Blob / FileReader / PointerEvent / TouchEvent / WAAPI(Element.animate) / CSS.supports / structuredClone / userAgent / requestIdleCallback / queueMicrotask 均无。
+
+## A. DataTransfer / File(src/dom/data_transfer.cpp)
+
+- 类型化 item 袋(format -> data, 插入序保序, set 同 format 就地替换)+ 文件列表 + effectAllowed/dropEffect。File 带 name + VFS uri, **字节惰性读**(拖入大文件零成本; size 首次调用测量并缓存)。
+- 句柄是不透明 struct(不是 lexbor 直通), 因为要装 vector/string。
+- 事件对象新增 `data_transfer` 借用指针 + `whaleui_dom_event_data_transfer`; `whaleui_event_init_t` 加 `data_transfer` 字段。
+
+## B. 页内 HTML5 拖放(render 侧)
+
+- 按下时若 hit 元素 `draggable="true"` 记录候选(`press_hit_el`); 指针过 6px 阈值(`kDndThreshold`)才 `dnd_begin` —— 与文本选择同样的门控, 保证"可拖元素上的普通点击仍是点击"。**拖放优先于文本选择**(draggable 元素拖拽不选文本)。
+- `dnd_begin` 建 transfer, 预填 textContent 为 text/plain(浏览器用选区, textContent 是最接近等价物), 派发 dragstart; **dragstart 里 preventDefault 取消整个会话**(浏览器契约)。`dnd_update` 命中变化时 dragleave/dragenter, 每次 dragover 按 preventDefault 设 dropEffect。`dnd_finish` 在 accepting 目标上派发 drop, 源上总是 dragend, 最后销毁 transfer。
+- `draggable` 只认显式属性: 浏览器里 img/a 默认可拖, 本引擎 UA 样式不表达, 已在头注释/文档写明。
+
+## C. OS 拖入(SDL_EVENT_DROP_*)
+
+- SDL 交付一组事件: BEGIN -> POSITION/FILE/TEXT* -> COMPLETE。窗口侧 `drop_dt/drop_active/drop_x/drop_y` 累积: BEGIN 建 transfer、POSITION 派发 dragover、FILE/TEXT 追加数据并派发 dragenter、COMPLETE 在最后位置派发 drop + dragleave 再销毁。COMPLETE 自身不带坐标, 所以用最后记录的 POSITION(注释写明)。
+- 没有 BEGIN 的平台兜底: FILE/TEXT 事件里若 drop_dt 为空就地建一个。
+- `whaleui_render_dispatch_os_drag` 做命中测试 + 派发(与页内会话无关, OS 拖入不建 dnd_active 会话)。
+- 引擎对两者都不做默认行为(浏览器会导航到拖入的文件), 页面自己处理 drop —— 与既有"preventDefault 取消默认行为"契约一致。
+- 窗口销毁时释放 drop_dt(否则泄漏)。
+
+## D. 测试(test_web 追加)
+
+DataTransfer 类型化 item 保序/就地替换/清空/effect 存取/File 惰性 size 与 VFS 读取/越界与坏参; 页内事件序列(dragstart -> dragenter -> dragover(prevented=1) -> drop(读到 dragstart 改写的文本) -> dragend); drag 事件冒泡到祖先; 非 drag 事件 transfer 为 NULL。坑: drop 读到的是 dragstart 监听器**改写后**的文本(不是初始 payload), 断言要跟着改 —— 这正验证了 dragstart 填 transfer 的语义。
+
+验证: 全量三变体构建 ok; 13/13 套件 exit=0。
