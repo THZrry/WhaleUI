@@ -232,3 +232,177 @@ whaleui_dom_element_t* whaleui_window_drag_source(const whaleui_window_t* win);
 页内拖放默认把源元素的 `textContent` 预填为 `text/plain`(浏览器用选区;
 textContent 是最接近的等价物),`dragstart` 监听器可替换。`draggable` 只认显式
 属性(浏览器里 img/a 默认可拖,本引擎的 UA 样式不表达这点——已在实现注释写明)。
+
+## matchMedia(window.matchMedia)
+
+```c
+typedef struct whaleui_media_query_list whaleui_media_query_list_t;
+typedef void (*whaleui_media_query_cb)(whaleui_media_query_list_t* list, void* userdata);
+
+whaleui_media_query_list_t* whaleui_window_match_media(const whaleui_window_t* win,
+                                                       const char* query);
+void whaleui_media_query_list_destroy(whaleui_media_query_list_t* list);
+int whaleui_media_query_list_matches(const whaleui_media_query_list_t* list);
+const char* whaleui_media_query_list_media(const whaleui_media_query_list_t* list);
+int whaleui_media_query_list_add_listener(whaleui_media_query_list_t* list,
+                                          whaleui_media_query_cb cb, void* userdata);
+int whaleui_media_query_list_remove_listener(whaleui_media_query_list_t* list,
+                                             whaleui_media_query_cb cb, void* userdata);
+```
+
+查询交给**级联用的同一个求值器**(`whaleui_style_media_ok`),所以
+`matchMedia(q).matches` 与 CSS 里 `@media q` 是否生效永远一致。监听器在
+`matches` **翻转**时触发(窗口 resize、换主题/深浅色);同一个回调重复
+add 只保留一份,remove 一个不存在的监听器返回非 0。
+
+C++:`whaleui::MatchMedia(win, "(min-width: 600px)")` 返回 RAII 的
+`MediaQueryList`。
+
+## CSS.supports
+
+```c
+int whaleui_css_supports(const char* property, const char* value);
+```
+
+两个独立的问题,都对才返回 1:
+
+1. **属性**是否被引擎实现——查显式属性表(取自 layout/paint/animate 实际读取的
+   属性名);自定义属性 `--*` 恒真。
+2. **值**是否合法——用引擎自己的解析器判:颜色走 `whaleui_render_parse_color`,
+   长度走 `whaleui_style_parse_len`,枚举属性(display/position/overflow/
+   flex-direction/... )走关键字集合。`var()`/`calc()`/`clamp()`/`min()`/
+   `max()`/`gradient()`/`url()` 与"引擎尚无值解析器"的属性一律放行(那是未知,
+   不是不支持)。
+
+> 不要退回"把 `x{prop:value}` 丢给解析器看声明是否存活"的做法:本项目的 CSS
+> 解析器**有意保留未知声明**(页面可以带厂商前缀/未来语法),那样会对
+> `no-such-property: 1px` 答 1——一个永远说 yes 的支持查询比没有更糟。
+
+属性名与关键字按 ASCII 大小写不敏感比较(`DISPLAY: FLEX` 为 1)。
+C++:`whaleui::CssSupports("display", "flex")`。
+
+## 程序化样式表(CSSOM 子集)
+
+```c
+int whaleui_css_parse(whaleui_css_rule_t** rules, size_t* count,
+                      const char* css, size_t len);
+int whaleui_css_load(whaleui_css_rule_t** rules, size_t* count, const char* uri);
+void whaleui_css_rules_destroy(whaleui_css_rule_t* rules, size_t count);
+
+/* 把一组规则挂到文档上,替换上一次挂的 */
+int whaleui_css_apply(whaleui_dom_document_t* doc,
+                      const whaleui_css_rule_t* rules, size_t count);
+```
+
+`whaleui_css_apply` 把规则深拷贝为**该文档自有的样式表**,追加在文档
+`<style>`/`<link>` 之后参与同一次级联(所以同特异度时后挂的胜出),下一帧生效。
+`count == 0` 清空该表(换整套主题表的用法)。规则数组在调用返回后即可销毁。
+
+C++:`whaleui::StyleSheet`(RAII)——`Parse()`/`Load()` 后 `Apply(doc)`。
+
+**样式表来源的改动会在下一帧自动重收**:追加/删除/改写 `<style>`(head 或
+body)、换 `<link rel=stylesheet href>`、`<head>.innerHTML`,以及
+`whaleui_css_apply`。普通文本/class 编辑不会触发重收(否则每次按键都要重解析
+整张表)。
+
+## Web Storage(localStorage / sessionStorage)
+
+```c
+int whaleui_storage_length(int session);
+const char* whaleui_storage_key(int session, int index);      /* 越界返回 NULL */
+const char* whaleui_storage_get_item(int session, const char* key);  /* 缺失返回 NULL */
+int whaleui_storage_set_item(int session, const char* key, const char* value);
+int whaleui_storage_remove_item(int session, const char* key);
+int whaleui_storage_clear(int session);
+```
+
+引擎没有 origin 概念,所以只有一个全局存储。`session = 0` 是 localStorage
+(持久化到平台 user-data 目录下的 JSON 文件),`session = 1` 是 sessionStorage
+(仅内存)。C++:`whaleui::LocalStorage()` / `SessionStorage()`。
+
+## queueMicrotask / requestIdleCallback
+
+```c
+typedef void (*whaleui_web_task_cb)(void* userdata);
+int whaleui_queue_microtask(whaleui_web_task_cb cb, void* userdata);
+int whaleui_request_idle_callback(whaleui_web_task_cb cb, void* userdata);
+```
+
+微任务在当前任务结束后、下一个定时器之前排空;空闲回调只在"没有事件、没有帧
+请求、没有动画、没有定时器/微任务"的循环迭代上执行。有排队微任务时事件循环
+保持唤醒,空闲回调不保持唤醒。
+
+## screen / navigator
+
+```c
+int whaleui_window_screen_size(const whaleui_window_t* win, int* w, int* h);
+int whaleui_window_screen_work_area(const whaleui_window_t* win, int* x, int* y,
+                                    int* w, int* h);   /* 工作区(排除任务栏) */
+const char* whaleui_navigator_user_agent(void);
+const char* whaleui_navigator_platform(void);
+const char* whaleui_navigator_language(void);
+```
+
+## MutationObserver
+
+```c
+typedef struct whaleui_mutation_observer whaleui_mutation_observer_t;
+
+enum {
+    WHALEUI_MUTATION_ATTRIBUTES = 0,
+    WHALEUI_MUTATION_CHARACTER_DATA = 1,
+    WHALEUI_MUTATION_CHILD_LIST = 2
+};
+
+typedef void (*whaleui_mutation_cb)(whaleui_dom_element_t* target, int type,
+                                    const char* attr, int added, int removed,
+                                    void* userdata);
+
+whaleui_mutation_observer_t* whaleui_dom_create_mutation_observer(whaleui_dom_document_t* doc);
+void whaleui_dom_mutation_observer_destroy(whaleui_mutation_observer_t* obs);
+int whaleui_dom_mutation_observer_observe(whaleui_mutation_observer_t* obs,
+                                          whaleui_dom_element_t* el,
+                                          whaleui_mutation_cb cb, void* userdata);
+int whaleui_dom_mutation_observer_disconnect(whaleui_mutation_observer_t* obs);
+int whaleui_dom_mutation_observer_take_records(whaleui_mutation_observer_t* obs);
+```
+
+`el` 为 NULL 表示观察整个文档,否则观察其子树。记录**按循环迭代批量投递**
+(不是内联),所以监听器里改 DOM 不会重入——它的改动在下一批到达。属性记录
+携带属性名(`setAttribute`、`toggleAttribute`、classList、dataset、inline
+style 全部如此),`childList` 记录用 `added`/`removed` 说明增删。
+
+`attributeOldValue` / `characterDataOldValue` 未跟踪(记录里没有旧值字段)。
+`disconnect` 后不再投递,可再次 `observe` 恢复。
+
+C++:`whaleui::CreateMutationObserver(doc)` 返回 RAII 的 `MutationObserver`。
+
+## ResizeObserver
+
+```c
+typedef struct whaleui_resize_observer whaleui_resize_observer_t;
+typedef void (*whaleui_resize_cb)(whaleui_dom_element_t* el, float width,
+                                  float height, void* userdata);
+
+whaleui_resize_observer_t* whaleui_dom_create_resize_observer(whaleui_dom_document_t* doc);
+void whaleui_dom_resize_observer_destroy(whaleui_resize_observer_t* obs);
+int whaleui_dom_resize_observer_observe(whaleui_resize_observer_t* obs,
+                                        whaleui_dom_element_t* el,
+                                        whaleui_resize_cb cb, void* userdata);
+int whaleui_dom_resize_observer_unobserve(whaleui_resize_observer_t* obs,
+                                          whaleui_dom_element_t* el);
+int whaleui_dom_resize_observer_disconnect(whaleui_resize_observer_t* obs);
+```
+
+每帧采样:把元素的**布局后 border box** 与上次投递的尺寸比较,变化时回调
+(`observe` 后的第一帧投递初始尺寸)。未参与布局的元素(display:none、已脱离
+文档)不投递。`el` 不能为 NULL(与 MutationObserver 不同,它需要一个真实盒子)。
+
+C++:`whaleui::CreateResizeObserver(doc)`。
+
+## 尚未实现(明确记录)
+
+Blob / FileReader(文件字节走 VFS 与 `whaleui_file_read`)、location / history
+(导航是 `load_uri`)、structuredClone(数据本来就是普通 C 结构)、PointerEvent /
+TouchEvent(SDL 提供鼠标与手柄;触摸待补)、IntersectionObserver、
+Web Animations API(`Element.animate`;动画走 CSS `@keyframes`/`transition`)。

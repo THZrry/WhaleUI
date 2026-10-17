@@ -520,11 +520,14 @@ int main(void)
             /* selectNodeContents covers the whole element */
             assert(whaleui_dom_range_select_node_contents(rg, inp) == 0);
             assert(std::strcmp(whaleui_dom_range_to_string(rg), "abcdef") == 0);
-            /* deleteContents trims the input value */
+            /* deleteContents trims the input value. Range endpoints are
+             * END-EXCLUSIVE (as the toString case above shows: [6,11) of
+             * "hello world" is "world"), so removing [1,4) of "abcdef" drops
+             * b, c and d and leaves "aef". */
             assert(whaleui_dom_range_set_start(rg, inp, 1) == 0);
             assert(whaleui_dom_range_set_end(rg, inp, 4) == 0);
             assert(whaleui_dom_range_delete_contents(rg) == 0);
-            assert(std::strcmp(whaleui_dom_get_value(inp), "adef") == 0);
+            assert(std::strcmp(whaleui_dom_get_value(inp), "aef") == 0);
             assert(whaleui_dom_range_collapsed(rg) == 1);
             /* null / invalid handling */
             assert(whaleui_dom_create_range(nullptr) == nullptr);

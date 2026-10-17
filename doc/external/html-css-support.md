@@ -102,7 +102,7 @@
 
 | @ 规则 | 状态 |
 |--------|------|
-| `@media` | ✅ `max-width` / `min-width` / `prefers-color-scheme` / `prefers-reduced-motion`;其余条件安全地判 false |
+| `@media` | ✅ 媒体**类型** `all`/`screen`(其余类型如 `print` 不匹配)+ `max-width`/`min-width`/`min-height`/`max-height`/`orientation`/`aspect-ratio`/`hover`/`pointer`/`resolution`/`prefers-color-scheme`/`prefers-reduced-motion`;`<style media="...">` 属性走同一求值器 |
 | `@keyframes` | ✅ 帧 `0%/from/to/百分比`,动画引擎插值 |
 | `@font-face` | 🟡 解析器识别,字体注册走应用 API(见 `07-api-font.md`) |
 | `@import` / `@charset` / `@supports` | ❌ 未处理 |
@@ -111,7 +111,7 @@
 
 | 项目 | 状态 |
 |------|------|
-| 单位 | ✅ px / % / em / vw / vh / 无单位;`auto` / `max-content` / `min-content` / `fit-content` 按 auto 处理 |
+| 单位 | ✅ px / % / em / rem / vw / vh / vmin / vmax / 无单位;`auto` / `max-content` / `min-content` / `fit-content` 按 auto 处理。**flex 项的主轴尺寸**(column 里的 height、row 里的 width)同样支持全部单位与 `calc()`,百分比与视口单位按容器主轴解析(column 的 `height:50%` 是容器高度的一半) |
 | 数学函数 | ✅ `clamp()` / `min()` / `max()` |
 | 渐变 | ✅ `linear-gradient`(角度/方向词)/ `radial-gradient`(圆/椭圆、百分比中心)多色标 |
 | `var(--x, fallback)` | ✅ 级联后统一解析 |
@@ -126,8 +126,8 @@ width, height, min/max-width/height, box-sizing
 margin/padding(简写+四边), border(简写+四边宽度/样式/颜色, border-block 简写)
 position(static/relative/absolute/fixed/sticky 基本), top/left/right/bottom, inset 简写
 z-index, opacity
-flex: flex-direction, flex-wrap, justify-content, align-items, gap, flex-grow, flex 简写
-grid: grid-template-columns(px/fr/auto/repeat()), grid-column 整行跨越, column-gap/row-gap
+flex: flex-direction, flex-wrap, justify-content, align-items, align-content, align-self, order, gap, flex-grow, flex-shrink, flex-basis, flex 简写
+grid: grid-template-columns(px/fr/auto/repeat()), grid-template-rows, grid-column 整行跨越, column-gap/row-gap, place-items(取第一个值作 align)
 background-color/background(纯色+渐变), background-image(渐变)
 border-radius(背景与边框沿弧线)
 box-shadow(外阴影 GPU: mipmap 模糊近似 / CPU: 同心环;inset 阴影 GPU: 对角线渐变三角形 + mipmap 模糊 / CPU: 同心内缩环), backdrop-filter: blur()(GPU mipmap 近似)
@@ -155,9 +155,8 @@ float / clear
 
 ```
 word-spacing, background-size/position/repeat
-flex-shrink, flex-basis(flex 简写仅消费 grow), align-content, place-items, align-self
-justify-self, justify-items, order(布局按 DOM 序,不支持重排)
-list-style, visibility, pointer-events, user-select
+justify-self, justify-items
+visibility, pointer-events, user-select
 text-indent, vertical-align, word-break, overflow-wrap, aspect-ratio
 column-count(column-gap 仅 grid 用), scroll-behavior, tab-size, resize
 grid: 显式 grid-template-rows / 命名区域 / dense 打包 / grid-row
@@ -187,11 +186,11 @@ position:sticky 容器底部钳制
 | word-spacing | ❌ |
 | background-size / background-position / background-repeat | ❌(渐变填充不受其约束) |
 | transform | 🟡 动画可插值,渲染未生效 |
-| flex-shrink / flex-basis | ❌ |
-| align-content / place-items | ❌ |
-| grid-template-rows | ❌ |
+| flex-shrink / flex-basis | ✅(含 `flex: <grow> <shrink> <basis>` 简写;basis 支持 `px`/`%`/`em`/`rem`/`vw`/`vh`) |
+| align-content / place-items | ✅(place-items 取第一个值作 align)|
+| grid-template-rows | ✅ |
 | float / clear | 🟡 已解析未生效 |
-| list-style | ❌ |
+| list-style-type | ✅(`none` 去掉标记;`list-style` 简写未解析)|
 | visibility | ❌ |
 | pointer-events / user-select | ❌ |
 | outline | 🟡 已解析未生效 |
@@ -235,6 +234,18 @@ position:sticky 容器底部钳制
 ```
 
 > `transform` 仅供动画插值,不位移元素;固定居中请用 `left/top` 配合 `margin` 或 flex 容器。
+
+flex 项的**主轴**尺寸(column 里的 height、row 里的 width)支持 `px` / `%` / `em` /
+`rem` / `vw` / `vh` / `calc()` 与 `flex-basis`;百分比与视口单位都按**容器的主轴
+尺寸**解析(column 的 `height:50%` 是容器高度的一半,不是宽度的),主轴尺寸不确定
+时百分比退化为 `auto`。因此"应用外壳"这类写法可直接用:
+
+```html
+<div style="height:100vh;display:flex;flex-direction:column">
+  <div style="height:40px;flex:none">顶部</div>
+  <div style="flex:1;min-height:0">主体</div>
+</div>
+```
 
 ### 5.2 交互标签
 

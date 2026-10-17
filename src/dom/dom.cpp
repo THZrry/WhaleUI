@@ -7,6 +7,7 @@
 #include "dom/dom.h"
 #include "core/utf.h"
 #include "dom/events.h"
+#include "dom/observers.h"
 #include "style/style.h"
 #include "canvas/canvas.h"
 
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -61,6 +63,22 @@ bool& g_struct_dirty()
 {
     static bool d = false;
     return d;
+}
+
+/* a stylesheet SOURCE node was added, removed or edited: the rule set the
+ * render context holds is stale and must be re-collected. The engine collects
+ * CSS from the document only at load / resize / theme change (see
+ * window_reload_css), so without this flag a <style> injected through the DOM
+ * API - or one whose text/attribute was rewritten - never took effect at all.
+ * That is the "CSS mounted from C++ does nothing" report: the markup path and
+ * the API path disagreed because only the markup path ran the collector.
+ * Per document (like the dirty set above) so one window's style edit does not
+ * re-parse every other window's sheet. Consumed by the render worker
+ * (whaleui_dom_take_css_dirty). */
+std::set<lxb_dom_document*>& g_css_dirty()
+{
+    static std::set<lxb_dom_document*> s;
+    return s;
 }
 
 /* document.activeElement mirror: per-document focused element (written by
@@ -494,13 +512,72 @@ extern "C" whaleui_dom_element_t* whaleui_dom_create_document_fragment(whaleui_d
 
 /* --- DOM mutation tracking (incremental relayout) --- */
 
-/* shared body: records (element, document, structural) with the upgrade rule */
-static void mark_dirty_ex(lxb_dom_element* el, bool structural)
+/* 1 when `el` IS a stylesheet source node (<style> or <link>): its text,
+ * attributes or inline style are read by the collector, so any edit to it
+ * changes the document's CSS. */
+static bool is_css_source_node(const lxb_dom_element* el)
+{
+    if (!el) {
+        return false;
+    }
+    size_t len = 0;
+    const lxb_char_t* nm = lxb_dom_element_local_name(
+        const_cast<lxb_dom_element*>(el), &len);
+    if (!nm || !len) {
+        return false;
+    }
+    return (len == 5 && std::memcmp(nm, "style", 5) == 0) ||
+           (len == 4 && std::memcmp(nm, "link", 4) == 0);
+}
+
+/* 1 when `el` is a section whose DIRECT CHILDREN the collector reads. Only a
+ * STRUCTURAL edit here changes the sheet (a child added, removed or moved);
+ * a text/attribute edit on <body> itself does not, which is what keeps an
+ * ordinary edit inside the page from re-collecting the stylesheet. */
+static bool is_css_section(const lxb_dom_element* el)
+{
+    if (!el) {
+        return false;
+    }
+    size_t len = 0;
+    const lxb_char_t* nm = lxb_dom_element_local_name(
+        const_cast<lxb_dom_element*>(el), &len);
+    if (!nm || len != 4) {
+        return false;
+    }
+    return std::memcmp(nm, "head", 4) == 0 || std::memcmp(nm, "body", 4) == 0;
+}
+
+/* shared body: records (element, document, structural) with the upgrade rule.
+ *
+ * `attr` names the attribute an attribute edit touched, so the MutationObserver
+ * record carries it. It is a parameter rather than a separate notify call
+ * because two calls produced TWO records for one edit (a named one plus the
+ * generic one below) - an observer saw every setAttribute twice. */
+static void mark_dirty_ex(lxb_dom_element* el, bool structural,
+                          const char* attr = nullptr)
 {
     if (!el) {
         return;
     }
     lxb_dom_document* doc = el->node.owner_document;
+    /* A stylesheet source node edited directly (text / attribute / style), or a
+     * STRUCTURAL change to a <head>/<body> - the sections whose child list the
+     * collector reads. Every insertion/removal/move API marks the PARENT it
+     * touched (append_child, remove_child, insert_before, set_inner_html,
+     * insert_adjacent*), so the section clause alone covers them all; a text or
+     * attribute edit on an ordinary child of <body> marks that child, which is
+     * correctly NOT a stylesheet change (flagging it would re-collect the whole
+     * sheet on every keystroke). */
+    if (is_css_source_node(el) ||
+        (structural && is_css_section(el))) {
+        g_css_dirty().insert(doc);
+    }
+    /* MutationObserver: a structural edit is a childList mutation, anything
+     * else an attribute/characterData edit (with the attribute name when the
+     * caller knows it - see the attribute APIs). */
+    whaleui_dom_notify_mutation(el, structural ? 2 : 0, structural ? nullptr : attr,
+                                structural ? 1 : 0, 0);
     for (auto& d : g_dirty()) {
         if (d.el == el && d.doc == doc) {
             /* already pending: a later structural edit must still upgrade the
@@ -510,6 +587,13 @@ static void mark_dirty_ex(lxb_dom_element* el, bool structural)
         }
     }
     g_dirty().push_back({el, doc, structural});
+}
+
+/* mark_dirty for an edit that set/removed a known attribute: the observer
+ * record carries the name. */
+static void mark_dirty_attr(lxb_dom_element* el, const char* name)
+{
+    mark_dirty_ex(el, false, name);
 }
 
 /* Same drain as whaleui_dom_take_dirty, but keeps the "structural" flag per
@@ -576,6 +660,26 @@ extern "C" int whaleui_dom_take_struct_dirty(void)
     return v ? 1 : 0;
 }
 
+extern "C" int whaleui_dom_take_css_dirty(whaleui_dom_document_t* doc)
+{
+    lxb_dom_document* want = as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
+    return g_css_dirty().erase(want) > 0 ? 1 : 0;
+}
+
+extern "C" int whaleui_dom_has_css_dirty(whaleui_dom_document_t* doc)
+{
+    lxb_dom_document* want = as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
+    return g_css_dirty().find(want) != g_css_dirty().end() ? 1 : 0;
+}
+
+extern "C" void whaleui_dom_mark_css_dirty(whaleui_dom_document_t* doc)
+{
+    lxb_dom_document* want = as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
+    if (want) {
+        g_css_dirty().insert(want);
+    }
+}
+
 extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size_t len)
 {
     lxb_html_document* doc = lxb_html_document_create();
@@ -613,6 +717,10 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
         /* the active-element mirror too: its key (the lxb_dom_document) is
          * about to be freed, and a later allocation could reuse the address */
         g_active().erase(dom_doc(doc));
+        /* same address-reuse hazard for the stylesheet-invalidation set and
+         * the document's programmatic sheet (whaleui_css_apply) */
+        g_css_dirty().erase(&as_doc(doc)->dom_document);
+        whaleui_style_doc_rules_clear(doc);
         lxb_html_document_destroy(as_doc(doc));
     }
 }
@@ -777,7 +885,7 @@ extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* 
                  ? 0
                  : -2;
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, name);
         if (std::strcmp(name, "style") == 0) {
             whaleui_dom_mark_vars_dirty();
         }
@@ -820,7 +928,7 @@ extern "C" int whaleui_dom_remove_attribute(whaleui_dom_element_t* el, const cha
                  ? 0
                  : -2;
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, name);
         if (std::strcmp(name, "style") == 0) {
             whaleui_dom_mark_vars_dirty();
         }
@@ -849,7 +957,7 @@ extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const cha
         lxb_dom_element_remove_attribute(e, reinterpret_cast<const lxb_char_t*>(name),
                                          std::strlen(name));
     }
-    whaleui_dom_mark_dirty(e);
+    mark_dirty_attr(e, name);
     if (std::strcmp(name, "style") == 0) {
         whaleui_dom_mark_vars_dirty();
     }
@@ -919,7 +1027,9 @@ extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* prop
     }
     int rc = style_set(as_el(el), property, value);
     if (rc == 0) {
-        whaleui_dom_mark_dirty(as_el(el));
+        /* an inline-style edit IS an attribute edit on "style": report the
+         * name so a MutationObserver record carries it */
+        mark_dirty_attr(as_el(el), "style");
         /* a --var definition or any style change can affect var()
          * resolution elsewhere; re-collect vars next frame */
         whaleui_dom_mark_vars_dirty();
@@ -1032,7 +1142,7 @@ extern "C" int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, cons
     if (!el || !property) return -1;
     int rc = style_remove(as_el(el), property);
     if (rc == 0) {
-        whaleui_dom_mark_dirty(as_el(el));
+        mark_dirty_attr(as_el(el), "style");
         whaleui_dom_mark_vars_dirty();
     }
     return rc;
@@ -1057,7 +1167,7 @@ extern "C" int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const c
     int rc = lxb_dom_element_set_attribute(e, (const lxb_char_t*)"style", 5,
         reinterpret_cast<const lxb_char_t*>(css_text), std::strlen(css_text)) ? 0 : -2;
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, "style");
         whaleui_dom_mark_vars_dirty();
     }
     return rc;
@@ -1928,7 +2038,7 @@ extern "C" int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls)
     }
     int rc = class_set(e, cls, 1);
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, "class");
     }
     return rc;
 }
@@ -1941,7 +2051,7 @@ extern "C" int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* c
     }
     int rc = class_set(e, cls, 0);
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, "class");
     }
     return rc;
 }
@@ -1955,7 +2065,7 @@ extern "C" int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* c
     int has = class_has(e, cls);
     int rc = class_set(e, cls, !has);
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, "class");
     }
     return has ? 0 : 1;
 }
@@ -2038,7 +2148,7 @@ extern "C" int whaleui_dom_class_replace(whaleui_dom_element_t* el,
     }
     class_set(e, old_cls, 0);
     class_set(e, new_cls, 1);
-    whaleui_dom_mark_dirty(e);
+    mark_dirty_attr(e, "class");
     return 1;
 }
 
@@ -2058,7 +2168,7 @@ extern "C" int whaleui_dom_class_toggle_force(whaleui_dom_element_t* el,
     if (rc != 0) {
         return -1;
     }
-    whaleui_dom_mark_dirty(e);
+    mark_dirty_attr(e, "class");
     return want;
 }
 
@@ -2100,7 +2210,7 @@ extern "C" int whaleui_dom_dataset_set(whaleui_dom_element_t* el,
                  ? 0
                  : -2;
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, name.c_str());
     }
     return rc;
 }
@@ -2148,7 +2258,7 @@ extern "C" int whaleui_dom_dataset_remove(whaleui_dom_element_t* el, const char*
                  ? 0
                  : -2;
     if (rc == 0) {
-        whaleui_dom_mark_dirty(e);
+        mark_dirty_attr(e, name.c_str());
     }
     return rc;
 }

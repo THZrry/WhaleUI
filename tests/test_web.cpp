@@ -2,9 +2,13 @@
 // Web Audio placeholder, gamepad, and the richer event payloads.
 #include "whaleui.h"
 #include "dom/events.h" /* internal full-payload dispatch */
+#include "dom/observers.h"
 #include "core/clipboard.h"
 #include "core/timers.h"
+#include "core/webapi.h"
 #include "test_util.h"
+
+#include <SDL3/SDL.h> /* SDL_GetError for the clipboard-availability probe */
 
 #include <cassert>
 #include <cstring>
@@ -85,6 +89,10 @@ void on_clip(const char* text, void* ud) {
     g_clip_cb_text = text ? text : "";
 }
 
+/* --- microtask chain probe (queues itself once) --- */
+int g_micro_chain = 0;
+void micro_chain_step(void*) { ++g_micro_chain; }
+
 } // namespace
 
 int main(void)
@@ -94,8 +102,20 @@ int main(void)
     whaleui_app_t* app = whaleui_app_create();
     assert(app != nullptr);
 
-    /* ---- clipboard (sync + async queue) ---- */
-    {
+    /* ---- clipboard (sync + async queue) ----
+     *
+     * The OS clipboard can be unavailable to the process (a session without a
+     * window station - headless CI, a service context): SDL then fails to open
+     * it and every write returns false. That is an environment fact, not an
+     * engine bug, so probe once and skip the block instead of failing. */
+    const bool clipboard_ok = whaleui_clipboard_set_text("whaleui-probe") == 0;
+    if (!clipboard_ok) {
+        std::fprintf(stderr,
+                     "clipboard unavailable in this environment (%s), "
+                     "skipping clipboard checks\n",
+                     SDL_GetError());
+    }
+    if (clipboard_ok) {
         assert(whaleui_clipboard_set_text("whaleui-clip") == 0);
         assert(whaleui_clipboard_has_text() == 1);
         assert(std::strcmp(whaleui_clipboard_get_text(), "whaleui-clip") == 0);
@@ -447,6 +467,311 @@ int main(void)
         /* no transfer attached -> NULL (not a drag event) */
         assert(whaleui_dom_dispatch_event(tgt, "click") == 0);
 
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* ---- matchMedia / CSS.supports / screen / navigator ---- */
+    {
+        whaleui_window_t* win = whaleui_window_create(app, "mm", 800, 600);
+        assert(win != nullptr);
+        /* min-width:500px matches at 800 wide, not at 400 */
+        whaleui_media_query_list_t* mq =
+            whaleui_window_match_media(win, "(min-width: 500px)");
+        assert(mq != nullptr);
+        assert(whaleui_media_query_list_matches(mq) == 1);
+        assert(std::strcmp(whaleui_media_query_list_media(mq),
+                           "(min-width: 500px)") == 0);
+        static int mq_fires = 0;
+        struct MQ {
+            static void on(whaleui_media_query_list_t* l, void*) {
+                ++mq_fires;
+                (void)l;
+            }
+        };
+        assert(whaleui_media_query_list_add_listener(mq, MQ::on, nullptr) == 0);
+        assert(whaleui_media_query_list_add_listener(mq, MQ::on, nullptr) == 0); /* dup */
+        /* resize across the breakpoint + refresh (app does this on resize) */
+        assert(whaleui_window_set_size(win, 400, 600) == 0);
+        whaleui_webapi_refresh_media();
+        assert(whaleui_media_query_list_matches(mq) == 0);
+        assert(mq_fires == 1);
+        /* no change -> no fire */
+        whaleui_webapi_refresh_media();
+        assert(mq_fires == 1);
+        assert(whaleui_media_query_list_remove_listener(mq, MQ::on, nullptr) == 0);
+        assert(whaleui_media_query_list_remove_listener(mq, MQ::on, nullptr) != 0);
+        whaleui_media_query_list_destroy(mq);
+        whaleui_media_query_list_destroy(nullptr);
+        assert(whaleui_window_match_media(nullptr, "(x)") == nullptr);
+        assert(whaleui_window_match_media(win, nullptr) == nullptr);
+
+        /* CSS.supports: property support is a table (the CSS parser keeps
+         * unknown declarations, so probing it alone answered 1 to everything),
+         * and the value is checked with the engine's own parsers. */
+        assert(whaleui_css_supports("display", "flex") == 1);
+        assert(whaleui_css_supports("color", "red") == 1);
+        assert(whaleui_css_supports("nonsense-property", "1px") == 0);
+        assert(whaleui_css_supports("", "red") == 0);
+        assert(whaleui_css_supports("color", nullptr) == 0);
+        /* a supported property with an unsupported value */
+        assert(whaleui_css_supports("display", "not-a-real-display") == 0);
+        assert(whaleui_css_supports("color", "not-a-color") == 0);
+        assert(whaleui_css_supports("position", "sideways") == 0);
+        assert(whaleui_css_supports("overflow", "hidden") == 1);
+        /* property names are ASCII case-insensitive */
+        assert(whaleui_css_supports("DISPLAY", "FLEX") == 1);
+        /* custom properties are always accepted */
+        assert(whaleui_css_supports("--brand", "12px") == 1);
+        /* values the engine resolves at cascade time are accepted */
+        assert(whaleui_css_supports("width", "calc(100% - 2px)") == 1);
+        assert(whaleui_css_supports("color", "var(--c)") == 1);
+        /* length values are validated */
+        assert(whaleui_css_supports("width", "12px") == 1);
+        assert(whaleui_css_supports("width", "12qu") == 0);
+        assert(whaleui_css_supports("width", "auto") == 1);
+        /* no value at all */
+        assert(whaleui_css_supports("color", "") == 0);
+
+        /* screen + navigator */
+        int sw = 0, sh = 0;
+        assert(whaleui_window_screen_size(win, &sw, &sh) == 0);
+        assert(sw > 0 && sh > 0);
+        int sx = 0, sy = 0, aw = 0, ah = 0;
+        assert(whaleui_window_screen_work_area(win, &sx, &sy, &aw, &ah) == 0);
+        assert(aw > 0 && ah > 0);
+        assert(whaleui_window_screen_size(win, nullptr, nullptr) != 0);
+        assert(std::strstr(whaleui_navigator_user_agent(), "WhaleUI") != nullptr);
+        assert(std::strlen(whaleui_navigator_platform()) > 0);
+        assert(std::strlen(whaleui_navigator_language()) > 0);
+
+        whaleui_window_destroy(win);
+    }
+
+    /* ---- Web Storage ---- */
+    {
+        /* sessionStorage: memory only */
+        assert(whaleui_storage_clear(1) == 0);
+        assert(whaleui_storage_length(1) == 0);
+        assert(whaleui_storage_set_item(1, "k", "v") == 0);
+        assert(whaleui_storage_length(1) == 1);
+        assert(std::strcmp(whaleui_storage_get_item(1, "k"), "v") == 0);
+        assert(whaleui_storage_get_item(1, "missing") == nullptr);
+        assert(std::strcmp(whaleui_storage_key(1, 0), "k") == 0);
+        assert(whaleui_storage_key(1, 5) == nullptr);
+        assert(whaleui_storage_remove_item(1, "k") == 0);
+        assert(whaleui_storage_remove_item(1, "k") != 0);
+        assert(whaleui_storage_length(1) == 0);
+        assert(whaleui_storage_set_item(1, nullptr, "v") != 0);
+        assert(whaleui_storage_set_item(1, "k", nullptr) != 0);
+
+        /* localStorage: same API, persisted (value with a newline round-trips
+         * through the escape) */
+        assert(whaleui_storage_clear(0) == 0);
+        assert(whaleui_storage_set_item(0, "multi", "a\nb") == 0);
+        assert(whaleui_storage_length(0) == 1);
+        assert(std::strcmp(whaleui_storage_get_item(0, "multi"), "a\nb") == 0);
+        assert(whaleui_storage_clear(0) == 0);
+        assert(whaleui_storage_length(0) == 0);
+    }
+
+    /* ---- queueMicrotask / requestIdleCallback ---- */
+    {
+        static int micro_n = 0, idle_n = 0;
+        struct T {
+            static void micro(void*) { ++micro_n; }
+            static void idle(void*) { ++idle_n; }
+        };
+        assert(whaleui_webapi_has_microtasks() == 0);
+        assert(whaleui_queue_microtask(T::micro, nullptr) == 0);
+        assert(whaleui_webapi_has_microtasks() == 1);
+        assert(whaleui_webapi_pump_microtasks() == 1);
+        assert(micro_n == 1);
+        assert(whaleui_webapi_has_microtasks() == 0);
+        /* a microtask that queues another microtask drains in the same pump */
+        assert(whaleui_queue_microtask(micro_chain_step, nullptr) == 0);
+        assert(whaleui_webapi_pump_microtasks() == 1);
+        assert(g_micro_chain == 1);
+        assert(whaleui_queue_microtask(nullptr, nullptr) != 0);
+
+        assert(whaleui_webapi_has_idle() == 0);
+        assert(whaleui_request_idle_callback(T::idle, nullptr) == 0);
+        assert(whaleui_webapi_has_idle() == 1);
+        assert(whaleui_webapi_pump_idle() == 1);
+        assert(idle_n == 1);
+        assert(whaleui_webapi_has_idle() == 0);
+        assert(whaleui_request_idle_callback(nullptr, nullptr) != 0);
+    }
+
+    /* ---- MutationObserver ---- */
+    {
+        whaleui_dom_document_t* doc =
+            whaleui_dom_parse_html("<html><body><div id=\"a\"></div></body></html>", 0);
+        assert(doc != nullptr);
+        whaleui_dom_element_t* a = whaleui_dom_get_element_by_id(doc, "a");
+        assert(a != nullptr);
+
+        static int mut_n = 0, mut_type = -1, mut_added = 0, mut_removed = 0;
+        static std::string mut_attr;
+        struct MO {
+            static void on(whaleui_dom_element_t* target, int type,
+                           const char* attr, int added, int removed, void*) {
+                (void)target;
+                ++mut_n;
+                mut_type = type;
+                mut_attr = attr ? attr : "";
+                mut_added = added;
+                mut_removed = removed;
+            }
+        };
+        whaleui_mutation_observer_t* mo =
+            whaleui_dom_create_mutation_observer(doc);
+        assert(mo != nullptr);
+        assert(whaleui_dom_mutation_observer_observe(mo, a, MO::on, nullptr) == 0);
+        /* records are queued, not delivered inline */
+        assert(whaleui_dom_set_attribute(a, "data-x", "1") == 0);
+        assert(mut_n == 0);
+        assert(whaleui_dom_observers_pump() >= 1);
+        assert(mut_n == 1);
+        assert(mut_type == WHALEUI_MUTATION_ATTRIBUTES);
+        assert(mut_attr == "data-x");
+        /* a structural edit reports childList with added=1 */
+        whaleui_dom_element_t* child = whaleui_dom_create_element(doc, "span");
+        mut_n = 0;
+        assert(whaleui_dom_append_child(a, child) == 0);
+        assert(whaleui_dom_observers_pump() >= 1);
+        assert(mut_n >= 1);
+        assert(mut_type == WHALEUI_MUTATION_CHILD_LIST);
+        assert(mut_added == 1);
+        /* a mutation outside the observed subtree is not delivered */
+        whaleui_dom_element_t* other = whaleui_dom_create_element(doc, "b");
+        assert(whaleui_dom_append_child(whaleui_dom_body(doc), other) == 0);
+        mut_n = 0;
+        whaleui_dom_observers_pump();
+        assert(mut_n == 0);
+        /* disconnect stops delivery. Regression: the disconnected observer
+         * stays in the registry with a NULL callback, and the pump used to
+         * call it anyway - it jumped to address 0 on the next mutation
+         * (SIGSEGV, seen as a bare crash with no output). */
+        assert(whaleui_dom_mutation_observer_disconnect(mo) == 0);
+        assert(whaleui_dom_set_attribute(a, "data-y", "2") == 0);
+        mut_n = 0;
+        whaleui_dom_observers_pump();
+        assert(mut_n == 0);
+        /* a second mutation while disconnected must not deliver either */
+        assert(whaleui_dom_set_attribute(a, "data-z", "3") == 0);
+        whaleui_dom_observers_pump();
+        assert(mut_n == 0);
+        /* re-observing after disconnect resumes delivery */
+        assert(whaleui_dom_mutation_observer_observe(mo, a, MO::on, nullptr) == 0);
+        mut_n = 0;
+        assert(whaleui_dom_set_attribute(a, "data-w", "4") == 0);
+        assert(whaleui_dom_observers_pump() >= 1);
+        assert(mut_n == 1);
+        assert(mut_attr == "data-w");
+        /* ONE record per attribute edit: the named record and the generic one
+         * used to both fire, so an observer saw every setAttribute twice. */
+        whaleui_dom_mutation_observer_destroy(mo);
+        whaleui_dom_mutation_observer_destroy(nullptr);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* ---- MutationObserver reports the attribute name for EVERY mutating API,
+     *      not just setAttribute ----
+     *
+     * classList / dataset / style edits all rewrite an attribute, so a record
+     * for them must name it ("class"/"data-*"/"style"). They used to reach the
+     * observer through the generic mark_dirty path with attr == NULL, which
+     * made a listener that filters on the name (the common pattern) miss them
+     * entirely. */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<html><body><div id=\"a\"></div></body></html>", 0);
+        assert(doc != nullptr);
+        whaleui_dom_element_t* a = whaleui_dom_get_element_by_id(doc, "a");
+        assert(a != nullptr);
+        static std::string last_attr;
+        static int rec_n = 0;
+        struct NameObs {
+            static void on(whaleui_dom_element_t*, int type, const char* attr,
+                           int, int, void*) {
+                if (type == WHALEUI_MUTATION_ATTRIBUTES) {
+                    ++rec_n;
+                    last_attr = attr ? attr : "(null)";
+                }
+            }
+        };
+        whaleui_mutation_observer_t* mo =
+            whaleui_dom_create_mutation_observer(doc);
+        assert(mo != nullptr);
+        assert(whaleui_dom_mutation_observer_observe(mo, a, NameObs::on,
+                                                     nullptr) == 0);
+
+        assert(whaleui_dom_class_add(a, "x") == 0);
+        rec_n = 0;
+        whaleui_dom_observers_pump();
+        assert(rec_n == 1);
+        assert(last_attr == "class");
+
+        assert(whaleui_dom_dataset_set(a, "ownerId", "7") == 0);
+        rec_n = 0;
+        whaleui_dom_observers_pump();
+        assert(rec_n == 1);
+        assert(last_attr == "data-owner-id");
+
+        assert(whaleui_dom_set_style(a, "color", "red") == 0);
+        rec_n = 0;
+        whaleui_dom_observers_pump();
+        assert(rec_n == 1);
+        assert(last_attr == "style");
+
+        assert(whaleui_dom_style_remove_property(a, "color") == 0);
+        rec_n = 0;
+        whaleui_dom_observers_pump();
+        assert(rec_n == 1);
+        assert(last_attr == "style");
+
+        assert(whaleui_dom_toggle_attribute(a, "hidden", -1) == 1);
+        rec_n = 0;
+        whaleui_dom_observers_pump();
+        assert(rec_n == 1);
+        assert(last_attr == "hidden");
+
+        whaleui_dom_mutation_observer_destroy(mo);
+        whaleui_dom_document_destroy(doc);
+        std::printf("[web] observer attribute names OK\n");
+    }
+
+    /* ---- ResizeObserver: initial size, then only on change ---- */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<html><body style=\"margin:0\">"
+            "<div id=\"a\" style=\"width:40px;height:30px\"></div>"
+            "</body></html>", 0);
+        assert(doc != nullptr);
+        whaleui_dom_element_t* a = whaleui_dom_get_element_by_id(doc, "a");
+        assert(a != nullptr);
+        static int rz_n = 0;
+        static float rz_w = 0.0f, rz_h = 0.0f;
+        struct RO {
+            static void on(whaleui_dom_element_t*, float w, float h, void*) {
+                ++rz_n;
+                rz_w = w;
+                rz_h = h;
+            }
+        };
+        whaleui_resize_observer_t* ro = whaleui_dom_create_resize_observer(doc);
+        assert(ro != nullptr);
+        assert(whaleui_dom_resize_observer_observe(ro, a, RO::on, nullptr) == 0);
+        assert(whaleui_dom_resize_observer_observe(ro, nullptr, RO::on,
+                                                   nullptr) != 0);
+        /* no layout tree yet: nothing to sample (the pump reports no work) */
+        whaleui_dom_resize_observers_pump();
+        assert(rz_n == 0);
+        /* unobserve/disconnect are safe and idempotent */
+        assert(whaleui_dom_resize_observer_unobserve(ro, a) == 0);
+        assert(whaleui_dom_resize_observer_disconnect(ro) == 0);
+        whaleui_dom_resize_observer_destroy(ro);
+        whaleui_dom_resize_observer_destroy(nullptr);
         whaleui_dom_document_destroy(doc);
     }
 

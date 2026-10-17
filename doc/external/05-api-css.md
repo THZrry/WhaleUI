@@ -25,10 +25,18 @@ int         whaleui_css_has_property(const whaleui_css_rule_t* rule, const char*
 ## 应用
 
 ```c
-/* 将一组规则应用到文档(内部按选择器匹配元素) */
+/* 把一组规则挂到文档上(替换上一次挂的),下一帧生效 */
 int whaleui_css_apply(whaleui_dom_document_t* doc,
                       const whaleui_css_rule_t* rules, size_t count);
 ```
+
+规则被**深拷贝**为该文档自有的样式表,并**追加**在文档的
+`<style>`/`<link rel=stylesheet>` 之后参与同一次级联——所以同特异度时后挂的
+胜出,与浏览器里"后插入的样式表赢"一致。`count == 0` 清空该表(换整套主题表
+的用法)。`rules` 数组在调用返回后即可销毁,文档持有自己的副本。
+
+挂表会标记该文档的样式表为陈旧,下一帧自动重收并重排/重绘——与 DOM 契约一致
+("改动在下一次重绘时生效"),不需要额外调用任何刷新函数。
 
 ## 用例
 
@@ -37,7 +45,31 @@ whaleui_css_rule_t* rules = NULL;
 size_t count = 0;
 whaleui_css_load(&rules, &count, "file://themes/fluent-dark.css");
 whaleui_css_apply(doc, rules, count);
+whaleui_css_rules_destroy(rules, count);   /* 文档已持有副本 */
 ```
+
+C++ 侧用 `whaleui::StyleSheet`(RAII):
+
+```cpp
+whaleui::StyleSheet sheet;
+sheet.Load("file://themes/fluent-dark.css");
+sheet.Apply(doc);
+```
+
+## 样式表来源的改动会自动重收
+
+文档的样式表来源是 `<head>`/`<body>` 里的 `<style>` 与
+`<link rel=stylesheet>`(浏览器允许 `<style>` 出现在 body 里,引擎同样读取)。
+任何一条路径改动它,引擎都会在下一帧重收:
+
+- 追加 / 删除 / 移动 `<style>`、`<link>`(含 `insertBefore`、`innerHTML`);
+- 改写 `<style>` 的文本、改它的属性(如 `media`);
+- 换 `<link href>`;
+- `whaleui_css_apply`。
+
+普通文本 / class / 普通属性编辑**不会**触发重收(否则每次按键都要重解析整张
+表)。`<style media="print">` 这类元素的 media 属性会被当成 `@media` 条件,
+由与 CSS 内联 `@media` 相同的求值器判定。
 
 ## 支持范围
 
@@ -50,4 +82,17 @@ whaleui_css_apply(doc, rules, count);
 | 最好 | font-style, text-shadow, filter, aspect-ratio 等 |
 
 - 各属性(含不兼容项)的实际支持状态与用例见 [html-css-support.md](html-css-support.md)。
-- 主题热切换 = 换一组已解析规则重新 apply。
+- 主题热切换 = 换一组已解析规则重新 apply(或直接
+  `whaleui_app_set_theme_style`)。
+## CSS.supports
+
+```c
+int whaleui_css_supports(const char* property, const char* value);
+```
+
+属性是否实现查显式属性表,值是否合法用引擎自己的解析器(颜色/长度/枚举关键字)
+判定;`var()`/`calc()`/`gradient()` 等延迟解析的值一律放行。详见
+[09-api-web.md](09-api-web.md#csssupports)。
+
+- 各属性(含不兼容项)的实际支持状态与用例见 [html-css-support.md](html-css-support.md)。
+- 主题热切换 = 换一组已解析规则重新 apply(或直接 `whaleui_app_set_theme_style`)。

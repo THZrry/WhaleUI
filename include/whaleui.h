@@ -967,6 +967,114 @@ int whaleui_window_drag_active(const whaleui_window_t* win);
 /* The drag source element of the running session (NULL when none). */
 whaleui_dom_element_t* whaleui_window_drag_source(const whaleui_window_t* win);
 
+/* ======================= Web 平台补充 API =======================
+ *
+ * matchMedia / CSS.supports / screen / navigator / Web Storage /
+ * queueMicrotask / requestIdleCallback. See doc/external/09-api-web.md. */
+
+/* --- matchMedia (window.matchMedia) --- */
+
+typedef struct whaleui_media_query_list whaleui_media_query_list_t;
+/* Called when `matches` flips (window resize / theme change). */
+typedef void (*whaleui_media_query_cb)(whaleui_media_query_list_t* list, void* userdata);
+
+whaleui_media_query_list_t* whaleui_window_match_media(const whaleui_window_t* win,
+                                                       const char* query);
+void whaleui_media_query_list_destroy(whaleui_media_query_list_t* list);
+int whaleui_media_query_list_matches(const whaleui_media_query_list_t* list);
+const char* whaleui_media_query_list_media(const whaleui_media_query_list_t* list);
+int whaleui_media_query_list_add_listener(whaleui_media_query_list_t* list,
+                                          whaleui_media_query_cb cb, void* userdata);
+int whaleui_media_query_list_remove_listener(whaleui_media_query_list_t* list,
+                                             whaleui_media_query_cb cb, void* userdata);
+
+/* --- CSS.supports --- */
+
+/* 1 when the engine's CSS parser keeps `property: value` (the parser IS the
+ * supported subset, so this answers the real question). */
+int whaleui_css_supports(const char* property, const char* value);
+
+/* --- screen / navigator --- */
+
+int whaleui_window_screen_size(const whaleui_window_t* win, int* w, int* h);
+/* screen.availLeft/Top/Width/Height (work area, taskbar excluded). */
+int whaleui_window_screen_work_area(const whaleui_window_t* win, int* x, int* y,
+                                    int* w, int* h);
+const char* whaleui_navigator_user_agent(void);
+const char* whaleui_navigator_platform(void);
+const char* whaleui_navigator_language(void);
+
+/* --- Web Storage (localStorage / sessionStorage) ---
+ *
+ * One global store (the engine has no origins). session = 1 selects
+ * sessionStorage (memory only); session = 0 selects localStorage, persisted
+ * under the platform's user-data dir. get_item returns NULL when absent. */
+
+int whaleui_storage_length(int session);
+const char* whaleui_storage_key(int session, int index);      /* NULL past the end */
+const char* whaleui_storage_get_item(int session, const char* key);
+int whaleui_storage_set_item(int session, const char* key, const char* value);
+int whaleui_storage_remove_item(int session, const char* key);
+int whaleui_storage_clear(int session);
+
+/* --- microtasks / idle callbacks --- */
+
+typedef void (*whaleui_web_task_cb)(void* userdata);
+
+/* queueMicrotask: runs before the next timer, after the current task. */
+int whaleui_queue_microtask(whaleui_web_task_cb cb, void* userdata);
+/* requestIdleCallback: runs on an otherwise-idle loop iteration. */
+int whaleui_request_idle_callback(whaleui_web_task_cb cb, void* userdata);
+
+/* --- MutationObserver --- */
+
+typedef struct whaleui_mutation_observer whaleui_mutation_observer_t;
+
+/* Mutation type ids passed to the callback / returned by take_records. */
+enum {
+    WHALEUI_MUTATION_ATTRIBUTES = 0,
+    WHALEUI_MUTATION_CHARACTER_DATA = 1,
+    WHALEUI_MUTATION_CHILD_LIST = 2
+};
+
+/* Called once per delivered record (batched per loop iteration, not inline).
+ * attr is the attribute name for attribute records (NULL otherwise);
+ * added/removed say whether childList gained/lost nodes. */
+typedef void (*whaleui_mutation_cb)(whaleui_dom_element_t* target, int type,
+                                    const char* attr, int added, int removed,
+                                    void* userdata);
+
+whaleui_mutation_observer_t* whaleui_dom_create_mutation_observer(whaleui_dom_document_t* doc);
+void whaleui_dom_mutation_observer_destroy(whaleui_mutation_observer_t* obs);
+/* el NULL watches the whole document; otherwise el's subtree. */
+int whaleui_dom_mutation_observer_observe(whaleui_mutation_observer_t* obs,
+                                          whaleui_dom_element_t* el,
+                                          whaleui_mutation_cb cb, void* userdata);
+int whaleui_dom_mutation_observer_disconnect(whaleui_mutation_observer_t* obs);
+/* Number of records queued for this observer but not yet delivered (normally
+ * 0: the pump delivers as it goes). */
+int whaleui_dom_mutation_observer_take_records(whaleui_mutation_observer_t* obs);
+
+/* --- ResizeObserver ---
+ *
+ * Sampled once per frame: the element's laid-out border box is compared with
+ * the size last delivered, and a change fires the callback (the initial size
+ * is delivered on the first frame after observe()). Elements not laid out
+ * (display:none, detached) report nothing. */
+
+typedef struct whaleui_resize_observer whaleui_resize_observer_t;
+typedef void (*whaleui_resize_cb)(whaleui_dom_element_t* el, float width,
+                                  float height, void* userdata);
+
+whaleui_resize_observer_t* whaleui_dom_create_resize_observer(whaleui_dom_document_t* doc);
+void whaleui_dom_resize_observer_destroy(whaleui_resize_observer_t* obs);
+int whaleui_dom_resize_observer_observe(whaleui_resize_observer_t* obs,
+                                        whaleui_dom_element_t* el,
+                                        whaleui_resize_cb cb, void* userdata);
+int whaleui_dom_resize_observer_unobserve(whaleui_resize_observer_t* obs,
+                                          whaleui_dom_element_t* el);
+int whaleui_dom_resize_observer_disconnect(whaleui_resize_observer_t* obs);
+
 /* ======================= CSS ======================= */
 
 typedef struct whaleui_css_rule whaleui_css_rule_t;

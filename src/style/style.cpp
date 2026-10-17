@@ -6,15 +6,18 @@
 
 #include "style/style.h"
 
+#include "dom/dom.h"       /* whaleui_dom_mark_css_dirty */
 #include "render/render.h" /* whaleui_render_parse_color */
 
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <functional>
 #include <vector>
@@ -1496,6 +1499,47 @@ extern "C" int whaleui_style_media_ok(const char* media, int theme,
         return 1;
     }
     std::string m(media);
+    /* media TYPE (the leading token, e.g. "print", "screen and (...)"). This
+     * engine renders to a screen, so only `all` and `screen` apply; every
+     * other type must fail or `@media print` / `media="print"` rules render on
+     * screen (they did - the type was simply never looked at, so any unknown
+     * condition counted as a match). Parenthesized feature groups are stripped
+     * first: a bare word inside them (`(pointer: fine)`) is not a type. */
+    {
+        std::string bare;
+        int depth = 0;
+        for (size_t i = 0; i < m.size(); ++i) {
+            char c = m[i];
+            if (c == '(') {
+                ++depth;
+            } else if (c == ')') {
+                if (depth > 0) {
+                    --depth;
+                }
+            } else if (depth == 0) {
+                bare += c;
+            }
+        }
+        size_t i = 0;
+        while (i < bare.size()) {
+            if (!std::isalnum(static_cast<unsigned char>(bare[i]))) {
+                ++i;
+                continue;
+            }
+            size_t j = i;
+            while (j < bare.size() &&
+                   std::isalnum(static_cast<unsigned char>(bare[j]))) {
+                ++j;
+            }
+            std::string tok = bare.substr(i, j - i);
+            if (tok == "print" || tok == "speech" || tok == "tty" ||
+                tok == "tv" || tok == "projection" || tok == "handheld" ||
+                tok == "braille" || tok == "embossed" || tok == "aural") {
+                return 0;
+            }
+            i = j;
+        }
+    }
     size_t pos = 0;
     while ((pos = m.find("prefers-reduced-motion", pos)) != std::string::npos) {
         size_t colon = m.find(':', pos);
@@ -2176,10 +2220,472 @@ extern "C" int whaleui_style_parse_len(const char* value, float* num, int* unit)
     return 0;
 }
 
-/* css_apply: walk the document computing styles for every element. The
- * results are not cached here - layout/render call whaleui_style_compute
- * per pass. This keeps the public contract (returns 0) while exercising the
- * whole cascade pipeline. */
+/* --- supported-property table (CSS.supports) ---
+ *
+ * The CSS parser keeps unknown `name: value` declarations on purpose (a page
+ * may carry vendor prefixes or future syntax without its whole declaration
+ * list being rejected), so the parser cannot answer "is this supported" - it
+ * said yes to everything. CSS.supports therefore needs an explicit list of the
+ * properties the engine reads. Extend it whenever a property gains an
+ * implementation (the authoritative set is what layout/paint/animate read). */
+extern "C" int whaleui_style_property_supported(const char* name)
+{
+    if (!name || !*name) {
+        return 0;
+    }
+    /* custom properties are stored and resolved, never interpreted */
+    if (name[0] == '-' && name[1] == '-') {
+        return 1;
+    }
+    static const char* const kProps[] = {
+        "align-content", "align-items", "align-self", "animation",
+        "animation-delay", "animation-direction", "animation-duration",
+        "animation-fill-mode", "animation-iteration-count", "animation-name",
+        "animation-play-state", "animation-timing-function", "aspect-ratio",
+        "backdrop-filter", "background", "background-blend-mode",
+        "background-color", "background-image", "background-position",
+        "background-repeat", "background-size", "border", "border-color",
+        "border-radius", "border-style", "border-width", "border-top",
+        "border-right", "border-bottom", "border-left", "border-top-color",
+        "border-right-color", "border-bottom-color", "border-left-color",
+        "border-top-width", "border-right-width", "border-bottom-width",
+        "border-left-width", "border-top-style", "border-right-style",
+        "border-bottom-style", "border-left-style", "bottom", "box-shadow",
+        "box-sizing", "clip-path", "color", "column-gap", "contain",
+        "content", "counter-increment", "counter-reset", "counter-set",
+        "cursor", "display", "filter", "flex", "flex-basis", "flex-direction",
+        "flex-grow", "flex-shrink", "flex-wrap", "font", "font-family",
+        "font-size", "font-style", "font-weight", "gap", "grid-column",
+        "grid-column-end", "grid-column-start", "grid-row", "grid-row-end",
+        "grid-row-start", "grid-template-columns", "grid-template-rows",
+        "height", "inset", "justify-content", "left", "letter-spacing",
+        "line-height", "list-style", "list-style-type", "margin",
+        "margin-top", "margin-right", "margin-bottom", "margin-left",
+        "mask-image", "max-height", "max-width", "min-height", "min-width",
+        "mix-blend-mode", "object-fit", "object-position", "opacity", "order",
+        "outline", "outline-color", "outline-offset", "outline-style",
+        "outline-width", "overflow", "overflow-x", "overflow-y", "padding",
+        "padding-top", "padding-right", "padding-bottom", "padding-left",
+        "place-items", "pointer-events", "position", "right", "row-gap",
+        "scrollbar-color", "scrollbar-width", "text-align", "text-decoration",
+        "text-shadow", "text-transform", "top", "transform",
+        "transform-origin", "transition", "transition-delay",
+        "transition-duration", "transition-property",
+        "transition-timing-function", "vertical-align", "visibility",
+        "white-space", "width", "word-break", "z-index",
+        /* engine extensions (see doc/external/html-css-support.md) */
+        "-webkit-text-stroke", "-webkit-text-stroke-color",
+        "-webkit-text-stroke-width", "text-stroke", "text-stroke-color",
+        "text-stroke-width", "placeholder-color", "selection-bg",
+        "selection-fg", "-webkit-mask-image",
+    };
+    for (size_t i = 0; i < sizeof(kProps) / sizeof(kProps[0]); ++i) {
+        if (std::strcmp(name, kProps[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* --- value plausibility (CSS.supports second half) ---
+ *
+ * Property support is a table (above); VALUE support is checked with the
+ * engine's own parsers wherever one exists, so the answer tracks what the
+ * renderer would really do:
+ *   - color properties  -> whaleui_render_parse_color
+ *   - length properties -> whaleui_style_parse_len (plus keywords/calc())
+ *   - the enumerated keyword properties (display, position, overflow, ...)
+ *     -> an explicit keyword set
+ * A property whose value syntax the engine does not parse yet (a filter list,
+ * a shadow, a transform function) answers 1 for any non-empty value: the
+ * renderer would attempt it, and claiming otherwise would be a guess. That is
+ * deliberately the opposite bias from the property check, which must be
+ * conservative because a wrong "yes" there is what made CSS.supports useless. */
+extern "C" int whaleui_style_value_supported(const char* name, const char* value)
+{
+    if (!name || !*name || !value || !*value) {
+        return 0;
+    }
+    std::string v(value);
+    size_t b = v.find_first_not_of(" \t");
+    size_t e = v.find_last_not_of(" \t");
+    if (b == std::string::npos) {
+        return 0;
+    }
+    v = v.substr(b, e - b + 1);
+    /* "inherit"/"initial"/"unset" are valid for every property */
+    if (v == "inherit" || v == "initial" || v == "unset" || v == "revert") {
+        return 1;
+    }
+    /* var()/calc()/clamp()/min()/max() resolve at cascade time */
+    if (v.find("var(") != std::string::npos || v.find("calc(") != std::string::npos ||
+        v.find("clamp(") != std::string::npos || v.find("min(") != std::string::npos ||
+        v.find("max(") != std::string::npos) {
+        return 1;
+    }
+    /* gradients / images / url() are opaque payloads here */
+    if (v.find("gradient(") != std::string::npos ||
+        v.find("url(") != std::string::npos) {
+        return 1;
+    }
+    std::string n(name);
+    for (size_t i = 0; i < n.size(); ++i) {
+        char c = n[i];
+        if (c >= 'A' && c <= 'Z') {
+            n[i] = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    /* value keywords are ASCII case-insensitive too ("FLEX" == "flex") */
+    {
+        for (size_t i = 0; i < v.size(); ++i) {
+            char c = v[i];
+            if (c >= 'A' && c <= 'Z') {
+                v[i] = static_cast<char>(c - 'A' + 'a');
+            }
+        }
+    }
+    /* color-valued properties */
+    static const char* const kColors[] = {
+        "color", "background-color", "border-color", "border-top-color",
+        "border-right-color", "border-bottom-color", "border-left-color",
+        "outline-color", "text-decoration-color", "caret-color",
+        "scrollbar-color", "placeholder-color", "selection-bg", "selection-fg",
+        "background", "border", "outline", "background-image", "border-top",
+        "border-right", "border-bottom", "border-left",
+    };
+    for (size_t i = 0; i < sizeof(kColors) / sizeof(kColors[0]); ++i) {
+        if (n == kColors[i]) {
+            unsigned int probe = 0;
+            if (whaleui_render_parse_color(v.c_str(), &probe) == 0) {
+                return 1;
+            }
+            /* shorthand: a colour anywhere in the list is enough */
+            if (n == "background" || n == "border" || n == "outline" ||
+                n == "border-top" || n == "border-right" ||
+                n == "border-bottom" || n == "border-left") {
+                return v.find("none") != std::string::npos ||
+                       v.find("solid") != std::string::npos ||
+                       v.find("transparent") != std::string::npos;
+            }
+            return 0;
+        }
+    }
+    /* length-valued properties */
+    static const char* const kLengths[] = {
+        "width", "height", "min-width", "max-width", "min-height",
+        "max-height", "top", "right", "bottom", "left", "margin",
+        "margin-top", "margin-right", "margin-bottom", "margin-left",
+        "padding", "padding-top", "padding-right", "padding-bottom",
+        "padding-left", "font-size", "line-height", "letter-spacing",
+        "border-radius", "border-width", "border-top-width",
+        "border-right-width", "border-bottom-width", "border-left-width",
+        "outline-width", "outline-offset", "gap", "row-gap", "column-gap",
+        "flex-basis", "inset", "vertical-align", "text-stroke-width",
+        "text-stroke", "-webkit-text-stroke", "-webkit-text-stroke-width",
+        "scrollbar-width",
+    };
+    for (size_t i = 0; i < sizeof(kLengths) / sizeof(kLengths[0]); ++i) {
+        if (n == kLengths[i]) {
+            float num = 0.0f;
+            int unit = 0;
+            if (whaleui_style_parse_len(v.c_str(), &num, &unit) == 0) {
+                return 1;
+            }
+            /* keywords these properties also accept */
+            static const char* const kKw[] = {
+                "auto", "none", "normal", "thin", "medium", "thick",
+                "baseline", "middle", "sub", "super", "text-top",
+                "text-bottom", "inherit",
+            };
+            for (size_t k = 0; k < sizeof(kKw) / sizeof(kKw[0]); ++k) {
+                if (v == kKw[k]) {
+                    return 1;
+                }
+            }
+            /* multi-value (padding/margin/border-radius/inset shorthands) */
+            if (n == "padding" || n == "margin" || n == "border-radius" ||
+                n == "inset" || n == "gap") {
+                size_t sp = v.find(' ');
+                if (sp != std::string::npos) {
+                    float n2 = 0.0f;
+                    int u2 = 0;
+                    if (whaleui_style_parse_len(v.substr(sp + 1).c_str(), &n2,
+                                                &u2) == 0) {
+                        return 1;
+                    }
+                }
+            }
+            return 0;
+        }
+    }
+    /* enumerated keyword properties */
+    struct KeywordSet { const char* prop; const char* const* words; size_t n; };
+    static const char* const kDisplay[] = {
+        "none", "block", "inline", "inline-block", "flex", "inline-flex",
+        "grid", "inline-grid", "table", "table-row", "table-cell",
+        "table-header-group", "table-row-group", "table-footer-group",
+        "list-item", "contents", "flow-root",
+    };
+    static const char* const kPosition[] = {
+        "static", "relative", "absolute", "fixed", "sticky",
+    };
+    static const char* const kOverflow[] = {
+        "visible", "hidden", "scroll", "auto", "clip",
+    };
+    static const char* const kBoxSizing[] = {"content-box", "border-box"};
+    static const char* const kTextAlign[] = {
+        "left", "right", "center", "justify", "start", "end",
+    };
+    static const char* const kWhiteSpace[] = {
+        "normal", "nowrap", "pre", "pre-wrap", "pre-line", "break-spaces",
+    };
+    static const char* const kFontStyle[] = {"normal", "italic", "oblique"};
+    static const char* const kTextTransform[] = {
+        "none", "uppercase", "lowercase", "capitalize",
+    };
+    static const char* const kVisibility[] = {"visible", "hidden", "collapse"};
+    static const char* const kCursor[] = {
+        "auto", "default", "pointer", "text", "move", "wait", "help",
+        "progress", "crosshair", "not-allowed", "grab", "grabbing",
+        "col-resize", "row-resize", "ew-resize", "ns-resize", "none",
+    };
+    static const char* const kPointerEvents[] = {"auto", "none"};
+    static const char* const kFlexDirection[] = {
+        "row", "row-reverse", "column", "column-reverse",
+    };
+    static const char* const kFlexWrap[] = {"nowrap", "wrap", "wrap-reverse"};
+    static const char* const kJustify[] = {
+        "flex-start", "flex-end", "center", "space-between", "space-around",
+        "space-evenly", "start", "end", "left", "right", "stretch",
+    };
+    static const char* const kAlign[] = {
+        "flex-start", "flex-end", "center", "baseline", "stretch", "start",
+        "end", "self-start", "self-end", "normal",
+    };
+    static const char* const kObjectFit[] = {
+        "fill", "contain", "cover", "none", "scale-down",
+    };
+    static const char* const kBorderStyle[] = {
+        "none", "hidden", "solid", "dashed", "dotted", "double", "groove",
+        "ridge", "inset", "outset",
+    };
+    static const char* const kBlend[] = {
+        "normal", "multiply", "screen", "overlay", "darken", "lighten",
+        "color-dodge", "color-burn", "hard-light", "soft-light",
+        "difference", "exclusion", "hue", "saturation", "color", "luminosity",
+        "plus-lighter",
+    };
+    static const KeywordSet kSets[] = {
+        {"display", kDisplay, sizeof(kDisplay) / sizeof(kDisplay[0])},
+        {"position", kPosition, sizeof(kPosition) / sizeof(kPosition[0])},
+        {"overflow", kOverflow, sizeof(kOverflow) / sizeof(kOverflow[0])},
+        {"overflow-x", kOverflow, sizeof(kOverflow) / sizeof(kOverflow[0])},
+        {"overflow-y", kOverflow, sizeof(kOverflow) / sizeof(kOverflow[0])},
+        {"box-sizing", kBoxSizing, sizeof(kBoxSizing) / sizeof(kBoxSizing[0])},
+        {"text-align", kTextAlign, sizeof(kTextAlign) / sizeof(kTextAlign[0])},
+        {"white-space", kWhiteSpace, sizeof(kWhiteSpace) / sizeof(kWhiteSpace[0])},
+        {"font-style", kFontStyle, sizeof(kFontStyle) / sizeof(kFontStyle[0])},
+        {"text-transform", kTextTransform,
+         sizeof(kTextTransform) / sizeof(kTextTransform[0])},
+        {"visibility", kVisibility, sizeof(kVisibility) / sizeof(kVisibility[0])},
+        {"cursor", kCursor, sizeof(kCursor) / sizeof(kCursor[0])},
+        {"pointer-events", kPointerEvents,
+         sizeof(kPointerEvents) / sizeof(kPointerEvents[0])},
+        {"flex-direction", kFlexDirection,
+         sizeof(kFlexDirection) / sizeof(kFlexDirection[0])},
+        {"flex-wrap", kFlexWrap, sizeof(kFlexWrap) / sizeof(kFlexWrap[0])},
+        {"justify-content", kJustify, sizeof(kJustify) / sizeof(kJustify[0])},
+        {"align-items", kAlign, sizeof(kAlign) / sizeof(kAlign[0])},
+        {"align-self", kAlign, sizeof(kAlign) / sizeof(kAlign[0])},
+        {"align-content", kJustify, sizeof(kJustify) / sizeof(kJustify[0])},
+        {"object-fit", kObjectFit, sizeof(kObjectFit) / sizeof(kObjectFit[0])},
+        {"border-style", kBorderStyle,
+         sizeof(kBorderStyle) / sizeof(kBorderStyle[0])},
+        {"mix-blend-mode", kBlend, sizeof(kBlend) / sizeof(kBlend[0])},
+        {"background-blend-mode", kBlend, sizeof(kBlend) / sizeof(kBlend[0])},
+    };
+    for (size_t i = 0; i < sizeof(kSets) / sizeof(kSets[0]); ++i) {
+        if (n != kSets[i].prop) {
+            continue;
+        }
+        for (size_t k = 0; k < kSets[i].n; ++k) {
+            if (v == kSets[i].words[k]) {
+                return 1;
+            }
+        }
+        /* overflow-x/-y also take "overlay"; shorthands take two keywords */
+        if (v.find(' ') != std::string::npos) {
+            size_t sp = v.find(' ');
+            std::string first = v.substr(0, sp);
+            for (size_t k = 0; k < kSets[i].n; ++k) {
+                if (first == kSets[i].words[k]) {
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
+    /* everything else: the engine has no value parser for it, so accept a
+     * non-empty value (see the note above) */
+    return 1;
+}
+
+/* --- document-level programmatic stylesheet (whaleui_css_apply) ---
+ *
+ * Keyed on the lxb_dom_document (the address the DOM layer uses as the
+ * document identity). Cleared on document destroy - the same address-reuse
+ * hazard the other per-document maps document. */
+namespace {
+struct DocRules
+{
+    whaleui_css_rule_t* rules;
+    size_t count;
+};
+std::map<lxb_dom_document*, DocRules>& g_doc_rules()
+{
+    static std::map<lxb_dom_document*, DocRules> m;
+    return m;
+}
+
+void doc_rule_free(whaleui_css_rule_t* r)
+{
+    if (!r) {
+        return;
+    }
+    std::free(r->selector);
+    std::free(r->media);
+    for (size_t d = 0; d < r->decl_count; ++d) {
+        std::free(r->decls[d]);
+    }
+    std::free(r->decls);
+}
+
+/* deep copy one rule (the API caller owns its array and may free it right
+ * after the call) */
+bool doc_rule_copy(whaleui_css_rule_t* dst, const whaleui_css_rule_t* src)
+{
+    std::memset(dst, 0, sizeof(*dst));
+    dst->important = src->important;
+    const char* sel = src->selector ? src->selector : "";
+    size_t n = std::strlen(sel);
+    dst->selector = static_cast<char*>(std::malloc(n + 1));
+    if (!dst->selector) {
+        return false;
+    }
+    std::memcpy(dst->selector, sel, n + 1);
+    if (src->media) {
+        size_t m = std::strlen(src->media);
+        dst->media = static_cast<char*>(std::malloc(m + 1));
+        if (!dst->media) {
+            return false;
+        }
+        std::memcpy(dst->media, src->media, m + 1);
+    }
+    if (src->decl_count) {
+        dst->decls = static_cast<char**>(
+            std::malloc(src->decl_count * sizeof(char*)));
+        if (!dst->decls) {
+            return false;
+        }
+        for (size_t d = 0; d < src->decl_count; ++d) {
+            const char* v = src->decls[d] ? src->decls[d] : "";
+            size_t vn = std::strlen(v);
+            dst->decls[d] = static_cast<char*>(std::malloc(vn + 1));
+            if (!dst->decls[d]) {
+                dst->decl_count = d;
+                return false;
+            }
+            std::memcpy(dst->decls[d], v, vn + 1);
+        }
+        dst->decl_count = src->decl_count;
+    }
+    return true;
+}
+} // namespace
+
+void whaleui_style_doc_rules_set(whaleui_dom_document_t* doc,
+                                 const whaleui_css_rule_t* rules, size_t count)
+{
+    if (!doc) {
+        return;
+    }
+    lxb_dom_document* key = &reinterpret_cast<lxb_html_document*>(doc)->dom_document;
+    whaleui_style_doc_rules_clear(doc);
+    if (!rules || count == 0) {
+        return;
+    }
+    whaleui_css_rule_t* copy = static_cast<whaleui_css_rule_t*>(
+        std::calloc(count, sizeof(whaleui_css_rule_t)));
+    if (!copy) {
+        return;
+    }
+    size_t made = 0;
+    for (; made < count; ++made) {
+        if (!doc_rule_copy(&copy[made], &rules[made])) {
+            break;
+        }
+    }
+    if (made < count) {
+        /* allocation failed part-way: keep the sheet consistent (no half
+         * rule) rather than leaving a partially copied array */
+        for (size_t i = 0; i <= made && i < count; ++i) {
+            doc_rule_free(&copy[i]);
+        }
+        std::free(copy);
+        return;
+    }
+    DocRules dr;
+    dr.rules = copy;
+    dr.count = count;
+    g_doc_rules()[key] = dr;
+}
+
+const whaleui_css_rule_t* whaleui_style_doc_rules_get(whaleui_dom_document_t* doc,
+                                                      size_t* count)
+{
+    if (count) {
+        *count = 0;
+    }
+    if (!doc) {
+        return nullptr;
+    }
+    lxb_dom_document* key = &reinterpret_cast<lxb_html_document*>(doc)->dom_document;
+    std::map<lxb_dom_document*, DocRules>::const_iterator it =
+        g_doc_rules().find(key);
+    if (it == g_doc_rules().end()) {
+        return nullptr;
+    }
+    if (count) {
+        *count = it->second.count;
+    }
+    return it->second.rules;
+}
+
+void whaleui_style_doc_rules_clear(whaleui_dom_document_t* doc)
+{
+    if (!doc) {
+        return;
+    }
+    lxb_dom_document* key = &reinterpret_cast<lxb_html_document*>(doc)->dom_document;
+    std::map<lxb_dom_document*, DocRules>::iterator it = g_doc_rules().find(key);
+    if (it == g_doc_rules().end()) {
+        return;
+    }
+    for (size_t i = 0; i < it->second.count; ++i) {
+        doc_rule_free(&it->second.rules[i]);
+    }
+    std::free(it->second.rules);
+    g_doc_rules().erase(it);
+}
+
+/* css_apply: attach a parsed stylesheet to the document. The rules are kept as
+ * the document's OWN sheet (deep-copied, replacing any previous set) and are
+ * appended to the stylesheet the window assembles (theme default + <style> /
+ * <link>), so they cascade like any other sheet on the next frame. The old
+ * implementation only computed a throwaway style map here - nothing rendered
+ * from it, so the documented "apply a set of rules to a document" changed no
+ * pixel (the "CSS from the API does nothing" report; the same CSS in the
+ * markup worked because the collector read it). */
 extern "C" int whaleui_css_apply(whaleui_dom_document_t* doc,
                                  const whaleui_css_rule_t* rules, size_t count)
 {
@@ -2187,21 +2693,13 @@ extern "C" int whaleui_css_apply(whaleui_dom_document_t* doc,
         return -1;
     }
     lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
-    lxb_dom_element* root = lxb_dom_document_element(&hd->dom_document);
-    if (!root) {
+    if (!lxb_dom_document_element(&hd->dom_document)) {
         return 0;
     }
-    std::map<std::string, std::string> vars;
-    whaleui_style_collect_vars_full(root, rules, count, vars);
-    std::function<void(lxb_dom_element*)> walk = [&](lxb_dom_element* el) {
-        whaleui_style_compute(el, rules, count, vars, nullptr);
-        for (lxb_dom_node* c = el->node.first_child; c; c = c->next) {
-            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-                walk(lxb_dom_interface_element(c));
-            }
-        }
-    };
-    walk(root);
+    whaleui_style_doc_rules_set(doc, rules, count);
+    /* the window's assembled sheet is stale: re-collect before the next frame
+     * (the DOM layer owns that flag; see dom.h whaleui_dom_mark_css_dirty) */
+    whaleui_dom_mark_css_dirty(doc);
     return 0;
 }
 

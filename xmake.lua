@@ -237,6 +237,67 @@ if os.isfile("temp/probe_hover.cpp") then
     target_end()
 end
 
+-- ======================= incorrect1: layout repro (temporary) ==============
+-- Bug report repro: a flex item whose MAIN-AXIS size is a viewport unit
+-- (vh in a column parent / vw in a row parent) resolves to 0 and is floored to
+-- 1px, taking every descendant with it. Only defined when
+-- temp/incorrect1/incorrect1.cpp exists. See temp/incorrect1/README.md.
+--   Build:  xmake b -y incorrect1
+--   Run:    build/mingw/x86_64/release/incorrect1.exe [variant]
+if os.isfile("temp/incorrect1/incorrect1.cpp") then
+    target("incorrect1")
+        set_kind("binary")
+        if is_mode("release") then
+            set_strip("all")
+        end
+        add_files("temp/incorrect1/incorrect1.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= CSS-from-API repro (temporary) ====================
+-- Reproduces "CSS mounted from C++ does not take effect" and the divergence
+-- between a stylesheet parsed straight out of the document and the same CSS
+-- fed through the public CSS API. Only defined when the probe exists.
+--   Build:  xmake b -y repro_css_api
+--   Run:    build/mingw/x86_64/release/repro_css_api.exe
+if os.isfile("temp/repro_css_api.cpp") then
+    target("repro_css_api")
+        set_kind("binary")
+        if is_mode("release") then
+            set_strip("all")
+        end
+        add_files("temp/repro_css_api.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
 -- ======================= anim frame-CPU benchmark (temporary) ==========
 -- gitignored tool: measures per-frame whaleui_render_frame CPU cost with
 -- demo-like animations. Only defined when temp/bench_anim.cpp exists.
@@ -296,4 +357,244 @@ if os.isfile("temp/render_shot.cpp") then
     target_end()
 end
 
+-- ======================= range delete probe (temporary) ====================
+if os.isfile("temp/probe_range.cpp") then
+    target("probe_range")
+        set_kind("binary")
+        add_files("temp/probe_range.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
 
+-- ======================= CSS path probe 2 (temporary) =====================
+if os.isfile("temp/probe_css2.cpp") then
+    target("probe_css2")
+        set_kind("binary")
+        add_files("temp/probe_css2.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= CSS path probe 3 (temporary) =====================
+if os.isfile("temp/probe_css3.cpp") then
+    target("probe_css3")
+        set_kind("binary")
+        add_files("temp/probe_css3.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= CSS path probe 4 (temporary) =====================
+if os.isfile("temp/probe_css4.cpp") then
+    target("probe_css4")
+        set_kind("binary")
+        add_files("temp/probe_css4.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= clipboard probe (temporary) ======================
+if os.isfile("temp/probe_clip.cpp") then
+    target("probe_clip")
+        set_kind("binary")
+        add_files("temp/probe_clip.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= CSS.supports probe (temporary) ===================
+if os.isfile("temp/probe_supports.cpp") then
+    target("probe_supports")
+        set_kind("binary")
+        add_files("temp/probe_supports.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= percentage flex probe (temporary) ================
+if os.isfile("temp/probe_pct.cpp") then
+    target("probe_pct")
+        set_kind("binary")
+        add_files("temp/probe_pct.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= flex box dump probe (temporary) ==================
+if os.isfile("temp/probe_flexbox.cpp") then
+    target("probe_flexbox")
+        set_kind("binary")
+        add_files("temp/probe_flexbox.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= flex feature probe (temporary) ===================
+if os.isfile("temp/probe_flexfeat.cpp") then
+    target("probe_flexfeat")
+        set_kind("binary")
+        add_files("temp/probe_flexfeat.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= flex feature probe 2 (temporary) =================
+if os.isfile("temp/probe_flexfeat2.cpp") then
+    target("probe_flexfeat2")
+        set_kind("binary")
+        add_files("temp/probe_flexfeat2.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end
+
+-- ======================= misc CSS probe (temporary) =======================
+if os.isfile("temp/probe_misc.cpp") then
+    target("probe_misc")
+        set_kind("binary")
+        add_files("temp/probe_misc.cpp")
+        add_deps("whaleui-full")
+        add_packages("libsdl3_image", "lexbor", "stb", "utf8proc")
+        add_includedirs("include", "src")
+        add_defines("WHALEUI_BUILD_FULL")
+        on_load(function (target)
+            use_sdl3(target)
+            if sdl3_ttf_prebuilt then
+                target:add("includedirs", "3rdparty/sdl3_ttf/include")
+                target:add("linkdirs", "3rdparty/sdl3_ttf/lib")
+                target:add("links", "SDL3_ttf")
+            else
+                target:add("packages", "libsdl3_ttf")
+            end
+        end)
+    target_end()
+end

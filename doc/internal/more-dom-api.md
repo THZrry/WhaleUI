@@ -292,6 +292,47 @@ int whaleui_window_set_event_callback(whaleui_window_t* win, whaleui_window_even
 | P2 | §8 getBoundingClientRect | ✅ 基线已实现(依赖最近布局) |
 | P2 | 选择器全量透传(`> + ~ [attr] :pseudo`) | ✅ DOM 查询已切 `whaleui_style_match` 语义(含逗号分支);元素级修正为后代语义 |
 
+## 11. C++ 门面(whaleui.hpp)必须与 C 面同步
+
+**规则**:`include/whaleui.hpp` 是 C++ 程序实际使用的 API,C ABI(`whaleui.h`)
+是它的导出层。**新增任何 C API 都要同时给出 C++ 包装**,否则对 C++ 用户而言这个
+能力等于不存在——这不是风格问题,是接口完整性问题。
+
+历史教训(2026-10-16,见 notes/current.md `<51>`):`<49>`/`<50>` 新增的 Web 平台
+API(matchMedia / CSS.supports / screen / navigator / Web Storage /
+queueMicrotask / requestIdleCallback / MutationObserver / ResizeObserver)
+**只有 C 版**;用脚本对了一遍两边符号,377 个 C 函数里 148 个在 hpp 里毫无引用
+(还包含一批更早的窗口状态 API:min/max size、mouse/keyboard grab、
+SetMousePosition、SetFocusable、SetParent、SetModal、SetIcon、DragActive/
+DragSource、IsFullscreen)。
+
+自查方法(不需要人工比对,一条命令):
+
+```sh
+python - <<'EOF'
+import re
+h=open('include/whaleui.h',encoding='utf-8',errors='ignore').read()
+p=open('include/whaleui.hpp',encoding='utf-8',errors='ignore').read()
+names=set(re.findall(r'\b(whaleui_[a-z0-9_]+)\s*\(',h))
+used=set(re.findall(r'\b(whaleui_[a-z0-9_]+)',p))
+for m in sorted(names-used): print(m)
+EOF
+```
+
+输出里每一条都应当是**有意**不包装的(例如只在 C 层有意义的内部钩子),不是漏的。
+注意"在 hpp 里出现过"不等于"包装过"——可能只在注释里被提到;关键 API 要在
+`tests/test_cpp.cpp` 里有真实调用用例。
+
+包装约定(与既有风格一致):
+- 返回 `int` 成功码的 C 函数 -> C++ 返回 `bool`;返回句柄的 -> RAII 类,析构里
+  调对应的 destroy,并补 move 构造/赋值(禁拷贝);
+- 字符串返回 -> `std::string`(`ToStr`);
+- 结构体在 C 头里是**不完整类型**时(如 `whaleui_css_rule_t`)不能直接访问成员,
+  走 C 访问器函数(`CssSelector`/`CssProperty`/`CssHasProperty`);
+- 需要多个类互相引用时(如 Window 的 matchMedia 需要 MediaQueryList),先在
+  类里放返回原始句柄的方法,再在文件末尾给自由函数返回 RAII 包装
+  (前向声明 + 末尾 inline 定义)。
+
 ## 提交建议
 
 - 每完成一个 P0 分组(查询 / 遍历 / 节点操作 / 窗口扩展)提交一次 git,消息按仓库惯例。

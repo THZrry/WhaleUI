@@ -226,6 +226,138 @@ int main(void)
         assert(cv.GetContext("webgl") == nullptr);
     }
 
+    /* ---- web-platform additions on the C++ face ----
+     *
+     * These APIs existed only on the C surface. The C++ header is the primary
+     * API a C++ program uses, so a capability that is C-only is effectively
+     * missing; every check below goes through the C++ path. */
+    {
+        /* CSS.supports + a programmatic stylesheet (RAII + Apply) */
+        assert(whaleui::CssSupports("display", "flex"));
+        assert(!whaleui::CssSupports("no-such-property", "1px"));
+        whaleui::StyleSheet sheet;
+        assert(sheet.Parse(".x{color:#112233}"));
+        assert(static_cast<bool>(sheet));
+        assert(sheet.Count() == 1);
+        assert(whaleui::CssSelector(sheet.rules()) == ".x");
+        assert(whaleui::CssProperty(sheet.rules(), "color") == "#112233");
+        assert(whaleui::CssHasProperty(sheet.rules(), "color"));
+        assert(sheet.Apply(doc));
+        whaleui::StyleSheet unparsed;
+        assert(!static_cast<bool>(unparsed));
+        assert(unparsed.Count() == 0);
+        /* applying an empty sheet is the documented "clear the programmatic
+         * sheet" operation, not an error */
+        assert(unparsed.Apply(doc));
+        /* a null/empty document argument is rejected by the C layer */
+        assert(!sheet.Apply(whaleui::Document()));
+
+        /* matchMedia */
+        {
+            whaleui::MediaQueryList mq =
+                whaleui::MatchMedia(win, "(min-width: 100px)");
+            assert(static_cast<bool>(mq));
+            assert(mq.Matches());
+            assert(mq.Media() == "(min-width: 100px)");
+            whaleui::MediaQueryList narrow =
+                whaleui::MatchMedia(win, "(min-width: 100000px)");
+            assert(!narrow.Matches());
+        }
+
+        /* screen / navigator */
+        int sw = 0, sh = 0;
+        assert(win.ScreenSize(&sw, &sh));
+        assert(sw > 0 && sh > 0);
+        int sx = 0, sy = 0, aw = 0, ah = 0;
+        assert(win.ScreenWorkArea(&sx, &sy, &aw, &ah));
+        assert(aw > 0 && ah > 0);
+        assert(win.DevicePixelRatio() > 0.0f);
+        assert(!whaleui::Navigator::UserAgent().empty());
+        assert(!whaleui::Navigator::Platform().empty());
+        assert(!whaleui::Navigator::Language().empty());
+        whaleui_visual_viewport_t vv;
+        assert(win.VisualViewport(&vv));
+
+        /* Web Storage */
+        whaleui::Storage ls = whaleui::LocalStorage();
+        whaleui::Storage ss = whaleui::SessionStorage();
+        assert(ss.SetItem("k", "v"));
+        assert(ss.GetItem("k") == "v");
+        assert(ss.Has("k"));
+        assert(!ss.Has("missing"));
+        assert(ss.Length() == 1);
+        assert(ss.Key(0) == "k");
+        assert(ss.RemoveItem("k"));
+        assert(!ss.Has("k"));
+        assert(ss.SetItem("a", "1"));
+        assert(ss.Clear());
+        assert(ss.Length() == 0);
+        /* the two stores are independent */
+        assert(ls.SetItem("only-local", "1"));
+        assert(ls.Has("only-local"));
+        assert(!ss.Has("only-local"));
+        assert(ls.RemoveItem("only-local"));
+
+        /* microtasks / idle callbacks are accepted (they run on the loop) */
+        struct Task { static void run(void*) {} };
+        assert(whaleui::QueueMicrotask(Task::run, nullptr));
+        assert(whaleui::RequestIdleCallback(Task::run, nullptr));
+
+        /* MutationObserver / ResizeObserver wrappers */
+        struct Obs {
+            static void on_mut(whaleui_dom_element_t*, int, const char*, int,
+                               int, void*) {}
+            static void on_resize(whaleui_dom_element_t*, float, float, void*) {}
+        };
+        {
+            whaleui::MutationObserver mo = whaleui::CreateMutationObserver(doc);
+            assert(static_cast<bool>(mo));
+            /* el may be empty: a NULL target watches the whole document */
+            assert(mo.Observe(whaleui::Element(), Obs::on_mut, nullptr));
+            assert(mo.TakeRecords() == 0);
+            assert(mo.Disconnect());
+        }
+        {
+            whaleui::ResizeObserver ro = whaleui::CreateResizeObserver(doc);
+            assert(static_cast<bool>(ro));
+            /* resize observation needs a real element (it samples a box);
+             * an empty handle is rejected, unlike the mutation observer's
+             * document-wide form */
+            assert(!ro.Observe(whaleui::Element(), Obs::on_resize, nullptr));
+            whaleui::Element target = doc.Body();
+            assert(static_cast<bool>(target));
+            assert(ro.Observe(target, Obs::on_resize, nullptr));
+            assert(ro.Unobserve(target));
+            assert(ro.Disconnect());
+        }
+
+        /* theme catalog (static: no instance needed) */
+        assert(whaleui::App::ThemeCount() > 0);
+        assert(!whaleui::App::ThemeName(0).empty());
+        assert(!whaleui::App::ThemeLabel(0).empty());
+
+        /* window state the facade was missing */
+        assert(win.SetMinSize(100, 100));
+        int mw = 0, mh = 0;
+        assert(win.GetMinSize(&mw, &mh));
+        assert(mw == 100 && mh == 100);
+        assert(win.SetMaxSize(4000, 4000));
+        assert(win.GetMaxSize(&mw, &mh));
+        assert(mw == 4000 && mh == 4000);
+        assert(!win.IsFullscreen());
+        assert(win.SetMouseGrab(true));
+        assert(win.MouseGrab());
+        assert(win.SetMouseGrab(false));
+        assert(!win.MouseGrab());
+        assert(win.SetKeyboardGrab(true));
+        assert(win.KeyboardGrab());
+        assert(win.SetKeyboardGrab(false));
+        assert(win.SetFocusable(true));
+        assert(!win.DragActive());
+        assert(!static_cast<bool>(win.DragSource()));
+        std::printf("[cpp] web-platform additions OK\n");
+    }
+
     /* window destroy + app-owned list */
     win.Destroy();
     assert(!static_cast<bool>(win));

@@ -247,6 +247,16 @@ struct whaleui_render
     int (*scroll_fn)(struct whaleui_render*, struct lxb_dom_element*, int,
                      void*);
     void* scroll_ud;
+    /* stylesheet re-collect hook, installed by the owning window. The frame
+     * calls it when the document's stylesheet sources changed through the DOM
+     * (<style> injected/rewritten, a <link> swapped) - the render context
+     * cannot parse CSS itself (the theme default sheet + theme style live in
+     * the app), so the window re-runs its collector. Keeping the call in the
+     * FRAME (not only in the app worker loop) is what makes a direct
+     * whaleui_render_frame call - tests, offscreen tools - behave like the
+     * real loop: the DOM contract says a mutation shows on the next repaint. */
+    void (*css_reload_fn)(struct whaleui_render*, void*);
+    void* css_reload_ud;
     /* smooth scrolling (opt-in: set scroll_fn to whaleui_scroll_smooth_fn):
      * wheel deltas accumulate into these TARGET positions and the frame
      * loop eases the live scrolls toward them in small per-frame steps -

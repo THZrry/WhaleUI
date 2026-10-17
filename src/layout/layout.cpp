@@ -821,9 +821,15 @@ bool inline_level_display(const std::string& d)
 /* "flex: [grow] [shrink] [basis]" shorthand + the three longhands.
  * PureLayout's flex algorithm starts from flex-basis, so all three must
  * resolve together. Defaults: grow 0, shrink 1, basis auto (-1).
- * One number ("flex: 1") = grow, basis 0% (0) - standard behavior. */
+ * One number ("flex: 1") = grow, basis 0% (0) - standard behavior.
+ *
+ * A basis may carry a viewport unit or a percentage ("flex-basis: 100vh",
+ * "flex: 1 1 50%"), so it resolves through the same viewport-aware,
+ * main-axis-based length path as the item's width/height: resolving it with
+ * len_px (vp 0, base 0) made such a basis 0 and the item collapsed. */
 static void flex_shorthand(const WhaleUIComputedStyle& s,
-                           float& grow, float& shrink, float& basis)
+                           float& grow, float& shrink, float& basis,
+                           float main_base, float vp_w, float vp_h)
 {
     grow = 0;
     shrink = 1;
@@ -838,7 +844,7 @@ static void flex_shorthand(const WhaleUIComputedStyle& s,
     }
     std::string b = get(s, "flex-basis");
     if (!b.empty() && b != "auto" && b != "content") {
-        basis = len_px(b, 0, 16);
+        basis = len_px_vp(b, main_base, 16, vp_w, vp_h);
     }
     std::string f = get(s, "flex");
     if (f.empty() || f == "none") {
@@ -887,7 +893,7 @@ static void flex_shorthand(const WhaleUIComputedStyle& s,
         if (is_basis(toks[1])) {
             basis = toks[1] == "auto" || toks[1] == "content"
                         ? -1
-                        : len_px(toks[1], 0, 16);
+                        : len_px_vp(toks[1], main_base, 16, vp_w, vp_h);
         } else {
             shrink = std::strtof(toks[1].c_str(), nullptr);
         }
@@ -895,7 +901,7 @@ static void flex_shorthand(const WhaleUIComputedStyle& s,
     if (toks.size() >= 3) {
         basis = toks[2] == "auto" || toks[2] == "content"
                     ? -1
-                    : len_px(toks[2], 0, 16);
+                    : len_px_vp(toks[2], main_base, 16, vp_w, vp_h);
     }
     if (toks.size() == 1) {
         basis = 0; /* flex: <number> -> basis 0% */
@@ -3378,6 +3384,25 @@ struct Builder
 
         /* container main size: 0 = indefinite (auto height) */
         int container_main = column ? inner_h : inner_w;
+        /* Viewport units and percentages on a flex item's MAIN axis resolve
+         * against the container's main size, not the cross axis:
+         *   - column: `height:100vh` / `height:50%` are main-axis lengths, so
+         *     the percentage base is the container's content HEIGHT;
+         *   - row: `width:100vw` / `width:50%` base on the content WIDTH.
+         * Passing inner_w for both axes made `height:50%` inside a 820px
+         * column resolve to 640 (50% of the width), and `100vh`/`calc(100vh)`
+         * resolve through the vp-less len_px to 0 - which the "avoid zero-size
+         * items" floor then turned into exactly 1px, collapsing the whole
+         * subtree (the reported "app shell renders 1280x1").
+         *
+         * A percentage against an INDEFINITE main size degrades to `auto` per
+         * CSS (not to 0, and not to the other axis): an auto-height column's
+         * `height:50%` child sizes to its content. */
+        float main_base = column ? static_cast<float>(inner_h)
+                                 : static_cast<float>(inner_w);
+        const bool main_definite = container_main > 0;
+        float vp_w = static_cast<float>(tree->viewport_w);
+        float vp_h = static_cast<float>(tree->viewport_h);
         std::vector<float> grow(kids.size()), shrink(kids.size());
         std::vector<float> main_size(kids.size());
         std::vector<int> min_main(kids.size(), 0); /* min-content floor */
@@ -3404,7 +3429,8 @@ struct Builder
                 }
             }
             float basis = 0;
-            flex_shorthand(k->style, grow[i], shrink[i], basis);
+            flex_shorthand(k->style, grow[i], shrink[i], basis, main_base,
+                           vp_w, vp_h);
             if (shrink[i] > 0) {
                 any_shrink = true;
             }
@@ -3419,8 +3445,8 @@ struct Builder
                                  letter_spacing_px(k->style, fs)))) +
                                  1
                            : (column
-                                  ? static_cast<int>(
-                                        est_node_height(k, inner_w, em))
+                                  ? static_cast<int>(est_node_height(
+                                        k, inner_w, em, main_base))
                                   : static_cast<int>(std::ceil(
                                         estimate_content_width(k, em, true))));
             std::string mn = get(k->style, column ? "min-height" : "min-width");
@@ -3468,9 +3494,17 @@ struct Builder
                 }
             } else {
                 bool is_auto = true;
-                float sz = len_or_auto(get(k->style, column ? "height" : "width"),
-                                       static_cast<float>(inner_w), em,
-                                       &is_auto);
+                std::string main_v =
+                    get(k->style, column ? "height" : "width");
+                float sz = 0;
+                if (!main_definite &&
+                    main_v.find('%') != std::string::npos) {
+                    /* indefinite main size: a percentage resolves to auto */
+                    is_auto = true;
+                } else {
+                    sz = len_or_auto_vp(main_v, main_base, em, vp_w, vp_h,
+                                        &is_auto);
+                }
                 if (is_auto) {
                     if (column) {
                         /* measure the REAL content height. A column flex
@@ -4085,11 +4119,27 @@ struct Builder
         }
     }
 
-    int est_node_height(whaleui_layout_node_t* k, int inner_w, float em)
+    int est_node_height(whaleui_layout_node_t* k, int inner_w, float em,
+                        float pct_base_h = -1.0f)
     {
         bool is_auto = true;
-        float h = len_or_auto(get(k->style, "height"),
-                              static_cast<float>(inner_w), em, &is_auto);
+        /* Viewport-aware: a `height:100vh` box's estimated height is the
+         * viewport height, not 0 (len_or_auto hardcodes vp 0, so every vh/vw
+         * height estimated as 0 and the cross-axis / row estimate collapsed).
+         *
+         * pct_base_h is the base for a PERCENTAGE height - the parent's
+         * content height where the caller knows it. Defaulting to inner_w
+         * (the wrap width) resolved `height:50%` against the WIDTH: inside a
+         * 820px-tall column that read as 50% of 1280 = 640, and since this
+         * value is also the flex main-size min-content floor, the floor
+         * overrode the correctly resolved 410 and the item came out 640 tall
+         * (the reported `flex-col-pct` case). */
+        float pct_h = pct_base_h >= 0.0f ? pct_base_h
+                                        : static_cast<float>(inner_w);
+        float h = len_or_auto_vp(
+            get(k->style, "height"), pct_h, em,
+            static_cast<float>(tree->viewport_w),
+            static_cast<float>(tree->viewport_h), &is_auto);
         if (is_auto) {
             /* estimate the height from wrapped text (like the text-run
              * layout does): line count = chars / chars-per-line, NOT the

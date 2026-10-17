@@ -65,6 +65,25 @@ int whaleui_style_filter_media(whaleui_css_rule_t* rules, size_t* count,
 void whaleui_style_collect_vars(lxb_dom_element* root,
                                 std::map<std::string, std::string>& vars);
 
+/* Document-level programmatic stylesheet (whaleui_css_apply).
+ *
+ * The engine assembles a window's real sheet per frame source: the theme
+ * default CSS plus the document's <style>/<link> text. Rules handed in through
+ * the public CSS API are kept here instead, as the document's OWN sheet, and
+ * are appended to that assembly - so they cascade like any other sheet instead
+ * of being computed into a throwaway map nothing rendered from (the API used
+ * to be a silent no-op: the documented "apply a set of rules to a document"
+ * changed no pixel).
+ *
+ * set() deep-copies and REPLACES the document's set (count == 0 clears it, the
+ * "swap the theme sheet" use case); get() returns the borrowed array the
+ * collector appends (valid until the next set/clear or document destroy). */
+void whaleui_style_doc_rules_set(whaleui_dom_document_t* doc,
+                                 const whaleui_css_rule_t* rules, size_t count);
+const whaleui_css_rule_t* whaleui_style_doc_rules_get(
+    whaleui_dom_document_t* doc, size_t* count);
+void whaleui_style_doc_rules_clear(whaleui_dom_document_t* doc);
+
 /* Like collect_vars but also includes --* from rules matching :root/html. */
 void whaleui_style_collect_vars_full(lxb_dom_element* root,
                                      const whaleui_css_rule_t* rules, size_t count,
@@ -81,6 +100,17 @@ WhaleUIComputedStyle whaleui_style_compute(lxb_dom_element* el,
 /* Length helpers for layout: "12px"/"1.5em"/"50%"/"auto" -> number + unit id.
  * unit: 0=px, 1=%, 2=em, 3=auto, 4=number(unitless). Returns 0 on success. */
 int whaleui_style_parse_len(const char* value, float* num, int* unit);
+
+/* 1 when `name` is a property the engine actually reads (see style.cpp for the
+ * list). The CSS parser keeps unknown declarations on purpose, so it cannot
+ * answer "is this supported" - CSS.supports needs this table. */
+int whaleui_style_property_supported(const char* name);
+
+/* 1 when `value` is plausible for `name`: checked with the engine's own value
+ * parsers where one exists (lengths, colors, the display/position/overflow
+ * keyword sets), accepted otherwise. Properties whose value syntax the engine
+ * does not parse yet answer 1 - see the note in style.cpp. */
+int whaleui_style_value_supported(const char* name, const char* value);
 
 /* Merge the declarations of every rule whose selector equals `selector`
  * (a synthetic element with no DOM node - e.g. the select popup

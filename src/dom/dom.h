@@ -66,6 +66,24 @@ void whaleui_dom_mark_dirty_struct(struct lxb_dom_element* el);
 /* Returns and clears the structural flag (once per frame). */
 int whaleui_dom_take_struct_dirty(void);
 
+/* A stylesheet source changed through the DOM (<style> text/attributes, a
+ * <link rel=stylesheet> attribute, or any add/remove/move under <head>):
+ * the collected stylesheet the render context holds is stale. The render
+ * worker must re-collect (whaleui_window_refresh_css) before the next frame -
+ * the engine otherwise only collects CSS at load / resize / theme change, so
+ * an injected or rewritten stylesheet never took effect ("CSS mounted from
+ * the API does nothing" while the same CSS in the markup works). Per document:
+ * returns 1 and clears the flag for `doc` only. */
+int whaleui_dom_take_css_dirty(struct whaleui_dom_document* doc);
+
+/* Non-consuming form: the worker uses it to decide whether a frame must be
+ * requested (the frame itself consumes the flag when it re-collects). */
+int whaleui_dom_has_css_dirty(struct whaleui_dom_document* doc);
+
+/* Mark `doc`'s stylesheet stale from outside the DOM layer (whaleui_css_apply
+ * attaches a programmatic sheet, so the assembled sheet must be rebuilt). */
+void whaleui_dom_mark_css_dirty(struct whaleui_dom_document* doc);
+
 /* The DOM-layer active element (document.activeElement mirror). Single
  * writer: whaleui_dom_focus/blur (public API) and the render focus
  * bookkeeping call this; whaleui_dom_active_element reads it. nullptr

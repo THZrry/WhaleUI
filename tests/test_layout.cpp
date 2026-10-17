@@ -12,6 +12,7 @@
 #include <ctime>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <sstream>
 #include <vector>
 
@@ -39,6 +40,29 @@ whaleui_layout_node_t* find_tag(whaleui_layout_node_t* n, const char* tag)
     }
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
         whaleui_layout_node_t* r = find_tag(c, tag);
+        if (r) {
+            return r;
+        }
+    }
+    return nullptr;
+}
+
+/* the first in-flow child of the first flex container, depth-first: the probe
+ * element in the flex-item main-axis sizing tests */
+whaleui_layout_node_t* flex_first_child(whaleui_layout_node_t* n)
+{
+    if (!n) {
+        return nullptr;
+    }
+    if (!n->is_text && n->el) {
+        std::map<std::string, std::string>::const_iterator it =
+            n->style.find("display");
+        if (it != n->style.end() && it->second == "flex" && n->first_child) {
+            return n->first_child;
+        }
+    }
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        whaleui_layout_node_t* r = flex_first_child(c);
         if (r) {
             return r;
         }
@@ -1590,8 +1614,95 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* A flex item's MAIN-axis size may be a viewport unit or a percentage;
+     * both must resolve against the container's MAIN size, not the cross
+     * axis, and `100vh` must see the real viewport (not the 0 that len_px
+     * hardcodes). Regression: the viewport-unit branch resolved to 0 and the
+     * "avoid zero-size items" floor then turned it into exactly 1px, so an
+     * app shell of nested `height:100vh` flex columns rendered 1280x1 with
+     * every descendant collapsed (temp/incorrect1). A percentage resolved
+     * against the WIDTH, so `height:50%` inside an 820px-tall column came out
+     * 640 instead of 410. */
+    {
+        struct Case { const char* style; int want_w, want_h; };
+        /* flex COLUMN: the main axis is vertical, so height is the main size */
+        const Case col_cases[] = {
+            {"height:100vh", 1280, 820},
+            {"height:calc(100vh)", 1280, 820},
+            {"height:50%", 1280, 410},   /* 50% of the container HEIGHT */
+            {"height:20rem", 1280, 320},
+            {"height:820px", 1280, 820},
+        };
+        for (size_t i = 0; i < sizeof(col_cases) / sizeof(col_cases[0]); ++i) {
+            std::string html =
+                std::string("<html><head><style>html,body{margin:0}"
+                            "*{box-sizing:border-box}</style></head><body>"
+                            "<div style=\"height:100vh;display:flex;"
+                            "flex-direction:column;overflow:hidden\">"
+                            "<div id=\"k\" style=\"") +
+                col_cases[i].style + "\"></div></div></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html.c_str(), html.size());
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 1280, 820, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            whaleui_layout_node_t* flex = flex_first_child(t->root);
+            assert(flex != nullptr);
+            assert(flex->border.h == col_cases[i].want_h);
+            assert(flex->border.w == col_cases[i].want_w);
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        }
+        /* flex ROW: the main axis is horizontal, so width:100vw is the case
+         * that used to collapse (6px = the text run's width) */
+        {
+            const char* html =
+                "<html><head><style>html,body{margin:0}</style></head><body>"
+                "<div style=\"display:flex;flex-direction:row\">"
+                "<div id=\"k\" style=\"width:100vw;height:50px\"></div>"
+                "</div></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html, std::strlen(html));
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 1280, 820, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            whaleui_layout_node_t* flex = flex_first_child(t->root);
+            assert(flex != nullptr);
+            assert(flex->border.w == 1280);
+            assert(flex->border.h == 50);
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        }
+        /* a viewport unit in flex-basis resolves through the same path (it
+         * used len_px, whose viewport is hardcoded 0) */
+        {
+            const char* html =
+                "<html><head><style>html,body{margin:0}</style></head><body>"
+                "<div style=\"display:flex;flex-direction:row\">"
+                "<div style=\"flex:0 0 100vw;height:30px\"></div>"
+                "</div></body></html>";
+            whaleui_dom_document_t* doc =
+                whaleui_dom_parse_html(html, std::strlen(html));
+            assert(doc != nullptr);
+            whaleui_layout_tree_t* t = whaleui_layout_compute(
+                doc, nullptr, 0, nullptr, 1280, 820, nullptr, nullptr,
+                nullptr, 1.0f);
+            assert(t != nullptr);
+            whaleui_layout_node_t* flex = flex_first_child(t->root);
+            assert(flex != nullptr);
+            assert(flex->border.w == 1280);
+            whaleui_layout_destroy(t);
+            whaleui_dom_document_destroy(doc);
+        }
+    }
+
     /* multi-class selector ".a.b" requires BOTH classes (a lone "a" must
      * not match) */
+
     {
         const char* html = "<head><style>"
             ".a.b { width: 80px; }"

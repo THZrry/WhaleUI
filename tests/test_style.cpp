@@ -3,6 +3,7 @@
 #include "style/css.h"  /* rule struct for element access in this white-box test */
 #include "style/style.h" /* selector matching + cascade + var resolution */
 #include "style/theme.h" /* built-in theme stylesheets + variable tables */
+#include "dom/dom.h"    /* stylesheet-invalidation flag (whaleui_css_apply) */
 #include "test_util.h"
 
 #include <lexbor/dom/dom.h>
@@ -678,7 +679,148 @@ int main(void)
                                        400));
         assert(whaleui_style_media_ok("(max-resolution: 300dpi)", 0, 200, 0,
                                       400));
+        /* media TYPES: this engine renders to a screen, so `all`/`screen`
+         * (and no type at all) apply while every other type must not. Before
+         * the type was read, `@media print` and <style media="print"> rules
+         * rendered on screen, because an unrecognized condition counted as a
+         * match. */
+        assert(whaleui_style_media_ok("print", 0, 200, 0, 400) == 0);
+        assert(whaleui_style_media_ok("speech", 0, 200, 0, 400) == 0);
+        assert(whaleui_style_media_ok("screen", 0, 200, 0, 400) == 1);
+        assert(whaleui_style_media_ok("all", 0, 200, 0, 400) == 1);
+        assert(whaleui_style_media_ok("screen and (min-width: 100px)", 0, 200,
+                                      0, 400) == 1);
+        assert(whaleui_style_media_ok("print and (min-width: 100px)", 0, 200,
+                                      0, 400) == 0);
+        assert(whaleui_style_media_ok("screen and (min-width: 400px)", 0, 200,
+                                      0, 400) == 0);
         std::printf("[media] extended OK\n");
+        std::fflush(stdout);
+    }
+
+    /* ---- programmatic stylesheets (whaleui_css_apply) ----
+     *
+     * The API used to compute a throwaway style map: nothing rendered from it,
+     * so "apply a set of rules to a document" changed no pixel while the same
+     * CSS in the markup worked (the "CSS mounted from the API does nothing"
+     * report). It now attaches the rules as the document's own sheet and flags
+     * the assembled stylesheet stale, so the next frame re-collects it. */
+    {
+        const char* html =
+            "<html><head><style>.box{background:#ff0000}</style></head>"
+            "<body><div class='box' id='b'></div></body></html>";
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(html,
+                                                            std::strlen(html));
+        assert(doc != nullptr);
+        /* a freshly parsed document has no stale-stylesheet flag */
+        assert(whaleui_dom_has_css_dirty(doc) == 0);
+
+        const char* css = ".box{background:#00ff00}";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css, std::strlen(css)) == 0);
+        assert(whaleui_css_apply(doc, rules, count) == 0);
+        /* the sheet is owned by the document now: the caller may free its copy */
+        whaleui_css_rules_destroy(rules, count);
+
+        size_t got = 0;
+        const whaleui_css_rule_t* stored = whaleui_style_doc_rules_get(doc, &got);
+        assert(stored != nullptr);
+        assert(got == 1);
+        assert(std::strcmp(whaleui_css_selector(&stored[0]), ".box") == 0);
+        assert(std::strcmp(whaleui_css_get_property(&stored[0], "background"),
+                           "#00ff00") == 0);
+        /* and the frame must be told to re-collect the stylesheet */
+        assert(whaleui_dom_has_css_dirty(doc) == 1);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+        assert(whaleui_dom_take_css_dirty(doc) == 0); /* consumed once */
+
+        /* a second apply REPLACES the sheet (the "swap the theme sheet" use) */
+        const char* css2 = ".box{background:#0000ff}";
+        whaleui_css_rule_t* r2 = nullptr;
+        size_t n2 = 0;
+        assert(whaleui_css_parse(&r2, &n2, css2, std::strlen(css2)) == 0);
+        assert(whaleui_css_apply(doc, r2, n2) == 0);
+        whaleui_css_rules_destroy(r2, n2);
+        stored = whaleui_style_doc_rules_get(doc, &got);
+        assert(stored != nullptr && got == 1);
+        assert(std::strcmp(whaleui_css_get_property(&stored[0], "background"),
+                           "#0000ff") == 0);
+
+        /* count == 0 clears the programmatic sheet */
+        assert(whaleui_css_apply(doc, nullptr, 0) == 0);
+        assert(whaleui_style_doc_rules_get(doc, &got) == nullptr);
+
+        /* null document is rejected */
+        assert(whaleui_css_apply(nullptr, nullptr, 0) != 0);
+        whaleui_dom_document_destroy(doc);
+        std::printf("[css] apply attaches a sheet OK\n");
+        std::fflush(stdout);
+    }
+
+    /* ---- stylesheet-source mutations flag the sheet stale ----
+     *
+     * The collector (window.cpp) reads <style> text and <link rel=stylesheet>
+     * from <head> and <body>, and only re-runs on load / resize / theme change.
+     * Every DOM path that can change those sources must therefore set the flag,
+     * or the mutation never reaches the renderer. */
+    {
+        const char* html =
+            "<html><head><style id='s'>.box{background:#ff0000}</style></head>"
+            "<body style='margin:0'><div class='box' id='b'></div>"
+            "<p id='p'>text</p></body></html>";
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(html,
+                                                            std::strlen(html));
+        assert(doc != nullptr);
+        whaleui_dom_element_t* head = whaleui_dom_query_selector(doc, "head");
+        whaleui_dom_element_t* body = whaleui_dom_query_selector(doc, "body");
+        whaleui_dom_element_t* style = whaleui_dom_get_element_by_id(doc, "s");
+        whaleui_dom_element_t* p = whaleui_dom_get_element_by_id(doc, "p");
+        assert(head && body && style && p);
+
+        /* append <style> to <head> */
+        assert(whaleui_dom_take_css_dirty(doc) == 0);
+        whaleui_dom_element_t* s2 = whaleui_dom_create_element(doc, "style");
+        whaleui_dom_set_text(s2, ".box{color:#123456}");
+        assert(whaleui_dom_append_child(head, s2) == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* append <style> to <body> (browsers accept it there too) */
+        whaleui_dom_element_t* s3 = whaleui_dom_create_element(doc, "style");
+        whaleui_dom_set_text(s3, ".box{border:1px solid #000}");
+        assert(whaleui_dom_append_child(body, s3) == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* rewrite an existing <style>'s text */
+        assert(whaleui_dom_set_text(style, ".box{background:#00ff00}") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* change a <style> attribute (media flips whether it applies) */
+        assert(whaleui_dom_set_attribute(style, "media", "print") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+        assert(whaleui_dom_remove_attribute(style, "media") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* innerHTML on <head> (another insertion path) */
+        assert(whaleui_dom_set_inner_html(
+                   head, "<style>.box{background:#abcdef}</style>") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* remove the <style> */
+        assert(whaleui_dom_remove_child(head,
+                                        whaleui_dom_query_selector(doc, "style"))
+               == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 1);
+
+        /* an ordinary edit must NOT flag the sheet (the collector would be
+         * re-run on every keystroke otherwise) */
+        assert(whaleui_dom_set_text(p, "other") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 0);
+        assert(whaleui_dom_set_attribute(p, "class", "x") == 0);
+        assert(whaleui_dom_take_css_dirty(doc) == 0);
+
+        whaleui_dom_document_destroy(doc);
+        std::printf("[css] stylesheet-source flag OK\n");
         std::fflush(stdout);
     }
 

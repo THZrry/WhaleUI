@@ -517,6 +517,75 @@ public:
         whaleui_window_set_select_callback(h_, cb, ud);
     }
 
+    /* --- screen / navigator (window.screen / navigator) --- */
+    bool ScreenSize(int* w, int* hgt) const {
+        return whaleui_window_screen_size(h_, w, hgt) == 0;
+    }
+    bool ScreenWorkArea(int* x, int* y, int* w, int* hgt) const {
+        return whaleui_window_screen_work_area(h_, x, y, w, hgt) == 0;
+    }
+    int DisplayId() const { return whaleui_window_display_id(h_); }
+    float DevicePixelRatio() const {
+        return whaleui_window_device_pixel_ratio(h_);
+    }
+    bool VisualViewport(whaleui_visual_viewport_t* out) const {
+        return whaleui_window_visual_viewport(h_, out) == 0;
+    }
+
+    /* --- matchMedia (window.matchMedia) ---
+     * The raw list is returned so this method can live before MediaQueryList
+     * is declared; the owned wrapper is the free MatchMedia() below. */
+    whaleui_media_query_list_t* MatchMediaHandle(const std::string& query) const {
+        return whaleui_window_match_media(h_, query.c_str());
+    }
+
+    /* --- window state the JS API exposes but the C++ facade lacked --- */
+    bool IsFullscreen() const {
+        return whaleui_window_get_fullscreen(h_) != WHALEUI_FULLSCREEN_OFF;
+    }
+    bool SetMinSize(int w, int hgt) const {
+        return whaleui_window_set_min_size(h_, w, hgt) == 0;
+    }
+    bool GetMinSize(int* w, int* hgt) const {
+        return whaleui_window_get_min_size(h_, w, hgt) == 0;
+    }
+    bool SetMaxSize(int w, int hgt) const {
+        return whaleui_window_set_max_size(h_, w, hgt) == 0;
+    }
+    bool GetMaxSize(int* w, int* hgt) const {
+        return whaleui_window_get_max_size(h_, w, hgt) == 0;
+    }
+    bool SetMouseGrab(bool g) const {
+        return whaleui_window_set_mouse_grab(h_, g ? 1 : 0) == 0;
+    }
+    bool MouseGrab() const { return whaleui_window_get_mouse_grab(h_) != 0; }
+    bool SetKeyboardGrab(bool g) const {
+        return whaleui_window_set_keyboard_grab(h_, g ? 1 : 0) == 0;
+    }
+    bool KeyboardGrab() const {
+        return whaleui_window_get_keyboard_grab(h_) != 0;
+    }
+    bool SetMousePosition(int x, int y) const {
+        return whaleui_window_set_mouse_position(h_, x, y) == 0;
+    }
+    bool SetFocusable(bool f) const {
+        return whaleui_window_set_focusable(h_, f ? 1 : 0) == 0;
+    }
+    bool SetParent(const Window& parent) const {
+        return whaleui_window_set_parent(h_, parent.handle()) == 0;
+    }
+    bool SetModal(const Window& parent) const {
+        return whaleui_window_set_modal(h_, parent.handle()) == 0;
+    }
+    bool SetIcon(const std::string& uri) const {
+        return whaleui_window_set_icon_uri(h_, uri.c_str()) == 0;
+    }
+    /* drag & drop session state (window.dragActive / dragSource) */
+    bool DragActive() const { return whaleui_window_drag_active(h_) != 0; }
+    Element DragSource() const {
+        return Element(whaleui_window_drag_source(h_));
+    }
+
     bool LoadHtml(const std::string& html) const {
         return whaleui_window_load_html(h_, html.c_str()) == 0;
     }
@@ -578,6 +647,15 @@ public:
     }
     void SetTextScale(float scale) { whaleui_app_set_text_scale(h_, scale); }
     void SetReducedMotion(bool reduce) { whaleui_app_set_reduced_motion(h_, reduce ? 1 : 0); }
+
+    /* built-in theme styles (the list the JS API exposes as a catalog) */
+    static int ThemeCount() { return whaleui_theme_count(); }
+    static std::string ThemeName(int index) {
+        return ToStr(whaleui_theme_name(index));
+    }
+    static std::string ThemeLabel(int index) {
+        return ToStr(whaleui_theme_label(index));
+    }
 
 private:
     whaleui_app_t* h_;
@@ -716,6 +794,217 @@ private:
 /* ---- Web Audio (placeholder; always unsupported for now) ---- */
 
 inline bool AudioSupported() { return whaleui_audio_is_supported() != 0; }
+
+/* ---- CSS (CSS.supports + programmatic stylesheets) ---- */
+
+inline bool CssSupports(const std::string& property, const std::string& value) {
+    return whaleui_css_supports(property.c_str(), value.c_str()) != 0;
+}
+
+/* rule introspection (the rule struct is opaque in the C header) */
+inline std::string CssSelector(const whaleui_css_rule_t* rule) {
+    return ToStr(whaleui_css_selector(rule));
+}
+inline std::string CssProperty(const whaleui_css_rule_t* rule,
+                               const std::string& name) {
+    return ToStr(whaleui_css_get_property(rule, name.c_str()));
+}
+inline bool CssHasProperty(const whaleui_css_rule_t* rule,
+                           const std::string& name) {
+    return whaleui_css_has_property(rule, name.c_str()) != 0;
+}
+
+/* A parsed stylesheet. RAII over whaleui_css_rule_t* (parse/load + destroy);
+ * Apply() attaches it to a Document as that document's programmatic sheet. */
+class StyleSheet {
+public:
+    StyleSheet() : rules_(nullptr), count_(0) {}
+    ~StyleSheet() { Clear(); }
+    StyleSheet(const StyleSheet&) = delete;
+    StyleSheet& operator=(const StyleSheet&) = delete;
+    StyleSheet(StyleSheet&& o) : rules_(o.rules_), count_(o.count_) {
+        o.rules_ = nullptr;
+        o.count_ = 0;
+    }
+    StyleSheet& operator=(StyleSheet&& o) {
+        if (this != &o) {
+            Clear();
+            rules_ = o.rules_;
+            count_ = o.count_;
+            o.rules_ = nullptr;
+            o.count_ = 0;
+        }
+        return *this;
+    }
+    explicit operator bool() const { return rules_ != nullptr; }
+
+    bool Parse(const std::string& css) {
+        Clear();
+        return whaleui_css_parse(&rules_, &count_, css.c_str(), css.size()) == 0;
+    }
+    bool Load(const std::string& uri) {
+        Clear();
+        return whaleui_css_load(&rules_, &count_, uri.c_str()) == 0;
+    }
+    /* attach to `doc` (replaces any sheet attached earlier); takes effect on
+     * the next frame, like any other DOM edit */
+    bool Apply(const Document& doc) const {
+        return whaleui_css_apply(doc.handle(), rules_, count_) == 0;
+    }
+    size_t Count() const { return count_; }
+    /* The rule array, opaque as in the C header: pair it with CssSelector() /
+     * CssProperty() below. Per-rule struct access is a white-box facility -
+     * include "style/css.h" for it (see tests/test_style.cpp). */
+    const whaleui_css_rule_t* rules() const { return rules_; }
+
+private:
+    void Clear() {
+        if (rules_) {
+            whaleui_css_rules_destroy(rules_, count_);
+            rules_ = nullptr;
+            count_ = 0;
+        }
+    }
+    whaleui_css_rule_t* rules_;
+    size_t count_;
+};
+
+/* ---- matchMedia list (RAII) ---- */
+
+class MediaQueryList {
+public:
+    MediaQueryList() : h_(nullptr) {}
+    explicit MediaQueryList(whaleui_media_query_list_t* h) : h_(h) {}
+    ~MediaQueryList() { whaleui_media_query_list_destroy(h_); }
+    MediaQueryList(const MediaQueryList&) = delete;
+    MediaQueryList& operator=(const MediaQueryList&) = delete;
+    MediaQueryList(MediaQueryList&& o) : h_(o.h_) { o.h_ = nullptr; }
+    explicit operator bool() const { return h_ != nullptr; }
+    whaleui_media_query_list_t* handle() const { return h_; }
+
+    bool Matches() const { return whaleui_media_query_list_matches(h_) != 0; }
+    std::string Media() const { return ToStr(whaleui_media_query_list_media(h_)); }
+    bool AddListener(whaleui_media_query_cb cb, void* ud) const {
+        return whaleui_media_query_list_add_listener(h_, cb, ud) == 0;
+    }
+    bool RemoveListener(whaleui_media_query_cb cb, void* ud) const {
+        return whaleui_media_query_list_remove_listener(h_, cb, ud) == 0;
+    }
+
+private:
+    whaleui_media_query_list_t* h_;
+};
+
+/* ---- navigator / Web Storage / microtasks ---- */
+
+namespace Navigator {
+inline std::string UserAgent() { return ToStr(whaleui_navigator_user_agent()); }
+inline std::string Platform() { return ToStr(whaleui_navigator_platform()); }
+inline std::string Language() { return ToStr(whaleui_navigator_language()); }
+} // namespace Navigator
+
+/* One global store (the engine has no origins). session=false selects
+ * localStorage (persisted), session=true selects sessionStorage (memory). */
+class Storage {
+public:
+    explicit Storage(bool session) : session_(session ? 1 : 0) {}
+    size_t Length() const { return whaleui_storage_length(session_); }
+    std::string Key(size_t i) const { return ToStr(whaleui_storage_key(session_, static_cast<int>(i))); }
+    /* empty string when absent (use Has() to tell "" from missing) */
+    std::string GetItem(const std::string& key) const {
+        return ToStr(whaleui_storage_get_item(session_, key.c_str()));
+    }
+    bool Has(const std::string& key) const {
+        return whaleui_storage_get_item(session_, key.c_str()) != nullptr;
+    }
+    bool SetItem(const std::string& key, const std::string& value) const {
+        return whaleui_storage_set_item(session_, key.c_str(), value.c_str()) == 0;
+    }
+    bool RemoveItem(const std::string& key) const {
+        return whaleui_storage_remove_item(session_, key.c_str()) == 0;
+    }
+    bool Clear() const { return whaleui_storage_clear(session_) == 0; }
+
+private:
+    int session_;
+};
+
+inline Storage LocalStorage() { return Storage(false); }
+inline Storage SessionStorage() { return Storage(true); }
+
+inline bool QueueMicrotask(whaleui_web_task_cb cb, void* ud) {
+    return whaleui_queue_microtask(cb, ud) == 0;
+}
+inline bool RequestIdleCallback(whaleui_web_task_cb cb, void* ud) {
+    return whaleui_request_idle_callback(cb, ud) == 0;
+}
+
+/* ---- MutationObserver / ResizeObserver ---- */
+
+class MutationObserver {
+public:
+    MutationObserver() : h_(nullptr) {}
+    explicit MutationObserver(whaleui_mutation_observer_t* h) : h_(h) {}
+    ~MutationObserver() { whaleui_dom_mutation_observer_destroy(h_); }
+    MutationObserver(const MutationObserver&) = delete;
+    MutationObserver& operator=(const MutationObserver&) = delete;
+    MutationObserver(MutationObserver&& o) : h_(o.h_) { o.h_ = nullptr; }
+    explicit operator bool() const { return h_ != nullptr; }
+    whaleui_mutation_observer_t* handle() const { return h_; }
+
+    /* el may be an empty Element: watches the whole document */
+    bool Observe(Element el, whaleui_mutation_cb cb, void* ud) const {
+        return whaleui_dom_mutation_observer_observe(h_, el.handle(), cb, ud) == 0;
+    }
+    bool Disconnect() const {
+        return whaleui_dom_mutation_observer_disconnect(h_) == 0;
+    }
+    int TakeRecords() const {
+        return whaleui_dom_mutation_observer_take_records(h_);
+    }
+
+private:
+    whaleui_mutation_observer_t* h_;
+};
+
+class ResizeObserver {
+public:
+    ResizeObserver() : h_(nullptr) {}
+    explicit ResizeObserver(whaleui_resize_observer_t* h) : h_(h) {}
+    ~ResizeObserver() { whaleui_dom_resize_observer_destroy(h_); }
+    ResizeObserver(const ResizeObserver&) = delete;
+    ResizeObserver& operator=(const ResizeObserver&) = delete;
+    ResizeObserver(ResizeObserver&& o) : h_(o.h_) { o.h_ = nullptr; }
+    explicit operator bool() const { return h_ != nullptr; }
+    whaleui_resize_observer_t* handle() const { return h_; }
+
+    bool Observe(Element el, whaleui_resize_cb cb, void* ud) const {
+        return whaleui_dom_resize_observer_observe(h_, el.handle(), cb, ud) == 0;
+    }
+    bool Unobserve(Element el) const {
+        return whaleui_dom_resize_observer_unobserve(h_, el.handle()) == 0;
+    }
+    bool Disconnect() const {
+        return whaleui_dom_resize_observer_disconnect(h_) == 0;
+    }
+
+private:
+    whaleui_resize_observer_t* h_;
+};
+
+/* ---- Document extensions that need the classes above ---- */
+
+inline MutationObserver CreateMutationObserver(const Document& doc) {
+    return MutationObserver(whaleui_dom_create_mutation_observer(doc.handle()));
+}
+
+inline ResizeObserver CreateResizeObserver(const Document& doc) {
+    return ResizeObserver(whaleui_dom_create_resize_observer(doc.handle()));
+}
+
+inline MediaQueryList MatchMedia(const Window& win, const std::string& query) {
+    return MediaQueryList(win.MatchMediaHandle(query));
+}
 
 } // namespace whaleui
 

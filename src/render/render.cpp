@@ -4936,6 +4936,19 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * release it immediately (return below). */
     std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
 
+    /* the document's stylesheet sources changed through the DOM API (a <style>
+     * injected or rewritten, a <link href> swapped): re-collect before this
+     * frame, so the mutation is honoured on the very next repaint like every
+     * other DOM edit. Done HERE (not only in the app worker loop) so a direct
+     * whaleui_render_frame call - tests, offscreen tools - sees the same
+     * behavior as the real loop. The hook is installed by the owning window;
+     * it re-parses and calls set_css, which resets the animation state and
+     * marks the tree dirty for a full rebuild. */
+    if (r->css_reload_fn && whaleui_dom_take_css_dirty(doc)) {
+        r->css_reload_fn(r, r->css_reload_ud);
+        r->has_dirty = 1; /* the cascade may have changed everywhere */
+    }
+
     /* advance all running animations and collect the current values (the
      * paint-only fast path below applies them without relaying out) */
     const uint64_t now = SDL_GetTicks();

@@ -7,7 +7,9 @@
 #include "core/clipboard.h"
 #include "core/extras.h"
 #include "core/timers.h"
+#include "core/webapi.h"
 #include "dom/events.h"
+#include "dom/observers.h"
 #include "platform/platform.h"
 #include "render/render.h"
 #include "style/theme.h"
@@ -962,9 +964,41 @@ void render_worker_fn(whaleui_app_t* app)
             app->frame_request.store(1);
         }
         whaleui_clipboard_pump();
+        /* microtasks drain before the next timer (browser ordering). */
+        if (whaleui_webapi_pump_microtasks() > 0) {
+            timer_dirty = true;
+            app->frame_request.store(1);
+        }
+        /* MutationObserver records are delivered per loop iteration (batched,
+         * not inline) - after the events that caused them, before the frame. */
+        if (whaleui_dom_observers_pump() > 0) {
+            timer_dirty = true;
+            app->frame_request.store(1);
+        }
+        /* idle callbacks only when nothing else is pending: no events, no
+         * frame request, no animation, no timer/microtask work. */
+        if (!timer_dirty && evs.empty() && !app->frame_request.load() &&
+            !app->frames_alive.load() && !whaleui_timers_pending()) {
+            if (whaleui_webapi_pump_idle() > 0) {
+                app->frame_request.store(1);
+            }
+        }
         /* fold event-watch resize slots (written lock-free from inside the
          * OS modal drag loop) into the coalesced resize state */
         fold_resize_watch(app);
+        /* a stylesheet source was added/removed/rewritten through the DOM
+         * (<style> injected by an app, a <link href> swapped, a <style>'s text
+         * replaced): request a frame so the re-collect (which the FRAME does,
+         * see the css_reload_fn hook) runs this iteration instead of waiting
+         * for unrelated input. The engine otherwise collects CSS only at
+         * load / resize / theme change, which is why the same @keyframes
+         * worked from markup but not when mounted through the API. */
+        for (whaleui_window_t* win : app->windows) {
+            if (win->document && whaleui_dom_has_css_dirty(win->document)) {
+                app->frame_request.store(1);
+                break;
+            }
+        }
         /* stash the current modifier state on every render context: the
          * render side has no SDL event at dispatch time, so hover/mousemove
          * payloads read it from here (one SDL call per wake-up). */
@@ -1014,7 +1048,8 @@ void render_worker_fn(whaleui_app_t* app)
         Uint64 now = SDL_GetTicks();
         bool want = !evs.empty() || app->frame_request.load() ||
                     app->frames_alive.load() || hover_dirty || wheel_dirty ||
-                    timer_dirty || whaleui_animation_frame_count() > 0;
+                    timer_dirty || whaleui_animation_frame_count() > 0 ||
+                    whaleui_dom_resize_observers_pending();
         if (apply_resizes(app, now)) {
             want = true;
         }
@@ -1031,6 +1066,11 @@ void render_worker_fn(whaleui_app_t* app)
              * scheduled for). A callback that re-requests keeps the loop
              * awake - the count check above already gates `want` on it. */
             if (whaleui_animation_frames_pump() > 0) {
+                app->frame_request.store(1);
+            }
+            /* ResizeObserver: sampled after layout (the frame just laid out),
+             * so a size change fires here with the fresh box. */
+            if (whaleui_dom_resize_observers_pump() > 0) {
                 app->frame_request.store(1);
             }
             /* an animated window keeps requesting its own frames (the

@@ -1293,3 +1293,233 @@ SOLVED
 DataTransfer 类型化 item 保序/就地替换/清空/effect 存取/File 惰性 size 与 VFS 读取/越界与坏参; 页内事件序列(dragstart -> dragenter -> dragover(prevented=1) -> drop(读到 dragstart 改写的文本) -> dragend); drag 事件冒泡到祖先; 非 drag 事件 transfer 为 NULL。坑: drop 读到的是 dragstart 监听器**改写后**的文本(不是初始 payload), 断言要跟着改 —— 这正验证了 dragstart 填 transfer 的语义。
 
 验证: 全量三变体构建 ok; 13/13 套件 exit=0。
+
+# <51>: API 挂载的 CSS 不生效 —— 采集器只跑在 load/resize/换主题
+
+SOLVED
+
+用户报告两件事: (1) C++ 挂载的 CSS 动画没效果; (2) lexbor 直出 CSS 与调用
+API 效果不一样。两条都复现了, 而且根因是同一个结构问题 + 一批连带缺口。
+
+## A. 根因: 文档 CSS 只在三处重收
+
+`window_reload_css` (core/window.cpp) 把「主题默认表 + 文档 <style>/<link>」
+拼成一张表交给 render。它只在 **load_html / resize / 换主题|accent** 时被调。
+于是:
+
+- 用 DOM API 追加一个 `<style>`(含 @keyframes)—— 采集器从不重跑, 规则**从未
+  进入引擎**。同一个 `<style>` 写在标记里就正常, 因为第一次解析就有它。
+  这就是「lexbor 直出 vs 调 API 不一样」的字面含义。
+- 改写已有 `<style>` 的文本、换 `<link href>`、`<head>.innerHTML`、删 `<style>`
+  同理。
+- 内联 `style="animation:..."` 一直能用(它不走采集器), 所以现象看起来像
+  "只有 @keyframes 不生效", 而不是"CSS 不生效"。
+
+**修法**: 不再逐 API 打补丁, 而是在 `mark_dirty_ex` 里判定"这次编辑动到了
+样式表来源没有"——判据只有两个节点类: 来源节点本身(`<style>`/`<link>` 的文本/
+属性编辑), 以及 `<head>`/`<body>` 的**结构性**编辑(采集器读的就是这两个节点的
+直接子节点; 所有插入/删除/移动 API 都会 mark 它碰过的父节点)。文本/属性编辑
+在普通子节点上**不算**(否则每次按键都要重收整张表)。命中就置 `g_css_dirty`
+(按 document 记, 见下)。
+
+重收的触发点放在**帧内**(render.cpp 顶部), 不是只在 worker 循环里: DOM 契约
+是"改动下次重绘生效", 直接调 `whaleui_render_frame` 的测试/离屏工具必须看到
+同样行为。render 侧不认识"主题默认表"这层, 所以走一个 `css_reload_fn` 钩子
+(window 安装), 帧发现标志就回调重收 + `has_dirty=1`。worker 循环里另有一处
+`has_css_dirty` 查询, 用来在空闲时把这一帧**叫醒**。
+
+标志按 `lxb_dom_document*` 记(不是全局 bool): 多窗口时一个窗口改样式不该让
+别的窗口重解析整张表。document 销毁时清(与 css_apply 的文档表一起, 都是
+地址复用风险的同类)。
+
+## B. `whaleui_css_apply` 是个文档记载的空操作
+
+`doc/external/05-api-css.md` 写着"将一组规则应用到文档", 实现是遍历全树算一遍
+`whaleui_style_compute` 然后把结果**丢掉**——没有任何渲染路径读它, 改不动一个
+像素。实测 `probe_css4` 的 E 场景: `.box{background:#00ff00}` apply 之后采样
+仍是 `#ff0000`。
+
+**修法**: 规则深拷贝进 document 的**自有表**(style.cpp 的 `g_doc_rules`),
+`window_reload_css` 把它**追加**在文档 `<style>` 之后一起解析。追加而不是单独
+第二张表, 是因为级联的源序 tiebreak 要求它们在同一数组里。`apply(count=0)`
+= 清空(文档里的"换主题表"用法)。销毁 document 时释放。
+
+## C. 顺带查出的同类缺口(都有实测)
+
+`probe_css2/4` 逐条对照"标记里 vs API", 结果分成三类:
+
+- **body 里的 `<style>` 不生效**(两条路都不生效): `collect_doc_css` 只扫
+  `hd->head` 的直接子节点。HTML 允许 body 里放 style, 浏览器会应用。修: 两个
+  区段按文档序都扫。
+- **`media="print"` 与 `@media print` 在屏幕上也生效**: `whaleui_style_media_ok`
+  从不看**媒体类型**, 只认括号里的特性; 于是任何无法识别的条件都算匹配。
+  修: 先剥掉括号组(避免把 `(pointer: fine)` 里的词当类型), 再检查裸词里的
+  类型, 非 `all`/`screen` 一律不匹配。`<style media>` 也按同样方式拼成
+  `@media <cond>{...}` 走同一个求值器(属性以前完全被忽略)。
+- **只加 @keyframes 的差异被"规则表相同"判定吃掉**: `window_reload_css` 的
+  跳过逻辑只比规则数组, 不比 keyframes; 一张只改了 keyframes 的表会被当成
+  "没变"丢弃。修: keyframes 也逐项比。
+
+## D. `CSS.supports` 对一切都答 1
+
+原实现"把 `x{prop:value}` 丢给解析器, 声明活下来就算支持"。但本项目的 CSS 解析
+器**有意保留未知声明**(页面可能带厂商前缀/未来语法, 不该因此整条列表被拒),
+所以 `CSS.supports("no-such-property","1px")` 返回 1——一个永远说 yes 的支持
+查询比没有更糟(实测 12 个用例里 6 个错)。
+
+**修法**: 拆成两个问题。
+1. **属性**: 显式表 `whaleui_style_property_supported`(取自 layout/paint/animate
+   真正读的属性名, 100+ 条; `--*` 恒真)。偏保守——错答 yes 正是让它失效的原因。
+2. **值**: `whaleui_style_value_supported` 用**引擎自己的解析器**判——
+   颜色走 `whaleui_render_parse_color`, 长度走 `whaleui_style_parse_len`,
+   枚举属性(display/position/overflow/... 20 组)走关键字集合; `var()/calc()/
+   gradient()/url()` 与"引擎尚无值解析器"的属性一律放行(那是未知, 不是不支持,
+   与属性侧相反的偏置)。属性名与关键字都按 ASCII 小写比较(`DISPLAY: FLEX`)。
+
+## E. MutationObserver 三处缺陷(新增 API 里最严重的)
+
+- **disconnect 后仍被回调 → 跳地址 0(SIGSEGV)**: `disconnect` 只把 `cb` 置空,
+  观察者仍留在注册表里; pump 只检查 `delivering/doc`, 于是下一次 mutation
+  调用空函数指针。test_web 从"断言失败"变成"无输出崩溃"(exit 139), 用 gdb 定位。
+  修: pump 跳过 `!cb` 的观察者(仍留在表里, 可重新 observe)。
+- **一次属性编辑投递两条记录**: 属性 API 先 `notify_attr`(带名字)再
+  `mark_dirty`(通用无名字), 两条都进队列。修: 名字作为 `mark_dirty_ex` 的
+  参数, 一次编辑一条记录。
+- **classList/dataset/style 编辑的记录没有属性名**: 它们走通用 `mark_dirty`,
+  attr 为 NULL, 按名字过滤的监听器(常见写法)完全收不到。修: 把这些 API 全部
+  改走 `mark_dirty_attr(el, "class"/"data-*"/"style"/<name>)`。
+
+## F. C++ 门面缺口(用户点名: 头文件要 C 和 C++ 都要)
+
+`whaleui.hpp` 是 C++ 程序实际用的 API, C ABI 是其导出层; 但 <49>~<50> 新增的
+Web 平台 API **只有 C 版**——C++ 用户等于没有。用脚本对了一遍两边的符号:
+377 个 C 函数里 148 个在 hpp 里毫无引用。
+
+补齐: `StyleSheet`(RAII + Parse/Load/Apply, 包 `whaleui_css_apply`)、
+`MediaQueryList` + `MatchMedia()`、`Navigator::*`、`Storage` +
+`LocalStorage()/SessionStorage()`、`QueueMicrotask/RequestIdleCallback`、
+`MutationObserver`/`ResizeObserver` 类 + `CreateMutationObserver/ResizeObserver`、
+`CssSupports` + `CssSelector/CssProperty/CssHasProperty`(规则结构体在 C 头里是
+不完整的, 只能走访问器)、`App::ThemeCount/Name/Label`, 以及 Window 上此前缺失的
+一批: ScreenSize/ScreenWorkArea/DisplayId/DevicePixelRatio/VisualViewport、
+min/max size、mouse/keyboard grab、SetMousePosition/SetFocusable/SetParent/
+SetModal/SetIcon、DragActive/DragSource、IsFullscreen。
+`test_cpp` 新增一整块用例覆盖每条。
+
+## G. 测试
+
+- `test_style`: `whaleui_css_apply` 挂表/替换/清空 + 文档表可读; 样式表来源
+  失效标志(append head/body style、改 style 文本/属性、head.innerHTML、删
+  style 都要置位; 普通文本/class 编辑**不置位**); media 类型矩阵。
+- `test_web`: CSS.supports 的属性+值矩阵(含大小写、var/calc、自定义属性);
+  MutationObserver 的 disconnect 后不再投递/重新 observe/一次编辑一条记录/
+  各 API 的属性名。
+- `test_cpp`: 上述全部 C++ 门面。
+- **修 `test_dom` 一处过期断言**: range deleteContents 期望 `"adef"`, 但
+  range 端点是**左闭右开**(同文件上面的 toString 用例 `[6,11) -> "world"`
+  已经确立), 删 `[1,4)` 应得 `"aef"`。原断言从 <48> 起就是错的, 与本次改动无关。
+- **test_web 剪贴板改为环境探测后跳过**: 本机 `SDL_SetClipboardText` 直接失败
+  ("Couldn't open clipboard: 操作成功完成。"), 是环境没有窗口站的事实, 不是引擎
+  缺陷; 改为先探一次, 不可用就打印原因跳过整块(原来必崩)。
+
+## H. 复现/回归工具(temp/, 已 gitignore)
+
+- `temp/repro_css_api.cpp` — 8 个场景的 PASS/FAIL(标记 vs API 挂载 @keyframes/
+  改 style 文本/内联 animation/css_apply/css_apply 带 keyframes/替换表/对照)。
+- `temp/probe_css4.cpp` — "标记里 vs API"逐条对照, 三态判定: OK / AGREE(共同
+  限制) / DIVERGE(真正的 API 差异)。区分"两条都不支持"与"只有一条生效"是关键,
+  否则会把共同的能力缺口误判成 API bug。
+- `temp/probe_supports.cpp` — CSS.supports 用例表。
+- `temp/probe_css2/3.cpp`、`temp/probe_clip.cpp`、`temp/probe_range.cpp` —
+  分区段探针(样式表来源各路径 / 剪贴板环境 / range 端点语义)。
+
+验证: 全量三变体构建 ok; 13/13 套件 exit=0; `repro_css_api` 8/8 PASS;
+`probe_css4` 7/7 OK。
+
+# <52>: flex 项主轴尺寸用 vh/vw 或百分比时塌成 1px
+
+SOLVED
+
+来源是 `temp/incorrect1/`(FlashSight 接 WhaleUI 时应用根容器被算成 `1280x1`,
+窗口只画出 40px 标签条)。复现程序逐变体列出盒子,修复前 15 个变体里 5 个 BUG。
+
+## 触发条件(实测)
+
+一个 **flex 项**,它的**主轴**尺寸写成**视口单位**(column 父里的 `vh`,
+row 父里的 `vw`)或**百分比**。与嵌套层数无关(单层即触发),与父容器自身高度
+无关(auto 高度同样触发),`flex:none` 也不管用(它仍是 flex 项)。交叉轴不受
+影响,`rem`/`px` 不受影响。
+
+## 根因(三处,同一个"主轴解析没有上下文"的问题)
+
+1. **`layout_flex` 的主轴长度走 `len_or_auto`**,它转发到 `len_px`,而 `len_px`
+   把视口宽高**硬编码成 0**(`len_px_impl(v, base, em, 0, 0)`)。于是该调用里所有
+   `vh`/`vw` 都算成 0。带视口的 `len_or_auto_vp` 早就存在、元素自身的
+   width/height 也早就在用,只有 flex 项这条路径没用。
+2. **百分比基数两轴都用 `inner_w`**。column 容器的主轴是竖直的,`height:50%`
+   应基容器**高度**:820 高的 column 里 50% 得 410,实测得 640 = 1280 的 50%。
+3. **`est_node_height` 也用 `len_or_auto`**(vp 0 + 宽度基数),所以
+   `height:50%` 的"内容高度"估计值是 640;而它同时是 flex 主轴的
+   min-content 地板(`min_main`),地板 640 把正确解析出的 410 又顶回去了 ——
+   这是第 2 条修完仍显示 640 的原因,两处必须一起改。
+
+视口单位为 0 之后的观测结果是 **1px** 而不是 0,因为有条"避免零尺寸主轴项"的
+地板:`if (main_size[i] < 1 && grow[i] <= 0) main_size[i] = 1;`。`flex:none`
+(默认)grow 为 0 所以命中地板;`flex:1` 的项跳过地板,它的 0 是**跟随**父容器
+算出来的 —— 这解释了为什么塌的是那个 100vh 盒子、而 `flex:1` 的子项只是跟着变 0。
+
+## 修法
+
+- `layout_flex` 里先算出主轴上下文:`main_base`(column = 容器内容高,
+  row = 内容宽)、`vp_w/vp_h`(tree->viewport_*)、`main_definite`(容器主轴
+  尺寸是否确定)。主轴长度一律走 `len_or_auto_vp(main_v, main_base, em, vp_w,
+  vp_h, &is_auto)`。
+- **主轴尺寸不确定时百分比退化为 `auto`**(CSS 语义),不是 0、也不是回落到另一轴:
+  auto 高度 column 里的 `height:50%` 子项按内容定高。
+- `flex_shorthand` 多收 `main_base/vp_w/vp_h`:`flex-basis` 与 `flex: 1 1 50%`
+  的 basis 走同一条 `len_px_vp`(原来用 `len_px`,vp=0 + base=0)。
+- `est_node_height` 加 `pct_base_h` 参数(默认退回 inner_w 以保持旧调用点语义),
+  flex 主轴调用点传 `main_base`;它内部改用 `len_or_auto_vp`。
+
+## 验证
+
+- `temp/incorrect1`:15/15 变体 ok(修复前 5 个 BUG)。
+- `test_layout` 新增回归:flex column 的 `height:100vh` / `calc(100vh)` /
+  `50%` / `20rem` / `820px` 五种主轴写法逐个断言盒子尺寸;flex row 的
+  `width:100vw`;`flex:0 0 100vw` 的 basis 路径。
+- **回归面**:16 张主题 × 深浅离屏渲染与 6 个 test_html 页面在修复前后
+  **逐像素完全一致**(0 diff),即这次改动只在"主轴是视口单位/百分比"这条
+  以前算错的路径上生效,没有动到任何原本正确的布局。用一张专门的
+  `temp/flex_main_axis.html`(嵌套 100vh flex column + `height:50%`)对照:
+  修复前 `#win` = 920x1、`#half` = 460,修复后 920x720 / 360(19.3% 像素不同)。
+- 13/13 测试套件 exit=0;三变体构建 ok。
+
+## 工具(temp/, 已 gitignore)
+
+- `temp/incorrect1/` — 15 变体矩阵(修复后即回归工具)。
+- `temp/probe_flexbox.cpp` — 按 id 打印整棵布局盒(定位这类问题比读代码快)。
+- `temp/probe_pct.cpp` — 百分比主轴的单点探针。
+- `temp/flex_main_axis.html` — 渲染对照页。
+- `temp/cmp_ppm.py` / `cmp_all.py` / `cmp_html.py` — PPM 逐像素对比
+  (确认改动没有波及无关页面)。
+## 附带:支持矩阵里三行过期条目
+
+修完主轴后顺手按"实测而非文档"复核了 `doc/external/html-css-support.md` 的
+❌ 行(探针 `temp/probe_flexfeat.cpp` / `probe_flexfeat2.cpp` / `probe_misc.cpp`,
+全部读布局盒与坐标,不看代码):
+
+- **flex-shrink / flex-basis 实际已实现**(文档写"❌,flex 简写仅消费 grow"):
+  两个 100px 项在 120px 行里各得 60px(收缩生效);`flex-basis:200px` 覆盖
+  `width:50px`(basis 生效)。
+- **align-content / place-items / align-self / order 已实现**:
+  `align-content:space-between` 两行贴在 0 与 180;`place-items:center` 居中;
+  `align-self:flex-end` 覆盖 `align-items:center`;`order:-1` 真的把 b 排到 a
+  前面(b.x=0, a.x=50)。
+- **grid-template-rows 已实现**:`30px 60px` 两行,第二行 y=30。
+- **list-style-type 已实现**(`none` 去标记;`list-style` 简写仍未解析)。
+- 确认**仍未实现**的:`visibility`(盒子照画)、`pointer-events`、`user-select`、
+  `text-indent`、`vertical-align`、`word-break`、`overflow-wrap`、
+  `justify-self`/`justify-items`。
+
+已把这些行改正(并把 flex 主轴的单位/百分比解析写进单位表与 flex 行)。
+教训与 `<3>` 一致:**判断引擎支持什么要看实测**,文档里的 ❌ 会长期滞后。

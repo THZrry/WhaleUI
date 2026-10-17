@@ -34,46 +34,97 @@ char* dup_str(const char* s)
     return d;
 }
 
-/* collect <style> text + <link rel=stylesheet> from the document head */
+/* collect <style> text + <link rel=stylesheet> from the document.
+ *
+ * Scans <head> AND <body> in document order: HTML allows <style> in the body
+ * (it is a common pattern for page-scoped or lazily inserted rules), and a
+ * browser applies it, so reading only <head> made the same markup behave
+ * differently here than in a browser. Document order also keeps the cascade's
+ * source-order tiebreak right when sheets sit in both sections.
+ *
+ * A <style media="..."> element's own media condition is prepended as an
+ * @media wrapper, so it is filtered by the same evaluator as an inline
+ * @media block (the attribute is a real part of the cascade; ignoring it made
+ * media="print" rules apply on screen). */
 void collect_doc_css(whaleui_dom_document_t* doc, std::string& out)
 {
     lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
-    if (!hd || !hd->head) {
+    if (!hd) {
         return;
     }
-    lxb_dom_node* n = hd->head->element.element.node.first_child;
-    while (n) {
-        if (n->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+    lxb_dom_node* roots[2] = {nullptr, nullptr};
+    if (hd->head) {
+        roots[0] = &hd->head->element.element.node;
+    }
+    if (hd->body) {
+        roots[1] = &hd->body->element.element.node;
+    }
+    for (int ri = 0; ri < 2; ++ri) {
+        for (lxb_dom_node* n = roots[ri] ? roots[ri]->first_child : nullptr; n;
+             n = n->next) {
+            if (n->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+                continue;
+            }
             lxb_dom_element* el = lxb_dom_interface_element(n);
             size_t len = 0;
             const lxb_char_t* name = lxb_dom_element_local_name(el, &len);
-            if (name && len == 5 && std::memcmp(name, "style", 5) == 0) {
+            if (!name) {
+                continue;
+            }
+            /* media attribute ("screen", "print", "(min-width: 600px)") */
+            std::string media;
+            size_t mlen = 0;
+            const lxb_char_t* mv = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"media", 5, &mlen);
+            if (mv && mlen) {
+                media.assign(reinterpret_cast<const char*>(mv), mlen);
+            }
+            std::string sheet;
+            if (len == 5 && std::memcmp(name, "style", 5) == 0) {
                 size_t tlen = 0;
-                const lxb_char_t* txt = lxb_dom_node_text_content(&el->node, &tlen);
+                const lxb_char_t* txt =
+                    lxb_dom_node_text_content(&el->node, &tlen);
                 if (txt) {
-                    out.append(reinterpret_cast<const char*>(txt), tlen);
-                    out += "\n";
+                    sheet.assign(reinterpret_cast<const char*>(txt), tlen);
                 }
-            } else if (name && len == 4 && std::memcmp(name, "link", 4) == 0) {
+            } else if (len == 4 && std::memcmp(name, "link", 4) == 0) {
                 size_t alen = 0;
-                const lxb_char_t* rel = lxb_dom_element_get_attribute(el, (const lxb_char_t*)"rel", 3, &alen);
-                if (rel && alen >= 10 && std::memcmp(rel, "stylesheet", 10) == 0) {
-                    size_t hlen = 0;
-                    const lxb_char_t* href = lxb_dom_element_get_attribute(el, (const lxb_char_t*)"href", 4, &hlen);
-                    if (href) {
-                        std::string uri(reinterpret_cast<const char*>(href), hlen);
-                        char* data = nullptr;
-                        size_t dlen = 0;
-                        if (whaleui_fs_load(uri.c_str(), &data, &dlen) == 0) {
-                            out.append(data, dlen);
-                            out += "\n";
-                            std::free(data);
-                        }
-                    }
+                const lxb_char_t* rel = lxb_dom_element_get_attribute(
+                    el, (const lxb_char_t*)"rel", 3, &alen);
+                if (!(rel && alen >= 10 &&
+                      std::memcmp(rel, "stylesheet", 10) == 0)) {
+                    continue;
                 }
+                size_t hlen = 0;
+                const lxb_char_t* href = lxb_dom_element_get_attribute(
+                    el, (const lxb_char_t*)"href", 4, &hlen);
+                if (!href) {
+                    continue;
+                }
+                std::string uri(reinterpret_cast<const char*>(href), hlen);
+                char* data = nullptr;
+                size_t dlen = 0;
+                if (whaleui_fs_load(uri.c_str(), &data, &dlen) == 0) {
+                    sheet.assign(data, dlen);
+                    std::free(data);
+                }
+            } else {
+                continue;
+            }
+            if (sheet.empty()) {
+                continue;
+            }
+            if (!media.empty()) {
+                out += "@media ";
+                out += media;
+                out += "{";
+                out += sheet;
+                out += "}\n";
+            } else {
+                out += sheet;
+                out += "\n";
             }
         }
-        n = n->next;
     }
 }
 
@@ -86,11 +137,58 @@ void window_reload_css(whaleui_window_t* win)
     if (win->document) {
         collect_doc_css(win->document, css);
     }
+    /* the document's programmatic sheet (whaleui_css_apply) cascades AFTER the
+     * document's own <style>/<link> text, which is the order a sheet attached
+     * later should win at equal specificity */
+    size_t doc_rule_count = 0;
+    const whaleui_css_rule_t* doc_rules =
+        whaleui_style_doc_rules_get(win->document, &doc_rule_count);
     whaleui_css_rule_t* rules = nullptr;
     size_t count = 0;
     whaleui_css_keyframes_t kf = {nullptr, 0};
     if (whaleui_css_parse_full(css.c_str(), css.size(), &rules, &count, &kf) != 0) {
         return;
+    }
+    if (doc_rules && doc_rule_count) {
+        /* Append: the programmatic sheet becomes part of the same rule array, so
+         * selector matching / the cascade / the tag index see ONE sheet. A
+         * separate array would need a second match pass and would lose the
+         * source-order tiebreak between the two. The array comes from the
+         * parser's realloc-grown buffer, so growing it here is the same
+         * allocator; a fresh allocation on failure keeps the sheet complete
+         * rather than silently dropping the programmatic rules. */
+        whaleui_css_rule_t* merged = static_cast<whaleui_css_rule_t*>(
+            std::realloc(rules, (count + doc_rule_count) * sizeof(*rules)));
+        if (!merged) {
+            merged = static_cast<whaleui_css_rule_t*>(
+                std::malloc((count + doc_rule_count) * sizeof(*rules)));
+            if (merged) {
+                std::memcpy(merged, rules, count * sizeof(*rules));
+                /* the old array's rules are MOVED, not copied: free only the
+                 * container, the members now live in `merged` */
+                std::free(rules);
+            }
+        }
+        if (merged) {
+            rules = merged;
+            for (size_t i = 0; i < doc_rule_count; ++i) {
+                std::memset(&rules[count + i], 0, sizeof(rules[count + i]));
+                const whaleui_css_rule_t* s = &doc_rules[i];
+                rules[count + i].selector = s->selector ? strdup(s->selector)
+                                                        : nullptr;
+                rules[count + i].media = s->media ? strdup(s->media) : nullptr;
+                rules[count + i].important = s->important;
+                if (s->decl_count) {
+                    rules[count + i].decls = static_cast<char**>(
+                        std::malloc(s->decl_count * sizeof(char*)));
+                    for (size_t d = 0; d < s->decl_count; ++d) {
+                        rules[count + i].decls[d] = strdup(s->decls[d]);
+                    }
+                    rules[count + i].decl_count = s->decl_count;
+                }
+            }
+            count += doc_rule_count;
+        }
     }
     /* drop rules whose @media condition does not match the current window
      * (theme, viewport, reduced-motion preference) */
@@ -119,6 +217,32 @@ void window_reload_css(whaleui_window_t* win)
                 }
                 for (size_t d = 0; same && d < rules[i].decl_count; ++d) {
                     if (std::strcmp(rules[i].decls[d], cur[i].decls[d]) != 0) {
+                        same = false;
+                    }
+                }
+            }
+        }
+        /* @keyframes are part of the sheet too: comparing rules alone treated
+         * a sheet that only adds/changes a keyframes block as "unchanged" and
+         * threw it away, so the animation never attached (the same sheet in
+         * the initial markup worked, because the first parse had no incumbent
+         * to compare against). */
+        if (same) {
+            const whaleui_css_keyframes_t* curk = &win->render->keyframes;
+            if (kf.count != curk->count) {
+                same = false;
+            }
+            for (size_t i = 0; same && i < kf.count; ++i) {
+                const whaleui_keyframes_t* a = &kf.items[i];
+                const whaleui_keyframes_t* b = &curk->items[i];
+                if (std::strcmp(a->name ? a->name : "", b->name ? b->name : "") != 0 ||
+                    a->frame_count != b->frame_count) {
+                    same = false;
+                    break;
+                }
+                for (size_t f = 0; same && f < a->frame_count; ++f) {
+                    if (std::strcmp(a->frames[f] ? a->frames[f] : "",
+                                    b->frames[f] ? b->frames[f] : "") != 0) {
                         same = false;
                     }
                 }
@@ -247,6 +371,18 @@ static void window_apply_hit_test(whaleui_window_t* win)
 extern "C" void whaleui_window_refresh_css(whaleui_window_t* win)
 {
     window_reload_css(win);
+}
+
+/* frame-level hook (see render.h css_reload_fn): lets the frame re-collect the
+ * document stylesheet after a DOM edit to a <style>/<link> without knowing how
+ * the sheet is assembled (theme default + document sheets). */
+static void window_css_reload_hook(whaleui_render_t* r, void* ud)
+{
+    (void)r;
+    whaleui_window_t* win = static_cast<whaleui_window_t*>(ud);
+    if (win) {
+        window_reload_css(win);
+    }
 }
 
 extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
@@ -431,6 +567,10 @@ extern "C" int whaleui_window_show(whaleui_window_t* win)
         if (!win->render) {
             return -5;
         }
+        /* let the frame re-collect the document stylesheet when the DOM edits
+         * a <style>/<link> (see render.h css_reload_fn) */
+        win->render->css_reload_fn = window_css_reload_hook;
+        win->render->css_reload_ud = win;
         /* -1 (auto): decided by the document size once we know it */
         if (win->app->async_layout < 0) {
             win->render->async_layout =
