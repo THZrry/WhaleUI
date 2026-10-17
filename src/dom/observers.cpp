@@ -259,21 +259,23 @@ std::vector<ResizeObs*>& resize_observers()
 }
 
 /* the element's border box from the most recent layout, or false when it is
- * not in the tree (display:none / detached) */
+ * not in the tree (display:none / detached). by_el, not an arena scan: an
+ * incremental relayout leaves the replaced nodes in the arena, so the scan
+ * reported a stale size and ResizeObserver stopped firing after an edit. */
 bool element_box(lxb_dom_element* el, float* w, float* h)
 {
     whaleui_layout_tree_t* tree = whaleui_render_last_tree();
-    if (!tree) {
+    if (!tree || !el) {
         return false;
     }
-    for (size_t i = 0; i < tree->arena.size(); ++i) {
-        if (tree->arena[i].el == el && !tree->arena[i].is_text) {
-            *w = static_cast<float>(tree->arena[i].border.w);
-            *h = static_cast<float>(tree->arena[i].border.h);
-            return true;
-        }
+    std::unordered_map<lxb_dom_element*, whaleui_layout_node_t*>::const_iterator
+        it = tree->by_el.find(el);
+    if (it == tree->by_el.end() || it->second->is_text) {
+        return false;
     }
-    return false;
+    *w = static_cast<float>(it->second->border.w);
+    *h = static_cast<float>(it->second->border.h);
+    return true;
 }
 
 } // namespace

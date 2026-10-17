@@ -1614,3 +1614,83 @@ inline-block 按钮/CJK 段落)逐个检查"墨迹是否越出盒子底边或右
 - 16 张主题渲染 + 6 个 test_html 页面与修复前逐像素比对: 最大差异 3.0%
   (material 主题的按钮因 min-content 修正而不再多折一行), 主题亮度/对比自检仍
   通过(浅色 0.98 / 深色 0.07~0.23 / spread 0.66~0.71)。
+
+# <54>: incorrect2 六项缺陷 + 动态编辑性能 + "卡在错误位置等 hover 才回正"
+
+SOLVED
+
+来源: `temp/incorrect2/` 用 FlashSight 的真实 `web/style.css` 渲染设置页/探索页,
+与浏览器逐屏对比; 以及用户报告 "做一些反应后会卡在错误的位置, 鼠标动一动
+(触发 hover) 才好"。
+
+## A. 性能: 一次宽度编辑 98ms -> 0.04ms (计算层, 不是渲染层)
+
+`probe_perf7`(800x600, flex-column 应用壳, N 行): 一次 `width` 编辑的
+`relayout_multi` 从 98ms(n=3200) 降到 **0.04ms**, 与 N 无关;整帧 111ms -> 3.3ms。
+两个独立原因:
+
+1. **flex column 的 auto 高度项被当成 definite 主尺寸赋值**。主轴尺寸来自
+   `est_node_height`(纯 CONTENT 高度), 却被直接写成 `k->border.h`(BORDER
+   高度), 每行少掉 padding+border(18px 的盒子装 23px 内容)。于是任何宽度
+   编辑引起文本重排 -> 高度"变化" -> 快路径拒绝 -> 整个 3200 行容器重排。
+   修: 只有 definite 项(flex-basis / 显式主轴长度)才强制写入解析出的主尺寸;
+   auto 项保留自己布局出的高度; `content_main` 对 column 项补上 padding+border。
+2. **`splice_child_link` 漏更新 `parent->first_child`**。它从 chunk 的首成员
+   起走, 替换的节点恰好是父节点第一个孩子时只改了 chunk 指针, 父节点的
+   `first_child` 仍指向旧节点 —— 重建的子树从树上不可达, 编辑看起来"没生效"
+   (随后又按旧节点重排)。修: 替换后显式 `if (parent->first_child == old)
+   parent->first_child = fresh;`。
+
+## B. 覆盖样式不对 + 必须外部触发才回正 (用户报的现象)
+
+复现: `probe_desc` — `.box.big .row{height:80px}`, 给 `#box` 加 class。
+切换后 `#row` 仍是 20px, **直到鼠标移动触发一次 hover 才变成 80px**。
+两个独立 bug:
+
+1. **后代复合选择器上的状态伪类被完全跳过**。`whaleui_style_match` 在匹配
+   祖先复合时 `continue` 掉, 于是 `.card:hover .acts{display:block}` 恒真
+   (加载时就显示), 任何 `A:hover B` 规则无条件生效。修: 祖先复合也要测
+   :hover/:active/:focus/:focus-within/:not(...)(对 `cur` 而非目标元素)。
+2. **属性/class/状态编辑只重算元素自己**。`kLayoutKeys` 差异只看被编辑元素,
+   后代选择器命中的子元素拿不到新级联; 且 layout 的 `style_cache` 按元素身份
+   缓存, 重建子树时会复用旧级联。修: 按规则集缓存"祖先前缀"列表
+   (`whaleui_style_ancestor_prefix`), 编辑元素命中任一前缀就重建整个子树并
+   清掉子树的 style_cache。只在真的有后代选择器命中时才走重路径。
+
+验证: `probe_desc` 切换后同帧 `row=80`, `after=80`; `probe_hoverdesc`
+`.card:hover .acts` 初始隐藏、hover 显示。
+
+## C. incorrect2 六项
+
+| # | 用例 | 修前 | 修后 |
+|---|---|---|---|
+| 1 | `overflow-span-flex` | 1x342 | **228x18** |
+| 2 | `button-explicit-size` | 34x32 | **34x19**(UA 改 `height`, 不再 `min-height`) |
+| 3 | `settings-grid` field1 | 122x64 | **484x46** |
+| 4 | `settings-grid` lbl2 | 118x36(折行) | **118x18** |
+| 5 | `settings-grid` tog | 8x32 | **34x19** |
+| 6 | `flex-fill-select` | 866 | **866**(= `flex-fill-div` 的 918 差在 `.field` 的 gap, 非 select 特例) |
+
+grid 的两个根因: `repeat(` 在 `minmax(...)` 的 `)` 处提前闭合; `auto_repeat`
+未初始化。另: `content_main` vs `min_main` 分离(overflow:hidden 只降低收缩
+地板, 不降低 hypothetical size), flex 主轴百分比/视口单位上下文, 见 note 52。
+
+## D. 其它修复
+
+- `win->doc_bytes` 未初始化 -> 异步切片首布局误判, 编辑永远落不到树上。
+- `getBoundingClientRect`/`getComputedStyle`/ResizeObserver/Tab 焦点原用
+  arena 扫描, 会读到被替换的旧节点 -> 改走 `by_el` 活节点表。
+- `kLayoutKeys` 补齐 border 简写/字体族/字重/word-spacing/text-transform/
+  aspect-ratio/flex-grid 对齐/grid 轨道/content/list-style-type。
+- `est_node_height` 的 `pct_base_h`(百分比高度基数不再用宽度)。
+- 每元素 relayout 改为批量 `whaleui_layout_relayout_multi`(原 N 次全树盒 pass)。
+- `rechunk_parent`(O(children) + 每次泄漏 chunk)改为 `splice_replace_child`。
+
+## 验证
+
+- 13/13 测试套件 exit=0; 新增回归: test_layout(首子节点 relayout 链、
+  flex-column auto 高度含 padding/border)、test_style(祖先 :hover 复合、
+  前缀助手)、test_render(后代选择器 class 编辑同帧生效)。
+- `probe_parity` 20 项 HTML/C++ 一致; `probe_layout` 0 bad case。
+- `probe_perf7`: relayout_multi 0.04ms / edit_frame 3.3ms(n=3200, 原 98/111)。
+- `probe_perf8`(宽度编辑导致重排换行): 3.3ms, 与 N 无关。

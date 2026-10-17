@@ -1256,7 +1256,7 @@ int text_glyph_adv(whaleui_render_t* r, int fs, const std::string& family,
 
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, int* tw, int* th,
-               int wrap_w)
+               int wrap_w, int lh_override)
 {
     *tw = *th = 0;
     if (text.empty() || !r) {
@@ -1273,6 +1273,7 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
     key ^= static_cast<uint64_t>(fs) * 0x9E3779B97F4A7C15ull;
     key ^= static_cast<uint64_t>(bold) * 0xBF58476D1CE4E5B9ull;
     key ^= static_cast<uint64_t>(wrap_w) * 0x94D049BB133111EBull;
+    key ^= static_cast<uint64_t>(lh_override) * 0xD6E8FEB86659FD93ull;
     for (size_t i = 0; i < family.size(); ++i) {
         key ^= static_cast<unsigned char>(family[i]);
         key *= 1099511628211ull;
@@ -1283,7 +1284,8 @@ void text_size(whaleui_render_t* r, const std::string& text, int fs,
         *th = it->second.second;
         return;
     }
-    int lh = text_line_h(r, fs, family, bold);
+    int lh = lh_override > 0 ? lh_override
+                             : text_line_h(r, fs, family, bold);
 #ifdef WHALEUI_BUILD_FULL
     TextMeasureCtx mc = { r, fs, family, bold };
     TextLayout L = layout_text(text, wrap_w, lh, glyph_ttf, &mc);
@@ -1318,6 +1320,43 @@ int text_line_h(whaleui_render_t* r, int fs, const std::string& family, bool bol
     StbFonts stb(family, fs > 0 ? fs : 16);
     return stb.line_h;
 #endif
+}
+
+/* Resolve a `line-height` declaration to px. Mirrors layout.cpp's
+ * line_height_px so the layout pass (which reserves the space) and the paint
+ * pass (which places the lines) cannot disagree:
+ *   px  -> the value            em -> value * fs
+ *   %   -> value * fs / 100     unitless -> value * fs
+ *   ""/"normal" -> 0 (caller uses the font's line height) */
+int text_line_h_css(whaleui_render_t* r, int fs, const std::string& family,
+                    bool bold, const std::string& css_lh)
+{
+    (void)r;
+    (void)family;
+    (void)bold;
+    if (css_lh.empty() || css_lh == "normal" || css_lh == "inherit") {
+        return text_line_h(r, fs, family, bold);
+    }
+    char* end = nullptr;
+    float v = std::strtof(css_lh.c_str(), &end);
+    if (end == css_lh.c_str() || v <= 0.0f) {
+        return text_line_h(r, fs, family, bold);
+    }
+    if (css_lh.find("px") != std::string::npos) {
+        return static_cast<int>(v);
+    }
+    if (css_lh.find("em") != std::string::npos) {
+        return static_cast<int>(v * static_cast<float>(fs));
+    }
+    if (css_lh.find('%') != std::string::npos) {
+        return static_cast<int>(v * static_cast<float>(fs) / 100.0f);
+    }
+    /* unitless multiplier: the LAYOUT pass resolves this through the real
+     * font height when its metric hook is installed (layout.cpp's
+     * line_height_px prefers g_line_height over fs*n), so the paint side must
+     * do the same or a `line-height: 1.3` run is reserved 1.3*fs and painted
+     * at the font's own height. */
+    return text_line_h(r, fs, family, bold);
 }
 
 std::vector<TRect> sel_rects(whaleui_render_t* r, const std::string& text,
@@ -1511,7 +1550,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   int style, int align, lxb_dom_element* ckey,
                   const Clip* clip, int lsp, bool wrap, float opacity,
                   bool outline, size_t sel_lo, size_t sel_hi,
-                  unsigned int sel_fg)
+                  unsigned int sel_fg, int lh_override)
 {
     /* 缂傚倸鍊搁崐鎼佸磹瑜版帒绠伴柟闂寸劍閸嬨倝鏌曟繛鐐珔闁藉啰鍠栭弻鏇熷緞濡厧甯ラ梺鎼炲€曠€氫即寮诲☉婊呯杸闁规崘娉涢埅鎻掝渻?text+闂傚倷绀侀幖顐ょ矓閹绢喖搴婇柤纰卞墯椤洟鏌嶉埡浣告殶闁崇粯姊婚埀顒€绠嶉崕閬嶅箠鎼达絿绀婂〒姘ｅ亾闁?闂傚倷绀佸﹢閬嶅磿閵堝洦鏆滈柣鎰摠濞?layout_text)婵犵數鍋為崹鍫曞箰閸涘娈介柟闂寸劍閸嬨倗鎲搁幋锕€桅闁圭増婢橀～鍛存煟濡绲婚弶鍫濇嚇濮婃椽宕崟顓夈垽鏌熼崘鍙夋崳闁逞屽墮閻忔岸鎮￠垾鎰佸殨?
      * 濠电姵顔栭崳顖滃緤閻ｅ本宕查柟鐗堟緲缁狀喗鎱ㄥΟ鍨厫闁绘挸鍊婚埀顒€绠嶉崕閬嶅箯鐎ｎ€絾绻濆顓炰化婵炴挻鑹鹃敃锔惧閸ф鐓?闂傚倷鑳堕崑銊╁磿閺屻儱钃熼柨鐔哄Т閻?闂傚倷绀侀幉锟犲蓟閿濆绀夐幖娣妼閺嬩線鏌涢幘妤€瀚▓浼存偡濠婂啰效妞ゃ垺宀搁、娆愬緞鐟欏嫬绗╃紒鐘崇⊕閹棃濡搁妷锔炬澓 run 闂傚倸鍊烽悞锕併亹閸愵亞鐭撻柣銏㈩焾閽冪喎鈹戦悩鍙夋悙缂佺姵濞婇弻鐔兼倻濡崵鍙嗗銈忕到閵堟悂寮婚敓鐘茬倞闁宠桨妞掓竟鏇炩攽?42ms 闂傚倷鐒﹂惇褰掑礉瀹€鈧埀顒佸嚬閸撶喐淇婇悽绋跨倞闁靛鍎崇粣鐐测攽閻戝洨绉甸柛蹇旓耿瀹?
@@ -1591,7 +1630,8 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
             fs = 16;
         }
         const bool bold = (style & kFontBold) != 0;
-        int lh = text_line_h(r, fs, family, bold);
+        int lh = lh_override > 0 ? lh_override
+                                 : text_line_h(r, fs, family, bold);
         if (lh <= 0) {
             lh = fs;
         }
@@ -2153,7 +2193,10 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
         size_t a = 0, b = 0;
     int tw = 0, th = 0;
     int ww = run_wrap_w(n);
-    text_size(r, n->text, fs, family, bold, &tw, &th, ww);
+    /* same line height the layout reserved (see paint_text) */
+    int lh_sel = text_line_h_css(r, fs, family, bold,
+                                 sget(n->style, "line-height"));
+    text_size(r, n->text, fs, family, bold, &tw, &th, ww, lh_sel);
     if (th <= 0) {
         return;
     }
@@ -2163,7 +2206,7 @@ void paint_text_selection(whaleui_render_t* r, whaleui_layout_node_t* n,
     ty += off_y;
     std::vector<TRect> rects = sel_rects(r, n->text, fs, family, bold, a, b,
                                          ww);
-    expand_hl_rects(rects, text_line_h(r, fs, family, bold));
+    expand_hl_rects(rects, lh_sel);
     unsigned int hl = sel_hl_color(r, n, 0x3C);
     for (size_t i = 0; i < rects.size(); ++i) {
         fill_rect(r->pixels, r->fb_w, r->fb_h,
@@ -2394,6 +2437,14 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
                                    ? v * fs
                                    : v);
     }
+    /* the CSS line height, resolved EXACTLY like the layout pass did
+     * (layout.cpp line_height_px): the box reserved `lh * lines` px, so the
+     * painted lines must be placed `lh` apart. Painting at the font's own
+     * line height instead made `line-height: 40px` text overlap the next
+     * line and leave a gap at the bottom of its box, and any wrap that
+     * depended on the line count disagreed with the reserved height. */
+    int css_lh = text_line_h_css(r, fs, family, bold,
+                                 sget(n->style, "line-height"));
     whaleui_layout_node_t* box = n;
     if (n->parent && !n->parent->is_text) {
         box = n->parent;
@@ -2811,7 +2862,7 @@ void paint_text(whaleui_render_t* r, whaleui_layout_node_t* n, int off_x,
     if (!did_fl) {
         draw_text_at(r, shown, tx0, ty0, avail_w, gh_box,
                      fs, family, color, style, align, n->el, clip, lsp, wrap,
-                     n->opacity, false, sela, selb, selfg);
+                     n->opacity, false, sela, selb, selfg, css_lh);
     }
 
     /* text-decoration: underline / line-through lines over the box (width
@@ -2852,7 +2903,11 @@ void text_origin(whaleui_render_t* r, whaleui_layout_node_t* n,
                  bool bold, int* tx, int* ty, int wrap_w)
 {
     int tw = 0, th = 0;
-    text_size(r, text, fs, family, bold, &tw, &th, wrap_w);
+    /* the line height the layout reserved for this run (the same value paint
+     * uses), so the centering math agrees with the box height */
+    int lh = text_line_h_css(r, fs, family, bold,
+                             sget(n->style, "line-height"));
+    text_size(r, text, fs, family, bold, &tw, &th, wrap_w, lh);
     /* vertical centering, clamped to non-negative: the layout box height
      * (estimated wrap lines) can come out shorter than the painted text
      * (per-glyph wrap), and a negative (border.h - th)/2 pushes the first
@@ -2891,7 +2946,8 @@ int run_wrap_w(whaleui_layout_node_t* n)
      * input/textarea) wraps at its own content width. Must mirror the
      * layout pass (layout.cpp, text-run avail walk). */
     while (box && !box->is_text &&
-           sget(box->style, "display") == "inline" && box->parent &&
+           sget(box->style, "display") == "inline" &&
+           sget(box->style, "width").empty() && box->parent &&
            !box->parent->is_text) {
         box = box->parent;
     }

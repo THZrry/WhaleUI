@@ -201,9 +201,17 @@ void apply_text_transform(std::string& s, const std::string& t);
  * single-line layout (only \n breaks), the historic behavior. */
 void text_size(whaleui_render_t* r, const std::string& text, int fs,
                const std::string& family, bool bold, int* tw, int* th,
-               int wrap_w = 0);
+               int wrap_w = 0, int lh_override = 0);
 int text_line_h(whaleui_render_t* r, int fs, const std::string& family,
                 bool bold);
+/* Line height for a run that carries a CSS `line-height`: resolves the
+ * declaration (px/em/%/unitless) and falls back to text_line_h for
+ * "normal"/""/invalid. The PAINT path must use this so the lines land where
+ * the layout pass reserved them (layout.cpp's line_height_px is the same
+ * math) - otherwise `line-height: 40px` text painted at the font's ~22px
+ * line height, overlapping the next line and leaving a gap at the bottom. */
+int text_line_h_css(whaleui_render_t* r, int fs, const std::string& family,
+                    bool bold, const std::string& css_line_height);
 /* 字形视觉盒高(ascent+descent/2):文字/光标垂直居中的统一基准。 */
 int text_glyph_h(whaleui_render_t* r, int fs, const std::string& family,
                  bool bold);
@@ -223,7 +231,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                   const Clip* clip, int lsp = 0, bool wrap = false,
                   float opacity = 1.0f, bool outline = false,
                   size_t sel_lo = 0, size_t sel_hi = 0,
-                  unsigned int sel_fg = 0);
+                  unsigned int sel_fg = 0, int lh = 0);
 bool sel_range_for(whaleui_render_t* r, lxb_dom_element* el, size_t len,
                    size_t* a, size_t* b, int seq, int sel_lo, int sel_hi);
 void sel_seq(whaleui_render_t* r, int* lo, int* hi, const Clip* clip);

@@ -697,6 +697,57 @@ int main(void)
         std::printf("[media] extended OK\n");
         std::fflush(stdout);
     }
+    {
+        /* State pseudo-classes on an ANCESTOR compound must be tested
+         * against that ancestor. They used to be skipped entirely, so
+         * `.card:hover .acts { display:block }` matched at page load and
+         * the overlay was visible before any hover (and `A:hover B` rules
+         * in general applied unconditionally). */
+        const char* css_text =
+            ".card:hover .acts { display: block }"
+            ".card .acts { color: red }"
+            ".card:hover { color: blue }";
+        whaleui_css_rule_t* rules = nullptr;
+        size_t count = 0;
+        assert(whaleui_css_parse(&rules, &count, css_text,
+                                 std::strlen(css_text)) == 0);
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"card\" class=\"card\">"
+            "<div id=\"acts\" class=\"acts\"></div></div></body>", 0);
+        lxb_dom_element* card = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc, "card"));
+        lxb_dom_element* acts = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc, "acts"));
+        assert(card && acts);
+        whaleui_style_state st;
+        std::map<std::string, std::string> vars;
+        WhaleUIComputedStyle cs = whaleui_style_compute(
+            acts, rules, count, vars, &st);
+        /* not hovered: the descendant rule must NOT apply */
+        assert(cs["display"].empty());
+        assert(cs["color"] == "red");
+        st.hover = card;
+        cs = whaleui_style_compute(acts, rules, count, vars, &st);
+        assert(cs["display"] == "block");
+        /* the hovered element itself still matches its own :hover rule */
+        cs = whaleui_style_compute(card, rules, count, vars, &st);
+        assert(cs["color"] == "blue");
+        /* the ancestor-prefix helper: one compound -> nothing to match;
+         * two compounds -> the prefix */
+        assert(whaleui_style_ancestor_prefix(".card").empty());
+        assert(whaleui_style_ancestor_prefix(".card:hover .acts") ==
+               ".card:hover");
+        assert(whaleui_style_ancestor_prefix("#theme > .x") == "#theme");
+        assert(whaleui_style_may_affect_descendants(".card:hover .acts", card,
+                                                    &st) == 1);
+        whaleui_style_state none;
+        assert(whaleui_style_may_affect_descendants(".card:hover .acts", card,
+                                                    &none) == 0);
+        whaleui_dom_document_destroy(doc);
+        whaleui_css_rules_destroy(rules, count);
+        std::printf("[selectors] ancestor state OK\n");
+        std::fflush(stdout);
+    }
 
     /* ---- programmatic stylesheets (whaleui_css_apply) ----
      *

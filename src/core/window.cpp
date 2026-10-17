@@ -434,6 +434,15 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->hit_test_ud = nullptr;
     win->hit_test_active = 0;
     win->display_refresh = 60;
+    /* `new whaleui_window_t` leaves scalars INDETERMINATE, and doc_bytes
+     * decides the async-layout policy at show time. Garbage >= 256 KB turned
+     * async layout on for a tiny page: the first layout is then SLICED (only
+     * the viewport's rows are built) and the rest streams in from a worker -
+     * with no worker draining it in a direct render_frame caller the tree
+     * stayed at ~33 nodes for every frame, so nothing laid out, nothing
+     * repainted and every C++ edit hit a node that was never in the tree
+     * ("layout is wrong and edits do nothing"). Zero-initialize the field. */
+    win->doc_bytes = 0;
     app->windows.push_back(win);
     return win;
 }

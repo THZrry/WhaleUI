@@ -1088,6 +1088,14 @@ extern "C" int whaleui_dom_element_destroy(whaleui_dom_element_t* el)
     return 0;
 }
 
+/* 1 when an inline-style edit can change CSS custom-property resolution:
+ * a --* definition, or a var() reference (whose resolved value may now come
+ * from a different definition). Everything else leaves the collected vars
+ * valid - and collecting them is a WHOLE-DOCUMENT walk, so flagging every
+ * style edit made each edited frame pay that walk (the "it gets slow as soon
+ * as the page is driven from C++" report). */
+static bool style_touches_vars(const char* prop, const char* value);
+
 extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* name, const char* value)
 {
     lxb_dom_element* e = as_el(el);
@@ -1103,7 +1111,8 @@ extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* 
                  : -2;
     if (rc == 0) {
         mark_dirty_attr(e, name);
-        if (std::strcmp(name, "style") == 0) {
+        if (std::strcmp(name, "style") == 0 &&
+            style_touches_vars(nullptr, value)) {
             whaleui_dom_mark_vars_dirty();
         }
     }
@@ -1176,7 +1185,7 @@ extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const cha
     }
     mark_dirty_attr(e, name);
     if (std::strcmp(name, "style") == 0) {
-        whaleui_dom_mark_vars_dirty();
+        whaleui_dom_mark_vars_dirty(); /* toggling `style` may add/remove --* */
     }
     return want ? 1 : 0;
 }
@@ -1237,6 +1246,20 @@ extern "C" const char* whaleui_dom_get_text(whaleui_dom_element_t* el)
     return cache.c_str();
 }
 
+/* 1 when an inline-style edit can change CSS custom-property resolution:
+ * a --* definition, or a var() reference (whose resolved value may now come
+ * from a different definition). Everything else leaves the collected vars
+ * valid - and collecting them is a WHOLE-DOCUMENT walk, so flagging every
+ * style edit made each edited frame pay that walk (the "it gets slow as soon
+ * as the page is driven from C++" report). */
+static bool style_touches_vars(const char* prop, const char* value)
+{
+    if (prop && prop[0] == '-' && prop[1] == '-') {
+        return true;
+    }
+    return value && std::strstr(value, "var(") != nullptr;
+}
+
 extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* property, const char* value)
 {
     if (!el || !property || !value) {
@@ -1247,9 +1270,9 @@ extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* prop
         /* an inline-style edit IS an attribute edit on "style": report the
          * name so a MutationObserver record carries it */
         mark_dirty_attr(as_el(el), "style");
-        /* a --var definition or any style change can affect var()
-         * resolution elsewhere; re-collect vars next frame */
-        whaleui_dom_mark_vars_dirty();
+        if (style_touches_vars(property, value)) {
+            whaleui_dom_mark_vars_dirty();
+        }
     }
     return rc;
 }
@@ -1360,7 +1383,9 @@ extern "C" int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, cons
     int rc = style_remove(as_el(el), property);
     if (rc == 0) {
         mark_dirty_attr(as_el(el), "style");
-        whaleui_dom_mark_vars_dirty();
+        if (style_touches_vars(property, nullptr)) {
+            whaleui_dom_mark_vars_dirty();
+        }
     }
     return rc;
 }
@@ -1426,8 +1451,15 @@ extern "C" whaleui_style_declaration_t* whaleui_dom_get_computed_style(whaleui_d
     whaleui_layout_tree_t* tree = whaleui_render_last_tree();
     const WhaleUIComputedStyle* src = nullptr;
     if (tree) {
-        for (size_t i = 0; i < tree->arena.size(); ++i) {
-            if (tree->arena[i].el == e && !tree->arena[i].is_text) { src = &tree->arena[i].style; break; }
+        /* by_el, NOT a scan of tree->arena: an incremental relayout rebuilds
+         * a subtree and leaves the OLD nodes in the arena (only the by_el
+         * entries are remapped), so a linear arena scan returns the stale
+         * node - getComputedStyle reported the pre-edit style. */
+        std::unordered_map<lxb_dom_element*,
+                           whaleui_layout_node_t*>::const_iterator it =
+            tree->by_el.find(e);
+        if (it != tree->by_el.end() && !it->second->is_text) {
+            src = &it->second->style;
         }
     }
     whaleui_style_declaration_t* d = new whaleui_style_declaration_t;
@@ -2847,16 +2879,20 @@ extern "C" int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
     if (!tree) {
         return -2; /* never rendered */
     }
-    for (auto& n : tree->arena) {
-        if (n.el == e && !n.is_text) {
-            out->x = static_cast<float>(n.border.x);
-            out->y = static_cast<float>(n.border.y);
-            out->width = static_cast<float>(n.border.w);
-            out->height = static_cast<float>(n.border.h);
-            return 0;
-        }
+    /* by_el is the LIVE map; the arena keeps the nodes of every subtree an
+     * incremental relayout replaced, so scanning it returns the stale box -
+     * getBoundingClientRect kept reporting the pre-edit geometry and the app
+     * looked stuck at the wrong position until a hover forced a rebuild. */
+    std::unordered_map<lxb_dom_element*, whaleui_layout_node_t*>::const_iterator
+        it = tree->by_el.find(e);
+    if (it == tree->by_el.end() || it->second->is_text) {
+        return -3; /* not in the last layout (display:none or detached) */
     }
-    return -3; /* not in the last layout (display:none or detached) */
+    out->x = static_cast<float>(it->second->border.x);
+    out->y = static_cast<float>(it->second->border.y);
+    out->width = static_cast<float>(it->second->border.w);
+    out->height = static_cast<float>(it->second->border.h);
+    return 0;
 }
 
 /* --- Range (document.createRange() subset) ---

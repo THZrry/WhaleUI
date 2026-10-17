@@ -1362,12 +1362,18 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
                     return 0;
                 }
             }
-            continue; /* pseudo-classes only apply to the target element */
+            /* fall through: the state pseudo-classes of THIS compound must
+             * be tested against `cur` (the ancestor), not skipped. Skipping
+             * them made every `A:hover B` selector match unconditionally -
+             * `.card:hover .acts{display:block}` applied at page load, and
+             * the reported "overlay styles are simply wrong" symptom. */
         }
-        /* pseudo-classes apply to the target element itself. :hover and
-         * :active bubble per CSS: they also match when the interaction
-         * target is a descendant of this element (a button containing a
-         * <span> stays :hover while the mouse is over the span) */
+        /* pseudo-classes apply to the compound they were written on (the
+         * target element for the last part, the matched ancestor for a
+         * preceding one). :hover and :active bubble per CSS: they also
+         * match when the interaction target is a descendant of this
+         * element (a button containing a <span> stays :hover while the
+         * mouse is over the span) */
         lxb_dom_element* cur_el = lxb_dom_interface_element(cur);
         if (part.hover) {
             bool ok = false;
@@ -2850,3 +2856,59 @@ extern "C" void whaleui_style_virtual(
     }
 }
 
+/* The ancestor part of a selector: everything before its LAST top-level
+ * compound, with trailing combinators trimmed. "" when the selector is a
+ * single compound (nothing can match an ancestor). */
+std::string whaleui_style_ancestor_prefix(const char* selector)
+{
+    if (!selector || !*selector) {
+        return std::string();
+    }
+    const char* last_start = selector;
+    int depth = 0;
+    for (const char* p = selector; *p; ++p) {
+        char c = *p;
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            if (depth > 0) {
+                --depth;
+            }
+        } else if (depth == 0 &&
+                   (c == ' ' || c == '\t' || c == '>' || c == '+')) {
+            const char* q = p;
+            while (*q == ' ' || *q == '\t' || *q == '>' || *q == '+') {
+                ++q;
+            }
+            if (*q) {
+                last_start = q;
+            }
+            p = q - 1;
+        }
+    }
+    if (last_start == selector) {
+        return std::string();
+    }
+    size_t plen = static_cast<size_t>(last_start - selector);
+    while (plen > 0) {
+        char c = selector[plen - 1];
+        if (c == ' ' || c == '\t' || c == '>' || c == '+') {
+            --plen;
+        } else {
+            break;
+        }
+    }
+    return std::string(selector, plen);
+}
+
+/* See style.h. */
+extern "C" int whaleui_style_may_affect_descendants(
+    const char* selector, lxb_dom_element* ancestor,
+    const whaleui_style_state* st)
+{
+    std::string prefix = whaleui_style_ancestor_prefix(selector);
+    if (prefix.empty()) {
+        return 0;
+    }
+    return whaleui_style_match(prefix.c_str(), ancestor, st);
+}

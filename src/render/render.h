@@ -66,6 +66,15 @@ struct whaleui_render
      * with none (most form/plain pages) makes hover purely a cursor/state
      * update - no tree rebuild per hover element change. */
     int has_interact_rules;
+    /* Selector prefixes of every rule that has a compound before its last
+     * one (`.box.big .row` -> ".box.big"): a class/state/attribute edit on
+     * an element matching one of these must rebuild its whole subtree,
+     * because the edit can change the computed style of its DESCENDANTS.
+     * Cached per rule set - scanning every selector on every DOM edit was
+     * O(rules) string work per edited element. */
+    std::vector<std::string> ancestor_prefixes;
+    const whaleui_css_rule_t* ancestor_prefixes_rules = nullptr;
+    size_t ancestor_prefixes_count = 0;
 
     /* font cache: "family" -> TTF_Font. One font per FAMILY - size and
      * style are set on demand (font_state below) right before use, so a

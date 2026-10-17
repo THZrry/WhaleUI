@@ -249,6 +249,45 @@ int main(void)
         whaleui_window_destroy(hw);
     }
 
+    /* descendant-selector invalidation: a class edit on an ANCESTOR must
+     * re-lay out the descendants it selects. It used to take the paint-only
+     * branch (the edited element's own layout keys were unchanged), so the
+     * rows kept their load-time height until some unrelated hover forced a
+     * re-cascade - the reported "sticks at the wrong position until the
+     * mouse moves". */
+    {
+        whaleui_window_t* dw =
+            whaleui_window_create(app, "desc", 400, 300);
+        assert(dw != nullptr);
+        const char* dhtml =
+            "<html><head><style>"
+            "html,body{margin:0}"
+            ".row{height:20px}"
+            ".box.big .row{height:80px}"
+            "</style></head><body>"
+            "<div id=\"box\" class=\"box\">"
+            "<div id=\"r0\" class=\"row\"></div>"
+            "<div id=\"r1\" class=\"row\"></div>"
+            "</div></body></html>";
+        assert(whaleui_window_load_html(dw, dhtml) == 0);
+        if (whaleui_window_show(dw) == 0 && dw->render != nullptr) {
+            assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            lxb_dom_element* box = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(dw->document, "box"));
+            lxb_dom_element* r1 = reinterpret_cast<lxb_dom_element*>(
+                whaleui_dom_get_element_by_id(dw->document, "r1"));
+            assert(box && r1);
+            assert(dw->render->tree->by_el[r1]->border.h == 20);
+            whaleui_dom_set_attribute(
+                reinterpret_cast<whaleui_dom_element_t*>(box), "class",
+                "box big");
+            assert(whaleui_render_frame(dw->render, dw->document) == 0);
+            assert(dw->render->tree->by_el[r1]->border.h == 80);
+            assert(dw->render->tree->by_el[r1]->border.y == 80);
+        }
+        whaleui_window_destroy(dw);
+    }
+
 #if 0 /* historical regression tests - disabled for fast scroll iteration;
        * see test_scroll.cpp for the focused checks */
     /* one frame */

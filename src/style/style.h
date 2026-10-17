@@ -141,8 +141,28 @@ void whaleui_style_virtual_host(const char* vclass, lxb_dom_element* host,
  * class rules never match). Called from whaleui_css_rules_destroy. */
 void whaleui_style_index_drop(const whaleui_css_rule_t* rules);
 
+/* Would `rules` let a change on `ancestor` alter the computed style of any
+ * DESCENDANT? True when some rule's selector has a compound before the last
+ * one that can match `ancestor` (`.box.big .row`, `.card:hover .acts`,
+ * `#theme > .x`). Attribute / class / state edits only re-cascade the edited
+ * element itself, so without this check a descendant-selector rule kept
+ * whatever it computed at load time - the reported "the overlay styles are
+ * simply wrong and only a mouse move (hover) paints it right".
+ *
+ * Deliberately conservative: a true answer costs one subtree rebuild of the
+ * edited element, a false one leaves stale descendant styles. */
+int whaleui_style_may_affect_descendants(const char* selector,
+                                         lxb_dom_element* ancestor,
+                                         const whaleui_style_state* st);
+
 #ifdef __cplusplus
 }
 #endif
+
+/* The ancestor part of `selector` (everything before its last compound), or
+ * an empty string when the selector has a single compound. Used to build the
+ * renderer's per-sheet prefix cache. (C++ only: returns std::string, so it
+ * lives outside the extern "C" block.) */
+std::string whaleui_style_ancestor_prefix(const char* selector);
 
 #endif /* WHALEUI_STYLE_STYLE_H */

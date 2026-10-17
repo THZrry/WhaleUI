@@ -176,7 +176,13 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
 button {
     display: inline-flex; align-items: center; justify-content: center;
     box-sizing: border-box;
-    min-height: var(--btn-h); padding: 0 var(--btn-px);
+    /* `height` (a DEFAULT), not `min-height`: min-height always wins over an
+     * author's `height`, so `<button style="height:19px">` rendered 32px tall
+     * and the app's 34x19 toggle track pushed its knob outside. A UA `height`
+     * is overridden by any author height, and the layout pass still grows an
+     * explicit-height box to its content when the content is taller (the
+     * auto-height branch), so multi-line buttons keep working. */
+    height: var(--btn-h); padding: 0 var(--btn-px);
     font-family: inherit; font-size: var(--text-base); font-weight: var(--btn-weight);
     line-height: 1; text-align: center;
     color: var(--btn-fg);

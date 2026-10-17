@@ -66,18 +66,39 @@ static void dnd_update(whaleui_render_t* r, int x, int y);
 static void dnd_finish(whaleui_render_t* r, int x, int y, int cancelled);
 static bool is_draggable_el(struct lxb_dom_element* el);
 
+/* Properties whose change invalidates GEOMETRY. An edit that touches one of
+ * these must re-run the box pass; anything else is paint-only and keeps the
+ * old geometry.
+ *
+ * This list is the gate for the incremental DOM path: a missing property
+ * makes a real layout change take the "geometry unchanged, repaint only"
+ * branch, so the element keeps its OLD box and the page is stuck at the
+ * wrong position until something else (a hover) forces a full relayout -
+ * exactly the reported "after a C++ style change the UI sits at the wrong
+ * spot, moving the mouse fixes it". Keep it in sync with the properties
+ * layout.cpp actually reads. */
 static const char* const kLayoutKeys[] = {
     "display", "position", "width", "height", "min-width", "min-height",
     "max-width", "max-height", "margin", "margin-top", "margin-right",
     "margin-bottom", "margin-left", "padding", "padding-top",
     "padding-right", "padding-bottom", "padding-left", "border-width",
     "border-top-width", "border-right-width", "border-bottom-width",
-    "border-left-width", "inset", "top", "right", "bottom", "left",
+    "border-left-width", "border-top", "border-right", "border-bottom",
+    "border-left", "border", "inset", "top", "right", "bottom", "left",
     "box-sizing", "float", "clear", "flex", "flex-grow", "flex-shrink",
     "flex-basis", "flex-direction", "flex-wrap", "gap", "row-gap",
-    "column-gap", "order", "font-size", "line-height", "letter-spacing",
+    "column-gap", "order", "font-size", "font-family", "font-weight",
+    "font-style", "line-height", "letter-spacing", "word-spacing",
     "white-space", "overflow", "overflow-x", "overflow-y", "text-align",
-    "vertical-align", "word-break",
+    "text-transform", "vertical-align", "word-break", "aspect-ratio",
+    /* flex/grid alignment changes move items inside their container */
+    "align-items", "align-self", "align-content", "justify-content",
+    "justify-items", "justify-self", "place-items", "place-content",
+    "grid-template-columns", "grid-template-rows", "grid-auto-flow",
+    "grid-auto-columns", "grid-auto-rows", "grid-column", "grid-row",
+    "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
+    /* a pseudo-element's content changes the boxes it generates */
+    "content", "list-style-type",
 };
 
 /* Same box KIND for layout, even when the strings differ. layout.cpp's build
@@ -761,8 +782,15 @@ void fix_run_heights(whaleui_render_t* r)
                 bool bold;
                 node_font(r, nd, &fs, &fam, &bold);
                 int tw = 0, th = 0;
+                /* reserve the CSS line height the layout pass used, not the
+                 * font's own height: fix_run_heights overwrote a
+                 * `line-height: 40px` run's box with the ~22px font height,
+                 * so the text overflowed its box and the following content
+                 * moved up into it. */
+                int lh = text_line_h_css(r, fs, fam, bold,
+                                         sget(nd->style, "line-height"));
                 text_size(r, nd->text, fs, fam, bold, &tw, &th,
-                          run_wrap_w(nd));
+                          run_wrap_w(nd), lh);
                 if (th > 0) {
                     nd->border.h = th;
                 }
@@ -803,6 +831,21 @@ void fix_scroll_max(whaleui_render_t* r)
         int inner_bottom = scrollable
                                ? 0
                                : nd->border.y + nd->border.h + scomp;
+        /* A plain `display:inline` box's vertical padding/border does NOT
+         * grow its ancestors (CSS: it overflows the line box). Counting the
+         * padded box made `<span style="padding:10px">` double its parent
+         * line's height. Its glyph content still contributes - via the text
+         * runs inside it, whose own boxes are clamped to the line height
+         * below. */
+        bool plain_inline = false;
+        if (nd->el && !nd->is_text && !nd->pseudo) {
+            plain_inline = sget(nd->style, "display") == "inline";
+        }
+        if (plain_inline) {
+            /* start from the CONTENT top (the line top, not the padded
+             * border top): the padding overflows, it does not push */
+            inner_bottom = nd->content.y + scomp;
+        }
         for (whaleui_layout_node_t* c = nd->first_child; c;
              c = c->next) {
             int cb = fix_sm(c, child_comp);
@@ -864,7 +907,24 @@ void fix_scroll_max(whaleui_render_t* r)
             std::string hh = sget(nd->style, "height");
             bool h_auto = hh.empty() || hh == "auto";
             if (h_auto) {
-                nd->border.h = inner_bottom - nd->border.y - scomp;
+                int grown = inner_bottom - nd->border.y - scomp;
+                /* max-height still caps an auto-height box: the growth above
+                 * is "content is taller than the estimate", not a license to
+                 * exceed the CSS clamp (a max-height:40 overflow:hidden box
+                 * grew to its content height and ignored the limit). */
+                std::string mxh = sget(nd->style, "max-height");
+                if (!mxh.empty()) {
+                    float m = 0.0f;
+                    int unit = 0;
+                    if (whaleui_style_parse_len(mxh.c_str(), &m, &unit) == 0 &&
+                        unit == 0 && m > 0.0f) {
+                        int cap = static_cast<int>(m);
+                        if (grown > cap) {
+                            grown = cap;
+                        }
+                    }
+                }
+                nd->border.h = grown;
                 int ch = nd->border.h - nd->padding[0] -
                          nd->padding[2] - nd->border_w[0] -
                          nd->border_w[2];
@@ -2346,14 +2406,20 @@ extern "C" void whaleui_render_focus_editable(whaleui_render_t* r, int dir)
         return;
     }
     std::vector<lxb_dom_element*> eds;
-    for (auto& n : r->tree->arena) {
-        if (!n.visible || !n.el || n.is_text || n.pseudo) {
+    /* by_el is the live map; the arena also holds the nodes of every subtree
+     * an incremental relayout replaced, so an arena scan listed detached
+     * duplicates (Tab could focus an element that is no longer laid out). */
+    for (std::unordered_map<lxb_dom_element*, whaleui_layout_node_t*>::iterator
+             it = r->tree->by_el.begin();
+         it != r->tree->by_el.end(); ++it) {
+        whaleui_layout_node_t* n = it->second;
+        if (!n || !n->visible || !n->el || n->is_text || n->pseudo) {
             continue;
         }
-        if (is_editable(n.el) &&
+        if (is_editable(n->el) &&
             !lxb_dom_element_has_attribute(
-                n.el, (const lxb_char_t*)"disabled", 8)) {
-            eds.push_back(n.el);
+                n->el, (const lxb_char_t*)"disabled", 8)) {
+            eds.push_back(n->el);
         }
     }
     if (eds.empty()) {
@@ -5839,7 +5905,71 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     break;
                 }
             }
-            if (lay_changed) {
+            /* A descendant-selector rule (`.box.big .row`, `.card:hover
+             * .acts`) makes the edit change the computed style of elements
+             * BELOW `el`, not of `el` itself. The diff above only looks at
+             * the edited element, so such an edit took the paint-only
+             * branch: descendants kept the style they had at load time and
+             * the screen showed the old layout until some unrelated
+             * interaction (a hover) happened to re-cascade them. Rebuild the
+             * whole subtree when the sheet has any rule whose ancestor part
+             * matches this element. */
+            if (r->ancestor_prefixes_rules != r->rules ||
+                r->ancestor_prefixes_count != r->rule_count) {
+                r->ancestor_prefixes.clear();
+                for (size_t ri = 0; ri < r->rule_count; ++ri) {
+                    if (!r->rules[ri].selector) {
+                        continue;
+                    }
+                    std::string pf =
+                        whaleui_style_ancestor_prefix(r->rules[ri].selector);
+                    if (!pf.empty()) {
+                        r->ancestor_prefixes.push_back(pf);
+                    }
+                }
+                r->ancestor_prefixes_rules = r->rules;
+                r->ancestor_prefixes_count = r->rule_count;
+            }
+            bool desc_affected = false;
+            for (size_t pi = 0; pi < r->ancestor_prefixes.size() &&
+                                !desc_affected;
+                 ++pi) {
+                if (whaleui_style_match(r->ancestor_prefixes[pi].c_str(), el,
+                                        &st)) {
+                    desc_affected = true;
+                }
+            }
+            if (desc_affected && r->tree) {
+                /* the rebuilt subtree re-cascades through the layout style
+                 * cache (build() consults it whenever an animation context
+                 * is present), so every descendant's cached entry must go -
+                 * otherwise `.box.big .row` still resolves to the height
+                 * computed before the class changed. */
+                std::function<void(lxb_dom_node*)> drop_cache =
+                    [&](lxb_dom_node* dn) {
+                        if (!dn) {
+                            return;
+                        }
+                        if (dn->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                            auto bit = r->tree->style_cache_by_el.find(
+                                lxb_dom_interface_element(dn));
+                            if (bit != r->tree->style_cache_by_el.end()) {
+                                for (size_t bi = 0; bi < bit->second.size();
+                                     ++bi) {
+                                    r->tree->style_cache.erase(
+                                        bit->second[bi]);
+                                }
+                                r->tree->style_cache_by_el.erase(bit);
+                            }
+                        }
+                        for (lxb_dom_node* c = dn->first_child; c;
+                             c = c->next) {
+                            drop_cache(c);
+                        }
+                    };
+                drop_cache(&el->node);
+            }
+            if (lay_changed || desc_affected) {
                 full_list.push_back(el);
             } else {
                 if (whaleui_layout_relayout_style(
@@ -5852,13 +5982,31 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 }
             }
         }
-        for (lxb_dom_element* el : full_list) {
-            if (whaleui_layout_relayout(r->tree, el, r->rules,
-                                        r->rule_count, &r->theme_vars,
-                                        &st, &r->scrolls, r->anim,
-                                        r->text_scale) < 0) {
+        /* Rebuild every changed element, then run the box pass ONCE.
+         *
+         * Calling whaleui_layout_relayout per element ran a WHOLE-TREE box
+         * pass each time (relayout_impl's tail: b.layout(tree->root, ...)),
+         * so an app that sets sizes on N elements in one frame paid N full
+         * layout passes - the reported "performance collapses as soon as the
+         * page is driven from C++". relayout_multi rebuilds the same
+         * subtrees but re-lays out only their topmost flex/grid ancestors
+         * (or the element itself in a pure block chain), deduplicated. */
+        {
+            std::vector<lxb_dom_element*> batch;
+            batch.reserve(full_list.size());
+            for (lxb_dom_element* el : full_list) {
+                /* only elements the tree knows about: a brand-new node is
+                 * covered by its parent's rebuild */
+                if (el && find_node_by_el(r->tree, el)) {
+                    batch.push_back(el);
+                }
+            }
+            if (!batch.empty() &&
+                whaleui_layout_relayout_multi(
+                    r->tree, batch.data(), batch.size(), r->rules,
+                    r->rule_count, &r->theme_vars, &st, &r->scrolls, r->anim,
+                    r->text_scale) < 0) {
                 ok = false;
-                break;
             }
         }
         dom_geom_changed = !full_list.empty() || struct_dirty;

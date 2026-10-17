@@ -1905,11 +1905,35 @@ struct Builder
             n->style["display"] = "none";
         }
         if (is_img) {
+            /* intrinsic size from the width/height ATTRIBUTES (HTML: the
+             * attributes are the image's intrinsic dimensions; CSS overrides
+             * them). Ignoring the attributes forced every image to 300x150 -
+             * the "img is always the wrong size" report. */
+            int iw = 300, ih = 150;
+            size_t iwlen = 0, ihlen = 0;
+            const lxb_char_t* iwa = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"width", 5, &iwlen);
+            const lxb_char_t* iha = lxb_dom_element_get_attribute(
+                el, (const lxb_char_t*)"height", 6, &ihlen);
+            if (iwa && iwlen) {
+                iw = std::atoi(std::string(reinterpret_cast<const char*>(iwa),
+                                           iwlen).c_str());
+            }
+            if (iha && ihlen) {
+                ih = std::atoi(std::string(reinterpret_cast<const char*>(iha),
+                                           ihlen).c_str());
+            }
+            if (iw <= 0) iw = 300;
+            if (ih <= 0) ih = 150;
             if (n->style.find("width") == n->style.end()) {
-                n->style["width"] = "300px";
+                char tmp[32];
+                std::snprintf(tmp, sizeof(tmp), "%dpx", iw);
+                n->style["width"] = tmp;
             }
             if (n->style.find("height") == n->style.end()) {
-                n->style["height"] = "150px";
+                char tmp[32];
+                std::snprintf(tmp, sizeof(tmp), "%dpx", ih);
+                n->style["height"] = tmp;
             }
             if (n->style.find("display") == n->style.end()) {
                 n->style["display"] = "inline-block";
@@ -2646,8 +2670,15 @@ struct Builder
              * boxes keeps <code>/<span> text on the outer line box. */
             if (avail != 0x7FFFFFFF) {
                 whaleui_layout_node_t* anc = n->parent;
+                /* stop at an inline ancestor with an EXPLICIT width: a
+                 * `label{width:118px}` is a definite box, so its text wraps
+                 * at 118px. Skipping it handed the run the whole 484px flex
+                 * row, and the label rendered 65px of text in a 36px-tall
+                 * line (FlashSight's "会话名提示" wrapped even though it
+                 * fits). */
                 while (anc && !anc->is_text &&
                        get(anc->style, "display") == "inline" &&
+                       get(anc->style, "width").empty() &&
                        anc->parent && !anc->parent->is_text) {
                     anc = anc->parent;
                 }
@@ -2918,6 +2949,14 @@ struct Builder
         n->border.w = bw;
         n->content.x = n->border.x + p[3] + n->border_w[3];
         n->content.y = n->border.y + p[0] + n->border_w[0];
+        /* A plain `display:inline` box: vertical padding/border does NOT
+         * move its text - CSS keeps the inline box's glyphs on the line box
+         * and lets the padding overflow above/below. Applying padding-top to
+         * content.y pushed the glyphs down inside the line (and made the
+         * line look taller), so the text is anchored at the border top. */
+        if (get(n->style, "display") == "inline") {
+            n->content.y = n->border.y;
+        }
 
         /* min/max-width clamp the box BEFORE children are laid out: a
          * max-width container must not hand its pre-clamp width to them
@@ -3124,8 +3163,14 @@ struct Builder
          * button's state layer, a fixed badge) resolves against the
          * container's used size - but an auto-height container only knows
          * that size after its children were laid out, so they were placed
-         * against inner_h = 0 and came out 2px tall. */
-        if (n->content.h != inner_h) {
+         * against inner_h = 0 and came out 2px tall.
+         *
+         * Runs ALWAYS, not only when content.h != inner_h: a flex container
+         * skips absolute children entirely in its own pass (they are out of
+         * flow), so an explicitly-sized flex container (a button with
+         * `height:19px`) had content.h == inner_h and its absolute state
+         * layer / toggle knob never got a box at all (0x0). */
+        {
             for (whaleui_layout_node_t* cc = n->first_child; cc;
                  cc = cc->next) {
                 if (!cc->visible) {
@@ -3173,6 +3218,17 @@ struct Builder
     {
         std::string h = get(c->style, "height");
         return !h.empty() && h != "auto";
+    }
+
+    /* A plain `display:inline` box contributes only its LINE height to the
+     * line box: CSS says vertical padding/border on an inline box does not
+     * grow the line (it overflows). Counting them made
+     * `<span style="padding:10px">x</span>` lay its line out 40px tall
+     * instead of 20px - the "inline elements double the line height"
+     * report. inline-block/inline-flex DO count (they are atomic boxes). */
+    bool is_plain_inline(const whaleui_layout_node_t* c)
+    {
+        return !c->is_text && get(c->style, "display") == "inline";
     }
 
     /* estimated inline width of a line-flow node (text run or inline
@@ -3324,17 +3380,30 @@ struct Builder
                     c->border.w = rem > 0 && real_w > rem ? rem : real_w;
                 }
                 x += c->border.w;
-                if (c->border.h > max_h) {
+                if (!is_plain_inline(c) && c->border.h > max_h) {
                     max_h = c->border.h;
                 }
                 line_members.push_back(c);
                 c = c->next;
+            }
+            /* a line of ONLY plain inline boxes still needs the text line
+             * height: the members' own (padded) boxes do not contribute,
+             * but their glyphs do */
+            if (max_h <= 0) {
+                int fs_line = font_px > 0 ? font_px : 16;
+                max_h = static_cast<int>(
+                    line_height_px(n->style, static_cast<float>(fs_line)));
             }
             for (size_t mi = 0; mi < line_members.size(); ++mi) {
                 whaleui_layout_node_t* m = line_members[mi];
                 if (has_explicit_height(m)) {
                     /* keep the member's own box; the line is already at
                      * least as tall as it (max_h took its height above) */
+                    continue;
+                }
+                if (is_plain_inline(m)) {
+                    /* inline boxes keep their own (padded) box: it overflows
+                     * the line box without stretching it (see above) */
                     continue;
                 }
                 m->border.h = max_h;
@@ -3346,6 +3415,18 @@ struct Builder
 
     /* shift a node and its whole subtree by (dx, dy) - used by flex/grid
      * cross-axis alignment and direction reversal after layout */
+    /* vertical padding + border of a node: the difference between its
+     * CONTENT height (what est_node_height returns) and its border-box
+     * height (what a flex column's main axis sizes). */
+    int box_main_extra(whaleui_layout_node_t* k, int inner_w, float em)
+    {
+        if (k->is_text) {
+            return 0;
+        }
+        BoxMetrics bm = box_metrics(k->style, static_cast<float>(inner_w), em);
+        return bm.p[0] + bm.p[2] + bm.b[0] + bm.b[2];
+    }
+
     void shift_subtree(whaleui_layout_node_t* k, int dx, int dy)
     {
         k->border.x += dx;
@@ -3432,6 +3513,7 @@ struct Builder
         std::vector<float> grow(kids.size()), shrink(kids.size());
         std::vector<float> main_size(kids.size());
         std::vector<int> min_main(kids.size(), 0); /* min-content floor */
+        std::vector<char> main_def(kids.size(), 0); /* definite main size */
         bool any_shrink = false;
         for (size_t i = 0; i < kids.size(); ++i) {
             whaleui_layout_node_t* k = kids[i];
@@ -3457,6 +3539,20 @@ struct Builder
             float basis = 0;
             flex_shorthand(k->style, grow[i], shrink[i], basis, main_base,
                            vp_w, vp_h);
+            {
+                bool idef = basis >= 0;
+                if (!idef) {
+                    std::string mv = get(k->style, column ? "height" : "width");
+                    if (!mv.empty() && mv != "auto" &&
+                        !(!main_definite &&
+                          mv.find('%') != std::string::npos)) {
+                        bool iauto = true;
+                        len_or_auto_vp(mv, main_base, em, vp_w, vp_h, &iauto);
+                        idef = !iauto;
+                    }
+                }
+                main_def[i] = idef ? 1 : 0;
+            }
             if (shrink[i] > 0) {
                 any_shrink = true;
             }
@@ -3464,17 +3560,29 @@ struct Builder
             if (fs <= 0) {
                 fs = font_px > 0 ? font_px : 16;
             }
-            int minc = k->is_text
-                           ? static_cast<int>(std::ceil(text_measure(
-                                 k->text, fs, get(k->style, "font-family"),
-                                 font_weight_bold(k->style),
-                                 letter_spacing_px(k->style, fs)))) +
-                                 1
-                           : (column
-                                  ? static_cast<int>(est_node_height(
-                                        k, inner_w, em, main_base))
-                                  : static_cast<int>(std::ceil(
-                                        estimate_content_width(k, em, true))));
+            /* CONTENT size (max-content for a row item, content height for a
+             * column item) and the MIN-CONTENT FLOOR are two different
+             * numbers. They used to be one variable, so any rule that lowered
+             * the floor also lowered the hypothetical main size:
+             * `overflow:hidden` sets the automatic minimum size to 0, and a
+             * flex item with `flex:0 1 auto` then got main size 0 -> floored
+             * to 1px, i.e. every ellipsis-truncated description collapsed to
+             * a 1px column (temp/incorrect2 defect 1). CSS: the hypothetical
+             * main size comes from flex-basis (auto = content size); the
+             * automatic minimum only caps how far SHRINK may go. */
+            int content_main =
+                k->is_text
+                    ? static_cast<int>(std::ceil(text_measure(
+                          k->text, fs, get(k->style, "font-family"),
+                          font_weight_bold(k->style),
+                          letter_spacing_px(k->style, fs)))) +
+                          1
+                    : (column ? static_cast<int>(
+                                    est_node_height(k, inner_w, em, main_base)) +
+                                    box_main_extra(k, inner_w, em)
+                              : static_cast<int>(std::ceil(
+                                    estimate_content_width(k, em, true))));
+            int minc = content_main;
             std::string mn = get(k->style, column ? "min-height" : "min-width");
             if (!mn.empty()) {
                 /* an explicit min-* (including min-height:0) replaces the
@@ -3564,10 +3672,12 @@ struct Builder
                             }
                         }
                         if (sz < 1) {
-                            sz = static_cast<float>(minc);
+                            sz = static_cast<float>(content_main);
                         }
                     } else {
-                        sz = static_cast<float>(minc);
+                        /* flex-basis:auto -> the item's CONTENT size, not the
+                         * min-content floor (see content_main above). */
+                        sz = static_cast<float>(content_main);
                     }
                 }
                 main_size[i] = sz;
@@ -3582,6 +3692,11 @@ struct Builder
         struct FlexRow
         {
             std::vector<whaleui_layout_node_t*> items;
+            /* the item's index in `kids`: grow/shrink/min arrays are indexed
+             * by it. Carrying it here is what keeps the row pass linear - the
+             * old code searched `kids` for every item on every use
+             * (O(n^2) per layout: 3200 rows cost seconds per relayout). */
+            std::vector<size_t> idx;
             std::vector<float> sizes;
             int y; /* cross start */
             int est_h;
@@ -3602,6 +3717,7 @@ struct Builder
                     pos = 0;
                 }
                 cur.items.push_back(kids[i]);
+                cur.idx.push_back(i);
                 cur.sizes.push_back(sz);
                 pos += sz + gap_main;
             }
@@ -3652,14 +3768,6 @@ struct Builder
             FlexRow& row = rows[r];
             /* per-row grow/shrink: the row's own free space decides
              * (PureLayout resolveFlexibleLengths, single pass) */
-            auto kid_idx = [&](whaleui_layout_node_t* k) -> size_t {
-                for (size_t i = 0; i < kids.size(); ++i) {
-                    if (kids[i] == k) {
-                        return i;
-                    }
-                }
-                return 0;
-            };
             float row_free = static_cast<float>(container_main);
             for (size_t i = 0; i < row.sizes.size(); ++i) {
                 row_free -= row.sizes[i];
@@ -3674,12 +3782,12 @@ struct Builder
             if (definite && row_free > 0) {
                 float gsum = 0;
                 for (size_t i = 0; i < row.sizes.size(); ++i) {
-                    gsum += grow[kid_idx(row.items[i])];
+                    gsum += grow[row.idx[i]];
                 }
                 if (gsum > 0) {
                     float extra = row_free / gsum;
                     for (size_t i = 0; i < row.sizes.size(); ++i) {
-                        size_t gi = kid_idx(row.items[i]);
+                        size_t gi = row.idx[i];
                         if (grow[gi] > 0) {
                             row.sizes[i] += extra * grow[gi];
                             /* a flex item never shrinks below its
@@ -3694,13 +3802,13 @@ struct Builder
             } else if (definite && row_free < 0 && any_shrink) {
                 float ssum = 0;
                 for (size_t i = 0; i < row.sizes.size(); ++i) {
-                    size_t gi = kid_idx(row.items[i]);
+                    size_t gi = row.idx[i];
                     ssum += shrink[gi] * row.sizes[i];
                 }
                 if (ssum > 0) {
                     float overflow = -row_free;
                     for (size_t i = 0; i < row.sizes.size(); ++i) {
-                        size_t gi = kid_idx(row.items[i]);
+                        size_t gi = row.idx[i];
                         if (shrink[gi] > 0) {
                             float cut = overflow * shrink[gi] * row.sizes[i] /
                                         ssum;
@@ -3718,7 +3826,7 @@ struct Builder
              * (select/input with min-width:180px inside a wide row was
              * keeping its ~127px content width) */
             for (size_t i = 0; i < row.sizes.size(); ++i) {
-                size_t gi = kid_idx(row.items[i]);
+                size_t gi = row.idx[i];
                 if (row.sizes[i] < min_main[gi]) {
                     row.sizes[i] = static_cast<float>(min_main[gi]);
                 }
@@ -3769,10 +3877,16 @@ struct Builder
                     cy = item_y;
                     layout(k, n->content.x, item_y, inner_w, sz, font_px,
                            &cy);
-                    /* the resolved main size is authoritative: a flex:1 pane
-                     * takes its share even when the content is shorter (or
-                     * taller - it then overflows/scrolls like a browser) */
-                    if (k->border.h != sz) {
+                    /* the resolved main size is authoritative only for a
+                     * DEFINITE item (flex-basis / explicit height): a
+                     * flex:1 pane takes its share even when the content is
+                     * shorter (or taller - it then overflows like a
+                     * browser). An AUTO-height item keeps the height its
+                     * own layout produced: assigning the pre-layout
+                     * estimate here clipped every row by its padding +
+                     * border (18px box around 23px of content) and made
+                     * every width edit look like a height change. */
+                    if (main_def[i] && k->border.h != sz) {
                         /* nested flex: re-lay with the resolved height as an
                          * explicit height so inner flex:1 panes grow to it
                          * (auto height laid them out at inner_h 0). Uses the
@@ -3790,9 +3904,11 @@ struct Builder
                             k->style["height"] = hs;
                         }
                     }
-                    k->border.h = sz;
-                    k->content.h = sz - k->padding[0] - k->padding[2] -
-                                   k->border_w[0] - k->border_w[2];
+                    if (main_def[i]) {
+                        k->border.h = sz;
+                        k->content.h = sz - k->padding[0] - k->padding[2] -
+                                       k->border_w[0] - k->border_w[2];
+                    }
                     pos = (k->border.y + k->border.h) - n->content.y +
                           between;
                     column_total = (k->border.y + k->border.h) - n->content.y;
@@ -3813,8 +3929,41 @@ struct Builder
                      * (a 2-char label became 3 lines tall -> the text
                      * painted below the checkbox). */
                     int lay_cw = k->is_text ? 0x7FFFFFFF : sz;
+                    /* The flex-assigned main size must be the item's USED
+                     * width, but layout() re-derives the width from the
+                     * style - and for an inline-level box (inline-block /
+                     * inline-flex) that is shrink-to-fit, which ignores the
+                     * flex share. A `.toggle-wrap{display:inline-flex}`
+                     * inside a 352px cell therefore laid its child out at
+                     * the 8px content estimate and the 34px toggle inside it
+                     * was squeezed to 8px. Give the item a temporary explicit
+                     * width (same pattern as the column branch's height),
+                     * then restore. */
+                    std::string ws_saved = get(k->style, "width");
+                    bool had_w = k->style.count("width") != 0;
+                    if (!k->is_text) {
+                        int content_w = sz - k->padding[1] - k->padding[3] -
+                                        k->border_w[1] - k->border_w[3];
+                        if (content_w < 0) {
+                            content_w = 0;
+                        }
+                        char wbuf[32];
+                        std::snprintf(wbuf, sizeof(wbuf), "%dpx",
+                                      get(k->style, "box-sizing") ==
+                                              "border-box"
+                                          ? sz
+                                          : content_w);
+                        k->style["width"] = wbuf;
+                    }
                     layout(k, n->content.x + static_cast<int>(pos), row.y,
                            lay_cw, inner_h, font_px, &cy);
+                    if (!k->is_text) {
+                        if (had_w) {
+                            k->style["width"] = ws_saved;
+                        } else {
+                            k->style.erase("width");
+                        }
+                    }
                     k->border.w = sz;
                     k->content.w = sz - k->padding[1] - k->padding[3] -
                                    k->border_w[1] - k->border_w[3];
@@ -3935,7 +4084,20 @@ struct Builder
                     /* stretch: grow the border box, content stays top-left.
                      * Re-lay with the resolved height so absolute children
                      * (inset:0 panes) fill the new size - the first pass
-                     * laid them out at inner_h 0. */
+                     * laid them out at inner_h 0.
+                     *
+                     * Stretch only applies to an AUTO cross size: an item
+                     * with an explicit `width` (in a column) or `height` (in
+                     * a row) keeps it. Growing it anyway made `width:300px`
+                     * on a row inside a flex column come out 800px wide -
+                     * every C++-set width in a column layout was silently
+                     * overridden. */
+                    const char* cross_prop = column ? "width" : "height";
+                    std::string cv = get(k->style, cross_prop);
+                    bool cross_auto = cv.empty() || cv == "auto";
+                    if (!cross_auto) {
+                        continue;
+                    }
                     if (column) {
                         k->border.w += extra;
                         k->content.w += extra;
@@ -3998,7 +4160,11 @@ struct Builder
     struct GridTrack
     {
         float len; /* px / fr number / percent number */
-        int type;  /* 0=px 1=fr 2=auto 3=percent */
+        int type;  /* 0=px 1=fr 2=auto 3=percent 4=minmax(px floor, fr max) */
+        float min_len; /* type 4: the px floor of minmax(min, 1fr) */
+        /* 1 = this track came from repeat(auto-fill|auto-fit, ...): the
+         * template is repeated to fill the container (see layout_grid) */
+        int auto_repeat;
     };
 
     /* grid item placement: final grid lines (1-based, end exclusive) */
@@ -4086,22 +4252,136 @@ struct Builder
         }
     }
 
+    /* Parse ONE track token into `out`. Handles:
+     *   <len>px / % / fr / auto / minmax(<min>, <max>)
+     * minmax(px, 1fr) is the common `repeat(auto-fill, minmax(400px, 1fr))`
+     * form: the px part is the track's MINIMUM (it decides how many tracks
+     * fit), the fr part takes the leftover. Parsing it as "auto" (the old
+     * behaviour: the token did not end in px/%/fr, so it fell through to
+     * auto) made auto-fill produce ONE content-sized column - the settings
+     * page's 122px fields instead of two ~510px columns. */
+    bool parse_one_track(const std::string& tok, GridTrack& out)
+    {
+        out.len = 0;
+        out.type = 2;
+        out.min_len = 0;
+        out.auto_repeat = 0;
+        if (tok.empty()) {
+            return false;
+        }
+        if (tok.compare(0, 7, "minmax(") == 0) {
+            size_t comma = tok.find(',');
+            size_t close = tok.rfind(')');
+            if (comma == std::string::npos || close == std::string::npos ||
+                comma < 7 || close <= comma) {
+                return false;
+            }
+            std::string mn = tok.substr(7, comma - 7);
+            std::string mx = tok.substr(comma + 1, close - comma - 1);
+            auto trim2 = [](std::string s) {
+                size_t b = s.find_first_not_of(" \t");
+                size_t e = s.find_last_not_of(" \t");
+                return b == std::string::npos ? std::string()
+                                              : s.substr(b, e - b + 1);
+            };
+            mn = trim2(mn);
+            mx = trim2(mx);
+            float min_px = len_px(mn, 0, 16);
+            char* e2 = nullptr;
+            float mxn = std::strtof(mx.c_str(), &e2);
+            if (e2 != mx.c_str() && e2[0] == 'f' && e2[1] == 'r') {
+                out.type = 4;      /* px floor + fr share */
+                out.len = mxn;     /* the fr number */
+                out.min_len = min_px;
+                return true;
+            }
+            if (e2 != mx.c_str() && *e2 == '%') {
+                out.type = 3;
+                out.len = mxn;
+                out.min_len = min_px;
+                return true;
+            }
+            /* minmax(px, px) / minmax(auto, ...): use the max when it is a
+             * length, else the min */
+            out.type = 0;
+            out.len = len_px(mx, 0, 16);
+            if (out.len <= 0) {
+                out.len = min_px;
+            }
+            return true;
+        }
+        char* end = nullptr;
+        float num = std::strtof(tok.c_str(), &end);
+        if (end != tok.c_str() && end[0] == 'f' && end[1] == 'r') {
+            out.type = 1;
+            out.len = num;
+            return true;
+        }
+        if (end != tok.c_str() && *end == '%') {
+            out.type = 3;
+            out.len = num;
+            return true;
+        }
+        if (end != tok.c_str()) {
+            out.type = 0;
+            out.len = len_px(tok, 0, 16);
+            return true;
+        }
+        out.type = 2; /* auto / unknown */
+        return true;
+    }
+
     void parse_grid_tracks(const std::string& v, std::vector<GridTrack>& out)
     {
         size_t rp = v.find("repeat(");
         if (rp != std::string::npos) {
-            size_t close = v.find(')', rp);
-            if (close != std::string::npos) {
+            size_t close = rp + 7;
+            int depth = 1;
+            while (close < v.size()) {
+                if (v[close] == '(') {
+                    ++depth;
+                } else if (v[close] == ')') {
+                    --depth;
+                    if (depth == 0) {
+                        break;
+                    }
+                }
+                ++close;
+            }
+            if (close < v.size()) {
                 std::string pre = v.substr(0, rp);
                 std::string inner = v.substr(rp + 7, close - rp - 7);
                 std::string post = v.substr(close + 1);
                 parse_grid_tracks(pre, out);
                 size_t comma = inner.find(',');
                 if (comma != std::string::npos) {
-                    int count = std::atoi(inner.substr(0, comma).c_str());
+                    std::string cnt = inner.substr(0, comma);
                     std::string tl = inner.substr(comma + 1);
                     std::vector<GridTrack> sub;
                     parse_grid_tracks(tl, sub);
+                    bool auto_fill = false, auto_fit = false;
+                    size_t cb = cnt.find_first_not_of(" \t");
+                    if (cb != std::string::npos) {
+                        std::string cw = cnt.substr(cb);
+                        size_t ce = cw.find_last_not_of(" \t");
+                        if (ce != std::string::npos) {
+                            cw = cw.substr(0, ce + 1);
+                        }
+                        auto_fill = cw == "auto-fill";
+                        auto_fit = cw == "auto-fit";
+                    }
+                    int count = 0;
+                    if (auto_fill || auto_fit) {
+                        /* auto-fill/auto-fit: the number of tracks is the
+                         * container width divided by the track's MINIMUM,
+                         * at least 1. `inner_w` is not known here, so the
+                         * caller re-expands these tracks (see the
+                         * GridAutoRepeat bookkeeping below); store a single
+                         * template and let layout_grid repeat it. */
+                        count = 0;
+                    } else {
+                        count = std::atoi(cnt.c_str());
+                    }
                     if (count < 0) {
                         count = 0;
                     }
@@ -4111,6 +4391,14 @@ struct Builder
                     for (int i = 0; i < count; ++i) {
                         for (size_t j = 0; j < sub.size(); ++j) {
                             out.push_back(sub[j]);
+                        }
+                    }
+                    if (auto_fill || auto_fit) {
+                        /* one template: layout_grid expands it to fit */
+                        for (size_t j = 0; j < sub.size(); ++j) {
+                            GridTrack t = sub[j];
+                            t.auto_repeat = 1;
+                            out.push_back(t);
                         }
                     }
                 }
@@ -4127,20 +4415,23 @@ struct Builder
                 break;
             }
             const char* s = p;
-            while (*p && *p != ' ' && *p != '\t') {
+            int depth = 0;
+            while (*p) {
+                if (*p == '(') {
+                    ++depth;
+                } else if (*p == ')') {
+                    if (depth > 0) {
+                        --depth;
+                    }
+                } else if ((*p == ' ' || *p == '\t') && depth == 0) {
+                    break;
+                }
                 ++p;
             }
             std::string tok(s, static_cast<size_t>(p - s));
-            char* end = nullptr;
-            float num = std::strtof(tok.c_str(), &end);
-            if (end != tok.c_str() && end[0] == 'f' && end[1] == 'r') {
-                out.push_back(GridTrack{num, 1});
-            } else if (end != tok.c_str() && *end == '%') {
-                out.push_back(GridTrack{num, 3});
-            } else if (end != tok.c_str()) {
-                out.push_back(GridTrack{len_px(tok, 0, 16), 0});
-            } else {
-                out.push_back(GridTrack{0, 2}); /* auto / unknown */
+            GridTrack t;
+            if (parse_one_track(tok, t)) {
+                out.push_back(t);
             }
         }
     }
@@ -4339,6 +4630,17 @@ struct Builder
             return;
         }
 
+        /* gap must be known BEFORE auto-fill expansion (the number of tracks
+         * that fit depends on the gap) */
+        std::string gapv = get(n->style, "gap");
+        if (gapv.empty()) {
+            gapv = get(n->style, "column-gap");
+        }
+        float col_gap = len_px(gapv, static_cast<float>(inner_w), em);
+        std::string rgv = get(n->style, "row-gap");
+        float row_gap = rgv.empty() ? col_gap
+                                    : len_px(rgv, static_cast<float>(inner_w), em);
+
         std::vector<GridTrack> ctracks;
         if (is_table) {
             /* table: one auto column per cell column */
@@ -4349,9 +4651,74 @@ struct Builder
                 }
             }
             ctracks.assign(static_cast<size_t>(ncol > 0 ? ncol : 1),
-                           GridTrack{0, 2});
+                           GridTrack{0, 2, 0, 0});
         } else {
             parse_grid_tracks(get(n->style, "grid-template-columns"), ctracks);
+            /* repeat(auto-fill|auto-fit, ...) is stored as ONE template
+             * marked auto_repeat; expand it here where the container width
+             * is known: how many tracks fit = floor((W + gap) /
+             * (min_track + gap)), at least 1. */
+            bool has_auto = false;
+            for (size_t i = 0; i < ctracks.size(); ++i) {
+                if (ctracks[i].auto_repeat) {
+                    has_auto = true;
+                    break;
+                }
+            }
+            if (has_auto) {
+                std::vector<GridTrack> tmpl;
+                size_t auto_at = ctracks.size();
+                for (size_t i = 0; i < ctracks.size(); ++i) {
+                    if (ctracks[i].auto_repeat) {
+                        if (auto_at == ctracks.size()) {
+                            auto_at = i;
+                        }
+                        tmpl.push_back(ctracks[i]);
+                    }
+                }
+                /* minimum width of one template repetition */
+                float tmpl_min = 0;
+                for (size_t i = 0; i < tmpl.size(); ++i) {
+                    if (tmpl[i].type == 4) {
+                        tmpl_min += tmpl[i].min_len;
+                    } else if (tmpl[i].type == 0) {
+                        tmpl_min += tmpl[i].len;
+                    } else {
+                        tmpl_min += 40; /* fr/auto: a small floor */
+                    }
+                }
+                if (tmpl_min < 1) {
+                    tmpl_min = 1;
+                }
+                float gap_px = col_gap;
+                float avail = static_cast<float>(inner_w);
+                int reps = 1;
+                if (tmpl_min + gap_px > 0) {
+                    reps = static_cast<int>(
+                        (avail + gap_px) / (tmpl_min + gap_px));
+                }
+                if (reps < 1) {
+                    reps = 1;
+                }
+                if (reps > 32) {
+                    reps = 32;
+                }
+                std::vector<GridTrack> expanded;
+                expanded.reserve(ctracks.size() - 1 + tmpl.size() * reps);
+                for (size_t i = 0; i < ctracks.size(); ++i) {
+                    if (i == auto_at) {
+                        for (int r = 0; r < reps; ++r) {
+                            for (size_t j = 0; j < tmpl.size(); ++j) {
+                                expanded.push_back(tmpl[j]);
+                            }
+                        }
+                        i += tmpl.size() - 1;
+                    } else {
+                        expanded.push_back(ctracks[i]);
+                    }
+                }
+                ctracks.swap(expanded);
+            }
         }
         std::vector<GridTrack> rtracks;
         parse_grid_tracks(get(n->style, "grid-template-rows"), rtracks);
@@ -4500,14 +4867,7 @@ struct Builder
             nrows = static_cast<int>(rtracks.size());
         }
 
-        std::string gapv = get(n->style, "gap");
-        if (gapv.empty()) {
-            gapv = get(n->style, "column-gap");
-        }
-        float col_gap = len_px(gapv, static_cast<float>(inner_w), em);
-        std::string rgv = get(n->style, "row-gap");
-        float row_gap = rgv.empty() ? col_gap
-                                    : len_px(rgv, static_cast<float>(inner_w), em);
+        /* the gap was resolved before the auto-fill expansion; reuse it */
         std::string align = get(n->style, "align-items");
         if (align.empty()) {
             /* place-items: <align> <justify> - first value is align */
@@ -4529,6 +4889,12 @@ struct Builder
                     ctracks[static_cast<size_t>(i)].len *
                     static_cast<float>(inner_w) / 100.0f);
             } else if (t == 1) {
+                fr_sum += ctracks[static_cast<size_t>(i)].len;
+            } else if (t == 4) {
+                /* minmax(px, 1fr): the px floor is the track's minimum; the
+                 * fr part distributes the leftover like a plain fr track. */
+                col_w[static_cast<size_t>(i)] =
+                    static_cast<int>(ctracks[static_cast<size_t>(i)].min_len);
                 fr_sum += ctracks[static_cast<size_t>(i)].len;
             }
         }
@@ -4585,6 +4951,10 @@ struct Builder
                         : 2;
             if (t == 1) {
                 col_w[static_cast<size_t>(i)] = static_cast<int>(
+                    ctracks[static_cast<size_t>(i)].len * fr_unit);
+            } else if (t == 4) {
+                /* minmax(px, 1fr): px floor + its share of the leftover */
+                col_w[static_cast<size_t>(i)] += static_cast<int>(
                     ctracks[static_cast<size_t>(i)].len * fr_unit);
             }
         }
@@ -4810,6 +5180,110 @@ struct Builder
  * members outright). Rebuild the list from the current chain in WUI_CHUNK
  * units and mark the path dirty so the boxes recompute through the normal
  * dirty path. file-scope (shared by relayout_impl + relayout_multi). */
+/* Splice `fresh` in place of `old` in `parent`'s child chain, in O(1)-ish
+ * time: walk from the START OF `old`'s CHUNK (<= WUI_CHUNK siblings) instead
+ * of from the parent's first child.
+ *
+ * With 3200 rows in one container the parent-anchored walk visited every
+ * sibling before the edited one - twice per edit (find + splice) - which is
+ * the "one C++ style edit costs 100ms on a 3200-row page" report. */
+static void splice_child_link(whaleui_layout_tree_t* tree,
+                              whaleui_layout_node_t* parent,
+                              whaleui_layout_node_t* old,
+                              whaleui_layout_node_t* fresh)
+{
+    (void)tree;
+    if (!parent || !old || !fresh) {
+        return;
+    }
+    whaleui_layout_node_t** link;
+    if (old->chunk && old->chunk->first) {
+        link = &old->chunk->first;
+    } else {
+        link = &parent->first_child;
+    }
+    while (*link && *link != old) {
+        link = &(*link)->next;
+    }
+    if (*link != old) {
+        /* chunk pointer stale: fall back to the parent-anchored walk */
+        link = &parent->first_child;
+        while (*link && *link != old) {
+            link = &(*link)->next;
+        }
+        if (*link != old) {
+            return;
+        }
+    }
+    *link = fresh;
+    /* The walk may have started at the CHUNK's first member instead of the
+     * parent's child pointer. When the replaced node is the parent's FIRST
+     * child both refer to it, but the chunk walk only rewrites the chunk
+     * pointer - parent->first_child kept pointing at the dead node, so the
+     * rebuilt subtree was never reachable from the tree (the edit appeared
+     * to do nothing, and later passes laid out the stale node). */
+    if (parent->first_child == old) {
+        parent->first_child = fresh;
+    }
+    /* one child replaced one child: the chunk boundaries stay valid, only
+     * the back-pointer and (if `old` was a boundary member) the chunk's
+     * first/last need patching (see splice_replace_child). */
+    whaleui_child_chunk* ck = old->chunk;
+    fresh->chunk = ck;
+    if (ck) {
+        if (ck->first == old) {
+            ck->first = fresh;
+        }
+        if (ck->last == old) {
+            ck->last = fresh;
+        }
+    }
+    for (whaleui_layout_node_t* bd = parent; bd && !bd->bd;
+         bd = bd->parent) {
+        bd->bd = 1;
+    }
+}
+
+/* Splice `fresh` in place of `old` under `parent`, keeping the parent's chunk
+ * list VALID WITHOUT REBUILDING IT.
+ *
+ * A relayout replaces one child with a fresh node of the same element, so the
+ * parent's child COUNT and order are unchanged - the chunk boundaries are
+ * still correct. Only the node -> chunk back-pointer and, if `old` happened to
+ * be a chunk's first/last member, that boundary pointer need updating.
+ *
+ * Rebuilding the list instead (rechunk_parent) was O(children) per edited
+ * element AND appended a fresh set of chunk objects to the arena every time:
+ * editing one row of a 3200-row list walked 3200 siblings and leaked ~50
+ * chunk objects per edit. That is the "a C++ style edit costs 100ms and the
+ * memory keeps growing" report. */
+static void splice_replace_child(whaleui_layout_tree_t* tree,
+                                 whaleui_layout_node_t* parent,
+                                 whaleui_layout_node_t* old,
+                                 whaleui_layout_node_t* fresh)
+{
+    if (!parent || !old || !fresh) {
+        return;
+    }
+    whaleui_child_chunk* ck = old->chunk;
+    fresh->chunk = ck;
+    if (ck) {
+        if (ck->first == old) {
+            ck->first = fresh;
+        }
+        if (ck->last == old) {
+            ck->last = fresh;
+        }
+    }
+    /* a rebuilt subtree carries its OWN chunk list (built by append_child);
+     * the parent's list is untouched */
+    (void)tree;
+    for (whaleui_layout_node_t* bd = parent; bd && !bd->bd;
+         bd = bd->parent) {
+        bd->bd = 1;
+    }
+}
+
 static void rechunk_parent(whaleui_layout_tree_t* tree,
                            whaleui_layout_node_t* parent)
 {
@@ -5080,22 +5554,21 @@ static int relayout_impl(
     /* splice: replace `old` with `fresh` in the parent's child chain */
     fresh->next = old->next;
     if (parent) {
-        whaleui_layout_node_t** link = &parent->first_child;
-        while (*link && *link != old) {
-            link = &(*link)->next;
+        if (old->chunk && old->chunk->first) {
+            /* the chunk-anchored walk validates itself; a stale chunk falls
+             * back to the parent-anchored walk inside the helper */
+            splice_child_link(tree, parent, old, fresh);
+        } else {
+            whaleui_layout_node_t** link = &parent->first_child;
+            while (*link && *link != old) {
+                link = &(*link)->next;
+            }
+            if (*link != old) {
+                return -1; /* tree inconsistent: caller falls back */
+            }
+            *link = fresh;
+            splice_replace_child(tree, parent, old, fresh);
         }
-        if (*link != old) {
-            return -1; /* tree inconsistent: caller falls back to a rebuild */
-        }
-        *link = fresh;
-        /* the rebuilt subtree came with its own fresh chunk objects, but
-         * the parent's chunk LIST still references the old ones: the
-         * paint/hit chunk walk would cull on stale boxes (or skip the new
-         * members entirely) - every hover-triggered relayout risked
-         * dropping subtrees from paint/hit until the next full rebuild
-         * ("hover breaks / click lands wrong after any state change").
-         * Re-chunk the parent from its (now current) child chain. */
-        rechunk_parent(tree, parent);
     } else {
         tree->root = fresh;
     }
@@ -5446,6 +5919,7 @@ int whaleui_layout_relayout_multi(
     std::vector<int> oldHeights;
     std::vector<int> oldTops; /* border.y */
     std::vector<int> oldMargT; /* margin-top */
+    std::vector<int> oldWidths; /* border.w (the block fast path's guard) */
     for (size_t e = 0; e < nel; ++e) {
         lxb_dom_element* el = els[e];
         auto found = tree->by_el.find(el);
@@ -5457,6 +5931,7 @@ int whaleui_layout_relayout_multi(
         oldHeights.push_back(old->border.h);
         oldTops.push_back(old->border.y);
         oldMargT.push_back(old->margin[0]);
+        oldWidths.push_back(old->border.w);
         std::function<void(whaleui_layout_node_t*)> unmap =
             [&](whaleui_layout_node_t* nd) {
                 if (nd->el) {
@@ -5478,6 +5953,11 @@ int whaleui_layout_relayout_multi(
         freshNodes.push_back(fresh);
         fresh->next = old->next;
         if (parent) {
+            /* the child link walk is O(children of the parent): with 3200
+             * rows in one container every edit walked the whole sibling
+             * chain twice (find + splice). Splice through the PREVIOUS
+             * node's `next` pointer instead - the node we replace is known,
+             * so walk from the chunk's first member, not the parent. */
             whaleui_layout_node_t** link = &parent->first_child;
             while (*link && *link != old) {
                 link = &(*link)->next;
@@ -5486,13 +5966,12 @@ int whaleui_layout_relayout_multi(
                 return -1;
             }
             *link = fresh;
-            /* same chunk-list desync as relayout_impl's splice (see
-             * rechunk_parent): the rebuilt subtree is invisible to the
-             * paint/hit chunk walks until the parent is re-chunked. A
-             * layout animation rebuilds subtrees EVERY frame, so without
-             * this the animated elements' chunks went stale continuously
-             * ("animation flickers / hover dies while the bar runs"). */
-            rechunk_parent(tree, parent);
+            /* same in-place splice as relayout_impl: the child count and
+             * order did not change, so the parent's chunk boundaries stay
+             * valid (see splice_replace_child). Rebuilding the list here ran
+             * once per animated element per FRAME - O(children) and a fresh
+             * set of chunk objects every time. */
+            splice_replace_child(tree, parent, old, fresh);
         } else {
             tree->root = fresh;
         }
@@ -5526,32 +6005,48 @@ int whaleui_layout_relayout_multi(
         if (!a) {
             a = tree->root;
         }
-        /* fast path: the whole ancestor chain is block (a == root) and the
-         * animated element itself is in normal flow inside a block parent.
-         * Block siblings are independent rows, so lay the fresh subtree out
-         * in place (parent's content box + old flow offset seed) and - when
-         * its height is unchanged - skip the ancestor pass for this element
-         * entirely: no sibling moved, no ancestor grew. font_px passes
-         * through unchanged at every level (top-level calls use 16), so 16
-         * here computes exactly what the ancestor pass would have. */
+        /* Fast path: lay the rebuilt subtree out IN PLACE inside its parent
+         * and decide whether anything OUTSIDE it can have moved.
+         *
+         * What can move a sibling:
+         *   - a HEIGHT change in a block flow or a flex COLUMN (vertical
+         *     main axis): following siblings shift down/up;
+         *   - a WIDTH change in a flex ROW (horizontal main axis): the free
+         *     space is redistributed;
+         *   - a y/x change (the item itself moved).
+         * Everything else - a cross-axis size change (width in a column,
+         * height in a row), a paint-only edit, or no size change at all -
+         * leaves every sibling and ancestor exactly where it was, so the
+         * ancestor box pass can be skipped.
+         *
+         * This is what makes a C++ style edit on one element cheap: the old
+         * check compared width/height/y against the previous box and, on any
+         * difference, re-laid out the topmost flex ancestor - i.e. the whole
+         * 3200-row container (~105ms per frame for ONE row's width edit). */
         bool done = false;
-        if (a == tree->root && fn->parent && fn->parent != tree->root) {
+        if (fn->parent && fn->parent != tree->root) {
             whaleui_layout_node_t* par = fn->parent;
-            int pdk = display_kind(get(par->style, "display"));
             int pk = position_kind(get(fn->style, "position"));
-            if (pdk != 1 && pdk != 4 && (pk == 0 || pk == 3 || pk == 4)) {
+            if (pk == 0 || pk == 3 || pk == 4) {
                 int cursor = oldTops[fi] - oldMargT[fi];
                 b.layout(fn, par->content.x, par->content.y,
                          par->content.w, par->content.h, 16, &cursor);
-                if (fn->border.h == oldHeights[fi] &&
-                    fn->border.y == oldTops[fi]) {
+                bool height_same = fn->border.h == oldHeights[fi] &&
+                                   fn->border.y == oldTops[fi];
+                bool width_same = fn->border.w == oldWidths[fi];
+                int pdk = display_kind(get(par->style, "display"));
+                std::string pdir = get(par->style, "flex-direction");
+                bool par_row = pdk == 1 && pdir != "column" &&
+                               pdir != "column-reverse";
+                bool par_col = pdk == 1 && !par_row;
+                if (height_same && (width_same || !par_row)) {
                     done = true;
                 }
-                /* height (or y) moved: fall through to the ancestor pass
-                 * below, which re-lays this subtree again as part of the
-                 * ancestor. One redundant subtree layout on height-change
-                 * frames only (width-only frames - the common case - skip
-                 * it); the double layout is idempotent. */
+                (void)par_col;
+                /* else: fall through to the ancestor pass below, which
+                 * re-lays this subtree again as part of the ancestor. One
+                 * redundant subtree layout on real-change frames only; the
+                 * double layout is idempotent. */
             }
         }
         if (!done &&

@@ -1896,6 +1896,63 @@ int main(void)
         whaleui_dom_document_destroy(doc);
     }
 
+    /* relayout of the FIRST child must replace the parent's first_child
+     * pointer, not just the chunk anchor (regression: the rebuilt subtree
+     * stayed unreachable, so an edit of the first row silently did
+     * nothing). */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"a\" style=\"width:100px;height:50px\"></div>"
+            "<div id=\"b\" style=\"width:80px;height:30px\"></div></body>",
+            0);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 800, 600, nullptr, nullptr, nullptr,
+            1.0f);
+        lxb_dom_element* ael = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc, "a"));
+        whaleui_layout_node_t* a = t->by_el[ael];
+        assert(a && a->parent && a->parent->first_child == a);
+        whaleui_dom_set_style(reinterpret_cast<whaleui_dom_element_t*>(ael),
+                              "height", "100px");
+        assert(whaleui_layout_relayout(t, ael, nullptr, 0, nullptr, nullptr,
+                                       nullptr, nullptr, 1.0f) == 0);
+        whaleui_layout_node_t* a2 = t->by_el[ael];
+        assert(a2 != a);
+        assert(a2->border.h == 100);
+        assert(a2->parent->first_child == a2); /* chain actually spliced */
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
+    /* flex column: an auto-height item keeps the height its own layout
+     * produced (padding + border included). The main-axis size used to be
+     * the raw CONTENT estimate and was assigned as the BORDER height, so
+     * every padded row came out 5px short (18px box around 23px of
+     * content). */
+    {
+        whaleui_layout_tree_t* t = do_layout(
+            "<body style=\"margin:0\"><div id=\"app\" style=\"display:flex;"
+            "flex-direction:column\">"
+            "<div id=\"row\" style=\"padding:2px 6px;border-bottom:1px solid "
+            "#eee;font-size:13px\">row text</div></div></body>",
+            800, 600);
+        whaleui_layout_node_t* app = find_tag(t->root, "div");
+        assert(app != nullptr && app->first_child != nullptr);
+        /* 13px text -> 18px line + 2px*2 padding + 1px border = 23px; the
+         * point is that the box is at least the content height + chrome,
+         * not the bare 18px content estimate */
+        /* The box must be content + padding + border. The regression made
+         * it the bare content estimate (15px here), dropping the 2+2
+         * padding and the 1px bottom border. */
+        whaleui_layout_node_t* row = app->first_child;
+        assert(row->content.h > 0);
+        assert(row->border.h == row->content.h + row->padding[0] +
+                                   row->padding[2] + row->border_w[0] +
+                                   row->border_w[2]);
+        assert(row->padding[0] == 2 && row->border_w[2] == 1);
+        whaleui_layout_destroy(t);
+    }
+
     /* smoke: every test_html example parses and lays out without crashing */
     {
         const char* files[] = {
