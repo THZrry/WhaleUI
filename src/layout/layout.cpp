@@ -1260,12 +1260,27 @@ float estimate_content_width(whaleui_layout_node_t* k, float em,
             }
         }
     }
-    /* padding left/right (full shorthand: "7px 12px" adds 12 each side) */
+    /* padding left/right (full shorthand: "7px 12px" adds 12 each side;
+     * the longhands count when the shorthand is absent) */
     std::string p = get(k->style, "padding");
     if (!p.empty()) {
         int pad4[4] = {0, 0, 0, 0};
         sides(p, pad4, 0, em, 0);
         w += pad4[1] + pad4[3];
+    } else {
+        w += len_px(get(k->style, "padding-left"), 0, em);
+        w += len_px(get(k->style, "padding-right"), 0, em);
+    }
+    /* Border width is part of the border box this value stands for. Omitting
+     * it made a bordered flex item's min-content 2px (both sides) too small,
+     * so its own text - measured to fit exactly - wrapped onto a second line
+     * and the item came out ~2x tall ("sizes doubled", "wraps one character
+     * early"). box_border_widths resolves the longhands and the "border"
+     * shorthand, which is what the box pass uses. */
+    {
+        int bw4[4] = {0, 0, 0, 0};
+        box_border_widths(k->style, em, bw4);
+        w += bw4[1] + bw4[3];
     }
     if (inline_box || flex_row) {
         /* 2px safety margin: the painted wrap uses the box width, and a
@@ -2619,21 +2634,24 @@ struct Builder
             if (ws == "nowrap" || ws == "pre") {
                 avail = 0x7FFFFFFF;
             }
-            /* an inline element's text flows with the OUTER line box: its
-             * wrap width is the block ancestor's remaining line space, not
-             * the inline box's own content width (~= the text width, at
-             * which a line wrapping exactly at the boundary estimates 2
-             * lines and the paint pass duplicates them - <code> text
-             * overlapped the line below it). Walk up past inline boxes
-             * (code/span/b/em...) to the first block/flex box. */
+            /* Wrap width MUST be exactly what the paint pass wraps at
+             * (render_text.cpp run_wrap_w): the block ancestor's content
+             * right edge minus this run's x. Deriving it any other way makes
+             * the two disagree by the run's indent - a run that starts
+             * mid-line (mixed text + <span> + text) got the FULL content
+             * width here but only the remainder at paint time, so the paint
+             * pass wrapped one character earlier than the layout assumed and
+             * the extra line overflowed the box ("wrapping is wrong, it
+             * overflows by a single character"). Walking up past inline
+             * boxes keeps <code>/<span> text on the outer line box. */
             if (avail != 0x7FFFFFFF) {
                 whaleui_layout_node_t* anc = n->parent;
                 while (anc && !anc->is_text &&
-                       display_kind(get(anc->style, "display")) == 2 &&
-                       get(anc->style, "display") == "inline") {
+                       get(anc->style, "display") == "inline" &&
+                       anc->parent && !anc->parent->is_text) {
                     anc = anc->parent;
                 }
-                if (anc && anc->content.w > 0) {
+                if (anc && !anc->is_text && anc->content.w > 0) {
                     int right = anc->content.x + anc->content.w;
                     int av2 = right - cx;
                     if (av2 > 0) {
@@ -2926,6 +2944,14 @@ struct Builder
 
         /* children */
         int inner_w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
+        /* The content width is final HERE (it only depends on the border box
+         * and the padding/border widths, all resolved above), and children
+         * need it: a text run's wrap width is derived from its container's
+         * content edge (see the text-run branch), and reading a stale/zero
+         * value made layout and paint wrap at different widths. Assigned
+         * again at the end of the pass, which is where it used to be set
+         * only. */
+        n->content.w = inner_w;
         int inner_h = static_cast<int>(hpx);
         if (border_box) {
             /* border-box: hpx includes padding/border - children lay out

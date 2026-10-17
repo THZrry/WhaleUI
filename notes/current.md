@@ -1523,3 +1523,94 @@ row 父里的 `vw`)或**百分比**。与嵌套层数无关(单层即触发),与
 
 已把这些行改正(并把 flex 主轴的单位/百分比解析写进单位表与 flex 行)。
 教训与 `<3>` 一致:**判断引擎支持什么要看实测**,文档里的 ❌ 会长期滞后。
+
+# <53>: 并列标签同字 / tab 切换闪退 / div 放大 / 换行差一字 / DOM 操作 O(n^2)
+
+SOLVED
+
+用户一次报了五个现象, 逐个复现定位。其中三个是同一个根因家族(缓存键与
+悬垂指针), 两个是布局上下文缺失。
+
+## A. 多个并列标签全显示第一个的字符串(critical)
+
+**根因: 行布局表缓存键用了 SSO 缓冲区地址。** `tl_key` 用
+`(text.data(), text.size())` 做键(为了不哈希超长文本), 但 `std::string` 的短串
+存在**对象内部的 SSO 缓冲**里, 而 paint 传下来的是一个**栈上局部副本** `shown`。
+于是同一行里所有**字节长度相同**的短文本得到完全相同的键: 第一个标签的行表
+(含字形序列)被后面所有同长度标签复用, 画出来就是第一个的字。
+
+复现: 四个同长度标签(Alpha/Bravo/Chair/Doubt)横排, 修复前四个格子像素完全
+一致; 长度不同的标签没问题 —— 这就是"有时候"的原因。
+
+**修法**: `tl_key` 对 <=4KB 的文本按**内容**哈希(一个标签几十字节, 成本可忽略),
+超长文本才保留指针身份(它们必然堆分配且唯一, 且文档重置时整表清空)。两条
+分支用不同 tag 常数, 不会互相别名。raster 缓存(`draw_text_at` 的 key)同样
+把 256 字节以上的长文本改成带 `text.data()` —— 同一元素下两个长 run 以前会
+共享一个 entry, 第二个画出第一个的字形。
+
+回归: `test_render::same_length_labels`(四个同长度标签必须给出 >=3 种墨迹)。
+
+## B. tab 切换(display:none / class 切换)闪退(fatal)
+
+两条悬垂指针路径, 都在"文档销毁"这一侧:
+
+1. **待处理脏队列不清**: `whaleui_dom_document_destroy` 没有丢弃该文档在
+   `g_dirty` 里的元素指针。之后新文档分配到同一地址时, 队列看起来"有脏元素",
+   renderer 去解引用已释放的节点。修: `dirty_purge_doc(doc)`。
+2. **id 索引不清(更严重)**: 新增的 id→元素哈希索引同样以 document 地址为键,
+   销毁时不清就被下一个文档继承, `getElementById` 直接返回**已释放的元素**。
+   这个 bug 是本次新增索引时自己引入的, `probe_idlookup` 第二个文档立刻 SIGSEGV,
+   已修(销毁时 `g_id_index().erase(...)`)。
+
+顺带修掉 `probe_tabs`(200 轮 class/display 切换 + details + select 弹层)与
+`probe_tabcrash`(200 次"带未提交编辑的 load_html")两个压力探针。
+
+## C. DOM 操作越用越慢(O(n^2))
+
+两处:
+
+1. **`mark_dirty_ex` 的去重是线性扫描**: 每帧编辑 N 个不同元素就是 O(N^2)。
+   实测 n=1600 时批量改 class 花 22.8ms(200 个元素 0.08ms → 完全平方增长)。
+   修: 脏队列加 `element -> 下标` 哈希索引(重建只在 drain 后一次, 均摊线性)。
+2. **`getElementById` 是 lexbor 的全树遍历**: 3200 个元素时单次 25.9µs,
+   循环里查 N 次就是 O(n^2) —— 应用里"事件处理器按 id 找元素"正是这种写法。
+   修: 每文档一个 id 哈希索引, O(1)。正确性靠三件事: 结构性编辑与 `id` 属性
+   编辑都递增全局 generation(命中时还要验证元素仍挂在本文档上, 失效则重建);
+   append/insert 路径就地打补丁(逐行建列表保持线性); 文档销毁时清索引。
+
+实测(修复后): n=3200 时单次查询 0.08µs(快 300 倍), 批量编辑线性。
+
+## D. div 尺寸放大(约 1.6x)
+
+`estimate_content_width`(flex 项的 min-content 地板)算了 padding, 但**没算
+边框宽度**。一个 `padding:6px 10px; border:1px solid` 的 flex 项, 地板比真实
+需求小 2px, 于是它自己的文本被判"刚好放不下"而折成两行: 实测高度 52px(应为
+33px) —— 正好是用户说的"放大了"。
+
+修: 用 `box_border_widths`(解析 longhand + `border` 简写, 与盒模型 pass 同源)
+把左右边框加进估算; `padding` 简写缺失时也读 `padding-left/right`。
+
+## E. 换行差一个字(溢出一字)
+
+layout 与 paint 的**换行宽度必须一致**, 但两边各写了一份推导:
+
+- layout 走 `display_kind(...) == 2` 判断是否跳过 inline 祖先, paint 用
+  `display == "inline"`; 且 layout 读的 `anc->content.w` 在子节点布局**之前
+  还没赋值**(只在 pass 末尾写), 于是行首 run 拿到的是 0 或上一轮的值。
+- 修: layout 在解析出 `inner_w` 后立刻写 `n->content.w`; 跳过 inline 祖先的
+  条件与 paint 对齐(只跳 `display:inline`, 并带上 parent 非文本的守卫)。
+
+验证: `temp/probe_wrap` 五个场景(混合 inline 行/普通段落/flex 长标签/
+inline-block 按钮/CJK 段落)逐个检查"墨迹是否越出盒子底边或右边", 全部 ok。
+
+## 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_ssolabels` 四格墨迹不再相同; `test_render` 新增同长度标签回归。
+- `probe_tabs` 400 轮、`probe_tabcrash` 200 轮无崩溃。
+- `probe_idlookup`: 3200 元素单次 0.08µs(原 25.9µs);`probe_perf2` 批量编辑线性。
+- `probe_sizes/sizes2/sizes3`: 边框+padding 的 flex 项 52→33;grid 3×1fr、
+  inline-block、button、textarea、img 等盒子尺寸逐个核对。
+- 16 张主题渲染 + 6 个 test_html 页面与修复前逐像素比对: 最大差异 3.0%
+  (material 主题的按钮因 min-content 修正而不再多折一行), 主题亮度/对比自检仍
+  通过(浅色 0.98 / 深色 0.07~0.23 / spread 0.66~0.71)。

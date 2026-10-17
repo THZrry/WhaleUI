@@ -19,6 +19,7 @@
 #include <functional>
 
 int anim_runs(void); /* defined after main (window/GPU path) */
+int same_length_labels(void); /* sibling text-cache key regression */
 
 /* read one pixel back from the GPU composited target (R8G8B8A8) */
 static unsigned int gpixel(whaleui_render_t* r, int x, int y)
@@ -3350,8 +3351,79 @@ int main(void)
 
     whaleui_app_destroy(app);
     anim_runs();
+    same_length_labels();
     return 0;
 #endif /* #if 0: historical tests disabled */
+}
+
+/* Same-length sibling labels must each paint their OWN text.
+ *
+ * The line-layout cache keyed runs on (text.data(), text.size()) to avoid
+ * hashing long runs. `std::string` keeps short strings in an SSO buffer inside
+ * the object, and the paint path passes a stack-local copy - so every short run
+ * of the same BYTE LENGTH produced the same key and the first label's line
+ * table (hence its glyphs) was served for all the others: "several parallel
+ * labels all show the first one's text". Regression: four same-length labels
+ * in one flex row must have four distinct ink signatures. */
+int same_length_labels(void)
+{
+    whaleui_app_t* app = whaleui_app_create();
+    if (!app) {
+        return 0;
+    }
+    whaleui_window_t* w = whaleui_window_create(app, "labels", 640, 120);
+    if (!w) {
+        whaleui_app_destroy(app);
+        return 0;
+    }
+    const char* html =
+        "<html><head><style>body{margin:0;background:#fff;font-size:16px}"
+        ".row{display:flex}"
+        ".tab{width:110px;height:30px;line-height:30px;text-align:center;"
+        "border:1px solid #ccc}"
+        "</style></head><body><div class='row'>"
+        "<div class='tab'>Alpha</div><div class='tab'>Bravo</div>"
+        "<div class='tab'>Chair</div><div class='tab'>Doubt</div>"
+        "</div></body></html>";
+    if (whaleui_window_load_html(w, html) != 0 ||
+        whaleui_window_show(w) != 0) {
+        whaleui_window_destroy(w);
+        whaleui_app_destroy(app);
+        return 0;
+    }
+    for (int i = 0; i < 3; ++i) {
+        assert(whaleui_render_frame(w->render, w->document) == 0);
+    }
+    /* ink count per tab cell (dark pixels); all four labels differ in glyph
+     * shapes, so the counts must not all coincide */
+    int ink[4] = {0, 0, 0, 0};
+    for (int c = 0; c < 4; ++c) {
+        for (int y = 4; y < 26; ++y) {
+            for (int x = c * 112 + 8; x < c * 112 + 104; ++x) {
+                unsigned int px = gpixel(w->render, x, y);
+                int r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF, b = px & 0xFF;
+                if (r + g + b < 3 * 140) {
+                    ++ink[c];
+                }
+            }
+        }
+    }
+    int distinct = 0;
+    for (int i = 0; i < 4; ++i) {
+        bool seen = false;
+        for (int j = 0; j < i; ++j) {
+            if (ink[j] == ink[i]) {
+                seen = true;
+            }
+        }
+        if (!seen) {
+            ++distinct;
+        }
+    }
+    assert(distinct >= 3); /* identical glyphs would give one count for all */
+    whaleui_window_destroy(w);
+    whaleui_app_destroy(app);
+    return 1;
 }
 
 /* paint-only animation: the fast path keeps repainting and the element

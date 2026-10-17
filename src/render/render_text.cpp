@@ -102,19 +102,41 @@ static uint64_t tl_fnv(uint64_t h, uint64_t v)
     return h;
 }
 
-/* Key for the line-layout table. It carries (buffer, size) instead of hashing
- * the bytes: the layout pass hands us the node's own stable text buffer, and a
- * document edit replaces that buffer (text_arena grows a fresh entry), so the
- * pointer changes with the content. Hashing a 292k-char run here was ~0.5ms on
- * EVERY frame - the viewport-culled raster still needs the whole line table, so
- * this lookup happens per frame. */
+/* Key for the line-layout table.
+ *
+ * It MUST identify the TEXT CONTENT, not just its buffer. The old key used
+ * (text.data(), text.size()) to avoid hashing long runs, but `std::string`
+ * keeps short strings in an SSO buffer INSIDE the object - and paint passes a
+ * stack-local `shown` copy, so every short run of the same byte length
+ * produced the same (address, size) key. The first label's line table was then
+ * served for every later label of the same length, and since the raster takes
+ * its glyphs from that table's display text, several sibling labels all
+ * painted the FIRST one's string ("several parallel labels all show the first
+ * one's text"). Equal length is exactly the case where the key collided.
+ *
+ * So: hash the content for every run short enough that the cost is noise
+ * (<= 4 KB; a page label is tens of bytes). Very long runs keep the
+ * (pointer, size) identity - their buffers are heap-allocated and unique while
+ * the node lives, the table is cleared on document reset, and a full FNV over
+ * 292k chars measured ~0.5ms/frame which is what this cache exists to avoid.
+ * The size is part of the key in both branches, so a short and a long run can
+ * never alias. */
 static uint64_t tl_key(const std::string& text, int fs,
                        const std::string& family, bool bold, float lsp,
                        int wrap_w, int lh)
 {
     uint64_t h = 1469598103934665603ull;
-    h = tl_fnv(h, static_cast<uint64_t>(
-                      reinterpret_cast<uintptr_t>(text.data())));
+    const size_t kHashLimit = 4096;
+    if (text.size() <= kHashLimit) {
+        for (size_t i = 0; i < text.size(); ++i) {
+            h = tl_fnv(h, static_cast<unsigned char>(text[i]));
+        }
+        h = tl_fnv(h, 0x53534f5full); /* tag: content-hashed branch */
+    } else {
+        h = tl_fnv(h, static_cast<uint64_t>(
+                          reinterpret_cast<uintptr_t>(text.data())));
+        h = tl_fnv(h, 0x5054525full); /* tag: pointer branch */
+    }
     h = tl_fnv(h, static_cast<uint64_t>(text.size()));
     for (size_t i = 0; i < family.size(); ++i) {
         h = tl_fnv(h, static_cast<unsigned char>(family[i]));
@@ -1524,6 +1546,7 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
          * the right"). The 256-byte cap keeps long layout runs on the
          * version-only path (a 292k-char FNV was ~0.5ms/frame). */
         unsigned long long content = 0;
+        const void* long_run_id = nullptr;
         if (text.size() < 256) {
             unsigned long long h = 1469598103934665603ULL;
             for (size_t i = 0; i < text.size(); ++i) {
@@ -1531,15 +1554,25 @@ void draw_text_at(whaleui_render_t* r, const std::string& text,
                 h *= 1099511628211ULL;
             }
             content = h ? h : 1;
+        } else {
+            /* A run this long is not content-hashed (the FNV cost is what this
+             * cache exists to avoid), so two long runs under the SAME element
+             * - which share (el, el_ver, fs, color, wrap width) - would share
+             * one cache entry and the second would paint the first's glyphs.
+             * The run's own text buffer identifies it: it is heap-allocated
+             * (not SSO at this size), stable while the layout node lives, and
+             * a relayout that changes the text creates a new node whose
+             * el_ver already invalidates the entry. */
+            long_run_id = text.data();
         }
         char key[192];
         std::unordered_map<lxb_dom_element*, uint64_t>::iterator vit =
             r->el_ver.find(ckey);
         const unsigned long long ever =
             vit != r->el_ver.end() ? vit->second : 0ull;
-        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu|%llx",
+        std::snprintf(key, sizeof(key), "%p|%d|%d|%s|%d|%u|%d|%llu|%llx|%p",
                       static_cast<void*>(ckey), fs, style, family.c_str(),
-                      wrap ? bw : -1, color, lsp, ever, content);
+                      wrap ? bw : -1, color, lsp, ever, content, long_run_id);
         auto it = r->text_cache.find(key);
         if (it != r->text_cache.end() && !it->second.px.empty()) {
             whaleui_render_t::TextCacheEntry& e = it->second;

@@ -24,6 +24,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -41,10 +42,55 @@ struct DirtyEntry
      * renderer's per-element version map. */
     bool structural;
 };
-std::vector<DirtyEntry>& g_dirty()
+
+/* The pending set plus an element -> position index.
+ *
+ * The "already pending?" test used to be a linear scan of the whole vector on
+ * EVERY edit, so editing N distinct elements in one frame cost O(N^2) - the
+ * reported "DOM operations get slower and slower". A list rebuild, a tab
+ * switch that re-classes many rows, or a bulk dataset update all hit it. The
+ * index makes the check O(1); it is rebuilt when the vector is compacted
+ * (once per drain), which keeps the per-frame cost linear. */
+struct DirtyStore
 {
-    static std::vector<DirtyEntry> d;
+    std::vector<DirtyEntry> entries;
+    std::unordered_map<lxb_dom_element*, size_t> index;
+};
+
+DirtyStore& g_dirty()
+{
+    static DirtyStore d;
     return d;
+}
+
+/* drop the entries of `doc` (its elements are about to be freed). Without
+ * this a destroyed document left dangling element pointers in the queue: a
+ * later document reusing the address looked like it had pending edits, and
+ * the renderer dereferenced freed nodes (the tab-switch crash). */
+void dirty_purge_doc(lxb_dom_document* doc)
+{
+    DirtyStore& d = g_dirty();
+    if (d.entries.empty()) {
+        return;
+    }
+    size_t w = 0;
+    for (size_t r = 0; r < d.entries.size(); ++r) {
+        if (d.entries[r].doc == doc) {
+            continue;
+        }
+        if (w != r) {
+            d.entries[w] = d.entries[r];
+        }
+        ++w;
+    }
+    if (w == d.entries.size()) {
+        return;
+    }
+    d.entries.resize(w);
+    d.index.clear();
+    for (size_t i = 0; i < d.entries.size(); ++i) {
+        d.index[d.entries[i].el] = i;
+    }
 }
 
 /* style-attribute edits can change --var definitions; the vars collection
@@ -88,6 +134,153 @@ std::map<lxb_dom_document*, lxb_dom_element*>& g_active()
 {
     static std::map<lxb_dom_document*, lxb_dom_element*> m;
     return m;
+}
+
+/* --- id -> element index ------------------------------------------------
+ *
+ * `lxb_dom_element_by_id` walks the whole subtree on every call, so a page
+ * that looks elements up in a loop (event handlers, per-row work, list
+ * building) paid O(document) per lookup - O(n^2) overall. That is the "DOM
+ * operations get slower and slower" report. One per-document hash index makes
+ * a lookup O(1).
+ *
+ * Correctness without per-API bookkeeping:
+ *   - every structural edit bumps g_dom_gen, so a MISS rebuilds once when the
+ *     tree changed since the build (a removed id can therefore never be
+ *     served from a stale entry for long, and a newly added one is found);
+ *   - a HIT verifies the element is still attached to this document (walking
+ *     the parent chain is O(depth), a few pointers) - a detached subtree whose
+ *     id is still in the map is detected and triggers the rebuild;
+ *   - the append/insert APIs also patch the map in place, so building a list
+ *     row by row stays linear instead of rebuilding per append. */
+struct IdIndex
+{
+    std::unordered_map<std::string, lxb_dom_element*> map;
+    uint64_t built_gen = 0;
+    bool built = false;
+};
+std::map<lxb_dom_document*, IdIndex>& g_id_index()
+{
+    static std::map<lxb_dom_document*, IdIndex> m;
+    return m;
+}
+
+/* bumped by every structural edit (see mark_dirty_ex) */
+uint64_t& g_dom_gen()
+{
+    static uint64_t g = 0;
+    return g;
+}
+
+bool id_index_attached(lxb_dom_element* root, lxb_dom_element* el)
+{
+    for (lxb_dom_node* n = el ? &el->node : nullptr; n; n = n->parent) {
+        if (n == &root->node) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* first element in document order wins (browser behavior for duplicate ids) */
+void id_index_build(IdIndex& idx, lxb_dom_element* root)
+{
+    idx.map.clear();
+    idx.built = true;
+    idx.built_gen = g_dom_gen();
+    if (!root) {
+        return;
+    }
+    std::vector<lxb_dom_element*> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+        lxb_dom_element* e = stack.back();
+        stack.pop_back();
+        size_t len = 0;
+        const lxb_char_t* id = lxb_dom_element_get_attribute(
+            e, reinterpret_cast<const lxb_char_t*>("id"), 2, &len);
+        if (id && len) {
+            idx.map.emplace(std::string(reinterpret_cast<const char*>(id), len),
+                            e);
+        }
+        /* push children reversed so the stack pops them in document order */
+        std::vector<lxb_dom_element*> kids;
+        for (lxb_dom_node* c = e->node.first_child; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                kids.push_back(lxb_dom_interface_element(c));
+            }
+        }
+        for (size_t i = kids.size(); i > 0; --i) {
+            stack.push_back(kids[i - 1]);
+        }
+    }
+}
+
+/* add/remove a subtree's ids (fresh index only; a stale one rebuilds anyway) */
+void id_index_patch(lxb_dom_document* doc, lxb_dom_element* node, bool add)
+{
+    if (!doc || !node) {
+        return;
+    }
+    std::map<lxb_dom_document*, IdIndex>::iterator it = g_id_index().find(doc);
+    if (it == g_id_index().end() || !it->second.built ||
+        it->second.built_gen != g_dom_gen()) {
+        return;
+    }
+    IdIndex& idx = it->second;
+    std::vector<lxb_dom_element*> stack;
+    stack.push_back(node);
+    while (!stack.empty()) {
+        lxb_dom_element* e = stack.back();
+        stack.pop_back();
+        size_t len = 0;
+        const lxb_char_t* id = lxb_dom_element_get_attribute(
+            e, reinterpret_cast<const lxb_char_t*>("id"), 2, &len);
+        if (id && len) {
+            std::string key(reinterpret_cast<const char*>(id), len);
+            if (add) {
+                idx.map.emplace(key, e);
+            } else {
+                std::unordered_map<std::string, lxb_dom_element*>::iterator f =
+                    idx.map.find(key);
+                if (f != idx.map.end() && f->second == e) {
+                    idx.map.erase(f);
+                }
+            }
+        }
+        for (lxb_dom_node* c = e->node.first_child; c; c = c->next) {
+            if (c->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                stack.push_back(lxb_dom_interface_element(c));
+            }
+        }
+    }
+}
+
+lxb_dom_element* id_index_lookup(lxb_dom_document* doc, lxb_dom_element* root,
+                                 const char* id)
+{
+    if (!doc || !id) {
+        return nullptr;
+    }
+    IdIndex& idx = g_id_index()[doc];
+    if (!idx.built) {
+        id_index_build(idx, root);
+    }
+    std::unordered_map<std::string, lxb_dom_element*>::iterator it =
+        idx.map.find(id);
+    if (it != idx.map.end() && id_index_attached(root, it->second)) {
+        return it->second;
+    }
+    /* miss, or a hit on a detached subtree: rebuild once if the tree moved
+     * since the last build, then retry */
+    if (idx.built_gen != g_dom_gen()) {
+        id_index_build(idx, root);
+        it = idx.map.find(id);
+        if (it != idx.map.end() && id_index_attached(root, it->second)) {
+            return it->second;
+        }
+    }
+    return nullptr;
 }
 
 lxb_dom_element* as_el(whaleui_dom_element_t* el)
@@ -561,6 +754,13 @@ static void mark_dirty_ex(lxb_dom_element* el, bool structural,
         return;
     }
     lxb_dom_document* doc = el->node.owner_document;
+    /* Any structural edit invalidates the id index (see id_index_lookup): a
+     * removed subtree's ids must stop resolving, an added one's must. An `id`
+     * attribute edit does too - it changes exactly the mapping. The generation
+     * counter is O(1); a rebuild only happens on the next miss. */
+    if (structural || (attr && std::strcmp(attr, "id") == 0)) {
+        ++g_dom_gen();
+    }
     /* A stylesheet source node edited directly (text / attribute / style), or a
      * STRUCTURAL change to a <head>/<body> - the sections whose child list the
      * collector reads. Every insertion/removal/move API marks the PARENT it
@@ -578,15 +778,18 @@ static void mark_dirty_ex(lxb_dom_element* el, bool structural,
      * caller knows it - see the attribute APIs). */
     whaleui_dom_notify_mutation(el, structural ? 2 : 0, structural ? nullptr : attr,
                                 structural ? 1 : 0, 0);
-    for (auto& d : g_dirty()) {
-        if (d.el == el && d.doc == doc) {
-            /* already pending: a later structural edit must still upgrade the
-             * entry, or the text caches would keep serving the old raster */
-            d.structural = d.structural || structural;
-            return;
-        }
+    DirtyStore& d = g_dirty();
+    std::unordered_map<lxb_dom_element*, size_t>::iterator found =
+        d.index.find(el);
+    if (found != d.index.end()) {
+        /* already pending: a later structural edit must still upgrade the
+         * entry, or the text caches would keep serving the old raster */
+        d.entries[found->second].structural =
+            d.entries[found->second].structural || structural;
+        return;
     }
-    g_dirty().push_back({el, doc, structural});
+    d.index[el] = d.entries.size();
+    d.entries.push_back({el, doc, structural});
 }
 
 /* mark_dirty for an edit that set/removed a known attribute: the observer
@@ -609,18 +812,26 @@ extern "C" void whaleui_dom_take_dirty_typed(
     out_structural.clear();
     lxb_dom_document* want =
         as_doc(doc) ? &as_doc(doc)->dom_document : nullptr;
-    std::vector<DirtyEntry>& d = g_dirty();
+    DirtyStore& d = g_dirty();
     std::vector<DirtyEntry> keep;
-    keep.reserve(d.size());
-    for (auto& e : d) {
-        if (e.doc == want) {
-            out.push_back(e.el);
-            out_structural.push_back(e.structural ? 1 : 0);
+    keep.reserve(d.entries.size());
+    for (size_t i = 0; i < d.entries.size(); ++i) {
+        if (d.entries[i].doc == want) {
+            out.push_back(d.entries[i].el);
+            out_structural.push_back(d.entries[i].structural ? 1 : 0);
         } else {
-            keep.push_back(e);
+            keep.push_back(d.entries[i]);
         }
     }
-    d.swap(keep);
+    if (keep.size() == d.entries.size()) {
+        return; /* nothing drained for this document: keep the index */
+    }
+    d.entries.swap(keep);
+    /* positions moved: rebuild the index for what is left */
+    d.index.clear();
+    for (size_t i = 0; i < d.entries.size(); ++i) {
+        d.index[d.entries[i].el] = i;
+    }
 }
 
 extern "C" void whaleui_dom_mark_dirty(lxb_dom_element* el)
@@ -721,6 +932,13 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
          * the document's programmatic sheet (whaleui_css_apply) */
         g_css_dirty().erase(&as_doc(doc)->dom_document);
         whaleui_style_doc_rules_clear(doc);
+        /* the id index and the pending dirty queue both hold raw pointers into
+         * this document. Dropping the document without them is the classic
+         * address-reuse bug: the next document allocated at the same address
+         * inherits the stale map and resolves ids to freed elements (observed
+         * as a SIGSEGV inside getElementById on the second document). */
+        g_id_index().erase(&as_doc(doc)->dom_document);
+        dirty_purge_doc(&as_doc(doc)->dom_document);
         lxb_html_document_destroy(as_doc(doc));
     }
 }
@@ -740,8 +958,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_get_element_by_id(whaleui_dom_docu
     if (!root) {
         return nullptr;
     }
-    return out(lxb_dom_element_by_id(root, reinterpret_cast<const lxb_char_t*>(id),
-                                     std::strlen(id)));
+    return out(id_index_lookup(&as_doc(doc)->dom_document, root, id));
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_query_selector(whaleui_dom_document_t* doc,
