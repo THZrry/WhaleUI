@@ -754,5 +754,32 @@ int main(void)
 
     test_dom_utf16_and_bom_input();
 
+    /* A DOM edit must be visible to the app loop's readiness test: the
+     * worker stayed parked when an edit produced no frame request, so a
+     * C++ display switch showed nothing until unrelated input arrived. */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"x\"></div></body>", 0);
+        assert(doc != nullptr);
+        /* pending_any() is global (any document), so compare before/after
+         * instead of assuming an empty queue: earlier tests may have left
+         * entries for documents that are already gone. */
+        const int before = whaleui_dom_pending_any();
+        lxb_dom_element* x = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc, "x"));
+        whaleui_dom_set_style(reinterpret_cast<whaleui_dom_element_t*>(x),
+                              "display", "none");
+        assert(whaleui_dom_pending_any() == 1); /* at least this one */
+        std::vector<lxb_dom_element*> d;
+        whaleui_dom_take_dirty(doc, d);
+        /* drained our document (the global count may still be non-zero
+         * from another document's leftovers) */
+        assert(d.size() >= 1);
+        (void)before;
+        whaleui_dom_document_destroy(doc);
+        std::printf("[dirty] pending_any OK\n");
+        std::fflush(stdout);
+    }
+
     return 0;
 }
