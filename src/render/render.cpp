@@ -5024,14 +5024,23 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * style maps / intermittent crash on big lists). Idle/parked frames
      * release it immediately (return below). */
     std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
-    /* Serialize the WHOLE frame against public DOM mutations (see dom.h).
-     * The frame walks the lexbor document for the cascade, the rebuild, the
-     * hit test and the text runs; an edit landing between any two of those
-     * left the tree inconsistent (the same API sequence rendered correctly
-     * one run and produced a blank/frozen page the next). Recursive, so the
-     * dirty-queue drains and any listener dispatch inside the frame can
-     * still mutate the DOM. */
-    WhaleUIDomLock dom_lk;
+    /* Run mutations the app posted for this thread (see whaleui_dom_post):
+     * a caller that must not block hands its edit over instead of waiting
+     * for the document lock. They run first so this frame already sees
+     * them. */
+    whaleui_dom_pump_posted();
+
+    /* The document lock is taken in SHORT SEGMENTS, not for the whole
+     * frame. A frame that held it end to end blocked every app-side DOM
+     * call for its full duration (39ms at 3200 rows), which reads as a
+     * frozen UI. The segments are the phases that actually touch lexbor:
+     * the stylesheet re-collect, the dirty drain, the cascade/rebuild and
+     * the text measurement. The box pass, the bounds walk and paint work on
+     * the already-built layout tree (styles and text are copied into the
+     * nodes), so they run without the lock. */
+    std::unique_lock<std::recursive_mutex> dom_lk(whaleui_dom_mutex(),
+                                                  std::defer_lock);
+    dom_lk.lock();
 
     /* the document's stylesheet sources changed through the DOM API (a <style>
      * injected or rewritten, a <link href> swapped): re-collect before this
@@ -5044,6 +5053,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->css_reload_fn && whaleui_dom_take_css_dirty(doc)) {
         r->css_reload_fn(r, r->css_reload_ud);
         r->has_dirty = 1; /* the cascade may have changed everywhere */
+    }
+
+    /* Release the document lock for the tree-only phases below. The dirty
+     * drain and the cascade happen further down; they re-take it. */
+    if (dom_lk.owns_lock()) {
+        dom_lk.unlock();
     }
 
     /* advance all running animations and collect the current values (the
@@ -5484,6 +5499,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
     if (r->edit_el) {
         caret_dirty = caret_blink_phase() != r->caret_phase_painted;
     }
+    if (dom_lk.owns_lock()) {
+        dom_lk.unlock(); /* nothing below this point touches lexbor */
+    }
     if (!r->has_dirty && r->tree && !r->scroll_dirty &&
         !animating && !caret_dirty && !r->hover_old_el &&
         !r->focus_old_el && !r->pressed_old_el && r->hover_prev.empty() &&
@@ -5870,6 +5888,9 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                 r->tree->vars_collected = false;
             }
         }
+        if (!dom_lk.owns_lock()) {
+            dom_lk.lock(); /* cascade + rebuild read lexbor */
+        }
         const bool struct_dirty = whaleui_dom_take_struct_dirty() != 0;
         bool ok = true;
         whaleui_style_state st;
@@ -6044,6 +6065,12 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
                     r->text_scale) < 0) {
                 ok = false;
             }
+        }
+        /* the cascade/rebuild above is the last lexbor touch of this
+         * frame: release the document lock so app-side DOM calls stop
+         * waiting while the box pass and paint run */
+        if (dom_lk.owns_lock()) {
+            dom_lk.unlock();
         }
         dom_geom_changed = !full_list.empty() || struct_dirty;
         if (dom_geom_changed) {

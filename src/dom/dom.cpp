@@ -55,6 +55,61 @@ extern "C" void whaleui_dom_unlock(void)
     dom_mx().unlock();
 }
 
+std::recursive_mutex& whaleui_dom_mutex(void)
+{
+    return dom_mx();
+}
+
+namespace {
+
+/* Deferred mutations: the zero-latency path for a caller that must not
+ * block on the document lock (a UI thread during a heavy frame, a
+ * background job). The frame runs them under the lock before its layout
+ * pass, in submission order. */
+struct PostedMutation
+{
+    whaleui_dom_mutation_fn fn;
+    void* ud;
+};
+std::mutex g_posted_mx;
+std::vector<PostedMutation>& posted()
+{
+    static std::vector<PostedMutation> v;
+    return v;
+}
+
+} // namespace
+
+extern "C" void whaleui_dom_post(whaleui_dom_mutation_fn fn, void* userdata)
+{
+    if (!fn) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_posted_mx);
+    PostedMutation p;
+    p.fn = fn;
+    p.ud = userdata;
+    posted().push_back(p);
+}
+
+extern "C" int whaleui_dom_pump_posted(void)
+{
+    std::vector<PostedMutation> todo;
+    {
+        std::lock_guard<std::mutex> lk(g_posted_mx);
+        if (posted().empty()) {
+            return 0;
+        }
+        todo.swap(posted());
+    }
+    /* the callbacks mutate the document: run them under the lock */
+    WhaleUIDomLock lk;
+    for (size_t i = 0; i < todo.size(); ++i) {
+        todo[i].fn(todo[i].ud);
+    }
+    return static_cast<int>(todo.size());
+}
+
 namespace {
 
 /* pending DOM mutations, per document. The renderer drains the set for its

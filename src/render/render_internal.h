@@ -50,6 +50,11 @@ extern whaleui_gpu_t* g_gpu;
 extern "C" void whaleui_sdl_on_main(void (*fn)(void*), void* ud);
 extern int g_backdrop_active;
 extern whaleui_layout_tree_t* g_last_tree;
+
+/* Post-layout corrections (render.cpp). Exposed for the perf probes and for
+ * callers that reflow the tree directly. */
+void fix_run_heights(whaleui_render_t* r);
+void fix_scroll_max(whaleui_render_t* r);
 extern whaleui_render_t* g_metric_render;
 
 /* --- shared types --- */

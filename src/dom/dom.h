@@ -12,6 +12,7 @@
 
 #include "whaleui.h"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -100,20 +101,39 @@ void whaleui_dom_clear_active(struct lxb_dom_document* doc);
  * so an edit that lands mid-walk corrupts the tree: the same sequence of
  * API calls produced a correct page one run and a blank/frozen page the
  * next, depending on where the frame happened to be when the edit arrived.
- * Every public DOM entry point therefore takes this lock, and the frame
- * holds it for its whole duration. It is RECURSIVE because the frame itself
- * drains the dirty queues and a listener may mutate the DOM from inside a
- * dispatch that the frame is running.
  *
- * Callers that need a multi-call critical section (a batch of edits that
- * must be visible to the frame atomically) can take it explicitly; the
- * per-call lock is re-entrant, so nesting is safe. */
+ * WRITE-PREFERRED, SHORT HOLD. The frame does NOT hold this for its whole
+ * duration - it takes it around the individual lexbor touches (cascade,
+ * rebuild, text measure, hit test). Holding it across a 50ms layout froze
+ * every app-side DOM call for 50ms, which is exactly the "UI freezes, the
+ * window does not respond" symptom: a caller blocked on a mutex looks
+ * identical to a hung UI thread. Short holds keep a DOM call to ~1ms even
+ * while a heavy frame runs.
+ *
+ * It is RECURSIVE because a frame drains the dirty queues and can dispatch
+ * a listener that mutates the DOM from inside a hold. */
 void whaleui_dom_lock(void);
 void whaleui_dom_unlock(void);
+
+/* Queue a mutation to run on the next frame's thread instead of blocking
+ * the caller. The callback runs with the document lock held, before the
+ * frame's layout pass, in submission order. This is the zero-latency path
+ * for a UI thread that must not stall: `set_text` from a background job can
+ * post here and return immediately. */
+typedef void (*whaleui_dom_mutation_fn)(void* userdata);
+void whaleui_dom_post(whaleui_dom_mutation_fn fn, void* userdata);
+/* Run every queued mutation (called by the frame before layout). Returns
+ * how many ran. */
+int whaleui_dom_pump_posted(void);
 
 #ifdef __cplusplus
 }
 #endif
+
+/* The mutex behind whaleui_dom_lock/unlock, for callers that need to hold
+ * it across several statements (the frame locks it per phase rather than
+ * for its whole duration - see the note above). */
+std::recursive_mutex& whaleui_dom_mutex(void);
 
 /* RAII helper for C++ callers inside the engine. */
 class WhaleUIDomLock {
