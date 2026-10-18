@@ -33,6 +33,14 @@ struct lxb_dom_element; /* lexbor element (opaque here) */
  * affected layout subtrees instead of the whole tree. */
 void whaleui_dom_mark_dirty(struct lxb_dom_element* el);
 
+/* 1 when the pending set holds at least one element (of any document).
+ * The app loop uses this to wake the render worker: a DOM edit made from
+ * the app thread produced no frame request, so the worker stayed parked and
+ * the page showed the pre-edit pixels until unrelated input (a mouse move)
+ * happened to wake it - the reported "C++ changes display and nothing
+ * redraws for ten seconds". */
+int whaleui_dom_pending_any(void);
+
 /* Move the dirty elements belonging to `doc` into `out` (and clear them
  * from the set). Call once per frame per render context. */
 void whaleui_dom_take_dirty(struct whaleui_dom_document* doc,
@@ -125,6 +133,9 @@ void whaleui_dom_post(whaleui_dom_mutation_fn fn, void* userdata);
 /* Run every queued mutation (called by the frame before layout). Returns
  * how many ran. */
 int whaleui_dom_pump_posted(void);
+/* 1 when at least one mutation is queued (the app loop keeps requesting
+ * frames so posted work is not left waiting for unrelated input). */
+int whaleui_dom_posted_pending(void);
 
 #ifdef __cplusplus
 }

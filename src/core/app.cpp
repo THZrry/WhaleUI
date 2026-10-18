@@ -4,6 +4,7 @@
 
 #include "core/app.h"
 #include "core/window.h"
+#include "dom/dom.h"
 #include "core/clipboard.h"
 #include "core/extras.h"
 #include "core/timers.h"
@@ -1046,11 +1047,23 @@ void render_worker_fn(whaleui_app_t* app)
             }
         }
         Uint64 now = SDL_GetTicks();
+        /* a DOM edit made from the app (not from an event) produces no
+         * frame_request: without this check the worker stayed parked and the
+         * page kept showing pre-edit pixels until some unrelated input woke
+         * it ("C++ changes display and the new page never appears, moving
+         * the mouse then paints everything at once"). */
+        bool dom_dirty = whaleui_dom_pending_any() != 0;
         bool want = !evs.empty() || app->frame_request.load() ||
                     app->frames_alive.load() || hover_dirty || wheel_dirty ||
-                    timer_dirty || whaleui_animation_frame_count() > 0 ||
+                    timer_dirty || dom_dirty ||
+                    whaleui_animation_frame_count() > 0 ||
                     whaleui_dom_resize_observers_pending();
         if (apply_resizes(app, now)) {
+            want = true;
+        }
+        /* posted mutations land in this frame; do not park before running
+         * them (they are drained at the top of the frame) */
+        if (whaleui_dom_posted_pending()) {
             want = true;
         }
         if (want) {

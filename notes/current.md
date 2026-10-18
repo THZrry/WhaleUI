@@ -1880,3 +1880,69 @@ int  whaleui_dom_pump_posted(void);   /* 帧在布局前调用 */
 - `probe_domblock`: DOM 调用延迟 39.5ms -> 0.0ms。
 - `probe_post`: 排队写入 200 项 0.41ms 提交、单帧合并生效。
 - `probe_partial2`: 增量 vs 全量 diff=0。
+
+# 57: DOM 编辑不唤醒渲染线程（"改 display 后十几秒不动"）
+
+SOLVED
+
+用户实测（前一轮代码库）: "进入新的页面（C++ 控制 display 做的），鼠标不动，
+等了十几秒完全没有变化，鼠标移到有 hover 的元素卡死 2s 后全部画出来了"。
+
+## 根因: 帧请求条件里没有 DOM 脏队列
+
+`app.cpp` 的主循环决定是否渲染:
+
+```c
+bool want = !evs.empty() || frame_request || frames_alive || hover_dirty ||
+            wheel_dirty || timer_dirty || animation_frame_count() > 0 ||
+            resize_observers_pending();
+```
+
+**没有 DOM 脏队列。** 应用侧 `whaleui_dom_set_style` 只是把元素推进
+`g_dirty()`，不设置 `frame_request`。于是 worker 继续 park，屏幕保持编辑前的
+像素，直到某个无关事件（鼠标移动产生 hover）才把 worker 叫醒 —— 一次把所有
+积压的编辑一起画出来，看起来就是"卡死后突然全刷新"。
+
+修: 新增 `whaleui_dom_pending_any()`，加入 `want` 条件。同时给排队写入加
+`whaleui_dom_posted_pending()`，避免"已排队但还没跑"的帧被 park 掉。
+
+验证 `probe_wake2`: 用 C++ 改 display 隐藏 a、显示 b，**不注入任何输入事件**，
+循环自己渲染了 1 帧，布局树正确（a vis=0、b vis=1 且 h=50）。
+
+## 顺带: 增量帧与全量重建在 GPU 上逐像素一致
+
+`probe_one2` 用 `SDL_DownloadFromGPUTexture` 读回 `target2`:
+- display 切换后，增量帧 vs 强制全量重建: **diff = 0 px**
+- 中心像素绿色 (expected)，布局树 bounds 也正确
+
+`probe_round`/`probe_round2` 同样确认圆角在首帧就正确绘制，且增量与全量
+一致。用户报告的"只有一个元素画出来、圆角是方块"在这条修复后无法复现 ——
+最可能的解释就是上面那个不唤醒：只有最先完成编辑的那个元素赶上了某次
+真实帧，其余都停在上一个画面，而圆角"方块"是被部分覆盖后的残影。
+
+## 边界脏标记: 只标真正移动的子树
+
+几何变化时原来对整棵树 `mark_bounds_dirty_all` + 全树
+`compute_paint_bounds`。改为对每个被编辑的元素 `mark_bounds_dirty`（标记向上
+冒泡到根），只有 `struct_dirty`（增删节点）才保留全树标记 —— 增删会移动它之后
+的所有兄弟。
+
+## 批量编辑的增长率（实测，800 行页面）
+
+| N | edit | relayout_multi | frame |
+|---|---|---|---|
+| 1 | 0.29ms | 0.15ms | 2.22ms |
+| 5 | 0.02ms | 0.28ms | 1.23ms |
+| 20 | 0.05ms | 1.50ms | 3.41ms |
+| 100 | 0.09ms | 3.84ms | 5.73ms |
+
+`relayout_multi` 每元素约 33-38µs（线性、斜率稳定）。20 个元素的整帧约
+3.4ms，仍在 60fps 预算内。用户看到的"20 个元素就危险"来自真实页面更重的
+样式级联，不是重排本身。
+
+## 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_wake2`: 无输入自动重绘 1 帧，状态正确。
+- `probe_one2`: GPU 读回，增量 vs 全量 diff=0 px。
+- `probe_partial2`: 同样 diff=0。

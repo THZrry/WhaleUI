@@ -92,6 +92,12 @@ extern "C" void whaleui_dom_post(whaleui_dom_mutation_fn fn, void* userdata)
     posted().push_back(p);
 }
 
+extern "C" int whaleui_dom_posted_pending(void)
+{
+    std::lock_guard<std::mutex> lk(g_posted_mx);
+    return posted().empty() ? 0 : 1;
+}
+
 extern "C" int whaleui_dom_pump_posted(void)
 {
     std::vector<PostedMutation> todo;
@@ -930,6 +936,12 @@ extern "C" void whaleui_dom_take_dirty(whaleui_dom_document_t* doc,
 {
     std::vector<int> structural;
     whaleui_dom_take_dirty_typed(doc, out, structural);
+}
+
+extern "C" int whaleui_dom_pending_any(void)
+{
+    std::lock_guard<std::recursive_mutex> lk(dom_mx());
+    return g_dirty().entries.empty() ? 0 : 1;
 }
 
 extern "C" void whaleui_dom_mark_vars_dirty(void)

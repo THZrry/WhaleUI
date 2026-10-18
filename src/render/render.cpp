@@ -6106,7 +6106,24 @@ d here leaves its ancestors'
                 r->bounds_valid = 1;
             } else {
                 r->bounds_valid = 0; /* subtree paint bounds are stale */
-                mark_bounds_dirty_all(r->tree->root);
+                /* Only the paths that actually moved need recomputing. Mark
+                 * each edited subtree (the mark bubbles to the root) instead
+                 * of every node in the tree: a 20-element edit on an 800-row
+                 * page walked 800+ nodes here and then repainted the whole
+                 * window, which dominated the per-element cost of a batch.
+                 * compute_paint_bounds early-returns on clean nodes, so the
+                 * walk visits just the marked paths. */
+                for (lxb_dom_element* el : full_list) {
+                    whaleui_layout_node_t* nd =
+                        find_node_by_el(r->tree, el);
+                    if (nd) {
+                        mark_bounds_dirty(nd);
+                    }
+                }
+                if (struct_dirty) {
+                    /* an insert/remove can move anything after it */
+                    mark_bounds_dirty_all(r->tree->root);
+                }
                 /* geometry changed tree-wide: a stale interaction-state
                  * partial repaint (hover_old_el etc.) would redraw only a
                  * small strip and leave the shifted/collapsed areas frozen
