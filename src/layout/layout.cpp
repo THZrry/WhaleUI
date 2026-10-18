@@ -3531,6 +3531,9 @@ struct Builder
 
     void shift_subtree(whaleui_layout_node_t* k, int dx, int dy)
     {
+        /* every shifted node's cached paint bounds are stale: see the note
+         * on shift_tree_down (a stale bd makes the cull drop it) */
+        k->bd = 1;
         k->border.x += dx;
         k->border.y += dy;
         k->content.x += dx;
@@ -5240,6 +5243,7 @@ struct Builder
                 bool h_auto = get(cells[i].node->style, "height").empty() ||
                               get(cells[i].node->style, "height") == "auto";
                 if (h_auto && !no_stretch && h > cells[i].node->border.h) {
+                    cells[i].node->bd = 1; /* grew: cached bounds stale */
                     cells[i].node->border.h = h;
                     cells[i].node->content.h =
                         h - cells[i].node->padding[0] -
@@ -5260,6 +5264,9 @@ struct Builder
                     }
                 }
                 if (cells[i].row_node) {
+                    /* the row box is placed against the final container
+                     * padding box here, after the cells were laid out */
+                    cells[i].row_node->bd = 1;
                     cells[i].row_node->border.x = n->content.x;
                     cells[i].row_node->border.y = n->content.y + oy;
                     cells[i].row_node->border.w = inner_w;
@@ -5910,6 +5917,12 @@ static void shift_tree_down(whaleui_layout_node_t* n, int dy)
     if (n->fx) {
         return; /* position:fixed is viewport-anchored */
     }
+    /* Bounds are ABSOLUTE viewport coordinates, so moving a subtree
+     * invalidates every node in it. compute_paint_bounds() skips nodes with
+     * bd clear, which would leave the old rectangle in place and make the
+     * paint cull drop elements that actually moved into view ("some elements
+     * disappear until the state changes"). */
+    n->bd = 1;
     n->border.y += dy;
     n->content.y += dy;
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
@@ -5943,6 +5956,10 @@ static bool propagate_block_delta(whaleui_layout_node_t* n, int delta)
         shift_siblings_after(n, delta);
         std::string h = get(a->style, "height");
         if (h.empty() || h == "auto") {
+            /* the ancestor's box grew: its cached absolute bounds are stale
+             * (same reason as shift_tree_down - a stale bd makes the paint
+             * cull use the old rectangle) */
+            a->bd = 1;
             a->border.h += delta;
             a->content.h += delta;
             if (a->content.h < 0) {
@@ -6129,10 +6146,12 @@ extern "C" int whaleui_layout_append_rows(
 
     /* grow the list box, its ancestors (their boxes now contain more
      * content) and shift everything after it in document order down */
+    list->bd = 1; /* the box grew and what follows moved: bounds stale */
     list->border.h += delta;
     list->content.h += delta;
     for (whaleui_layout_node_t* p = list->parent; p && p->parent;
          p = p->parent) {
+        p->bd = 1;
         p->border.h += delta;
     }
     shift_following(list, delta);
@@ -6546,6 +6565,7 @@ int whaleui_layout_relayout_multi(
             /* the container's auto height follows its content */
             std::string ph = get(par->style, "height");
             if (ph.empty() || ph == "auto") {
+                par->bd = 1; /* box grew: cached bounds are stale */
                 par->border.h += acc;
                 par->content.h += acc;
                 if (par->content.h < 0) {

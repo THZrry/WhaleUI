@@ -2087,3 +2087,67 @@ FlashSight 自身当前链接失败（`build_p2r.txt` 里大量 mbedtls undefine
 reference），无法直接端到端复现，因此本轮用 `probe_fsmode` / `probe_display`
 复刻其调用模式。剩余 ~9-10ms 的基线（与属性无关、随 N 线性）是每个元素一次
 完整级联 + 局部盒 pass 的成本，下一步可考虑级联结果复用。
+
+# 60: 丢渲染的真正原因 —— 移动过的节点没有标记 paint bounds 失效
+
+SOLVED
+
+用户: "先提交，但别急着结束，因为现在还是卡，而且丢渲染我不确定你能一次性
+解决。我建议你还是对代码继续审查，先解决掉过多的树重建，然后看看哪些代码会
+阻止元素被渲染，然后看它们的触发场景是否有误——前面丢渲染大部分是这种场景"
+
+## A. 根因: 移动了子树但没置 bd
+
+paint 侧的裁剪条件只有三个（`paint_node` 的全部提前返回）:
+1. `!n->visible`
+2. `paint_cull(...)` —— 用 `n->bounds`（绝对视口坐标）判断是否在重绘区域内
+3. `chunk_culled(...)` —— 用 chunk 的合并 box
+
+`compute_paint_bounds()` 的第一行是:
+
+```cpp
+if (!n->bd) return;   // 认为"这棵子树没动过，bounds 仍然有效"
+```
+
+而 `shift_tree_down` / `shift_subtree` 直接改 `border.y/content.y`，**没有置
+`bd`**。于是节点移动后 bounds 还停在旧位置，`paint_cull` 用旧矩形判断 ——
+移进视口的元素被裁掉（不渲染），移出视口的元素留着旧像素。
+
+这正是用户说的"hover 有时候会让部分元素消失，不切换一下状态就不显示"。
+
+修: 两个 shift 函数在移动前 `n->bd = 1`（bounds 是绝对坐标，整棵子树都失效）。
+其余原地几何修改处（`propagate_block_delta` 的祖先增高、批量增量的容器增高、
+grid 单元格拉伸、行盒定位、append_rows 的 list/祖先增高）此前已分别置位，
+现在共 13 处。
+
+### 消融验证
+
+`probe_lost`（400px spacer 把 target 顶到视口下方，再把 spacer 缩到 40px）:
+
+| | target y | bounds | 结果 |
+|---|---|---|---|
+| 有 bd 标记 | 40 | `0,40 100x50` | 在视口内，正常绘制 |
+| 去掉 bd 标记 | 40 | `0,400 100x50` | **"NO (will be culled)"** |
+
+几何正确但 bounds 陈旧 —— 元素被静默丢弃，与用户现象完全一致。
+
+## B. specificity 缓存
+
+`sel_specificity()` 是 selector 文本的纯函数，但级联对每个 (元素, 候选规则)
+组合都重新解析一次字符串。加了按 selector 文本的缓存（带 8192 条上限）。
+级联 11.8µs → 10.7µs/元素。
+
+## C. 一次失败的尝试（已回退）
+
+把 selector chain 缓存从 `std::map<std::string, ...>` 改成按 selector
+**指针**键（规则里的 selector 是 strdup 的，生命周期稳定）。测试立刻挂了 4 个
+（`test_dom` querySelector、`test_style` `:has`、`test_layout` 文本合并、
+`test_scroll` select 行）——分配器把释放掉的 selector 地址复用给了下一个
+stylesheet，新 selector 继承了旧 chain。已回退为文本键。
+
+## 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_lost`: 移动后 bounds 同步更新。
+- `probe_partial2`: 增量 vs 全量 **diff=0 px**（CPU text_layer）。
+- `probe_one2`: GPU `target2` 读回，display 切换后增量 vs 全量 **diff=0 px**。

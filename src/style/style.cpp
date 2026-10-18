@@ -855,7 +855,41 @@ inline bool better(const Specificity& a, const Specificity& b)
     return a.c > b.c;
 }
 
+Specificity sel_specificity_uncached(const char* sel);
+
+/* Specificity is a pure function of the selector TEXT, and the cascade asks
+ * for it once per (element, candidate rule) pair - i.e. for every element
+ * that matches a rule, every relayout. Parsing the selector string each time
+ * was a measurable part of the per-element cascade cost (28us/element for a
+ * simple row). Cached on the selector string, like the tag index is cached
+ * on the rule set. */
 Specificity sel_specificity(const char* sel)
+{
+    static std::mutex mx;
+    static std::map<std::string, Specificity> cache;
+    if (!sel) {
+        return Specificity{0, 0, 0};
+    }
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        std::map<std::string, Specificity>::const_iterator it =
+            cache.find(sel);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+    Specificity sp = sel_specificity_uncached(sel);
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        if (cache.size() > 8192) {
+            cache.clear(); /* bounded: selectors are few, but never leak */
+        }
+        cache[sel] = sp;
+    }
+    return sp;
+}
+
+Specificity sel_specificity_uncached(const char* sel)
 {
     Specificity sp = {0, 0, 0};
     for (const char* p = sel; *p; ++p) {
@@ -1246,7 +1280,12 @@ void expand_shorthands(WhaleUIComputedStyle& s)
 
 /* cached selector chain (parse once per selector, reused across the
  * per-element cascade scans - the chain split + paren scan was a hot cost
- * on rule-heavy pages) */
+ * on rule-heavy pages).
+ *
+ * Keyed on the selector TEXT. Keying it on the pointer looked like a free
+ * win (selectors are strdup'd once per sheet) but the allocator reuses a
+ * freed selector's address for the NEXT sheet, so a different selector
+ * silently inherited the previous chain - four tests caught it. */
 struct SelChain { std::string sel; int comb; };
 static std::map<std::string, std::vector<SelChain>> g_chain_cache;
 
