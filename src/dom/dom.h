@@ -93,8 +93,35 @@ void whaleui_dom_set_active(struct lxb_dom_element* el);
  * focusable element). */
 void whaleui_dom_clear_active(struct lxb_dom_document* doc);
 
+/* --- document lock -------------------------------------------------------
+ *
+ * The render worker walks the lexbor document (layout build, hit test,
+ * style cascade) while the app mutates it. lexbor has no internal locking,
+ * so an edit that lands mid-walk corrupts the tree: the same sequence of
+ * API calls produced a correct page one run and a blank/frozen page the
+ * next, depending on where the frame happened to be when the edit arrived.
+ * Every public DOM entry point therefore takes this lock, and the frame
+ * holds it for its whole duration. It is RECURSIVE because the frame itself
+ * drains the dirty queues and a listener may mutate the DOM from inside a
+ * dispatch that the frame is running.
+ *
+ * Callers that need a multi-call critical section (a batch of edits that
+ * must be visible to the frame atomically) can take it explicitly; the
+ * per-call lock is re-entrant, so nesting is safe. */
+void whaleui_dom_lock(void);
+void whaleui_dom_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif
+
+/* RAII helper for C++ callers inside the engine. */
+class WhaleUIDomLock {
+public:
+    WhaleUIDomLock() { whaleui_dom_lock(); }
+    ~WhaleUIDomLock() { whaleui_dom_unlock(); }
+    WhaleUIDomLock(const WhaleUIDomLock&) = delete;
+    WhaleUIDomLock& operator=(const WhaleUIDomLock&) = delete;
+};
 
 #endif /* WHALEUI_DOM_DOM_H */

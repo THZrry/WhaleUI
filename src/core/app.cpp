@@ -1178,6 +1178,19 @@ extern "C" whaleui_app_t* whaleui_app_create(void)
     app->gpu = nullptr;
     app->select_cb = nullptr;
     app->select_ud = nullptr;
+    /* `new whaleui_app_t` default-initializes the atomics and the function
+     * pointers to INDETERMINATE values (only aggregates with `{}` are
+     * zeroed). A garbage app->key_cb was CALLED on the first key press, and
+     * garbage frame_request / frames_alive made the worker think a frame was
+     * pending (or an animation was running) before anything asked for one -
+     * the reported "startup sometimes crashes / hangs with the tab bar drawn
+     * but no content". Every field is set explicitly here. */
+    app->key_cb = nullptr;
+    app->key_ud = nullptr;
+    app->frame_request.store(0);
+    app->frame_done.store(0);
+    app->frames_alive.store(0);
+    app->watch_generation.store(0);
     /* Windows modal message loop (SDL_AppFreezeDuringDrag): SDL_PollEvent
      * blocks while the window is being resized/dragged, so resize events
      * never reach the main loop and the app freezes. An event watch is

@@ -1384,12 +1384,29 @@ int main(void)
             assert(whaleui_window_show(w) == 0);
             assert(whaleui_render_frame(w->render, w->document) == 0);
             whaleui_layout_node_t* root = w->render->tree->root;
+            /* walk the LIVE tree (not the arena: rebuilt/replaced nodes stay
+             * there, and hidden subtrees now carry text runs too, so an arena
+             * scan can pick a node that is not part of the painted page) */
             whaleui_layout_node_t* last_run = nullptr;
-            for (auto& n : w->render->tree->arena) {
-                if (n.visible && n.is_text) {
-                    last_run = &n;
-                }
-            }
+            int last_bottom = -1;
+            std::function<void(whaleui_layout_node_t*)> find_last =
+                [&](whaleui_layout_node_t* n) {
+                    if (!n) {
+                        return;
+                    }
+                    if (n->visible && n->is_text) {
+                        int b = n->border.y + n->border.h;
+                        if (b > last_bottom) {
+                            last_bottom = b;
+                            last_run = n;
+                        }
+                    }
+                    for (whaleui_layout_node_t* c = n->first_child; c;
+                         c = c->next) {
+                        find_last(c);
+                    }
+                };
+            find_last(w->render->tree->root);
             assert(root->scroll_max > 0);
             assert(last_run != nullptr);
             int content_bottom = root->scroll_max + root->content.h;

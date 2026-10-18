@@ -84,6 +84,17 @@ const whaleui_css_rule_t* whaleui_style_doc_rules_get(
     whaleui_dom_document_t* doc, size_t* count);
 void whaleui_style_doc_rules_clear(whaleui_dom_document_t* doc);
 
+/* Same, plus the sheet's @keyframes (deep-copied). Needed because the public
+ * whaleui_css_parse has nowhere to return keyframes, so a sheet mounted from
+ * C++ could never animate. */
+void whaleui_style_doc_rules_set_full(whaleui_dom_document_t* doc,
+                                      const whaleui_css_rule_t* rules,
+                                      size_t count,
+                                      const whaleui_css_keyframes_t* kf);
+/* The document's own @keyframes (borrowed; NULL when it has none). */
+const whaleui_css_keyframes_t* whaleui_style_doc_keyframes_get(
+    whaleui_dom_document_t* doc);
+
 /* Like collect_vars but also includes --* from rules matching :root/html. */
 void whaleui_style_collect_vars_full(lxb_dom_element* root,
                                      const whaleui_css_rule_t* rules, size_t count,

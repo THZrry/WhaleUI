@@ -927,26 +927,57 @@ void paint_one_shadow(whaleui_render_t* r, whaleui_layout_node_t* n,
             }
             return;
         }
-        /* hard OUTER shadow (blur 0): one fill grown by spread - this is
-         * the "0 0 0 3px rgba(...)" focus ring the themes write */
-        int hx = bx + ox - spread;
-        int hy = by + oy - spread;
-        int hw = n->border.w + 2 * spread;
-        int hh = n->border.h + 2 * spread;
-        if (hw <= 0 || hh <= 0) {
-            return;
-        }
+        /* hard OUTER shadow (blur 0): the RING between the box and the
+         * spread-grown box - this is the "0 0 0 3px rgba(...)" focus ring
+         * the themes write.
+         *
+         * It used to be one solid fill of the grown rect, which only looked
+         * like a ring when the element had an opaque background to cover the
+         * middle (paint_node draws the shadow BEFORE the body). On a
+         * `background: transparent` button - the UA `button:focus` ring on
+         * FlashSight's title buttons - nothing covered it, so the whole box
+         * painted in the ring colour and the label disappeared. Four strips
+         * leave the interior untouched, like the inset branch above. */
+        int sl = spread - ox; /* left strip */
+        int sr = spread + ox; /* right */
+        int st = spread - oy; /* top */
+        int sb = spread + oy; /* bottom */
+        if (sl < 0) sl = 0;
+        if (sr < 0) sr = 0;
+        if (st < 0) st = 0;
+        if (sb < 0) sb = 0;
         int rad0 = 0;
         std::string br0 = sget(n->style, "border-radius");
         if (!br0.empty()) {
             rad0 = std::atoi(br0.c_str());
         }
-        if (rad0 > 0) {
-            fill_round_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh,
-                            rad0, colc, clip);
-        } else {
-            fill_rect(r->pixels, r->fb_w, r->fb_h, hx, hy, hw, hh, colc,
-                      clip);
+        const int bw0 = n->border.w;
+        const int bh0 = n->border.h;
+        if (bw0 <= 0 || bh0 <= 0) {
+            return;
+        }
+        /* side strips span the full height (corners included) so the ring
+         * closes at the corners; the middle strips fill between them */
+        if (sl > 0) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + ox - sl,
+                            by + oy - st, sl, bh0 + st + sb,
+                            rad0 > 0 ? rad0 + sl : 0, colc, clip);
+        }
+        if (sr > 0) {
+            fill_round_rect(r->pixels, r->fb_w, r->fb_h, bx + ox + bw0,
+                            by + oy - st, sr, bh0 + st + sb,
+                            rad0 > 0 ? rad0 + sr : 0, colc, clip);
+        }
+        int midw = bw0;
+        if (midw > 0) {
+            if (st > 0) {
+                fill_rect(r->pixels, r->fb_w, r->fb_h, bx + ox, by + oy - st,
+                          midw, st, colc, clip);
+            }
+            if (sb > 0) {
+                fill_rect(r->pixels, r->fb_w, r->fb_h, bx + ox,
+                          by + oy + bh0, midw, sb, colc, clip);
+            }
         }
         return;
     }

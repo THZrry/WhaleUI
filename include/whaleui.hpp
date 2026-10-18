@@ -851,6 +851,13 @@ public:
     bool Apply(const Document& doc) const {
         return whaleui_css_apply(doc.handle(), rules_, count_) == 0;
     }
+    /* Apply raw CSS text, @keyframes included. Use this (or ParseText) for a
+     * sheet that declares animations: the rule-array path cannot carry
+     * @keyframes, so `animation: name` would never resolve. */
+    static bool ApplyText(const Document& doc, const std::string& css) {
+        return whaleui_css_apply_text(doc.handle(), css.c_str(),
+                                      css.size()) == 0;
+    }
     size_t Count() const { return count_; }
     /* The rule array, opaque as in the C header: pair it with CssSelector() /
      * CssProperty() below. Per-rule struct access is a white-box facility -

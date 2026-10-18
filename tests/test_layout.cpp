@@ -1953,6 +1953,40 @@ int main(void)
         whaleui_layout_destroy(t);
     }
 
+    /* a text-only edit must rebuild the run. The relayout's in-place restyle
+     * path compares the DOM shape against the layout shape; comparing only
+     * ELEMENT children let `set_text` on an element with no element children
+     * pass as "same shape", so the run was never created and the box stayed
+     * 0px tall ("text disappears after a C++ edit"). */
+    {
+        whaleui_dom_document_t* doc = whaleui_dom_parse_html(
+            "<body><div id=\"x\" style=\"width:40px\"></div></body>", 0);
+        whaleui_layout_tree_t* t = whaleui_layout_compute(
+            doc, nullptr, 0, nullptr, 400, 300, nullptr, nullptr, nullptr,
+            1.0f);
+        lxb_dom_element* x = reinterpret_cast<lxb_dom_element*>(
+            whaleui_dom_get_element_by_id(doc, "x"));
+        assert(x && t->by_el.count(x));
+        assert(t->by_el[x]->border.h == 0); /* empty div */
+        whaleui_dom_set_text(reinterpret_cast<whaleui_dom_element_t*>(x),
+                             "\xe7\x94\xa8\xe9\x87\x8f"); /* 用量 */
+        assert(whaleui_layout_relayout(t, x, nullptr, 0, nullptr, nullptr,
+                                       nullptr, nullptr, 1.0f) == 0);
+        whaleui_layout_node_t* n = t->by_el[x];
+        assert(n != nullptr);
+        /* one 13px line: the box must have picked up the run's height */
+        assert(n->border.h >= 15);
+        bool has_run = false;
+        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+            if (c->is_text) {
+                has_run = true;
+            }
+        }
+        assert(has_run);
+        whaleui_layout_destroy(t);
+        whaleui_dom_document_destroy(doc);
+    }
+
     /* smoke: every test_html example parses and lays out without crashing */
     {
         const char* files[] = {

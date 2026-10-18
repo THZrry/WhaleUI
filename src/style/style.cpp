@@ -2546,6 +2546,14 @@ struct DocRules
 {
     whaleui_css_rule_t* rules;
     size_t count;
+    /* @keyframes from the same sheet. The public whaleui_css_parse drops
+     * them (its signature has nowhere to return them), so a sheet mounted
+     * through the API could never animate: the rules cascaded, but the
+     * `animation: name` they set resolved against a keyframes registry that
+     * did not contain `name`. whaleui_css_apply_full parses with the
+     * internal parser and keeps them here; the window's sheet assembly
+     * appends them to the document's own keyframes. */
+    whaleui_css_keyframes_t keyframes;
 };
 std::map<lxb_dom_document*, DocRules>& g_doc_rules()
 {
@@ -2643,7 +2651,81 @@ void whaleui_style_doc_rules_set(whaleui_dom_document_t* doc,
     DocRules dr;
     dr.rules = copy;
     dr.count = count;
+    dr.keyframes.items = nullptr;
+    dr.keyframes.count = 0;
     g_doc_rules()[key] = dr;
+}
+
+/* Set the document's sheet AND its @keyframes. `kf` is borrowed and
+ * deep-copied; it may be null (rules only). */
+void whaleui_style_doc_rules_set_full(whaleui_dom_document_t* doc,
+                                      const whaleui_css_rule_t* rules,
+                                      size_t count,
+                                      const whaleui_css_keyframes_t* kf)
+{
+    whaleui_style_doc_rules_set(doc, rules, count);
+    if (!doc || !kf || kf->count == 0) {
+        return;
+    }
+    lxb_dom_document* key =
+        &reinterpret_cast<lxb_html_document*>(doc)->dom_document;
+    std::map<lxb_dom_document*, DocRules>::iterator it =
+        g_doc_rules().find(key);
+    if (it == g_doc_rules().end()) {
+        return;
+    }
+    whaleui_css_keyframes_t& dst = it->second.keyframes;
+    dst.items = static_cast<whaleui_keyframes_t*>(
+        std::calloc(kf->count, sizeof(whaleui_keyframes_t)));
+    if (!dst.items) {
+        return;
+    }
+    dst.count = kf->count;
+    for (size_t i = 0; i < kf->count; ++i) {
+        const whaleui_keyframes_t* s = &kf->items[i];
+        whaleui_keyframes_t* d = &dst.items[i];
+        if (s->name) {
+            size_t n = std::strlen(s->name);
+            d->name = static_cast<char*>(std::malloc(n + 1));
+            if (d->name) {
+                std::memcpy(d->name, s->name, n + 1);
+            }
+        }
+        if (s->frame_count) {
+            d->frames = static_cast<char**>(
+                std::calloc(s->frame_count, sizeof(char*)));
+            if (!d->frames) {
+                continue;
+            }
+            for (size_t f = 0; f < s->frame_count; ++f) {
+                if (!s->frames[f]) {
+                    continue;
+                }
+                size_t n = std::strlen(s->frames[f]);
+                d->frames[f] = static_cast<char*>(std::malloc(n + 1));
+                if (d->frames[f]) {
+                    std::memcpy(d->frames[f], s->frames[f], n + 1);
+                }
+            }
+            d->frame_count = s->frame_count;
+        }
+    }
+}
+
+const whaleui_css_keyframes_t* whaleui_style_doc_keyframes_get(
+    whaleui_dom_document_t* doc)
+{
+    if (!doc) {
+        return nullptr;
+    }
+    lxb_dom_document* key =
+        &reinterpret_cast<lxb_html_document*>(doc)->dom_document;
+    std::map<lxb_dom_document*, DocRules>::const_iterator it =
+        g_doc_rules().find(key);
+    if (it == g_doc_rules().end() || it->second.keyframes.count == 0) {
+        return nullptr;
+    }
+    return &it->second.keyframes;
 }
 
 const whaleui_css_rule_t* whaleui_style_doc_rules_get(whaleui_dom_document_t* doc,
@@ -2681,6 +2763,7 @@ void whaleui_style_doc_rules_clear(whaleui_dom_document_t* doc)
         doc_rule_free(&it->second.rules[i]);
     }
     std::free(it->second.rules);
+    whaleui_css_keyframes_destroy(&it->second.keyframes);
     g_doc_rules().erase(it);
 }
 
@@ -2697,14 +2780,41 @@ extern "C" int whaleui_css_apply(whaleui_dom_document_t* doc,
 {
     if (!doc) {
         return -1;
-    }
-    lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
+    }    lxb_html_document* hd = reinterpret_cast<lxb_html_document*>(doc);
     if (!lxb_dom_document_element(&hd->dom_document)) {
         return 0;
     }
     whaleui_style_doc_rules_set(doc, rules, count);
     /* the window's assembled sheet is stale: re-collect before the next frame
      * (the DOM layer owns that flag; see dom.h whaleui_dom_mark_css_dirty) */
+    whaleui_dom_mark_css_dirty(doc);
+    return 0;
+}
+
+/* CSS text -> document sheet, INCLUDING @keyframes. The plain
+ * whaleui_css_parse cannot carry keyframes (its signature has nowhere to put
+ * them), so a sheet mounted from C++ could set `animation: foo` but `foo`
+ * never existed in the keyframes registry the animation engine consults -
+ * the animation silently did nothing while the same CSS in the markup
+ * played. This is the entry point for "mount CSS from C++". */
+extern "C" int whaleui_css_apply_text(whaleui_dom_document_t* doc,
+                                      const char* css, size_t len)
+{
+    if (!doc || !css) {
+        return -1;
+    }
+    if (len == 0) {
+        len = std::strlen(css);
+    }
+    whaleui_css_rule_t* rules = nullptr;
+    size_t count = 0;
+    whaleui_css_keyframes_t kf = {nullptr, 0};
+    if (whaleui_css_parse_full(css, len, &rules, &count, &kf) != 0) {
+        return -2;
+    }
+    whaleui_style_doc_rules_set_full(doc, rules, count, &kf);
+    whaleui_css_rules_destroy(rules, count);
+    whaleui_css_keyframes_destroy(&kf);
     whaleui_dom_mark_css_dirty(doc);
     return 0;
 }

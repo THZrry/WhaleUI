@@ -3137,6 +3137,29 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     if (!r) {
         return;
     }
+    /* The async first-layout worker walks the document and the rule array.
+     * The caller destroys the old document right after this call, so the
+     * worker MUST be gone before that - otherwise it keeps reading freed
+     * lexbor nodes and publishes a tree built from a dead document, which
+     * the next frame adopts and paints (use-after-free: "the tab bar shows
+     * but the content never appears, then the app hangs"). Join it here,
+     * under the tree lock, and drop whatever it produced. */
+    {
+        std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+        if (r->layout_thread) {
+            /* the worker only reads; wait for it to finish (bounded by one
+             * full layout) and discard the result - it belongs to the old
+             * document */
+            r->layout_thread->join();
+            delete r->layout_thread;
+            r->layout_thread = nullptr;
+            r->layout_done.store(0, std::memory_order_relaxed);
+        }
+        if (r->layout_pending) {
+            whaleui_layout_destroy(r->layout_pending);
+            r->layout_pending = nullptr;
+        }
+    }
 #ifdef WHALEUI_BUILD_FULL
     /* run-raster cache: entries are owned vectors keyed by the full string
      * key (see draw_text_at) - clearing drops every raster at once */
@@ -5001,6 +5024,14 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
      * style maps / intermittent crash on big lists). Idle/parked frames
      * release it immediately (return below). */
     std::unique_lock<std::recursive_mutex> tree_lk(r->tree_mx);
+    /* Serialize the WHOLE frame against public DOM mutations (see dom.h).
+     * The frame walks the lexbor document for the cascade, the rebuild, the
+     * hit test and the text runs; an edit landing between any two of those
+     * left the tree inconsistent (the same API sequence rendered correctly
+     * one run and produced a blank/frozen page the next). Recursive, so the
+     * dirty-queue drains and any listener dispatch inside the frame can
+     * still mutate the DOM. */
+    WhaleUIDomLock dom_lk;
 
     /* the document's stylesheet sources changed through the DOM API (a <style>
      * injected or rewritten, a <link href> swapped): re-collect before this
@@ -5588,11 +5619,16 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
         r->focus_old_el = nullptr;
         r->pressed_old_el = nullptr;
         r->hover_prev.clear();
-        whaleui_layout_destroy(r->tree);
-        /* was there no tree at all (first layout) vs a rebuild? The slice
-         * decision below applies only to the FIRST layout - a rebuild must
-         * stay whole, or the page would lose content. */
+        /* Was there no tree at all (first layout) vs a rebuild? Must be read
+         * BEFORE the destroy below - after it `r->tree` is always null, so
+         * the slice decision applied to every rebuild as well and a resized
+         * page was cut to one viewport's worth of rows (content missing
+         * after a resize). The slice decision applies only to the FIRST
+         * layout: a rebuild must stay whole, or the page would lose
+         * content. */
         const bool wui_first_layout = (r->tree == nullptr);
+        whaleui_layout_destroy(r->tree);
+        r->tree = nullptr;
         /* Build with an interaction-NEUTRAL state so every element hits the
          * style cache (keyed per element + state): the cascade does not
          * depend on which element is hovered, so a whole-tree rebuild after
@@ -6586,7 +6622,11 @@ d here leaves its ancestors'
         SDL_SubmitGPUCommandBuffer(cmd);
         bool pop_anim = r->open_select && r->open_select_t != 0 &&
                         whaleui_anim_now() < r->open_select_t + 2500;
-        r->alive = (animating || r->edit_el || r->stream_expand.active ||
+        /* same reasoning as the tail gate: an animation started this frame
+         * must keep the loop alive even though the frame's tick predates it */
+        const bool anim_live = animating ||
+                               (r->anim && whaleui_anim_active(r->anim) != 0);
+        r->alive = (anim_live || r->edit_el || r->stream_expand.active ||
                     pop_anim)
                        ? 1
                        : 0;
@@ -6664,7 +6704,18 @@ d here leaves its ancestors'
             uint64_t now = whaleui_anim_now();
             pop_anim = now < r->open_select_t + 2500;
         }
-        r->alive = (animating || r->edit_el || r->stream_expand.active ||
+        /* `animating` is the tick's verdict from the TOP of this frame. An
+         * animation REGISTERED during this frame's relayout (a C++ style
+         * edit that sets `animation`, a class toggle that starts one) is not
+         * in it yet - the tick that would report it runs on the NEXT frame.
+         * Reporting alive=0 here parked the worker immediately after the
+         * frame that started the animation, so it never advanced until some
+         * unrelated input (a mouse move, a resize) requested a frame: the
+         * reported "CSS animation defined from C++ does not play until I
+         * resize the window". Ask the animation state directly as well. */
+        const bool anim_live = animating ||
+                               (r->anim && whaleui_anim_active(r->anim) != 0);
+        r->alive = (anim_live || r->edit_el || r->stream_expand.active ||
                     pop_anim)
                        ? 1
                        : 0;

@@ -294,6 +294,68 @@ static unsigned int disp_cp_at(const TextLayout& L, size_t ci){
 
 /* 闂?wrap_w 闂傚倷绀侀幖顐﹀磻閸℃稑鐭楅柍褜鍓氶妵?闂傚倸鍊风欢锟犲磻閸涙潙绀夐柡鍥ュ灪閸嬨倗鎲歌箛鏇炲灊妞ゆ挶鍨洪弲婊堟煕閹炬瀚崝鎼佹⒑閼姐倕小閻犱焦鐓￠崺鈧い鎺嶇婢ь垶鏌涢悢椋幮ф?闂備胶鍎甸崜婵堟暜閹烘绠犻幖鎼厛閺佸﹪鏌￠崘銊у缂侇偄绉归幃褰掓惞閻熸澘濡虹紓浣插亾闁逞屽墴濮婄粯绗熼崶褌绨梺绋款儐閹瑰洭寮诲☉銏犵闁哄倹顑欓弳顓炩攽閻愬瓨灏柣鏍帶閻ｇ兘濡烽敂钘夊妳濠电娀娼ч悧婊勫閸ャ劎绠鹃柟瀵稿仦閹嫬霉濠婂懎浠遍柛鈺冨仱瀵粙顢橀悙鎻掓暏?闂?
  * wrap_w <= 0 = 婵犵數鍋為崹鍫曞箰閸濄儳鐭撻柣鎴ｅГ鐎氬啴鎮楅敐搴℃灈缂佺姵鐓￠弻鏇＄疀閵壯呅ｉ梺琛″亾濞寸姴顑嗛悡蹇涙煕閳╁喚娈旈柍褜鍓涢弲顐﹀箲閵忋倕绠ｉ柨鏇楀亾闁绘劕锕弻锝夊箛椤掑娈跺┑鈥崇湴閸旀垿骞冪捄琛℃婵☆垵鍋愭导鍥р攽閻愯尙澧涢柛銊ョ仢椤曪絾瀵奸弶鎴狀槶閻熸粌顑嗙粋鎺戔槈閵忊€斥偓鍨箾閹寸偟鎳愭繛鍫熒戦妵鍕箣濠婂懐鐛㈤梺鐟扮－婵炩偓鐎规洘锕㈡俊鎼佹晜閹冩瘣 [cstart,cend) 婵犵數鍋為崹鍫曞箰閸涘娈介柟闂寸绾炬寧鎱ㄥΟ鍧楀摵妞ゎ偅娲熼弻锝呂熼悜妯锋灆闂佸摜鍠庣粔褰掑蓟?*/
+/* CSS line-breaking rule (a subset of UAX #14): these characters may not
+ * START a line, so a break that would leave one of them at the beginning has
+ * to move back one position and let the character overflow the measure
+ * ("hanging punctuation"). Without it a trailing `.` / `,` / `)` / closing
+ * quote wrapped onto its own line, so `value.` in a 31px box rendered as
+ * "value" + "." instead of one clipped line - the reported "small text
+ * wraps or truncates at punctuation". */
+static bool no_line_start(unsigned int cp)
+{
+    switch (cp) {
+    case ',':
+    case '.':
+    case ';':
+    case ':':
+    case '!':
+    case '?':
+    case ')':
+    case ']':
+    case '}':
+    case '%':
+    case 0x3001: /* 、 */
+    case 0x3002: /* 。 */
+    case 0xFF0C: /* ， */
+    case 0xFF0E: /* ． */
+    case 0xFF1A: /* ： */
+    case 0xFF1B: /* ； */
+    case 0xFF01: /* ！ */
+    case 0xFF1F: /* ？ */
+    case 0xFF09: /* ） */
+    case 0x300D: /* 」 */
+    case 0x300F: /* 』 */
+    case 0x3011: /* 】 */
+    case 0x201D: /* ” */
+    case 0x2019: /* ’ */
+    case 0x00BB: /* » */
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* CSS line-breaking rule (a subset of UAX #14): these characters may not
+ * END a line (an opening bracket/quote stays with the following text). */
+static bool no_line_end(unsigned int cp)
+{
+    switch (cp) {
+    case '(':
+    case '[':
+    case '{':
+    case 0xFF08: /* （ */
+    case 0x300C: /* 「 */
+    case 0x300E: /* 『 */
+    case 0x3010: /* 【 */
+    case 0x201C: /* “ */
+    case 0x2018: /* ‘ */
+    case 0x00AB: /* « */
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void layout_wrap(TextLayout& L, int wrap_w, int lh,
                         TextGlyphFn gw, void* st)
 {
@@ -321,6 +383,29 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
                     br = last_sp + 1;
                     bw = wacc_at_sp;
                 }
+                /* Kinsoku: a closing punctuation may not START the next
+                 * line, so pull it back onto this one (it then overflows the
+                 * measure - what browsers do, and what keeps `value.` on one
+                 * line in a box one glyph too narrow). Conversely an opening
+                 * bracket/quote must not END a line: push the break past it.
+                 * Both only move FORWARD; `br` is the first character of the
+                 * next line. */
+                while (br < nc && no_line_start(disp_cp_at(L, br))) {
+                    ++br;
+                }
+                while (br < ci && br > ls + 1 &&
+                       no_line_end(disp_cp_at(L, br - 1))) {
+                    ++br;
+                }
+                if (br != ci) {
+                    /* the line grew past the original break: restore its
+                     * accumulated width */
+                    int bw2 = 0;
+                    for (size_t k = ls; k < br; ++k) {
+                        bw2 += gw(disp_cp_at(L, k), st);
+                    }
+                    bw = bw2;
+                }
                 if (br <= ls) { /* 缂傚倸鍊风粈渚€鎯夋總绋跨？闁靛牆顦伴崑瀣煙闂傚顦﹂柛娆忥攻閵囧嫰寮介妸褏顓奸梺琛″亾闁芥ê锛夊☉銏℃櫜闁糕剝鐟ラ埛鍫ユ⒑閻戔晛澧查柛銊ф暬椤㈡岸鏁愭径濠勶紲濠殿喗锚瀹曨剟鎮?闂傚倷绀侀幖顐﹀磻閸℃稑鍌ㄩ柣鎾冲嚱閼版寧銇勮箛鎾村偍濞存粌缍婇弻鐔煎箚瑜嶉弳杈ㄣ亜閵堝懏鍤囬柟顔筋殔閳藉鈻庡Ο鑽ゆ毉婵＄偑鍊栭崹宕囨濮橆剛鏆?*/
                     br = ci;
                     bw = wacc;
@@ -331,6 +416,14 @@ static void layout_wrap(TextLayout& L, int wrap_w, int lh,
                 }
                 L.th += lh;
                 ci = br;
+                /* Kinsoku can push `br` all the way to the end (the trailing
+                 * punctuation was pulled onto this line). Then the loop is
+                 * DONE - setting `ci = nc` and breaking would fall into the
+                 * `ci >= nc` branch below and emit an extra empty line,
+                 * doubling the measured height. */
+                if (ci >= nc) {
+                    return;
+                }
                 break;
             }
             wacc += w;

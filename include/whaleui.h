@@ -1096,6 +1096,14 @@ int         whaleui_css_has_property(const whaleui_css_rule_t* rule, const char*
 int whaleui_css_apply(whaleui_dom_document_t* doc,
                       const whaleui_css_rule_t* rules, size_t count);
 
+/* Apply CSS TEXT to a document, @keyframes included. Prefer this over
+ * whaleui_css_parse + whaleui_css_apply when the sheet declares animations:
+ * the public parser has nowhere to return @keyframes, so `animation: foo`
+ * would resolve against a registry that never learned `foo` and the animation
+ * would silently do nothing (the same CSS in the markup played fine). */
+int whaleui_css_apply_text(whaleui_dom_document_t* doc,
+                           const char* css, size_t len);
+
 /* ======================= virtual file system ======================= */
 
 /* All file operations go through the VFS. Default loader reads from disk

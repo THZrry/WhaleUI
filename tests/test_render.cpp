@@ -249,6 +249,36 @@ int main(void)
         whaleui_window_destroy(hw);
     }
 
+    /* Kinsoku: a trailing punctuation may not start a new line, so a word
+     * one glyph wider than the measure stays on one overflowing line instead
+     * of pushing the `.` down ("small text wraps at punctuation"). */
+    {
+        whaleui_window_t* kw = whaleui_window_create(app, "k", 300, 200);
+        assert(kw != nullptr);
+        assert(whaleui_window_load_html(kw,
+            "<html><body><p style=\"font-size:13px\">x</p></body></html>") == 0);
+        if (whaleui_window_show(kw) == 0 && kw->render != nullptr) {
+            assert(whaleui_render_frame(kw->render, kw->document) == 0);
+            whaleui_render_t* kr = kw->render;
+            int lh = text_line_h(kr, 13, "", false);
+            int tw = 0, th = 0;
+            /* "value." is 33px wide; a 30px measure would break before the
+             * period without the rule */
+            text_size(kr, "value.", 13, "", false, &tw, &th, 30);
+            assert(th == lh);
+            /* and a closing quote must not start a line either */
+            int tw2 = 0, th2 = 0;
+            text_size(kr, "\xe2\x80\x9cok\xe2\x80\x9d", 13, "", false,
+                      &tw2, &th2, 20);
+            assert(th2 == lh);
+            /* a genuinely too-narrow box still wraps */
+            int tw3 = 0, th3 = 0;
+            text_size(kr, "value.", 13, "", false, &tw3, &th3, 12);
+            assert(th3 > lh);
+        }
+        whaleui_window_destroy(kw);
+    }
+
     /* descendant-selector invalidation: a class edit on an ANCESTOR must
      * re-lay out the descendants it selects. It used to take the paint-only
      * branch (the edited element's own layout keys were unchanged), so the
@@ -1681,13 +1711,26 @@ int main(void)
         assert(whaleui_window_show(w) == 0);
         assert(whaleui_render_frame(w->render, w->document) == 0);
 
+        /* walk the LIVE tree: the arena keeps replaced nodes, and a hidden
+         * subtree now carries text runs too (built up front so a tab panel
+         * can be shown without a rebuild), so an arena scan can pick a run
+         * that is not on the painted page. */
         whaleui_layout_node_t* tr = nullptr;
-        for (auto& n : w->render->tree->arena) {
-            if (n.visible && n.is_text) {
-                tr = &n;
-                break;
-            }
-        }
+        std::function<void(whaleui_layout_node_t*)> find_text =
+            [&](whaleui_layout_node_t* n) {
+                if (!n || tr) {
+                    return;
+                }
+                if (n->is_text && n->visible) {
+                    tr = n;
+                    return;
+                }
+                for (whaleui_layout_node_t* c = n->first_child; c;
+                     c = c->next) {
+                    find_text(c);
+                }
+            };
+        find_text(w->render->tree->root);
         assert(tr != nullptr);
         int y = tr->border.y + tr->border.h / 2;
         /* drag across the whole run: everything is selected */

@@ -16,6 +16,11 @@
 #include <cmath>
 #include <string>
 #include <cwchar>
+#include <cstdlib>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <vector>
 
 namespace {
 
@@ -56,16 +61,201 @@ bool dxc_init()
 }
 #endif
 
-/* compile HLSL to DXIL via DXC; returns a blob the caller owns (Release).
- * profile: L"vs_6_0" / L"ps_6_0" / L"cs_6_0". When spirv is set, emits
- * SPIR-V (-spirv) with the given -fvk-bind extras. */
-IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
+/* --- compiled-shader cache ---------------------------------------------
+ *
+ * DXC costs ~500-700ms for the ten shaders the renderer needs, and it ran
+ * once per WINDOW (whaleui_gpu_create compiles all of them), so even an
+ * empty page took ~600ms to show and a second window paid it again. Two
+ * layers fix that:
+ *   - an in-process memo: the second window reuses the first window's
+ *     bytecode (same device driver, same sources);
+ *   - an on-disk cache keyed on a hash of EVERYTHING that determines the
+ *     bytecode, so a source edit can never hit a stale entry.
+ *
+ * The key covers the HLSL text, entry point, target profile, the SPIR-V
+ * flag and its extra args, the library version, a cache-format version,
+ * and the DXC DLL's size + mtime (upgrading dxcompiler.dll invalidates).
+ * A change to any of those produces a different filename, so the old entry
+ * is simply never read again. */
+
+const uint32_t kShaderCacheVersion = 1; /* bump on any layout/key change */
+
+uint64_t fnv1a(const void* data, size_t len, uint64_t h = 1469598103934665603ULL)
+{
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < len; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+uint64_t fnv1a_str(const char* s, uint64_t h = 1469598103934665603ULL)
+{
+    return s ? fnv1a(s, std::strlen(s), h) : h;
+}
+
+/* "<hex key>.bin" under the cache directory, or empty when caching is off */
+std::string shader_cache_path(const std::string& key)
+{
+    const char* off = SDL_getenv("WHALEUI_SHADER_CACHE");
+    if (off && off[0] == '0' && off[1] == '\0') {
+        return std::string(); /* explicitly disabled */
+    }
+    char* dir = nullptr;
+    if (off && off[0]) {
+        dir = SDL_strdup(off); /* caller-supplied directory */
+    } else {
+        dir = SDL_GetPrefPath("WhaleUI", "shader-cache");
+    }
+    if (!dir) {
+        return std::string();
+    }
+    std::string path(dir);
+    SDL_free(dir);
+    if (!path.empty() && path[path.size() - 1] != '/' &&
+        path[path.size() - 1] != '\\') {
+        path += '/';
+    }
+    path += key;
+    path += ".bin";
+    return path;
+}
+
+std::mutex g_shader_memo_mx;
+std::map<std::string, std::vector<unsigned char> >& shader_memo()
+{
+    static std::map<std::string, std::vector<unsigned char> > m;
+    return m;
+}
+
+bool read_file(const std::string& path, std::vector<unsigned char>& out)
+{
+    if (path.empty()) {
+        return false;
+    }
+    SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
+    if (!io) {
+        return false;
+    }
+    Sint64 sz = SDL_GetIOSize(io);
+    if (sz <= 0 || sz > (64 << 20)) {
+        SDL_CloseIO(io);
+        return false;
+    }
+    out.resize(static_cast<size_t>(sz));
+    size_t got = SDL_ReadIO(io, out.data(), out.size());
+    SDL_CloseIO(io);
+    if (got != out.size()) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+/* write via a temp file + rename so a concurrent reader never sees a
+ * half-written entry (two windows can compile the same key at once) */
+void write_file_atomic(const std::string& path,
+                       const std::vector<unsigned char>& data)
+{
+    if (path.empty() || data.empty()) {
+        return;
+    }
+    std::string tmp = path + ".tmp";
+    SDL_IOStream* io = SDL_IOFromFile(tmp.c_str(), "wb");
+    if (!io) {
+        return;
+    }
+    size_t put = SDL_WriteIO(io, data.data(), data.size());
+    SDL_CloseIO(io);
+    if (put != data.size()) {
+        SDL_RemovePath(tmp.c_str());
+        return;
+    }
+    /* rename over an existing entry: remove first (Windows rename fails
+     * otherwise); losing a concurrent writer's entry is harmless - the
+     * loser just recompiles next run */
+    SDL_RemovePath(path.c_str());
+    if (SDL_RenamePath(tmp.c_str(), path.c_str()) != 0) {
+        SDL_RemovePath(tmp.c_str());
+    }
+}
+
+/* Everything that can change the emitted bytecode, hashed into one key. */
+std::string shader_key(const char* hlsl, const char* entry,
                        const wchar_t* profile, bool spirv,
                        const wchar_t* const* extra, int nextra)
 {
+    uint64_t h = fnv1a_str(hlsl);
+    h = fnv1a_str(entry, h);
+    if (profile) {
+        h = fnv1a(profile, std::wcslen(profile) * sizeof(wchar_t), h);
+    }
+    h = fnv1a(&spirv, sizeof(spirv), h);
+    for (int i = 0; i < nextra && extra; ++i) {
+        if (extra[i]) {
+            h = fnv1a(extra[i], std::wcslen(extra[i]) * sizeof(wchar_t), h);
+        }
+    }
+    h = fnv1a_str(WHALEUI_VERSION, h);
+    h = fnv1a(&kShaderCacheVersion, sizeof(kShaderCacheVersion), h);
+#ifdef _WIN32
+    /* a dxcompiler.dll upgrade must invalidate every entry */
+    if (g_dxc_dll) {
+        char path[MAX_PATH];
+        DWORD n = GetModuleFileNameA(g_dxc_dll, path, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            WIN32_FILE_ATTRIBUTE_DATA fad;
+            if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+                h = fnv1a(&fad.nFileSizeLow, sizeof(fad.nFileSizeLow), h);
+                h = fnv1a(&fad.ftLastWriteTime, sizeof(fad.ftLastWriteTime), h);
+            }
+        }
+    }
+#endif
+    char hex[24];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+    return std::string(hex);
+}
+
+/* compile HLSL to DXIL/SPIR-V bytecode; returns false on failure.
+ * profile: L"vs_6_0" / L"ps_6_0" / L"cs_6_0". When spirv is set, emits
+ * SPIR-V (-spirv) with the given -fvk-bind extras.
+ *
+ * Returns BYTES rather than an IDxcBlob so the cache can hand back a decoded
+ * entry without recompiling (see the cache block above). */
+bool compile_dxil(const char* hlsl, const char* entry,
+                  const wchar_t* profile, bool spirv,
+                  const wchar_t* const* extra, int nextra,
+                  std::vector<unsigned char>& out)
+{
+    out.clear();
 #ifdef _WIN32
     if (!dxc_init()) {
-        return nullptr;
+        return false;
+    }
+    /* memo/disk cache: see the block comment above. Keyed on every input
+     * that can change the bytecode, so a source edit is a cache MISS, never
+     * a stale hit. */
+    const std::string key = shader_key(hlsl, entry, profile, spirv, extra,
+                                       nextra);
+    {
+        std::lock_guard<std::mutex> lk(g_shader_memo_mx);
+        std::map<std::string, std::vector<unsigned char> >::iterator mi =
+            shader_memo().find(key);
+        if (mi != shader_memo().end()) {
+            out = mi->second;
+            return true;
+        }
+    }
+    if (read_file(shader_cache_path(key), out)) {
+        if (!out.empty()) {
+            std::lock_guard<std::mutex> lk(g_shader_memo_mx);
+            shader_memo()[key] = out;
+            return true;
+        }
+        /* corrupt/truncated entry: fall through and recompile */
+        out.clear();
     }
     IDxcCompiler3* compiler = nullptr;
     HRESULT hr = g_dxc_create(CLSID_DxcCompiler, IID_DXC_Compiler3,
@@ -73,7 +263,7 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
     if (FAILED(hr) || !compiler) {
         std::fprintf(stderr, "[gpu] DxcCreateInstance(Compiler) failed: 0x%lx\n",
                      static_cast<unsigned long>(hr));
-        return nullptr;
+        return false;
     }
     DxcBuffer buf;
     buf.Ptr = hlsl;
@@ -99,7 +289,7 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
     if (FAILED(hr) || !result) {
         std::fprintf(stderr, "[gpu] DXC Compile(%s) failed: 0x%lx\n", entry,
                      static_cast<unsigned long>(hr));
-        return nullptr;
+        return false;
     }
     HRESULT status = S_OK;
     result->GetStatus(&status);
@@ -118,7 +308,7 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
                          static_cast<unsigned long>(status));
         }
         result->Release();
-        return nullptr;
+        return false;
     }
     IDxcBlob* blob = nullptr;
     result->GetOutput(DXC_OUT_OBJECT, IID_DXC_Blob,
@@ -126,14 +316,31 @@ IDxcBlob* compile_dxil(const char* hlsl, const char* entry,
     result->Release();
     if (!blob) {
         std::fprintf(stderr, "[gpu] DXC %s: no object blob\n", entry);
-        return nullptr;
+        return false;
     }
-    return blob;
+    const unsigned char* bytes =
+        static_cast<const unsigned char*>(blob->GetBufferPointer());
+    out.assign(bytes, bytes + blob->GetBufferSize());
+    blob->Release();
+    if (out.empty()) {
+        return false;
+    }
+    /* persist for the next run; a failed write only costs a recompile */
+    write_file_atomic(shader_cache_path(key), out);
+    {
+        std::lock_guard<std::mutex> lk(g_shader_memo_mx);
+        shader_memo()[key] = out;
+    }
+    return true;
 #else
     (void)hlsl;
     (void)entry;
     (void)profile;
-    return nullptr;
+    (void)spirv;
+    (void)extra;
+    (void)nextra;
+    (void)out;
+    return false;
 #endif
 }
 
@@ -150,15 +357,15 @@ SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
 #ifdef _WIN32
     const bool vulkan = vulkan_driver(dev);
     const std::wstring profile = fragment ? L"ps_6_0" : L"vs_6_0";
-    IDxcBlob* blob = compile_dxil(hlsl, entry, profile.c_str(), vulkan,
-                                  nullptr, 0);
-    if (!blob) {
+    std::vector<unsigned char> bytecode;
+    if (!compile_dxil(hlsl, entry, profile.c_str(), vulkan, nullptr, 0,
+                      bytecode)) {
         return nullptr;
     }
     SDL_GPUShaderCreateInfo sci;
     std::memset(&sci, 0, sizeof(sci));
-    sci.code = static_cast<const Uint8*>(blob->GetBufferPointer());
-    sci.code_size = blob->GetBufferSize();
+    sci.code = bytecode.data();
+    sci.code_size = bytecode.size();
     sci.entrypoint = entry;
     sci.format = vulkan ? SDL_GPU_SHADERFORMAT_SPIRV
                         : SDL_GPU_SHADERFORMAT_DXIL;
@@ -166,7 +373,6 @@ SDL_GPUShader* compile_shader(SDL_GPUDevice* dev, const char* hlsl,
                          : SDL_GPU_SHADERSTAGE_VERTEX;
     sci.num_samplers = fragment ? 1 : 0;
     SDL_GPUShader* sh = SDL_CreateGPUShader(dev, &sci);
-    blob->Release();
     if (!sh) {
         std::fprintf(stderr, "[gpu] SDL_CreateGPUShader(%s) failed: %s\n",
                      entry, SDL_GetError());
@@ -530,15 +736,15 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     /* text-composite compute pipeline: text_layer (t0,t1) -> target2 (u0) */
     {
-        IDxcBlob* cs = compile_dxil(kTextCompositeCS, "main", L"cs_6_0",
-                                    vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        std::vector<unsigned char> cs;
+        if (!compile_dxil(kTextCompositeCS, "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
         SDL_GPUComputePipelineCreateInfo cpi;
         std::memset(&cpi, 0, sizeof(cpi));
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         cpi.entrypoint = "main";
         cpi.format = vulkan_driver(device) ? SDL_GPU_SHADERFORMAT_SPIRV
                                            : SDL_GPU_SHADERFORMAT_DXIL;
@@ -549,7 +755,6 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.threadcount_y = 16;
         cpi.threadcount_z = 1;
         g->pipe_text_composite = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_text_composite) {
             std::fprintf(stderr, "[gpu] text composite pipeline failed: %s\n",
                          SDL_GetError());
@@ -559,15 +764,15 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
 
     /* blur compute pipelines: blur_tex (t0) + params (t1) -> target (u0) */
     {
-        IDxcBlob* cs = compile_dxil(kShadowCS.c_str(), "main", L"cs_6_0",
-                                    vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        std::vector<unsigned char> cs;
+        if (!compile_dxil(kShadowCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
         SDL_GPUComputePipelineCreateInfo cpi;
         std::memset(&cpi, 0, sizeof(cpi));
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         cpi.entrypoint = "main";
         cpi.format = vulkan_driver(device) ? SDL_GPU_SHADERFORMAT_SPIRV
                                            : SDL_GPU_SHADERFORMAT_DXIL;
@@ -579,64 +784,55 @@ whaleui_gpu_t* whaleui_gpu_create(SDL_GPUDevice* device, int w, int h)
         cpi.threadcount_y = 8;
         cpi.threadcount_z = 1;
         g->pipe_shadow_cs = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_shadow_cs) {
             std::fprintf(stderr, "[gpu] shadow CS pipeline failed: %s\n",
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kBackdropCS.c_str(), "main", L"cs_6_0",
-                          vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        if (!compile_dxil(kBackdropCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         g->pipe_backdrop_cs = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_backdrop_cs) {
             std::fprintf(stderr, "[gpu] backdrop CS pipeline failed: %s\n",
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kInsetCS.c_str(), "main", L"cs_6_0",
-                          vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        if (!compile_dxil(kInsetCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         g->pipe_inset_cs = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_inset_cs) {
             std::fprintf(stderr, "[gpu] inset CS pipeline failed: %s\n",
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kFilterCS.c_str(), "main", L"cs_6_0",
-                          vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        if (!compile_dxil(kFilterCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         g->pipe_filter_cs = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_filter_cs) {
             std::fprintf(stderr, "[gpu] filter CS pipeline failed: %s\n",
                          SDL_GetError());
             goto fail;
         }
-        cs = compile_dxil(kMixBlendCS.c_str(), "main", L"cs_6_0",
-                          vulkan_driver(device), nullptr, 0);
-        if (!cs) {
+        if (!compile_dxil(kMixBlendCS.c_str(), "main", L"cs_6_0",
+                          vulkan_driver(device), nullptr, 0, cs)) {
             goto fail;
         }
-        cpi.code = static_cast<const Uint8*>(cs->GetBufferPointer());
-        cpi.code_size = cs->GetBufferSize();
+        cpi.code = cs.data();
+        cpi.code_size = cs.size();
         cpi.num_samplers = 1;
         g->pipe_mixblend_cs = SDL_CreateGPUComputePipeline(device, &cpi);
-        cs->Release();
         if (!g->pipe_mixblend_cs) {
             std::fprintf(stderr, "[gpu] mixblend CS pipeline failed: %s\n",
                          SDL_GetError());

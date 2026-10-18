@@ -1821,7 +1821,12 @@ struct Builder
         t->el = n->el;
         t->parent = n;
         t->is_text = 1;
-        t->visible = 1;
+        /* A run inside a display:none subtree is not painted either. The run
+         * itself carries no `display`, so without inheriting the parent's
+         * flag every hidden subtree's text looked visible to code that walks
+         * the tree (the <style> element's CSS text was reported as the page's
+         * first visible run). */
+        t->visible = n->visible;
         t->in_inline = 0;
         t->pseudo = 0;
         t->opacity = n->opacity;
@@ -1837,6 +1842,80 @@ struct Builder
             last->next = t;
         }
         return t;
+    }
+
+    /* Re-cascade an EXISTING node subtree in place, without rebuilding it.
+     * Used when the DOM shape matches the tree shape (a display:none toggle,
+     * a class change that only affects descendants' styles). Everything
+     * build() does for style resolution is repeated here; geometry is left
+     * to the box pass that follows. */
+    void restyle_subtree(whaleui_layout_node_t* n, bool full)
+    {
+        if (!n || n->is_text) {
+            return;
+        }
+        lxb_dom_element* el = n->el;
+        if (el) {
+            WhaleUIComputedStyle s =
+                whaleui_style_compute(el, rules, rule_count, vars, &st);
+            /* the same inheritance merge build() applies */
+            if (n->parent && !n->parent->is_text) {
+                const WhaleUIComputedStyle& ps = n->parent->style;
+                static const char* kInherit[] = {
+                    "font-size", "color", "font-family", "line-height",
+                    "letter-spacing", "cursor",
+                };
+                for (size_t i = 0; i < sizeof(kInherit) / sizeof(kInherit[0]);
+                     ++i) {
+                    if (s.find(kInherit[i]) == s.end()) {
+                        WhaleUIComputedStyle::const_iterator pi =
+                            ps.find(kInherit[i]);
+                        if (pi != ps.end()) {
+                            s[kInherit[i]] = pi->second;
+                        }
+                    }
+                }
+            }
+            n->style.swap(s);
+            if (anim) {
+                whaleui_anim_apply(anim, el, n->style, whaleui_anim_now());
+            }
+            n->opacity = 1.0f;
+            WhaleUIComputedStyle::const_iterator oi = n->style.find("opacity");
+            if (oi != n->style.end()) {
+                n->opacity = static_cast<float>(std::atof(oi->second.c_str()));
+            }
+            std::string zs = get(n->style, "z-index");
+            n->z = zs.empty() ? 0 : std::atoi(zs.c_str());
+            n->hz = n->z > 0;
+            whaleui_layout_node_refresh_paint_flags(n);
+            /* visibility follows display, exactly as build() sets it */
+            bool vis = display_kind(get(n->style, "display")) != 0;
+            if (vis != (n->visible != 0)) {
+                for (whaleui_layout_node_t* ba = n; ba && !ba->bd;
+                     ba = ba->parent) {
+                    ba->bd = 1;
+                }
+            }
+            n->visible = vis ? 1 : 0;
+        }
+        /* text runs inherit the element's style: refresh their copies so a
+         * font/color change on the parent reaches the glyphs. A display-only
+         * toggle changes neither, so the subtree is left untouched (only the
+         * `visible` bit of this node matters - layout()/paint read the
+         * ancestor's, not a per-node copy). */
+        if (!full) {
+            return;
+        }
+        for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+            if (c->is_text) {
+                c->style = n->style;
+                c->opacity = n->opacity;
+                c->visible = n->visible;
+            } else {
+                restyle_subtree(c, true);
+            }
+        }
     }
 
     /* build node + children; returns the node (display:none still built) */
@@ -2520,8 +2599,15 @@ struct Builder
             } else if (details_collapsed) {
                 break; /* everything after the summary is hidden */
             }
-            if (n->visible &&
-                (c->type == LXB_DOM_NODE_TYPE_TEXT ||
+            /* Text runs are built even when this element is display:none.
+             * Skipping them made a hidden tab panel's subtree INCOMPLETE, so
+             * toggling it visible had to rebuild the whole panel (1600 rows
+             * = ~60ms, the reported tab-switch stall). Building the runs up
+             * front costs one pass at load and lets the toggle be an in-place
+             * visibility flip + subtree box pass. layout() still returns
+             * immediately for an invisible node, so no geometry is computed
+             * for hidden content. */
+            if ((c->type == LXB_DOM_NODE_TYPE_TEXT ||
                  c->type == LXB_DOM_NODE_TYPE_CDATA_SECTION)) {
                 const lexbor_str_t* s =
                     &lxb_dom_interface_text(c)->char_data.data;
@@ -2890,9 +2976,36 @@ struct Builder
         if (bw < 0) {
             bw = 0;
         }
+        /* min/max-width clamp the used width BEFORE auto margins resolve.
+         * CSS computes the used width first (width, then clamped by min/max)
+         * and only then distributes the leftover space to `margin:auto`.
+         * Clamping afterwards made `width:100%; max-width:50%; margin:0 auto`
+         * take the full container width for the margin math (free = 0) and
+         * then shrink to 50% at the left edge - the reported "composer is
+         * not centered". `bw` is also what children lay out against, so
+         * doing it here (rather than after the border box was assigned)
+         * removes the second clamp below. */
+        {
+            std::string mnw0 = get(n->style, "min-width");
+            std::string mxw0 = get(n->style, "max-width");
+            if (!mnw0.empty()) {
+                int mnw_px = static_cast<int>(
+                    len_px_vp(mnw0, static_cast<float>(cw), em, vw, vh));
+                if (bw < mnw_px) {
+                    bw = mnw_px;
+                }
+            }
+            if (!mxw0.empty()) {
+                int mxw_px = static_cast<int>(
+                    len_px_vp(mxw0, static_cast<float>(cw), em, vw, vh));
+                if (bw > mxw_px) {
+                    bw = mxw_px;
+                }
+            }
+        }
         /* auto horizontal margins center a fixed-width block in the
          * available space ("margin: 0 auto" -> the page column stays
-         * centered when the window is resized) */
+         * centered when the window is resized). Uses the CLAMPED width. */
         if ((ml_auto || mr_auto) && !w_auto && (pkind == 0 || pkind == 3)) {
             int taken = bw + (ml_auto ? 0 : m[1]) + (mr_auto ? 0 : m[3]);
             int free_w = avail_w - taken;
@@ -2958,28 +3071,11 @@ struct Builder
             n->content.y = n->border.y;
         }
 
-        /* min/max-width clamp the box BEFORE children are laid out: a
-         * max-width container must not hand its pre-clamp width to them
-         * (a .app{max-width:1120px} inside a 1280 viewport would otherwise
-         * lay every child out at 1260px and overflow). Each bound parses
-         * once: the old code ran len_px_vp twice per bound (compare +
-         * assign). */
-        std::string mnw = get(n->style, "min-width");
-        std::string mxw = get(n->style, "max-width");
-        if (!mnw.empty()) {
-            int mnw_px = static_cast<int>(
-                len_px_vp(mnw, static_cast<float>(cw), em, vw, vh));
-            if (n->border.w < mnw_px) {
-                n->border.w = mnw_px;
-            }
-        }
-        if (!mxw.empty()) {
-            int mxw_px = static_cast<int>(
-                len_px_vp(mxw, static_cast<float>(cw), em, vw, vh));
-            if (n->border.w > mxw_px) {
-                n->border.w = mxw_px;
-            }
-        }
+        /* min/max-width were already applied to `bw` above (before the auto
+         * margins, which is the CSS order). `n->border.w` was assigned from
+         * that clamped value, so no second clamp here - re-applying it
+         * against the same parsed value is a no-op at best and a source of
+         * order bugs at worst. */
 
         /* children */
         int inner_w = n->border.w - p[1] - p[3] - n->border_w[1] - n->border_w[3];
@@ -4614,6 +4710,20 @@ struct Builder
                 if (!c->visible) {
                     continue;
                 }
+                /* Out-of-flow children (position:absolute/fixed, including
+                 * an absolutely-positioned ::before box) do NOT participate
+                 * in grid auto-placement - CSS leaves them out of the grid
+                 * item list entirely; the box pass places them against the
+                 * container's final padding box afterwards. Counting them as
+                 * items shifted every real item one cell to the right and
+                 * pushed the last one onto a new row (a .proj-card's accent
+                 * ::before made `info` land in the right column and
+                 * `sessions` wrap below). layout_flex already filters the
+                 * same way; this is the grid counterpart. */
+                int cpk = position_kind(get(c->style, "position"));
+                if (cpk == 1 || cpk == 2) {
+                    continue;
+                }
                 GridPlace pc = grid_place_of(c->style, true);
                 GridPlace pr = grid_place_of(c->style, false);
                 GridCell cell;
@@ -5657,6 +5767,57 @@ extern "C" int whaleui_layout_relayout_style(
                          anim, text_scale, 1);
 }
 
+/* A pure BLOCK-flow container: children stack vertically, each one's height
+ * is independent of its siblings, and the container's own height is the
+ * stack's total. In such a container an edit that changes one child's height
+ * only needs to (a) re-place that child and (b) shift the FOLLOWING siblings
+ * by the delta - re-running the box pass over the whole container is
+ * O(children) for a change that touches one row. That is the tab-switch /
+ * log-append cost: 3200 rows re-laid for one display:none toggle. */
+static bool is_pure_block_flow(const whaleui_layout_node_t* n)
+{
+    if (!n || n->is_text) {
+        return false;
+    }
+    int dk = display_kind(get(n->style, "display"));
+    if (dk != 3) {
+        return false; /* flex/grid/table/inline: siblings share an axis */
+    }
+    /* wrapping inline content interleaves runs and inline boxes across the
+     * children list, so a per-child shift would split a line: keep the full
+     * pass for containers that hold any inline-level child */
+    for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        if (c->is_text ||
+            display_kind(get(c->style, "display")) == 2) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Propagate a height delta from `n` up through pure block-flow ancestors:
+ * each ancestor's following siblings shift, and each auto-height ancestor
+ * grows. Stops at the first ancestor that is not pure block flow (flex/grid
+ * share an axis and need the real box pass). Returns true when the whole
+ * chain was handled (the caller can skip the ancestor box pass). */
+static bool propagate_block_delta(whaleui_layout_node_t* n, int delta);
+
+/* shift a subtree down by dy: document y of every descendant. Fixed boxes
+ * do not move with content growth. */
+static void shift_tree_down(whaleui_layout_node_t* n, int dy);
+
+/* Shift every sibling AFTER `n` in `parent` by dy, recursively (block flow:
+ * following siblings move, descendants move with them). */
+static void shift_siblings_after(whaleui_layout_node_t* n, int dy)
+{
+    if (!n || dy == 0) {
+        return;
+    }
+    for (whaleui_layout_node_t* s = n->next; s; s = s->next) {
+        shift_tree_down(s, dy);
+    }
+}
+
 /* shift a subtree down by dy: document y of every descendant. Fixed boxes
  * do not move with content growth. */
 static void shift_tree_down(whaleui_layout_node_t* n, int dy)
@@ -5684,6 +5845,32 @@ static void shift_following(whaleui_layout_node_t* n, int dy)
     if (n->parent) {
         shift_following(n->parent, dy);
     }
+}
+
+/* See the forward declaration above. Implemented here (after
+ * shift_siblings_after / shift_tree_down) so the helpers exist. */
+static bool propagate_block_delta(whaleui_layout_node_t* n, int delta)
+{
+    if (!n || delta == 0) {
+        return true;
+    }
+    for (whaleui_layout_node_t* a = n->parent; a; a = a->parent) {
+        if (!is_pure_block_flow(a)) {
+            return false; /* caller falls back to the ancestor box pass */
+        }
+        shift_siblings_after(n, delta);
+        std::string h = get(a->style, "height");
+        if (h.empty() || h == "auto") {
+            a->border.h += delta;
+            a->content.h += delta;
+            if (a->content.h < 0) {
+                a->content.h = 0;
+            }
+        }
+        /* explicit height: the box keeps it, but what follows still moves */
+        n = a;
+    }
+    return true;
 }
 
 extern "C" int whaleui_layout_append_rows(
@@ -5920,6 +6107,14 @@ int whaleui_layout_relayout_multi(
     std::vector<int> oldTops; /* border.y */
     std::vector<int> oldMargT; /* margin-top */
     std::vector<int> oldWidths; /* border.w (the block fast path's guard) */
+    /* Nodes whose SUBTREE STRUCTURE is unchanged, so an in-place restyle can
+     * replace the rebuild. A display:none <-> visible toggle is the important
+     * case: the subtree is already built (build() emits text runs for hidden
+     * nodes too), so the only work is re-cascading its styles and re-running
+     * the box pass - rebuilding 1600 rows for a tab switch was ~60ms. */
+    std::vector<whaleui_layout_node_t*> restyleOnly;
+    std::vector<size_t> restyleIdx;
+    std::vector<char> restyleFull; /* 1 = re-cascade descendants too */
     for (size_t e = 0; e < nel; ++e) {
         lxb_dom_element* el = els[e];
         auto found = tree->by_el.find(el);
@@ -5945,6 +6140,145 @@ int whaleui_layout_relayout_multi(
                     unmap(c);
                 }
             };
+        /* In-place restyle: the layout node already carries the full subtree
+         * (build() walks hidden subtrees too; only layout() skips them). So
+         * when the DOM's shape matches the tree's shape, re-cascade the
+         * styles onto the existing nodes instead of building new ones. The
+         * tab-switch case (display:none <-> block on a panel) is exactly
+         * this: 1600 rows used to be rebuilt for one visibility flip. */
+        bool can_restyle = true;
+        {
+            /* Walk the DOM children and the layout children TOGETHER and
+             * require the same SHAPE: an element must line up with an
+             * element node of the same element, and every run of text nodes
+             * must line up with text nodes. Comparing elements only let a
+             * text-only edit (set_text on a div with no element children)
+             * pass as "same shape" and skip the rebuild - the run was never
+             * created, so the element stayed 0px tall ("text disappears
+             * after a C++ text edit"). */
+            lxb_dom_node* dc = el->node.first_child;
+            whaleui_layout_node_t* tc = old->first_child;
+            bool prev_text = false; /* last DOM node was text */
+            for (;;) {
+                bool d_text = dc && (dc->type == LXB_DOM_NODE_TYPE_TEXT ||
+                                     dc->type == LXB_DOM_NODE_TYPE_CDATA_SECTION);
+                bool t_text = tc && tc->is_text;
+                if (!dc != !tc) {
+                    can_restyle = false;
+                    break;
+                }
+                if (!dc) {
+                    break;
+                }
+                if (d_text != t_text) {
+                    can_restyle = false;
+                    break;
+                }
+                if (!d_text) {
+                    if (dc->type != LXB_DOM_NODE_TYPE_ELEMENT ||
+                        lxb_dom_interface_element(dc) != tc->el) {
+                        can_restyle = false;
+                        break;
+                    }
+                }
+                /* Consecutive text nodes are merged into ONE run, so the
+                 * node counts legitimately differ there; only the
+                 * text/non-text ALTERNATION has to line up. */
+                bool next_d_text = false;
+                if (dc->next) {
+                    next_d_text = dc->next->type == LXB_DOM_NODE_TYPE_TEXT ||
+                                  dc->next->type ==
+                                      LXB_DOM_NODE_TYPE_CDATA_SECTION;
+                }
+                dc = dc->next;
+                if (d_text && next_d_text) {
+                    continue; /* stay on the same run */
+                }
+                tc = tc->next;
+                prev_text = d_text;
+            }
+            (void)prev_text;
+        }
+        if (can_restyle) {
+            restyleOnly.push_back(old);
+            restyleIdx.push_back(e);
+            /* A DISPLAY-ONLY change (a tab panel shown/hidden) does not
+             * alter any descendant's computed style - inheritance carries
+             * font/color down, and neither changes here. Skipping their
+             * cascade makes the toggle O(1) instead of O(rows): the panel
+             * becomes visible, the box pass below lays it out, and the
+             * existing per-node styles are already correct. Any other
+             * layout-key change may propagate (e.g. font-size), so those
+             * re-cascade the subtree. */
+            /* Is this a pure DISPLAY toggle? Compare the new cascade's
+             * inherited-value keys against the node's current style. Other
+             * keys legitimately differ (the node's style also carries
+             * inheritance and animation values that a bare cascade does not
+             * produce), so only the keys that PROPAGATE to descendants are
+             * compared. If none of them changed, the subtree's computed
+             * styles are still valid and only this node needs updating. */
+            WhaleUIComputedStyle fresh =
+                whaleui_style_compute(el, rules, count, b.vars, &b.st);
+            static const char* kInherited[] = {
+                "font-size", "font-family", "font-weight", "font-style",
+                "line-height", "letter-spacing", "word-spacing", "color",
+                "text-align", "text-transform", "white-space", "cursor",
+                "visibility", "list-style-type",
+            };
+            /* The node's style also carries values merged in from its parent
+             * (build() inherits font/color/...), while a bare cascade does
+             * not. Merge the same keys from the parent before comparing, or
+             * every element looks "changed" and the fast path never fires. */
+            for (size_t ki = 0;
+                 ki < sizeof(kInherited) / sizeof(kInherited[0]); ++ki) {
+                if (fresh.find(kInherited[ki]) != fresh.end()) {
+                    continue;
+                }
+                whaleui_layout_node_t* pp = old->parent;
+                if (!pp || pp->is_text) {
+                    continue;
+                }
+                WhaleUIComputedStyle::const_iterator pi =
+                    pp->style.find(kInherited[ki]);
+                if (pi != pp->style.end()) {
+                    fresh[kInherited[ki]] = pi->second;
+                }
+            }
+            bool display_only = true;
+            for (size_t ki = 0;
+                 ki < sizeof(kInherited) / sizeof(kInherited[0]); ++ki) {
+                WhaleUIComputedStyle::const_iterator ni =
+                    fresh.find(kInherited[ki]);
+                WhaleUIComputedStyle::const_iterator oi =
+                    old->style.find(kInherited[ki]);
+                bool n_has = ni != fresh.end();
+                bool o_has = oi != old->style.end();
+                if (n_has != o_has ||
+                    (n_has && ni->second != oi->second)) {
+                    display_only = false;
+                    break;
+                }
+            }
+            /* A DESCENDANT-selector rule makes this element's change reach
+             * its children (`.box.big .row{...}`), so the subtree must be
+             * re-cascaded even though this element's own inherited values
+             * are unchanged. Skipping it here left descendants at their old
+             * computed style until some unrelated hover re-cascaded them. */
+            if (display_only) {
+                for (size_t ri = 0; ri < count; ++ri) {
+                    if (!rules[ri].selector) {
+                        continue;
+                    }
+                    if (whaleui_style_may_affect_descendants(
+                            rules[ri].selector, el, &b.st)) {
+                        display_only = false;
+                        break;
+                    }
+                }
+            }
+            restyleFull.push_back(display_only ? 0 : 1);
+            continue;
+        }
         unmap(old);
         whaleui_layout_node_t* fresh = b.build(el, parent);
         if (!fresh) {
@@ -5976,6 +6310,24 @@ int whaleui_layout_relayout_multi(
             tree->root = fresh;
         }
     }
+    /* Re-cascade the subtrees we are reusing (the box pass below re-lays
+     * them out). Done AFTER the rebuild loop so inherited values come from
+     * parents that may themselves have been rebuilt. */
+    for (size_t ri = 0; ri < restyleOnly.size(); ++ri) {
+        b.restyle_subtree(restyleOnly[ri], restyleFull[ri] != 0);
+    }
+    /* A restyled node takes the same fast/slow decision as a rebuilt one.
+     * `freshOldIdx` maps each entry of freshNodes back to its element's slot
+     * in the old-box arrays (which are filled for EVERY edited element, so
+     * the two lists are not positionally aligned). */
+    std::vector<size_t> freshOldIdx(freshNodes.size(), 0);
+    for (size_t fi = 0; fi < freshNodes.size(); ++fi) {
+        freshOldIdx[fi] = fi;
+    }
+    for (size_t ri = 0; ri < restyleOnly.size(); ++ri) {
+        freshNodes.push_back(restyleOnly[ri]);
+        freshOldIdx.push_back(restyleIdx[ri]);
+    }
     /* localize the box pass: a layout animation (bar width) reflows the
      * animated subtree but the sibling flex rows do not move, so re-running
      * the whole-tree box pass every frame is the cost. Two tiers:
@@ -5994,6 +6346,7 @@ int whaleui_layout_relayout_multi(
     std::vector<whaleui_layout_node_t*> rroots;
     for (size_t fi = 0; fi < freshNodes.size(); ++fi) {
         whaleui_layout_node_t* fn = freshNodes[fi];
+        const size_t oi = freshOldIdx[fi]; /* slot in the old-box arrays */
         whaleui_layout_node_t* a = fn->parent;
         while (a && a != tree->root) {
             int adk = display_kind(get(a->style, "display"));
@@ -6028,12 +6381,12 @@ int whaleui_layout_relayout_multi(
             whaleui_layout_node_t* par = fn->parent;
             int pk = position_kind(get(fn->style, "position"));
             if (pk == 0 || pk == 3 || pk == 4) {
-                int cursor = oldTops[fi] - oldMargT[fi];
+                int cursor = oldTops[oi] - oldMargT[oi];
                 b.layout(fn, par->content.x, par->content.y,
                          par->content.w, par->content.h, 16, &cursor);
-                bool height_same = fn->border.h == oldHeights[fi] &&
-                                   fn->border.y == oldTops[fi];
-                bool width_same = fn->border.w == oldWidths[fi];
+                bool height_same = fn->border.h == oldHeights[oi] &&
+                                   fn->border.y == oldTops[oi];
+                bool width_same = fn->border.w == oldWidths[oi];
                 int pdk = display_kind(get(par->style, "display"));
                 std::string pdir = get(par->style, "flex-direction");
                 bool par_row = pdk == 1 && pdir != "column" &&
@@ -6041,6 +6394,22 @@ int whaleui_layout_relayout_multi(
                 bool par_col = pdk == 1 && !par_row;
                 if (height_same && (width_same || !par_row)) {
                     done = true;
+                } else if (!height_same && is_pure_block_flow(par)) {
+                    /* Pure block flow: this child's height changed, so only
+                     * the FOLLOWING siblings move - shift them by the delta
+                     * instead of re-laying out the whole container. This is
+                     * the difference between O(1) and O(children) for a
+                     * display:none toggle, a collapsing <details>, or a row
+                     * whose text re-wrapped. The child itself was just laid
+                     * out in place above; its own y is unchanged (block flow
+                     * places it at the cursor we seeded), so the delta is
+                     * purely its height. */
+                    int delta = fn->border.h - oldHeights[oi];
+                    if (propagate_block_delta(fn, delta)) {
+                        done = true;
+                    }
+                    /* else: an ancestor shares an axis - fall through to
+                     * the ancestor box pass (correct, just not cheap) */
                 }
                 (void)par_col;
                 /* else: fall through to the ancestor pass below, which

@@ -149,6 +149,42 @@ void window_reload_css(whaleui_window_t* win)
     if (whaleui_css_parse_full(css.c_str(), css.size(), &rules, &count, &kf) != 0) {
         return;
     }
+    /* the document's OWN sheet may also carry @keyframes (whaleui_css_apply_text
+     * keeps them, because the public whaleui_css_parse drops them). Append them
+     * to this sheet's keyframes: the animation engine resolves
+     * `animation: <name>` against ONE registry, so a sheet mounted from C++ and
+     * the markup sheet must land in the same list. */
+    if (win->document) {
+        const whaleui_css_keyframes_t* dkf =
+            whaleui_style_doc_keyframes_get(win->document);
+        if (dkf && dkf->count) {
+            size_t old = kf.count;
+            whaleui_keyframes_t* grown = static_cast<whaleui_keyframes_t*>(
+                std::realloc(kf.items,
+                             (old + dkf->count) * sizeof(whaleui_keyframes_t)));
+            if (grown) {
+                kf.items = grown;
+                for (size_t i = 0; i < dkf->count; ++i) {
+                    whaleui_keyframes_t* d = &kf.items[old + i];
+                    const whaleui_keyframes_t* s = &dkf->items[i];
+                    std::memset(d, 0, sizeof(*d));
+                    d->name = s->name ? strdup(s->name) : nullptr;
+                    if (s->frame_count) {
+                        d->frames = static_cast<char**>(
+                            std::calloc(s->frame_count, sizeof(char*)));
+                        if (d->frames) {
+                            for (size_t f = 0; f < s->frame_count; ++f) {
+                                d->frames[f] =
+                                    s->frames[f] ? strdup(s->frames[f]) : nullptr;
+                            }
+                            d->frame_count = s->frame_count;
+                        }
+                    }
+                }
+                kf.count = old + dkf->count;
+            }
+        }
+    }
     if (doc_rules && doc_rule_count) {
         /* Append: the programmatic sheet becomes part of the same rule array, so
          * selector matching / the cascade / the tag index see ONE sheet. A
@@ -407,6 +443,12 @@ extern "C" whaleui_window_t* whaleui_window_create(whaleui_app_t* app,
     win->mouse_pending = 0;
     win->mouse_x = 0.0f;
     win->mouse_y = 0.0f;
+    /* MouseEvent.movementX/Y is computed from these on the first mouse
+     * event. `new` leaves them INDETERMINATE, so the first event reported a
+     * garbage delta (a huge movement value, and for a page listening on it,
+     * arbitrary behaviour). */
+    win->last_mouse_x = 0.0f;
+    win->last_mouse_y = 0.0f;
     win->occluded = 0;
     win->bg_last = 0;
     win->wheel_pending = 0;
@@ -690,13 +732,19 @@ static int window_load_html_len(whaleui_window_t* win, const char* html,
         return -1;
     }
     win->base_uri.clear(); /* in-memory html has no base for relative links */
-    if (win->document) {
-        whaleui_dom_document_destroy(win->document);
-    }
-    /* drop caches keyed on the old document's elements (text rasters,
-     * images, select/scroll/edit state) before the new DOM takes over */
+    /* Stop anything that still reads the OLD document BEFORE freeing it.
+     * reset_dom joins the async first-layout worker (which walks that
+     * document and the rule array) and drops the layout tree, the animation
+     * state and every element-keyed cache. Doing this after the destroy was
+     * a use-after-free: a sliced first layout still streaming in from the
+     * worker kept reading freed lexbor nodes ("startup sometimes crashes /
+     * hangs with the tab bar drawn but the content missing"). */
     if (win->render) {
         whaleui_render_reset_dom(win->render);
+    }
+    if (win->document) {
+        whaleui_dom_document_destroy(win->document);
+        win->document = nullptr;
     }
     /* the REAL byte count, not strlen(): a UTF-16 file carries NUL bytes
      * after every ASCII character, so strlen() stops at the first one and

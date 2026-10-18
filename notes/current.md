@@ -1694,3 +1694,114 @@ grid 的两个根因: `repeat(` 在 `minmax(...)` 的 `)` 处提前闭合; `auto
 - `probe_parity` 20 项 HTML/C++ 一致; `probe_layout` 0 bad case。
 - `probe_perf7`: relayout_multi 0.04ms / edit_frame 3.3ms(n=3200, 原 98/111)。
 - `probe_perf8`(宽度编辑导致重排换行): 3.3ms, 与 N 无关。
+
+# 55: 结构性问题 —— DOM/渲染竞态、tab 切换卡顿、文本编辑丢失、标点换行
+
+SOLVED
+
+用户反馈: "同样的操作，有时整页渲染消失，有时卡顿不动，有时 css 不更新";
+"tab 切换极其卡顿，卡到无法正常渲染"; "小文字和标点结尾还会换行或截断";
+"动画时对预渲染帧进行变换（目前实现严重怀疑会重建树）"。
+
+## A. DOM 与渲染线程完全无同步 (根因: 结果不可复现)
+
+`src/dom/dom.cpp` 里 **没有任何 mutex/atomic**。渲染 worker 线程遍历 lexbor
+文档（级联、重建、命中测试、文本 run），应用在主线程/事件回调里改 DOM。
+lexbor 本身不加锁，两者交错就损坏树: 同一串 API 调用，一次渲染正确，下一次
+整页空白或卡死。
+
+修: 全局 `std::recursive_mutex`（`whaleui_dom_lock/unlock` + `WhaleUIDomLock`）。
+- 106 个公开 DOM 入口统一加锁（脚本批量插入，跳过内部 mark_/take_ 辅助）。
+- `whaleui_render_frame` 在 `tree_mx` 之后持有同一把锁（递归，帧内派发监听器
+  仍可改 DOM）。
+验证: `probe_race` 在第二个线程里并发编辑 40 帧期间完成 **79,671 次编辑**、
+活节点 156,762，无崩溃无卡死。
+
+## B. tab 切换: 42ms 的级联 + 20ms 盒 pass -> 0.03ms + 20ms
+
+`probe_tab`(1280x820, 1600 行/面板) 一次 display 切换 **243ms** -> **20.5ms**。
+三段修复:
+
+1. **隐藏子树不建文本 run**（`layout.cpp` build 里 `n->visible &&` 条件）。
+   于是 `display:none -> block` 必须重建整棵子树（1600 行）。改为始终构建
+   run（`layout()` 仍对不可见节点立即返回，不算几何）。
+2. **`can_restyle` 形状比较漏掉文本节点**。它只对齐「元素」子节点，所以
+   `set_text` 到无元素子节点的 div 被判为「形状相同」，跳过重建 -> run 从未
+   创建 -> **盒子高度 0，文字消失**（用户报的"整页渲染消失"之一）。改为
+   同时对齐文本节点（连续文本合并成一个 run，只比较 text/non-text 交替）。
+3. **浅 restyle 判断错了**: 拿新级联直接和节点 style 比，而节点 style 含继承
+   与动画值，必然不等 -> 每次全量级联 42ms。改为只比较会**向下继承**的键
+   （font-size/family/weight/style、line-height、letter-spacing、word-spacing、
+   color、text-align、text-transform、white-space、cursor、visibility、
+   list-style-type），并先按 build 的规则做一次父级继承合并。
+   另有 descendant-selector 例外: `.box.big .row` 命中时必须重建子树，
+   否则后代保留旧级联（上一轮修过的 bug 会回归）。
+
+结果: restyle 42ms -> 0.03ms；剩余 15-20ms 是真正必要的盒 pass（面板此前
+从未布局）。
+
+## C. 文本: 标点不能出现在行首 (UAX #14 子集)
+
+`"value."` 自然宽 33px，在 31px 容器里被断成 "value" + "."（2 行）；
+`“ok”` 在 20px 下同理。实现禁则处理:
+- `no_line_start`: `, . ; : ! ? ) ] } %` + 全角/中文标点 `、。，．：；！？）」
+  』】` + `” ’ »`
+- `no_line_end`: `( [ {` + `（「『【` + `“ ‘ «`
+断点字符属于前者时**前移**（把标点留在本行，允许溢出）；属于后者时把断点
+推过它。修 `br` 到达末尾后外层又 push 一个空行导致高度翻倍的重复行。
+
+验证: `value.` 在 avail 30/31 下 1 行、12px 下仍正常换行。
+
+## D. CSS API 挂载的 @keyframes 从不生效
+
+公开 `whaleui_css_parse` 解析后**丢弃** keyframes（签名没有返回位），所以
+`StyleSheet::Parse` / `whaleui_css_apply` 无论怎么写都产生不了动画。
+新增 `whaleui_css_apply_text(doc, css, len)`（内部走 `whaleui_css_parse_full`）
++ `whaleui_style_doc_rules_set_full` / `whaleui_style_doc_keyframes_get`；
+`window_reload_css` 把文档自有 keyframes 追加进同一份注册表。C++ 门面加
+`StyleSheet::ApplyText`。
+
+## E. 动画不播（启动帧 alive=0）
+
+`alive` 用帧首的 `animating` 快照。动画在这一帧的 relayout 里才注册，帧尾
+仍按旧值算出 `alive=0`，worker 立即 park——改窗口大小或动鼠标才恢复。
+两处门控（正常尾部 + swapchain 失败分支）都改为
+`animating || whaleui_anim_active(r->anim)`。
+
+## F. 着色器缓存（启动 1.2s -> 0.7s，第二个窗口 1.1s -> 0.28s）
+
+`whaleui_gpu_create` 用 DXC 运行时编译 10 个着色器，**每个窗口重编一次**。
+加两层缓存: 进程内 memo + 磁盘条目（`SDL_GetPrefPath("WhaleUI","shader-cache")`，
+`WHALEUI_SHADER_CACHE=0` 关闭 / 设为目录则覆盖）。
+版本安全: 键 = HLSL 全文 + entry + profile + spirv 标志 + 额外参数 +
+`WHALEUI_VERSION` + 缓存格式版本 + **dxcompiler.dll 的大小与 mtime**。
+任一变化都产生新文件名，旧条目永不误用（`probe_verify_cache` 实测改一个
+shader 只新增 1 个 key，其余复用）。写入用 tmp+rename，避免并发读到半个文件。
+
+## G. 其它结构修复
+
+- `whaleui_window_load_html_len`: **先在旧文档上 reset_dom，再销毁文档**。
+  原顺序反了，异步首布局 worker 在文档释放后继续读 lexbor 节点
+  （`probe_startup_stress` 去掉这个 join 后 40 轮即 0xC0000005，加上后全通过）。
+- `whaleui_render_reset_dom`: 先 join 异步布局 worker 并丢弃其结果。
+- `whaleui_app_create`: `key_cb`/`key_ud`/`frame_request`/`frame_done`/
+  `frames_alive`/`watch_generation` 从未初始化（`new` 不置零），垃圾函数指针
+  在首次按键时会被调用。
+- `whaleui_window_create`: `last_mouse_x/y` 未初始化 -> 首个 mouse 事件的
+  movementX/Y 是垃圾。
+- `<style>`/`<script>`/`<head>` 里的文本 run 现在是 invisible（`add_run` 继承
+  父节点 `visible`）。此前 `<style>` 的 CSS 文本被当作页面可见文本，是"页面
+  出现奇怪文字/首行错位"的来源之一。
+- 块流增量重排: 纯 block 容器里子节点高度变化只移动后续兄弟
+  （`propagate_block_delta`），不再整容器盒 pass。
+
+## 验证
+
+- 13/13 测试套件 exit=0。新增回归: 文本编辑建 run（test_layout）、
+  禁则换行（test_render）。
+- `probe_tab`: 1600 行 tab 切换 243ms -> 20.5ms；restyle 42ms -> 0.03ms。
+- `probe_parity`: 19 项 HTML vs C++ 行为一致。
+- `incorrect3`: 全部用例 ok（grid 绝对子元素、max-width 居中、
+  spread-only box-shadow 环形、绝对定位不吃格）。
+- `probe_race`: 并发 79,671 次编辑无异常。
+- 绘制成本实测: 整窗重绘 0.1ms（3200 行），瓶颈一直在布局而非绘制。

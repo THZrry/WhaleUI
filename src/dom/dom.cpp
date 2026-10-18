@@ -22,10 +22,38 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace {
+
+/* See dom.h: one recursive lock serializes every public DOM entry point
+ * against the render worker's tree walk. lexbor has no internal locking, so
+ * an edit arriving mid-layout (or mid-paint) corrupted the tree - the same
+ * API sequence produced a correct page one run and a blank or frozen page
+ * the next. Recursive because a frame drains dirty queues and can dispatch
+ * a listener that mutates the DOM from inside the frame's own critical
+ * section. */
+std::recursive_mutex& dom_mx()
+{
+    static std::recursive_mutex m;
+    return m;
+}
+
+} // namespace
+
+extern "C" void whaleui_dom_lock(void)
+{
+    dom_mx().lock();
+}
+
+extern "C" void whaleui_dom_unlock(void)
+{
+    dom_mx().unlock();
+}
 
 namespace {
 
@@ -633,6 +661,7 @@ extern "C" int whaleui_dom_insert_adjacent_html(whaleui_dom_element_t* elt,
                                                 const char* position,
                                                 const char* html)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(elt);
     if (!e || !position || !html) {
         return -1;
@@ -668,6 +697,7 @@ extern "C" int whaleui_dom_insert_adjacent_text(whaleui_dom_element_t* elt,
                                                 const char* position,
                                                 const char* text)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = reinterpret_cast<lxb_dom_element*>(elt);
     if (!e || !position || !text) {
         return -1;
@@ -695,6 +725,7 @@ extern "C" int whaleui_dom_insert_adjacent_text(whaleui_dom_element_t* elt,
 
 extern "C" whaleui_dom_element_t* whaleui_dom_create_document_fragment(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_document* d = dom_doc(doc);
     if (!d) {
         return nullptr;
@@ -893,6 +924,7 @@ extern "C" void whaleui_dom_mark_css_dirty(whaleui_dom_document_t* doc)
 
 extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size_t len)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_html_document* doc = lxb_html_document_create();
     if (!doc) {
         return nullptr;
@@ -917,6 +949,7 @@ extern "C" whaleui_dom_document_t* whaleui_dom_parse_html(const char* html, size
 
 extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     if (doc) {
         /* element listeners die with their document (all elements become
          * unreachable; dropping the whole map avoids stale pointers) */
@@ -945,12 +978,14 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_document_element(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     return out(root_element(doc));
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_get_element_by_id(whaleui_dom_document_t* doc,
                                                                 const char* id)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !id) {
         return nullptr;
     }
@@ -964,6 +999,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_get_element_by_id(whaleui_dom_docu
 extern "C" whaleui_dom_element_t* whaleui_dom_query_selector(whaleui_dom_document_t* doc,
                                                              const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !selector || !*selector) {
         return nullptr;
     }
@@ -980,6 +1016,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_query_selector(whaleui_dom_documen
 
 extern "C" whaleui_dom_element_t* whaleui_dom_parent(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !e->node.parent) {
         return nullptr;
@@ -989,12 +1026,14 @@ extern "C" whaleui_dom_element_t* whaleui_dom_parent(whaleui_dom_element_t* el)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_first_child(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(next_element(e->node.first_child)) : nullptr;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_next_sibling(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(next_element(e->node.next)) : nullptr;
 }
@@ -1002,6 +1041,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_next_sibling(whaleui_dom_element_t
 extern "C" whaleui_dom_element_t* whaleui_dom_create_element(whaleui_dom_document_t* doc,
                                                              const char* tag)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_document* d = dom_doc(doc);
     if (!d || !tag) {
         return nullptr;
@@ -1021,6 +1061,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_create_element(whaleui_dom_documen
 
 extern "C" int whaleui_dom_append_child(whaleui_dom_element_t* parent, whaleui_dom_element_t* child)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* p = as_el(parent);
     if (!p || !child) {
         return -1;
@@ -1055,6 +1096,7 @@ extern "C" int whaleui_dom_append_child(whaleui_dom_element_t* parent, whaleui_d
 
 extern "C" int whaleui_dom_remove_child(whaleui_dom_element_t* parent, whaleui_dom_element_t* child)
 {
+    WhaleUIDomLock _dom_lk;
     (void)parent;
     lxb_dom_element* c = as_el(child);
     if (!c) {
@@ -1073,6 +1115,7 @@ extern "C" int whaleui_dom_remove_child(whaleui_dom_element_t* parent, whaleui_d
 
 extern "C" int whaleui_dom_element_destroy(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return -1;
@@ -1098,6 +1141,7 @@ static bool style_touches_vars(const char* prop, const char* value);
 
 extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* name, const char* value)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !name || !value) {
         return -1;
@@ -1120,6 +1164,7 @@ extern "C" int whaleui_dom_set_attribute(whaleui_dom_element_t* el, const char* 
 }
 extern "C" const char* whaleui_dom_get_attribute(whaleui_dom_element_t* el, const char* name)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !name) {
         return nullptr;
@@ -1132,6 +1177,7 @@ extern "C" const char* whaleui_dom_get_attribute(whaleui_dom_element_t* el, cons
 
 extern "C" int whaleui_dom_has_attribute(whaleui_dom_element_t* el, const char* name)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !name) {
         return 0;
@@ -1144,6 +1190,7 @@ extern "C" int whaleui_dom_has_attribute(whaleui_dom_element_t* el, const char* 
 
 extern "C" int whaleui_dom_remove_attribute(whaleui_dom_element_t* el, const char* name)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !name) {
         return -1;
@@ -1165,6 +1212,7 @@ extern "C" int whaleui_dom_remove_attribute(whaleui_dom_element_t* el, const cha
 extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const char* name,
                                             int force)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !name) {
         return -1;
@@ -1192,6 +1240,7 @@ extern "C" int whaleui_dom_toggle_attribute(whaleui_dom_element_t* el, const cha
 
 extern "C" int whaleui_dom_set_text(whaleui_dom_element_t* el, const char* text)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !text) {
         return -1;
@@ -1217,6 +1266,7 @@ extern "C" int whaleui_dom_set_text(whaleui_dom_element_t* el, const char* text)
 
 extern "C" const char* whaleui_dom_get_text(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     static char empty[1] = {0};
     lxb_dom_element* e = as_el(el);
     if (!e) {
@@ -1262,6 +1312,7 @@ static bool style_touches_vars(const char* prop, const char* value)
 
 extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* property, const char* value)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !property || !value) {
         return -1;
     }
@@ -1279,6 +1330,7 @@ extern "C" int whaleui_dom_set_style(whaleui_dom_element_t* el, const char* prop
 
 extern "C" const char* whaleui_dom_get_style(whaleui_dom_element_t* el, const char* property)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !property) {
         return nullptr;
     }
@@ -1363,11 +1415,13 @@ static int style_remove(lxb_dom_element* e, const char* prop)
 
 extern "C" int whaleui_dom_style_set_property(whaleui_dom_element_t* el, const char* property, const char* value)
 {
+    WhaleUIDomLock _dom_lk;
     return whaleui_dom_set_style(el, property, value);
 }
 
 extern "C" int whaleui_dom_style_get_property(whaleui_dom_element_t* el, const char* property, char* out, size_t cap)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !property || !out || cap == 0) return -1;
     const char* v = whaleui_dom_get_style(el, property);
     if (!v) return -2;
@@ -1379,6 +1433,7 @@ extern "C" int whaleui_dom_style_get_property(whaleui_dom_element_t* el, const c
 
 extern "C" int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, const char* property)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !property) return -1;
     int rc = style_remove(as_el(el), property);
     if (rc == 0) {
@@ -1392,6 +1447,7 @@ extern "C" int whaleui_dom_style_remove_property(whaleui_dom_element_t* el, cons
 
 extern "C" int whaleui_dom_style_get_css_text(whaleui_dom_element_t* el, char* out, size_t cap)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !out || cap == 0) return -1;
     size_t alen = 0;
     const lxb_char_t* s = lxb_dom_element_get_attribute(as_el(el), (const lxb_char_t*)"style", 5, &alen);
@@ -1404,6 +1460,7 @@ extern "C" int whaleui_dom_style_get_css_text(whaleui_dom_element_t* el, char* o
 
 extern "C" int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const char* css_text)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !css_text) return -1;
     int rc = lxb_dom_element_set_attribute(e, (const lxb_char_t*)"style", 5,
@@ -1417,6 +1474,7 @@ extern "C" int whaleui_dom_style_set_css_text(whaleui_dom_element_t* el, const c
 
 extern "C" size_t whaleui_dom_style_length(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) return 0;
     size_t alen = 0;
@@ -1428,6 +1486,7 @@ extern "C" size_t whaleui_dom_style_length(whaleui_dom_element_t* el)
 
 extern "C" int whaleui_dom_style_item(whaleui_dom_element_t* el, size_t index, char* out, size_t cap)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !out || cap == 0) return -1;
     lxb_dom_element* e = as_el(el);
     size_t alen = 0;
@@ -1443,6 +1502,7 @@ extern "C" int whaleui_dom_style_item(whaleui_dom_element_t* el, size_t index, c
 
 extern "C" whaleui_style_declaration_t* whaleui_dom_get_computed_style(whaleui_dom_element_t* el, const char* pseudo)
 {
+    WhaleUIDomLock _dom_lk;
     (void)pseudo;
     lxb_dom_element* e = as_el(el);
     if (!e) return nullptr;
@@ -1517,6 +1577,7 @@ extern "C" int whaleui_style_declaration_get(const whaleui_style_declaration_t* 
 
 extern "C" const char* whaleui_dom_tag_name(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return nullptr;
@@ -1534,18 +1595,21 @@ struct whaleui_dom_list
 
 extern "C" size_t whaleui_dom_list_length(const whaleui_dom_list_t* list)
 {
+    WhaleUIDomLock _dom_lk;
     return list ? list->items.size() : 0;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_list_item(const whaleui_dom_list_t* list,
                                                         size_t index)
 {
+    WhaleUIDomLock _dom_lk;
     return (list && index < list->items.size()) ? out(list->items[index])
                                                 : nullptr;
 }
 
 extern "C" void whaleui_dom_list_destroy(whaleui_dom_list_t* list)
 {
+    WhaleUIDomLock _dom_lk;
     delete list;
 }
 
@@ -1654,6 +1718,7 @@ lxb_dom_element* prev_element(lxb_dom_element* el)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_body(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_html_document* d = as_doc(doc);
     return d && d->body ? out(lxb_dom_interface_element(&d->body->element.element.node))
                         : nullptr;
@@ -1661,6 +1726,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_body(whaleui_dom_document_t* doc)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_head(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_html_document* d = as_doc(doc);
     return d && d->head ? out(lxb_dom_interface_element(&d->head->element.element.node))
                         : nullptr;
@@ -1668,6 +1734,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_head(whaleui_dom_document_t* doc)
 
 extern "C" whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     /* the DOM-layer active element (public focus()/blur() + the engine's
      * click/Tab focus both record it via whaleui_dom_set_active); the body
      * is the default when nothing was focused, like the browser */
@@ -1686,6 +1753,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_active_element(whaleui_dom_documen
  * and the render click/Tab focus bookkeeping both call this. */
 extern "C" void whaleui_dom_set_active(struct lxb_dom_element* el)
 {
+    WhaleUIDomLock _dom_lk;
     if (!el || !el->node.owner_document) {
         return;
     }
@@ -1696,6 +1764,7 @@ extern "C" void whaleui_dom_set_active(struct lxb_dom_element* el)
  * (click outside the tree). Safe on an absent key. */
 extern "C" void whaleui_dom_clear_active(struct lxb_dom_document* doc)
 {
+    WhaleUIDomLock _dom_lk;
     if (doc) {
         g_active().erase(doc);
     }
@@ -1703,6 +1772,7 @@ extern "C" void whaleui_dom_clear_active(struct lxb_dom_document* doc)
 
 extern "C" int whaleui_dom_set_title(whaleui_dom_document_t* doc, const char* title)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !title) {
         return -1;
     }
@@ -1749,6 +1819,7 @@ extern "C" int whaleui_dom_set_title(whaleui_dom_document_t* doc, const char* ti
 
 extern "C" const char* whaleui_dom_get_title(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     static std::string cache;
     cache.clear();
     lxb_html_document* d = as_doc(doc);
@@ -1782,6 +1853,7 @@ extern "C" const char* whaleui_dom_get_title(whaleui_dom_document_t* doc)
 extern "C" whaleui_dom_list_t* whaleui_dom_query_selector_all(whaleui_dom_document_t* doc,
                                                                const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !selector || !*selector) {
         return nullptr;
     }
@@ -1797,6 +1869,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_query_selector_all(whaleui_dom_docume
 extern "C" whaleui_dom_list_t* whaleui_dom_get_elements_by_class_name(whaleui_dom_document_t* doc,
                                                                        const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !cls) {
         return nullptr;
     }
@@ -1811,6 +1884,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_get_elements_by_class_name(whaleui_do
 extern "C" whaleui_dom_list_t* whaleui_dom_get_elements_by_tag_name(whaleui_dom_document_t* doc,
                                                                     const char* tag)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc || !tag) {
         return nullptr;
     }
@@ -1827,6 +1901,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_get_elements_by_tag_name(whaleui_dom_
 extern "C" whaleui_dom_element_t* whaleui_dom_element_query_selector(whaleui_dom_element_t* el,
                                                                      const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !selector || !*selector) {
         return nullptr;
@@ -1842,6 +1917,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_element_query_selector(whaleui_dom
 extern "C" whaleui_dom_list_t* whaleui_dom_element_query_selector_all(whaleui_dom_element_t* el,
                                                                       const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !selector || !*selector) {
         return nullptr;
@@ -1854,6 +1930,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_element_query_selector_all(whaleui_do
 extern "C" whaleui_dom_list_t* whaleui_dom_element_get_elements_by_class_name(whaleui_dom_element_t* el,
                                                                               const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     std::vector<lxb_dom_element*> v;
     if (e && cls) {
@@ -1865,6 +1942,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_element_get_elements_by_class_name(wh
 extern "C" whaleui_dom_list_t* whaleui_dom_element_get_elements_by_tag_name(whaleui_dom_element_t* el,
                                                                             const char* tag)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     std::vector<lxb_dom_element*> v;
     if (e && tag) {
@@ -1876,6 +1954,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_element_get_elements_by_tag_name(whal
 extern "C" whaleui_dom_element_t* whaleui_dom_closest(whaleui_dom_element_t* el,
                                                       const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !selector || !*selector) {
         return nullptr;
@@ -1892,6 +1971,7 @@ extern "C" whaleui_dom_element_t* whaleui_dom_closest(whaleui_dom_element_t* el,
 
 extern "C" int whaleui_dom_matches(whaleui_dom_element_t* el, const char* selector)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !selector || !*selector) {
         return 0;
@@ -1903,45 +1983,53 @@ extern "C" int whaleui_dom_matches(whaleui_dom_element_t* el, const char* select
 
 extern "C" whaleui_dom_element_t* whaleui_dom_parent_element(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     return whaleui_dom_parent(el);
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_last_child(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(last_element_child(e)) : nullptr;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_previous_sibling(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(prev_element(e)) : nullptr;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_first_element_child(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     return whaleui_dom_first_child(el);
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_last_element_child(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(last_element_child(e)) : nullptr;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_next_element_sibling(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     return whaleui_dom_next_sibling(el);
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_previous_element_sibling(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? out(prev_element(e)) : nullptr;
 }
 
 extern "C" whaleui_dom_list_t* whaleui_dom_children(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     std::vector<lxb_dom_element*> v;
     if (e) {
@@ -1956,6 +2044,7 @@ extern "C" whaleui_dom_list_t* whaleui_dom_children(whaleui_dom_element_t* el)
 
 extern "C" size_t whaleui_dom_child_element_count(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     size_t n = 0;
     if (e) {
@@ -1973,6 +2062,7 @@ extern "C" size_t whaleui_dom_child_element_count(whaleui_dom_element_t* el)
 extern "C" whaleui_dom_element_t* whaleui_dom_create_text_node(whaleui_dom_document_t* doc,
                                                                const char* text)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_document* d = dom_doc(doc);
     if (!d || !text) {
         return nullptr;
@@ -1988,6 +2078,7 @@ extern "C" int whaleui_dom_insert_before(whaleui_dom_element_t* parent,
                                          whaleui_dom_element_t* new_child,
                                          whaleui_dom_element_t* ref_child)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* p = as_el(parent);
     lxb_dom_node* nc = new_child ? reinterpret_cast<lxb_dom_node*>(new_child) : nullptr;
     lxb_dom_node* rc = ref_child ? &as_el(ref_child)->node : nullptr;
@@ -2030,6 +2121,7 @@ extern "C" int whaleui_dom_replace_child(whaleui_dom_element_t* parent,
                                          whaleui_dom_element_t* new_child,
                                          whaleui_dom_element_t* old_child)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* p = as_el(parent);
     lxb_dom_node* nc = new_child ? &as_el(new_child)->node : nullptr;
     lxb_dom_node* oc = old_child ? &as_el(old_child)->node : nullptr;
@@ -2050,11 +2142,13 @@ extern "C" int whaleui_dom_replace_child(whaleui_dom_element_t* parent,
 
 extern "C" int whaleui_dom_remove(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     return whaleui_dom_remove_child(nullptr, el);
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_clone(whaleui_dom_element_t* el, int deep)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return nullptr;
@@ -2119,6 +2213,7 @@ static void splice_insert(lxb_dom_node* parent, lxb_dom_node* nc,
 extern "C" int whaleui_dom_append(whaleui_dom_element_t* el,
                                   whaleui_dom_element_t* node)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     lxb_dom_node* nc = nullptr;
     if (node_handle(node, &nc) != 0 || !e) {
@@ -2132,6 +2227,7 @@ extern "C" int whaleui_dom_append(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_prepend(whaleui_dom_element_t* el,
                                    whaleui_dom_element_t* node)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     lxb_dom_node* nc = nullptr;
     if (node_handle(node, &nc) != 0 || !e) {
@@ -2145,6 +2241,7 @@ extern "C" int whaleui_dom_prepend(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_before(whaleui_dom_element_t* el,
                                   whaleui_dom_element_t* node)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     lxb_dom_node* nc = nullptr;
     if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
@@ -2158,6 +2255,7 @@ extern "C" int whaleui_dom_before(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_after(whaleui_dom_element_t* el,
                                  whaleui_dom_element_t* node)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     lxb_dom_node* nc = nullptr;
     if (node_handle(node, &nc) != 0 || !e || !e->node.parent) {
@@ -2171,6 +2269,7 @@ extern "C" int whaleui_dom_after(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_contains(whaleui_dom_element_t* parent,
                                     whaleui_dom_element_t* child)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* p = as_el(parent);
     lxb_dom_element* c = as_el(child);
     if (!p || !c) {
@@ -2186,12 +2285,14 @@ extern "C" int whaleui_dom_contains(whaleui_dom_element_t* parent,
 
 extern "C" int whaleui_dom_has_child_nodes(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e && e->node.first_child ? 1 : 0;
 }
 
 extern "C" int whaleui_dom_is_connected(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return 0;
@@ -2281,6 +2382,7 @@ int class_set(lxb_dom_element* e, const char* cls, int add)
 
 extern "C" int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !cls) {
         return -1;
@@ -2294,6 +2396,7 @@ extern "C" int whaleui_dom_class_add(whaleui_dom_element_t* el, const char* cls)
 
 extern "C" int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !cls) {
         return -1;
@@ -2307,6 +2410,7 @@ extern "C" int whaleui_dom_class_remove(whaleui_dom_element_t* el, const char* c
 
 extern "C" int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !cls) {
         return -1;
@@ -2321,6 +2425,7 @@ extern "C" int whaleui_dom_class_toggle(whaleui_dom_element_t* el, const char* c
 
 extern "C" int whaleui_dom_class_contains(whaleui_dom_element_t* el, const char* cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !cls) {
         return 0;
@@ -2358,6 +2463,7 @@ std::vector<std::string> class_tokens(lxb_dom_element* e)
 
 extern "C" size_t whaleui_dom_class_length(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     return e ? class_tokens(e).size() : 0;
 }
@@ -2365,6 +2471,7 @@ extern "C" size_t whaleui_dom_class_length(whaleui_dom_element_t* el)
 extern "C" int whaleui_dom_class_item(whaleui_dom_element_t* el, size_t index,
                                       char* out, size_t cap)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !out || cap == 0) {
         return -1;
@@ -2384,6 +2491,7 @@ extern "C" int whaleui_dom_class_replace(whaleui_dom_element_t* el,
                                          const char* old_cls,
                                          const char* new_cls)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !old_cls || !new_cls || !*old_cls || !*new_cls) {
         return 0;
@@ -2404,6 +2512,7 @@ extern "C" int whaleui_dom_class_replace(whaleui_dom_element_t* el,
 extern "C" int whaleui_dom_class_toggle_force(whaleui_dom_element_t* el,
                                               const char* cls, int force)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !cls) {
         return -1;
@@ -2446,6 +2555,7 @@ void dataset_attr_name(const char* key, std::string& out)
 extern "C" int whaleui_dom_dataset_set(whaleui_dom_element_t* el,
                                        const char* key, const char* value)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !key || !*key || !value) {
         return -1;
@@ -2467,6 +2577,7 @@ extern "C" int whaleui_dom_dataset_set(whaleui_dom_element_t* el,
 extern "C" const char* whaleui_dom_dataset_get(whaleui_dom_element_t* el,
                                                const char* key)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !key || !*key) {
         return nullptr;
@@ -2481,6 +2592,7 @@ extern "C" const char* whaleui_dom_dataset_get(whaleui_dom_element_t* el,
 
 extern "C" int whaleui_dom_dataset_has(whaleui_dom_element_t* el, const char* key)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !key || !*key) {
         return 0;
@@ -2495,6 +2607,7 @@ extern "C" int whaleui_dom_dataset_has(whaleui_dom_element_t* el, const char* ke
 
 extern "C" int whaleui_dom_dataset_remove(whaleui_dom_element_t* el, const char* key)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !key || !*key) {
         return -1;
@@ -2641,6 +2754,7 @@ int parse_into(lxb_dom_element* el, const char* html, size_t len)
 extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
                                           const char* html)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !html) {
         return -1;
@@ -2668,6 +2782,7 @@ extern "C" int whaleui_dom_set_inner_html(whaleui_dom_element_t* el,
 
 extern "C" const char* whaleui_dom_get_inner_html(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     static std::string cache;
     cache.clear();
     lxb_dom_element* e = as_el(el);
@@ -2681,6 +2796,7 @@ extern "C" const char* whaleui_dom_get_inner_html(whaleui_dom_element_t* el)
 extern "C" int whaleui_dom_set_outer_html(whaleui_dom_element_t* el,
                                           const char* html)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !html) {
         return -1;
@@ -2715,6 +2831,7 @@ extern "C" int whaleui_dom_set_outer_html(whaleui_dom_element_t* el,
 
 extern "C" const char* whaleui_dom_get_outer_html(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     static std::string cache;
     cache.clear();
     lxb_dom_element* e = as_el(el);
@@ -2729,6 +2846,7 @@ extern "C" const char* whaleui_dom_get_outer_html(whaleui_dom_element_t* el)
 
 extern "C" int whaleui_dom_set_value(whaleui_dom_element_t* el, const char* value)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !value) {
         return -1;
@@ -2775,6 +2893,7 @@ extern "C" int whaleui_dom_set_value(whaleui_dom_element_t* el, const char* valu
 
 extern "C" const char* whaleui_dom_get_value(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return nullptr;
@@ -2829,6 +2948,7 @@ extern "C" const char* whaleui_dom_get_value(whaleui_dom_element_t* el)
 
 extern "C" int whaleui_dom_focus(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return -1;
@@ -2852,6 +2972,7 @@ extern "C" int whaleui_dom_focus(whaleui_dom_element_t* el)
 
 extern "C" int whaleui_dom_blur(whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e) {
         return -1;
@@ -2871,6 +2992,7 @@ extern "C" int whaleui_dom_blur(whaleui_dom_element_t* el)
 extern "C" int whaleui_dom_get_bounding_client_rect(whaleui_dom_element_t* el,
                                                     whaleui_dom_rect_t* out)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!e || !out) {
         return -1;
@@ -2994,6 +3116,7 @@ static lxb_dom_element* range_owner(whaleui_dom_element_t* container)
 
 extern "C" whaleui_dom_range_t* whaleui_dom_create_range(whaleui_dom_document_t* doc)
 {
+    WhaleUIDomLock _dom_lk;
     if (!doc) {
         return nullptr;
     }
@@ -3005,6 +3128,7 @@ extern "C" whaleui_dom_range_t* whaleui_dom_create_range(whaleui_dom_document_t*
 
 extern "C" void whaleui_dom_range_destroy(whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     delete range;
 }
 
@@ -3012,6 +3136,7 @@ extern "C" int whaleui_dom_range_set_start(whaleui_dom_range_t* range,
                                            whaleui_dom_element_t* container,
                                            int offset)
 {
+    WhaleUIDomLock _dom_lk;
     if (!range) {
         return -1;
     }
@@ -3028,6 +3153,7 @@ extern "C" int whaleui_dom_range_set_end(whaleui_dom_range_t* range,
                                          whaleui_dom_element_t* container,
                                          int offset)
 {
+    WhaleUIDomLock _dom_lk;
     if (!range) {
         return -1;
     }
@@ -3042,26 +3168,31 @@ extern "C" int whaleui_dom_range_set_end(whaleui_dom_range_t* range,
 
 extern "C" whaleui_dom_element_t* whaleui_dom_range_start_container(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     return range ? out(range->start_el) : nullptr;
 }
 
 extern "C" whaleui_dom_element_t* whaleui_dom_range_end_container(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     return range ? out(range->end_el) : nullptr;
 }
 
 extern "C" int whaleui_dom_range_start_offset(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     return range ? range->start_off : 0;
 }
 
 extern "C" int whaleui_dom_range_end_offset(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     return range ? range->end_off : 0;
 }
 
 extern "C" int whaleui_dom_range_collapsed(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     if (!range) {
         return 1;
     }
@@ -3137,6 +3268,7 @@ static std::string range_text_between(lxb_dom_element* sa, int so,
 
 extern "C" const char* whaleui_dom_range_to_string(const whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     if (!range) {
         return "";
     }
@@ -3151,6 +3283,7 @@ extern "C" const char* whaleui_dom_range_to_string(const whaleui_dom_range_t* ra
 extern "C" int whaleui_dom_range_select_node_contents(whaleui_dom_range_t* range,
                                                       whaleui_dom_element_t* el)
 {
+    WhaleUIDomLock _dom_lk;
     lxb_dom_element* e = as_el(el);
     if (!range || !e) {
         return -1;
@@ -3164,6 +3297,7 @@ extern "C" int whaleui_dom_range_select_node_contents(whaleui_dom_range_t* range
 
 extern "C" int whaleui_dom_range_delete_contents(whaleui_dom_range_t* range)
 {
+    WhaleUIDomLock _dom_lk;
     if (!range || !range->start_el || !range->end_el) {
         return -1;
     }
