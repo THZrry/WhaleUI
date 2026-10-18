@@ -2785,36 +2785,53 @@ struct Builder
             std::string fam2 = get(n->style, "font-family");
             bool bold2 = font_weight_bold(n->style);
             float lsp2 = letter_spacing_px(n->style, static_cast<float>(fs));
-            /* wrap estimate (estimate-only for block runs: fast path);
-             * longest run (a single \n-free line) sets width */
-            size_t wrap_lines = est_wrap_lines(n->text, fs, avail, fam2,
-                                               bold2, lsp2);
+            /* Same run, same font, same wrap width as last time? Then the
+             * measurement is still valid - skip the per-glyph wrap and the
+             * width measure. An edit that touches an ancestor re-lays every
+             * run in the subtree, and those runs usually did not change. */
+            const bool tm_hit = n->tm_ok && n->tm_fs == fs &&
+                                n->tm_avail == avail &&
+                                n->tm_bold == (bold2 ? 1u : 0u);
+            size_t wrap_lines;
+            int bw2;
+            if (tm_hit) {
+                wrap_lines = static_cast<size_t>(n->tm_lines);
+                bw2 = n->tm_w;
+            } else {
+                /* wrap estimate (estimate-only for block runs: fast path);
+                 * longest run (a single \n-free line) sets width */
+                wrap_lines = est_wrap_lines(n->text, fs, avail, fam2,
+                                            bold2, lsp2);
+                /* box width must match the measured (real) glyph width */
+                float max_w = 0;
+                for (size_t i = 0; i <= n->text.size();) {
+                    size_t j = n->text.find('\n', i);
+                    if (j == std::string::npos) {
+                        j = n->text.size();
+                    }
+                    float lw = text_measure(n->text.substr(i, j - i), fs,
+                                            fam2, bold2, lsp2);
+                    if (lw > max_w) {
+                        max_w = lw;
+                    }
+                    if (j == n->text.size()) {
+                        break;
+                    }
+                    i = j + 1;
+                }
+                bw2 = static_cast<int>(max_w);
+                n->tm_lines = static_cast<int>(wrap_lines);
+                n->tm_w = bw2;
+                n->tm_fs = fs;
+                n->tm_avail = avail;
+                n->tm_bold = bold2 ? 1u : 0u;
+                n->tm_ok = 1;
+            }
             if (wrap_lines > lines) {
                 lines = wrap_lines;
             }
             n->border.x = cx;
             n->border.y = *cursor_y;
-            /* box width must match the measured (real) glyph width: an
-             * estimate narrower than the real ink (CJK vs latin metrics,
-             * letter-spacing) leaves the tail characters clipped at render
-             * time. Use the real metric hook when installed. */
-            float max_w = 0;
-            for (size_t i = 0; i <= n->text.size();) {
-                size_t j = n->text.find('\n', i);
-                if (j == std::string::npos) {
-                    j = n->text.size();
-                }
-                float lw = text_measure(n->text.substr(i, j - i), fs, fam2,
-                                        bold2, lsp2);
-                if (lw > max_w) {
-                    max_w = lw;
-                }
-                if (j == n->text.size()) {
-                    break;
-                }
-                i = j + 1;
-            }
-            int bw2 = static_cast<int>(max_w);
             /* an inline run's content width IS its glyph width - do NOT
              * clamp to the parent avail, or the tail characters get
              * clipped when the run box is narrower than the ink. (A block

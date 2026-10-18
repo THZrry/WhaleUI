@@ -2151,3 +2151,62 @@ stylesheet，新 selector 继承了旧 chain。已回退为文本键。
 - `probe_lost`: 移动后 bounds 同步更新。
 - `probe_partial2`: 增量 vs 全量 **diff=0 px**（CPU text_layer）。
 - `probe_one2`: GPU `target2` 读回，display 切换后增量 vs 全量 **diff=0 px**。
+
+# 61: 单遍 bounds/chunk 合并 + 文本 run 测量缓存
+
+SOLVED
+
+继续按"哪些代码会阻止元素被渲染 / 哪些地方重复计算"审查。
+
+## A. compute_paint_bounds 每个节点走两遍子链
+
+原实现对每个被访问节点：
+1. 遍历子链，递归并合并子 bounds；
+2. **再次**遍历每个 chunk 的成员，合并 chunk box。
+
+改成一遍：chunk 是同一子链上的连续区间，可以在遍历子链时顺带累计 chunk
+box（`c->chunk != ck` 时 flush 上一个 chunk）。对 800 行的容器少一半遍历。
+
+顺带确认了 `compute_paint_bounds` 的整树 pass 本身很便宜（3200 行 0.143ms），
+不是瓶颈；但这次合并仍减少了每个几何编辑帧的常数开销。
+
+## B. 文本 run 每次重排都重新测量
+
+`layout()` 对每个文本 run 做两件昂贵的事：
+- `est_wrap_lines()` → `render_wrap_lines()` → `text_size()`（逐字换行）
+- 逐行 `text_measure()` 求最大宽度
+
+这两者的输入只有 (文本, 字号, 可用宽度, 字体, 粗体, 字距)，而一次几何编辑会
+重排整个被编辑子树——里面绝大多数 run 根本没变。
+
+修: 节点上加测量备忘录（`tm_lines/tm_w/tm_fs/tm_avail/tm_bold/tm_ok`），
+key 命中时直接复用，跳过换行估算和宽度测量。
+
+## C. 稳定测量（多轮取最小值）
+
+之前的探针噪声很大（同一用例 6.8ms ~ 14ms）。`probe_bench` 对每个用例重复
+8 次取最小值（冷缓存只会让某次变慢，不会变快）：
+
+| 用例 | n=20 | n=200 |
+|---|---|---|
+| color | 1.71ms | 7.82ms |
+| width | 1.39ms | 7.44ms |
+| height | 1.32ms | 7.54ms |
+
+对比本轮开始时（`probe_display`）：width 10.10、height 33.00、color 9.91、
+padding 8.78、display 9.02。height 的 33ms 是 O(n²) 兄弟位移（note 59 已修），
+其余从 ~10ms 降到 ~7.5ms。
+
+## D. 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_lost`: 移动后 bounds 同步（`0,40`）。
+- `probe_bdpath`: 兄弟位移后 bounds 同步（`150/250`）。
+- `probe_partial2`: 增量 vs 全量 **diff=0 px**（CPU）。
+- `probe_one2`: GPU `target2` 读回 **diff=0 px**。
+
+## 备注
+
+`est_wrap_lines` 的备忘录按 (fs, avail, bold) 命中，未把 font-family 和
+letter-spacing 编入 key——同一个 run 的字体由继承决定，重排时不会变化；若
+将来支持逐 run 改字体，需把这两项也加入 key。

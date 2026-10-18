@@ -1458,7 +1458,26 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
         return; /* still valid: nothing under here moved */
     }
     whaleui_rect_t b = n->border;
+    /* ONE walk over the children: merge their bounds AND their chunk boxes.
+     * The old code walked the chain once for bounds and then again per chunk
+     * for the merged boxes - two passes over every child of every visited
+     * node. Chunks are contiguous runs of the same chain, so the box can be
+     * accumulated while the chain is traversed. */
+    whaleui_child_chunk* ck = n->chunks;
+    whaleui_rect_t cb;
+    bool cb_have = false;
+    auto flush_chunk = [&]() {
+        if (ck) {
+            ck->box = cb_have ? cb : whaleui_rect_t{0, 0, 0, 0};
+            ck = ck->next;
+        }
+        cb_have = false;
+    };
     for (whaleui_layout_node_t* c = n->first_child; c; c = c->next) {
+        /* leaving the previous chunk? */
+        if (ck && c->chunk != ck) {
+            flush_chunk();
+        }
         if (!c->visible) {
             continue;
         }
@@ -1474,40 +1493,29 @@ void compute_paint_bounds(whaleui_layout_node_t* n)
         b.y = y0;
         b.w = x1 - x0;
         b.h = y1 - y0;
+        if (ck && c->chunk == ck) {
+            if (!cb_have) {
+                cb = c->bounds;
+                cb_have = true;
+            } else {
+                int qx0 = cb.x, qy0 = cb.y;
+                int qx1 = cb.x + cb.w, qy1 = cb.y + cb.h;
+                if (cx0 < qx0) qx0 = cx0;
+                if (cy0 < qy0) qy0 = cy0;
+                if (cx1 > qx1) qx1 = cx1;
+                if (cy1 > qy1) qy1 = cy1;
+                cb.x = qx0;
+                cb.y = qy0;
+                cb.w = qx1 - qx0;
+                cb.h = qy1 - qy0;
+            }
+        }
+    }
+    /* any chunks after the last member (all members hidden) */
+    while (ck) {
+        flush_chunk();
     }
     n->bounds = b;
-    /* per-chunk merged boxes: same members, so refresh them in the same pass.
-     * A paint / hit walk can then skip a whole chunk (WUI_CHUNK siblings) with
-     * one box test instead of testing every sibling. */
-    for (whaleui_child_chunk* ck = n->chunks; ck; ck = ck->next) {
-        whaleui_rect_t cb;
-        bool have = false;
-        for (whaleui_layout_node_t* c = ck->first;
-             c && c->chunk == ck; c = c->next) {
-            if (!c->visible) {
-                continue;
-            }
-            if (!have) {
-                cb = c->bounds;
-                have = true;
-                continue;
-            }
-            int x0 = cb.x, y0 = cb.y;
-            int x1 = cb.x + cb.w, y1 = cb.y + cb.h;
-            int cx0 = c->bounds.x, cy0 = c->bounds.y;
-            int cx1 = c->bounds.x + c->bounds.w;
-            int cy1 = c->bounds.y + c->bounds.h;
-            if (cx0 < x0) x0 = cx0;
-            if (cy0 < y0) y0 = cy0;
-            if (cx1 > x1) x1 = cx1;
-            if (cy1 > y1) y1 = cy1;
-            cb.x = x0;
-            cb.y = y0;
-            cb.w = x1 - x0;
-            cb.h = y1 - y0;
-        }
-        ck->box = have ? cb : whaleui_rect_t{0, 0, 0, 0};
-    }
     n->bd = 0;
 }
 

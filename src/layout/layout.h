@@ -128,6 +128,18 @@ struct whaleui_layout_node
      * working exactly as before. `chunk` is the chunk this node belongs to;
      * `chunks` heads this node's chunk list. Maintained where children are
      * appended (layout.cpp); the boxes are refreshed by compute_paint_bounds. */
+    /* Text-run measurement memo. A relayout re-measures every run in the
+     * edited subtree; the measurement only depends on the run's text plus
+     * (font size, available width, family, bold, letter-spacing), so an
+     * unchanged run can reuse the previous result instead of re-running the
+     * per-glyph wrap and width measure. */
+    int tm_lines;   /* wrapped line count */
+    int tm_w;       /* measured max line width */
+    int tm_fs;
+    int tm_avail;
+    unsigned tm_ok : 1;
+    unsigned tm_bold : 1;
+
     struct whaleui_child_chunk* chunk;
     struct whaleui_child_chunk* chunks;
     struct whaleui_child_chunk* chunks_last; /* O(1) append tail */
