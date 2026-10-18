@@ -5760,6 +5760,82 @@ extern "C" int whaleui_layout_relayout(
                          anim, text_scale, 0);
 }
 
+/* Paint-only edit (no layout key changed): update the computed styles of the
+ * element's existing subtree IN PLACE. No rebuild, no geometry pass, no
+ * copy_geo - the old path rebuilt the subtree and then copied the old boxes
+ * back, which is O(subtree) per edited element and made a 200-element colour
+ * batch cost 9ms. Returns 0 on success, 1 when the element is not in the
+ * tree, -1 when the subtree shape no longer matches the DOM (caller should
+ * fall back to the rebuilding path). */
+extern "C" int whaleui_layout_restyle_inplace(
+    whaleui_layout_tree_t* tree, lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st, struct whaleui_anim* anim,
+    float text_scale)
+{
+    if (!tree || !el) {
+        return 1;
+    }
+    auto found = tree->by_el.find(el);
+    if (found == tree->by_el.end()) {
+        return 1;
+    }
+    Builder b;
+    b.tree = tree;
+    b.rules = rules;
+    b.rule_count = count;
+    b.st = st ? *st : whaleui_style_state();
+    b.anim = anim;
+    b.text_scale = text_scale > 0 ? text_scale : 1.0f;
+    if (theme_vars) {
+        b.vars = *theme_vars;
+    }
+    if (!tree->vars_collected && tree->root && tree->root->el) {
+        whaleui_style_collect_vars_full(tree->root->el, rules, count,
+                                        tree->vars);
+        tree->vars_collected = true;
+    }
+    for (auto& kv : tree->vars) {
+        b.vars[kv.first] = kv.second;
+    }
+    /* Shape must still match the DOM: a structural edit is the caller's job
+     * (it goes through the rebuilding path), but a stale tree must not be
+     * restyled blindly. */
+    {
+        lxb_dom_node* dc = el->node.first_child;
+        whaleui_layout_node_t* tc = found->second->first_child;
+        for (;;) {
+            bool d_text = dc && (dc->type == LXB_DOM_NODE_TYPE_TEXT ||
+                                 dc->type == LXB_DOM_NODE_TYPE_CDATA_SECTION);
+            bool t_text = tc && tc->is_text;
+            if (!dc != !tc) {
+                return -1;
+            }
+            if (!dc) {
+                break;
+            }
+            if (d_text != t_text) {
+                return -1;
+            }
+            if (!d_text && lxb_dom_interface_element(dc) != tc->el) {
+                return -1;
+            }
+            bool next_d_text = dc->next &&
+                               (dc->next->type == LXB_DOM_NODE_TYPE_TEXT ||
+                                dc->next->type ==
+                                    LXB_DOM_NODE_TYPE_CDATA_SECTION);
+            dc = dc->next;
+            if (d_text && next_d_text) {
+                continue;
+            }
+            tc = tc->next;
+        }
+    }
+    b.restyle_subtree(found->second, true);
+    return 0;
+}
+
 extern "C" int whaleui_layout_relayout_style(
     whaleui_layout_tree_t* tree,
     lxb_dom_element* el,
@@ -6353,6 +6429,17 @@ int whaleui_layout_relayout_multi(
      * A height change (or a flex/grid ancestor) takes the fallback: the
      * shift below only handles the height-stable block case. */
     std::vector<whaleui_layout_node_t*> rroots;
+    /* Height deltas from pure block-flow edits, grouped per CONTAINER.
+     * Applying them one element at a time shifted every following sibling
+     * once per edit: 200 rows in an 800-row list cost 200 x 800 subtree
+     * shifts (33ms). Collected here and applied as ONE ordered walk per
+     * container, which is O(children). */
+    struct HeightDelta
+    {
+        whaleui_layout_node_t* node;
+        int delta;
+    };
+    std::map<whaleui_layout_node_t*, std::vector<HeightDelta> > pendingShift;
     for (size_t fi = 0; fi < freshNodes.size(); ++fi) {
         whaleui_layout_node_t* fn = freshNodes[fi];
         const size_t oi = freshOldIdx[fi]; /* slot in the old-box arrays */
@@ -6414,11 +6501,11 @@ int whaleui_layout_relayout_multi(
                      * places it at the cursor we seeded), so the delta is
                      * purely its height. */
                     int delta = fn->border.h - oldHeights[oi];
-                    if (propagate_block_delta(fn, delta)) {
-                        done = true;
-                    }
-                    /* else: an ancestor shares an axis - fall through to
-                     * the ancestor box pass (correct, just not cheap) */
+                    HeightDelta hd;
+                    hd.node = fn;
+                    hd.delta = delta;
+                    pendingShift[par].push_back(hd);
+                    done = true;
                 }
                 (void)par_col;
                 /* else: fall through to the ancestor pass below, which
@@ -6430,6 +6517,59 @@ int whaleui_layout_relayout_multi(
         if (!done &&
             std::find(rroots.begin(), rroots.end(), a) == rroots.end()) {
             rroots.push_back(a);
+        }
+    }
+    /* Apply the collected height deltas: ONE ordered walk per container.
+     * Each edited child was already laid out at its OLD flow offset, so it
+     * must be shifted by the deltas of the edited siblings before it; its
+     * own delta then applies to everything after it. */
+    for (std::map<whaleui_layout_node_t*, std::vector<HeightDelta> >::iterator
+             pi = pendingShift.begin();
+         pi != pendingShift.end(); ++pi) {
+        whaleui_layout_node_t* par = pi->first;
+        std::map<whaleui_layout_node_t*, int> deltaOf;
+        for (size_t di = 0; di < pi->second.size(); ++di) {
+            deltaOf[pi->second[di].node] += pi->second[di].delta;
+        }
+        int acc = 0;
+        for (whaleui_layout_node_t* c = par->first_child; c; c = c->next) {
+            if (acc != 0) {
+                shift_tree_down(c, acc);
+            }
+            std::map<whaleui_layout_node_t*, int>::iterator dit =
+                deltaOf.find(c);
+            if (dit != deltaOf.end()) {
+                acc += dit->second;
+            }
+        }
+        if (acc != 0) {
+            /* the container's auto height follows its content */
+            std::string ph = get(par->style, "height");
+            if (ph.empty() || ph == "auto") {
+                par->border.h += acc;
+                par->content.h += acc;
+                if (par->content.h < 0) {
+                    par->content.h = 0;
+                }
+            }
+            /* and it may move following siblings further up */
+            if (!propagate_block_delta(par, acc)) {
+                whaleui_layout_node_t* a = par->parent;
+                while (a && a != tree->root) {
+                    int adk = display_kind(get(a->style, "display"));
+                    if (adk == 1 || adk == 4) {
+                        break;
+                    }
+                    a = a->parent;
+                }
+                if (!a) {
+                    a = tree->root;
+                }
+                if (std::find(rroots.begin(), rroots.end(), a) ==
+                    rroots.end()) {
+                    rroots.push_back(a);
+                }
+            }
         }
     }
     for (whaleui_layout_node_t* rr : rroots) {

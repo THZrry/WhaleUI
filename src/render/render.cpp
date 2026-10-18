@@ -6030,13 +6030,17 @@ extern "C" int whaleui_render_frame(whaleui_render_t* r, whaleui_dom_document_t*
             if (lay_changed || desc_affected) {
                 full_list.push_back(el);
             } else {
-                if (whaleui_layout_relayout_style(
-                        r->tree, el, r->rules, r->rule_count,
-                        &r->theme_vars, &st, &r->scrolls, r->anim,
-                        r->text_scale) < 0) {
-                    full_list.push_back(el);
-                } else {
+                /* Paint-only: re-cascade in place. The old call rebuilt the
+                 * subtree and copied the old boxes back, which is O(subtree)
+                 * per element and dominated a batch of colour edits. */
+                int rs = whaleui_layout_restyle_inplace(
+                    r->tree, el, r->rules, r->rule_count, &r->theme_vars,
+                    &st, r->anim, r->text_scale);
+                if (rs == 0) {
                     dom_repaint.push_back(el);
+                } else {
+                    /* shape changed or element gone: rebuilding path */
+                    full_list.push_back(el);
                 }
             }
         }

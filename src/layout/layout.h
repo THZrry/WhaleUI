@@ -343,6 +343,19 @@ int whaleui_layout_relayout_style(
     const std::map<struct lxb_dom_element*, int>* scrolls,
     struct whaleui_anim* anim, float text_scale);
 
+/* Paint-only edit: re-cascade the element's existing subtree IN PLACE - no
+ * rebuild, no geometry pass, no copy_geo. This is what a colour/opacity
+ * change needs; the rebuilding path did all of that work only to copy the
+ * old boxes back (O(subtree) per edited element, ~30us each). Returns 0 on
+ * success, 1 when the element has no node here, -1 when the subtree shape no
+ * longer matches the DOM (caller falls back to the rebuilding path). */
+int whaleui_layout_restyle_inplace(
+    whaleui_layout_tree_t* tree, struct lxb_dom_element* el,
+    const whaleui_css_rule_t* rules, size_t count,
+    const std::map<std::string, std::string>* theme_vars,
+    const whaleui_style_state* st, struct whaleui_anim* anim,
+    float text_scale);
+
 /* Append-only relayout: <li> rows were appended to the END of an already
  * laid-out list container (ul/ol). Rebuilds ONLY the new rows (per-item
  * style cascade + independent layout from the container's running cursor),

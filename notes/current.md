@@ -2021,3 +2021,69 @@ WhaleUIComputedStyle s = whaleui_style_compute(el, rules, rule_count, vars, &st)
 - `probe_partial2`: 增量 vs 全量 diff=0 px。
 - `probe_one2`: GPU 读回，display 切换后增量 vs 全量 diff=0 px。
 - 所有临时计时插桩已移除（`WUI_PROF_MULTI` / `WUI_PROF_FRAME` 计数为 0）。
+
+# 59: 批量编辑的 O(n^2) 高度位移 + paint-only 编辑仍在重建子树
+
+SOLVED
+
+用户: "我打错了是 200，200 已经到 13ms 了那才是危险" 以及指向真实项目
+`C:/aaa/FlashSight`（src/ui 是响应式框架 + ui_dom_whale.cpp 适配层）。
+
+用 `probe_fsmode` 复现适配层的调用模式（每元素多次 set_style）发现:
+- `set_style` 本身极便宜（0.9µs/次，200 元素 × 5 属性 = 0.88ms）
+- 但**后续那一帧 35.29ms**
+
+`probe_display` 逐属性隔离（200 元素各改一个属性）:
+
+| 属性 | 修前 | 修后 |
+|---|---|---|
+| width | 10.10ms | 9.97ms |
+| **height** | **33.00ms** | **19.95ms** |
+| color | 9.91ms | 9.75ms |
+| padding | 8.78ms | 9.45ms |
+| display | 9.02ms | 9.00ms |
+
+## A. height: O(n^2) 的兄弟位移
+
+`relayout_multi` 的块流快路径对每个高度变化的元素调用
+`propagate_block_delta` → `shift_siblings_after`，把该元素**之后的所有兄弟**
+整棵子树下移。200 个元素各改高度 = 200 × 800 次子树位移。
+
+修: 收集到 `pendingShift`（按容器分组），循环结束后**每个容器只走一遍**:
+
+```cpp
+int acc = 0;
+for (c = par->first_child; c; c = c->next) {
+    if (acc != 0) shift_tree_down(c, acc);
+    if (auto it = deltaOf.find(c)) acc += it->second;
+}
+```
+
+每个编辑过的子节点先按"它之前所有编辑的累计位移"移动，再加自己的增量。
+容器 auto 高度按总量增长；若祖先不是纯块流则回退到祖先盒 pass。
+33ms → 20ms。
+
+## B. paint-only 编辑仍在重建子树
+
+color/opacity 这类不改布局的编辑走 `whaleui_layout_relayout_style`：它
+**重建整棵子树**再把旧几何 copy 回去（`copy_geo`），每个元素 O(subtree)。
+200 个元素因此要 9.4ms。
+
+修: 新增 `whaleui_layout_restyle_inplace(tree, el, ...)` —— 只做形状校验 +
+`restyle_subtree(n, true)`，不重建、不做几何 pass。返回 0 成功 / 1 元素不在树
+/ -1 形状不匹配（调用方回退到重建路径）。render.cpp 的 paint-only 分支改用它。
+
+200 元素 color 编辑: 9.44ms → **6.97ms**。
+
+## C. 正确性
+
+- 13/13 测试套件 exit=0。
+- `probe_partial2`: 增量 vs 强制全量重建 **diff=0 px**。
+- `probe_one2`: GPU `target2` 读回，display 切换后增量 vs 全量 **diff=0 px**。
+
+## 备注
+
+FlashSight 自身当前链接失败（`build_p2r.txt` 里大量 mbedtls undefined
+reference），无法直接端到端复现，因此本轮用 `probe_fsmode` / `probe_display`
+复刻其调用模式。剩余 ~9-10ms 的基线（与属性无关、随 N 线性）是每个元素一次
+完整级联 + 局部盒 pass 的成本，下一步可考虑级联结果复用。
