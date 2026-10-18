@@ -1019,8 +1019,10 @@ extern "C" void whaleui_dom_document_destroy(whaleui_dom_document_t* doc)
     WhaleUIDomLock _dom_lk;
     if (doc) {
         /* element listeners die with their document (all elements become
-         * unreachable; dropping the whole map avoids stale pointers) */
-        whaleui_events_clear_all();
+         * unreachable; dropping them avoids stale pointers). Only THIS
+         * document's listeners: clear_all() also unregistered every other
+         * window's, so replacing one window's page left the others dead. */
+        whaleui_events_clear_doc(&as_doc(doc)->dom_document);
         /* canvas contexts too: keyed on element pointers that dangle with
          * the document (a later allocation reusing an address would hit a
          * stale context with a freed backing) */

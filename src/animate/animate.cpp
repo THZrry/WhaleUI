@@ -1384,6 +1384,14 @@ extern "C" void whaleui_anim_reset(whaleui_anim_t* a)
         a->trans.clear();
         a->prev.clear();
         a->base.clear();
+        /* `act` maps ELEMENT POINTERS to the properties being animated and is
+         * read by whaleui_anim_els()/has_el() every frame. Leaving it across a
+         * document swap meant the frame enumerated freed lexbor nodes (the
+         * intermittent "wrong element animates / crash after switching pages"
+         * class of bug). */
+        a->act.clear();
+        a->ov.clear();
+        a->needs_layout = 0;
         a->active = 0;
     }
 }

@@ -195,6 +195,25 @@ extern "C" void whaleui_events_clear_all(void)
     listeners().clear();
 }
 
+/* Drop the listeners registered on elements of ONE document. The destroy path
+ * used clear_all(), which also unregistered every OTHER window's listeners -
+ * replacing one window's page then left the other window unresponsive. */
+extern "C" void whaleui_events_clear_doc(struct lxb_dom_document* doc)
+{
+    if (!doc) {
+        return;
+    }
+    for (std::map<lxb_dom_element*, std::vector<Listener>>::iterator it =
+             listeners().begin();
+         it != listeners().end();) {
+        if (it->first && it->first->node.owner_document == doc) {
+            it = listeners().erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 extern "C" int whaleui_dom_add_event_listener(whaleui_dom_element_t* el,
                                               const char* type,
                                               whaleui_event_cb cb, void* userdata)

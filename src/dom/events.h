@@ -19,6 +19,9 @@ void whaleui_events_clear_element(struct lxb_dom_element* el);
 
 /* Drop every listener (document destroyed; elements are unreachable). */
 void whaleui_events_clear_all(void);
+/* Drop only the listeners of ONE document (document destroy). The
+ * all-documents variant would also unregister other windows. */
+void whaleui_events_clear_doc(struct lxb_dom_document* doc);
 
 /* Register a listener with an explicit capture flag (the public
  * whaleui_dom_add_event_listener is the bubble (capture=0) shorthand). */

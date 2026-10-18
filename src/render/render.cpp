@@ -3187,6 +3187,21 @@ extern "C" void whaleui_render_reset_dom(whaleui_render_t* r)
     r->scrolls.clear();
     r->hscrolls.clear();
     r->last_scrolls.clear();
+    /* These two also hold DOM element pointers: scroll_boxes is walked by the
+     * partial-repaint scrollbar widening, scroll_tgt by the smooth-scroll
+     * easing. Leaving them across a document swap dereferences freed lexbor
+     * nodes on the next frame (an intermittent crash / "wrong element" -
+     * the classic address-reuse class of bug). */
+    r->scroll_boxes.clear();
+    r->scroll_tgt.clear();
+    /* drag & drop keeps three more element pointers (the press candidate and
+     * the running session's source/over targets); they dangle across a
+     * document swap and the next drag/click would compare against or
+     * dispatch to a freed node. */
+    r->press_hit_el = nullptr;
+    r->dnd_source = nullptr;
+    r->dnd_over = nullptr;
+    r->dnd_active = 0;
     r->hover_el = nullptr;
     r->hover_old_el = nullptr;
     r->hover_prev.clear();

@@ -2210,3 +2210,57 @@ padding 8.78、display 9.02。height 的 33ms 是 O(n²) 兄弟位移（note 59 
 `est_wrap_lines` 的备忘录按 (fs, avail, bold) 命中，未把 font-family 和
 letter-spacing 编入 key——同一个 run 的字体由继承决定，重排时不会变化；若
 将来支持逐 run 改字体，需把这两项也加入 key。
+
+# 62: 文档切换时的悬垂指针（"偶发"问题的来源）
+
+SOLVED
+
+用户: "如果是偶发路径有可能是比较严重的指针问题，因为正常路径大多数都是可复现的"
+
+系统扫了一遍所有以 DOM 对象为键的全局/成员容器，逐个核对是否在文档销毁或
+`whaleui_render_reset_dom` 时清理。
+
+## A. render 状态里三个漏清的 element 指针容器
+
+`whaleui_render_reset_dom` 清了 20 多个 element 指针字段，但漏了：
+
+| 字段 | 用途 | 后果 |
+|---|---|---|
+| `scroll_boxes` | 部分重绘时加宽滚动条列 | 每帧遍历，解引用已释放节点 |
+| `scroll_tgt` | 平滑滚动目标 | 每帧 easing 时解引用 |
+| `press_hit_el` / `dnd_source` / `dnd_over` | 拖拽会话 | 下次点击/拖拽比较到悬垂指针 |
+
+其中 `scroll_boxes` 最危险：它**每帧**被 partial-repaint 的滚动条加宽逻辑遍历，
+所以换页后第一次局部重绘就会踩到。
+
+## B. 动画引擎的 `act` 没清
+
+`whaleui_anim_reset()` 清了 `kf/trans/prev/base`，但漏了 `act`
+（`map<lxb_dom_element*, set<string>>`）。而 `whaleui_anim_els()` /
+`whaleui_anim_has_el()` **每帧**都会读它 —— 换页后帧循环枚举的是已释放的
+lexbor 节点。
+
+修: `whaleui_anim_reset` 补上 `act.clear()`、`ov.clear()`、`needs_layout = 0`。
+
+## C. 事件监听器被跨文档清空（功能性 bug）
+
+`whaleui_dom_document_destroy` 调的是 `whaleui_events_clear_all()` —— 它清空
+**所有文档**的监听器。多窗口时替换一个窗口的页面，会把另一个窗口的所有监听器
+一起注销，那个窗口从此不响应点击。
+
+修: 新增 `whaleui_events_clear_doc(doc)`，只清 `owner_document == doc` 的条目；
+销毁路径改用它。
+
+验证 `probe_multidoc`: 两个文档各注册 click 监听器，替换窗口 1 的页面后，
+窗口 2 的监听器仍然 ALIVE（修前会被清掉）。
+
+## D. 无界缓存
+
+`g_chain_cache`（selector 文本 → 解析后的 chain）从不裁剪，长期换页的进程会
+无限增长。加 8192 条上限（清空后重新解析，安全）。
+
+## 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_docswap`: 60 轮"设置全部 element 状态 → 换文档"，无崩溃，id 查询一致。
+- `probe_multidoc`: 多文档监听器隔离正确。

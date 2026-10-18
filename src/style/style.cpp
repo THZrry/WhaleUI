@@ -1298,6 +1298,13 @@ extern "C" int whaleui_style_match(const char* selector, lxb_dom_element* el,
     /* split on '>'/'+' and whitespace into a chain of simple selectors.
      * comb: 0 = descendant, 1 = child (prev part's relation), 2 = adjacent
      * sibling (this part must match the previous sibling of the target). */
+    /* Bounded: selectors are few per sheet, but the map is global and was
+     * never trimmed, so a long-running app that swaps many documents grew it
+     * without limit. Dropping it wholesale is safe (a cleared entry is just
+     * re-parsed). */
+    if (g_chain_cache.size() > 8192) {
+        g_chain_cache.clear();
+    }
     std::vector<SelChain>& chain = g_chain_cache[selector];
     if (chain.empty() && *selector) {
         int comb = 0;
