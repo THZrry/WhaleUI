@@ -1946,3 +1946,78 @@ bool want = !evs.empty() || frame_request || frames_alive || hover_dirty ||
 - `probe_wake2`: 无输入自动重绘 1 帧，状态正确。
 - `probe_one2`: GPU 读回，增量 vs 全量 diff=0 px。
 - `probe_partial2`: 同样 diff=0。
+
+# 58: relayout_multi 每元素重复级联（200 元素批量 12.4ms -> 2.9ms）
+
+SOLVED
+
+用户: "我打错了是 200，200 已经到 13ms 了那才是危险。...因此你还是把 tree pass
+再检查一下吧"
+
+## A. 每元素做了两次完整级联
+
+给 `whaleui_layout_relayout_multi` 加分段计时（build / restyle / loop / box）：
+
+```
+n=1    build=72us   restyle=24us   loop=53us
+n=20   build=365us  restyle=204us  loop=196us
+n=100  build=2190us restyle=1010us loop=866us   (总计 4.16ms)
+```
+
+`build` 段最大，但 `can_restyle` 对 126/126 全部通过——根本没走 `build()`。
+那这个时间是什么？是判断本身：
+
+```cpp
+WhaleUIComputedStyle fresh = whaleui_style_compute(el, ...);  // 一次完整级联
+...
+restyleFull.push_back(display_only ? 0 : 1);
+```
+
+然后 `restyle_subtree()` 里又做了一次：
+
+```cpp
+WhaleUIComputedStyle s = whaleui_style_compute(el, rules, rule_count, vars, &st);
+```
+
+**每个被编辑元素跑两遍完整级联。**
+
+修: `restyle_subtree(n, full, root_style)` 接受已经算好的 cascade，调用方把
+`display_only` 判断里那次的结果传进去。
+
+| 指标 | 修前 | 修后 |
+|---|---|---|
+| build 段 (n=100) | 2190µs | 1716µs |
+| restyle 段 (n=100) | 1010µs | 169µs |
+| relayout_multi (n=100) | 4.16ms | 2.86ms |
+| 每元素 | 41.6µs | 28.6µs |
+
+100 个元素 2.86ms，200 个约 5.5ms。首次调用（n=1）受冷缓存影响，稳态每元素
+约 28µs。
+
+## B. 单元素编辑与页面规模无关
+
+`probe_paintpay`（同一页 400~3200 行）：
+
+| rows | colour_edit_frame | width_edit_frame |
+|---|---|---|
+| 400 | 3.42ms | 4.16ms |
+| 800 | 4.87ms | 6.91ms |
+| 1600 | 3.40ms | 4.13ms |
+| 3200 | 3.97ms | 4.56ms |
+
+单元素 width 编辑 4-7ms，且**不随页面行数增长**——增量路径确实局部化了。
+（200 元素批量 13.7ms 中 relayout 只占 3.2ms，其余是 200 个元素各自的局部
+盒 pass，属于必要工作。）
+
+## C. 边界失效只标被编辑的子树（前一轮遗留）
+
+几何变化时原来 `mark_bounds_dirty_all` 标记整棵树再全树 recompute；改为对每个
+被编辑元素 `mark_bounds_dirty`（冒泡到根），只有 `struct_dirty`（增删节点）才
+全树标记——因为插入/删除会移动它之后的所有兄弟。
+
+## 验证
+
+- 13/13 测试套件 exit=0。
+- `probe_partial2`: 增量 vs 全量 diff=0 px。
+- `probe_one2`: GPU 读回，display 切换后增量 vs 全量 diff=0 px。
+- 所有临时计时插桩已移除（`WUI_PROF_MULTI` / `WUI_PROF_FRAME` 计数为 0）。

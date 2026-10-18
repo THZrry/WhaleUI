@@ -1849,15 +1849,21 @@ struct Builder
      * a class change that only affects descendants' styles). Everything
      * build() does for style resolution is repeated here; geometry is left
      * to the box pass that follows. */
-    void restyle_subtree(whaleui_layout_node_t* n, bool full)
+    void restyle_subtree(whaleui_layout_node_t* n, bool full,
+                        const WhaleUIComputedStyle* root_style = nullptr)
     {
         if (!n || n->is_text) {
             return;
         }
         lxb_dom_element* el = n->el;
         if (el) {
+            /* An already-computed cascade for THIS node (the caller needed it
+             * to decide display-only vs full) is reused: computing it twice
+             * was the per-element cost of a batch edit. */
             WhaleUIComputedStyle s =
-                whaleui_style_compute(el, rules, rule_count, vars, &st);
+                root_style ? *root_style
+                           : whaleui_style_compute(el, rules, rule_count, vars,
+                                                   &st);
             /* the same inheritance merge build() applies */
             if (n->parent && !n->parent->is_text) {
                 const WhaleUIComputedStyle& ps = n->parent->style;
@@ -6115,6 +6121,7 @@ int whaleui_layout_relayout_multi(
     std::vector<whaleui_layout_node_t*> restyleOnly;
     std::vector<size_t> restyleIdx;
     std::vector<char> restyleFull; /* 1 = re-cascade descendants too */
+    std::vector<WhaleUIComputedStyle> restyleStyle; /* cascade for the root */
     for (size_t e = 0; e < nel; ++e) {
         lxb_dom_element* el = els[e];
         auto found = tree->by_el.find(el);
@@ -6277,6 +6284,7 @@ int whaleui_layout_relayout_multi(
                 }
             }
             restyleFull.push_back(display_only ? 0 : 1);
+            restyleStyle.push_back(fresh);
             continue;
         }
         unmap(old);
@@ -6314,7 +6322,8 @@ int whaleui_layout_relayout_multi(
      * them out). Done AFTER the rebuild loop so inherited values come from
      * parents that may themselves have been rebuilt. */
     for (size_t ri = 0; ri < restyleOnly.size(); ++ri) {
-        b.restyle_subtree(restyleOnly[ri], restyleFull[ri] != 0);
+        b.restyle_subtree(restyleOnly[ri], restyleFull[ri] != 0,
+                          &restyleStyle[ri]);
     }
     /* A restyled node takes the same fast/slow decision as a rebuilt one.
      * `freshOldIdx` maps each entry of freshNodes back to its element's slot
